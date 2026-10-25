@@ -86,6 +86,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         self.inner.authority.supports_deferred_durability()
     }
 
+    /// Funds a final authority flush before a phase accepts deferred writes.
+    /// Polling uses that reservation even after caller cancellation.
+    pub fn prepare_durability_barrier<'a>(
+        &'a self,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<
+        impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask + use<'a, A, O>,
+        crate::AuthorityStoreError,
+    > {
+        self.inner.authority.prepare_durability_barrier(work)
+    }
+
     /// Seals the authority prefix before a dependent external effect is dispatched.
     /// Object bytes are already durable before authority publication.
     pub async fn durability_barrier<W: FsWork>(

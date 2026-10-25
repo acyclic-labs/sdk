@@ -176,8 +176,9 @@ async fn dispatch_claims_have_no_fallible_post_publication_barrier() -> Result<(
         // The former deferred claim commits its start, then fails admission
         // before the executor can issue the corresponding external effect.
         let old = BarrierJournal(Journal::default(), journal.1, AtomicUsize::new(0));
-        let result = super::super::phase::run(&old, None, async {
-            old.append(operation, "old-claim", &dispatch, None)?.await
+        let result = acyclic_stream::deferring_durability(async {
+            old.append(operation, "old-claim", &dispatch, None)?.await?;
+            old.durability_barrier(None)?.await
         })
         .await;
         assert!(result.is_err());

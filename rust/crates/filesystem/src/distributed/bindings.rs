@@ -52,6 +52,50 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .map_err(map_stream_error)
     }
 
+    fn prepare_durability_barrier<'a>(
+        &'a self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<
+        impl std::future::Future<Output = Result<(), AuthorityStoreError>>
+        + acyclic_stream::ProviderTask
+        + use<'a, P>,
+        AuthorityStoreError,
+    > {
+        work.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = if let Some(original) = work.original {
+            let future = self
+                .provider
+                .prepare_native_durability_barrier(original.runtime_meter())
+                .map_err(|error| work.native_io_failure(error))?;
+            Some((future, original.clone()))
+        } else {
+            None
+        };
+        if !work.is_native() {
+            work.charge(WorkCounters {
+                durability_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        Ok(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some((future, original)) = native {
+                future
+                    .await
+                    .map_err(|error| {
+                        AuthorityStoreError::NativeOriginal(original.runtime_error(error))
+                    })?
+                    .map_err(AuthorityStoreError::from)?;
+                return Ok(());
+            }
+            self.provider
+                .durability_barrier()
+                .await
+                .map_err(map_stream_error)
+        })
+    }
+
     fn supports_generation_lineage_prefix(&self) -> bool {
         true
     }

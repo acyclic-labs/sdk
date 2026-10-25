@@ -95,11 +95,15 @@ impl Work {
 
     #[cfg(feature = "local")]
     pub(crate) fn reserve_durability(&self, count: u64) -> Result<(), StreamError> {
-        let ticket = self.record(NativeOperationReservation::new(
+        self.record(self.prepare_durability(count))
+    }
+    #[cfg(feature = "local")]
+    pub(crate) fn prepare_durability(&self, count: u64) -> std::io::Result<()> {
+        let ticket = NativeOperationReservation::new(
             Arc::clone(&self.meter),
             NativeOperationKind::Durability,
             count,
-        ))?;
+        )?;
         *self
             .durability
             .lock()

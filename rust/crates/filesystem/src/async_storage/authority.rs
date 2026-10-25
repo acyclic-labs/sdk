@@ -30,6 +30,14 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     ) -> impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired))
     }
+    /// Funds a phase's final flush before accepting deferred writes. The
+    /// returned future must complete without consulting caller cancellation.
+    fn prepare_durability_barrier<'a>(
+        &'a self,
+        _work: &mut AuthorityWork<'_>,
+    ) -> Result<impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask + use<'a, Self>, crate::AuthorityStoreError> {
+        Err::<std::future::Ready<Result<(), crate::AuthorityStoreError>>, _>(crate::AuthorityStoreError::Retired)
+    }
     /// Whether creation can retain a published-generation prefix.
     fn supports_generation_lineage_prefix(&self) -> bool {
         false

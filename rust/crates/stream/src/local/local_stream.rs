@@ -359,13 +359,17 @@ impl LocalStream {
 
     /// Pins the accepted prefix before joining the common group-commit wait.
     async fn seal_accepted(&self) -> Result<(), StreamError> {
+        self.seal_accepted_with_reservation(false).await
+    }
+
+    async fn seal_accepted_with_reservation(&self, reserved: bool) -> Result<(), StreamError> {
         self.check_available()?;
         let target = {
             let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
             if journal.synced >= journal.appended {
                 return Ok(());
             }
-            if let Some(work) = &self.work {
+            if !reserved && let Some(work) = &self.work {
                 work.reserve_durability(1)?;
             }
             journal.required = journal.appended;

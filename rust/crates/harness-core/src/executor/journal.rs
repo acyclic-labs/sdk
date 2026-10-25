@@ -76,7 +76,8 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         false
     }
 
-    /// Makes the phase durable before a dependent model or tool is dispatched.
+    /// Admits completion before the phase accepts deferred writes. Polling
+    /// seals its accepted prefix without rechecking caller cancellation.
     fn durability_barrier<'a>(
         &'a self,
         io: Option<&'a PreparationIo>,

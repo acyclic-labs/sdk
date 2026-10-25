@@ -4,7 +4,7 @@ use futures::{FutureExt, StreamExt};
 
 type Journal = FilesystemExecutionJournal<
     acyclic_stream::LocalStream,
-    acyclic_fs::StreamAuthorityStore<acyclic_stream::LocalStream>,
+    Arc<acyclic_fs::StreamAuthorityStore<acyclic_stream::LocalStream>>,
     acyclic_fs::MemoryObjectBackend,
 >;
 
@@ -25,7 +25,7 @@ async fn fixture(
     );
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     let backend = acyclic_fs::Fs::new(
-        acyclic_fs::StreamAuthorityStore::new(authority),
+        Arc::new(acyclic_fs::StreamAuthorityStore::new(authority)),
         acyclic_fs::LogicalObjectStore::new(Arc::new(objects), bucket),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
@@ -213,4 +213,109 @@ fn phase_io(mode: u8) -> Result<Option<PreparationIo>> {
         1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
         _ => Some(PreparationIo::from_native_work(&work)?),
     })
+}
+
+#[tokio::test]
+async fn standalone_phase_cancellation_cannot_revoke_accepted_durability() -> Result<()> {
+    check_cancelled_phase(1).await
+}
+
+#[tokio::test]
+async fn native_phase_cancellation_cannot_revoke_accepted_durability() -> Result<()> {
+    check_cancelled_phase(2).await
+}
+
+async fn check_cancelled_phase(mode: u8) -> Result<()> {
+    for late_admission in [true, false] {
+        for exit in 0..3 {
+            let fail = exit != 0;
+            let io = phase_io(mode)?.ok_or_else(|| Error::Invalid("phase IO missing".into()))?;
+            let directory =
+                tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+            let operation = OperationId::new();
+            let (journal, _runtime) = fixture(directory.path(), operation, Some(&io)).await?;
+            let path = journal.path(operation)?.path().clone();
+            let before = journal.stream.watermarks(path.clone()).await?;
+            let before_work = io.receipt();
+            let future = async {
+                crate::executor::append_model_event(
+                    &journal,
+                    operation,
+                    "model:0:0",
+                    (0, ModelPurpose::Response),
+                    &ModelEvent::Content {
+                        delta: "accepted before cancellation".into(),
+                    },
+                    Some(&io),
+                )
+                .await?;
+                let accepted = journal.stream.watermarks(path.clone()).await?;
+                assert_eq!(accepted.accepted, before.accepted + 1);
+                assert_eq!(accepted.durable, before.durable);
+                io.cancellation().cancel();
+                match exit {
+                    0 => Ok(()),
+                    1 => io.check_cancellation(),
+                    _ => std::future::pending::<Result<()>>().await,
+                }
+            };
+            // As in the model dispatch entry point, completion must outlive
+            // the loser of the cancellation race as well as an ordinary error.
+            let future = async {
+                let cancellation = io.cancellation().cancelled();
+                futures::pin_mut!(cancellation, future);
+                match futures::future::select(cancellation, future).await {
+                    futures::future::Either::Left(_) => Err(Error::InteractionRejected(
+                        crate::InteractionRejection::Cancelled,
+                    )),
+                    futures::future::Either::Right((result, _)) => result,
+                }
+            };
+            let result = if late_admission {
+                // Execute the old ordering as a negative control: constructing
+                // completion after cancellation strands the accepted prefix.
+                let result = acyclic_stream::deferring_durability(future).await;
+                match journal.durability_barrier(Some(&io)) {
+                    Ok(barrier) => barrier.await.and(result),
+                    Err(error) => Err(error),
+                }
+            } else {
+                crate::executor::phase::run(&journal, Some(&io), future).await
+            };
+            assert_eq!(
+                result.is_err(),
+                late_admission || fail,
+                "mode={mode} late={late_admission} fail={fail}: {result:?}"
+            );
+            let after = journal.stream.watermarks(path).await?;
+            assert_eq!(
+                after.durable == after.accepted,
+                !late_admission,
+                "cancellation durability oracle mode={mode} late={late_admission}"
+            );
+            if !late_admission {
+                assert!(
+                    io.receipt().durability_operations > before_work.durability_operations,
+                    "completion escaped the original ledger"
+                );
+            }
+        }
+    }
+    // A cancelled caller cannot start a phase; the reservation is its single
+    // admission boundary, before the deferred body can accept anything.
+    let io = phase_io(mode)?.ok_or_else(|| Error::Invalid("phase IO missing".into()))?;
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (journal, _runtime) = fixture(directory.path(), OperationId::new(), Some(&io)).await?;
+    io.cancellation().cancel();
+    let polled = std::sync::atomic::AtomicBool::new(false);
+    assert!(
+        crate::executor::phase::run(&journal, Some(&io), async {
+            polled.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .is_err()
+    );
+    assert!(!polled.load(std::sync::atomic::Ordering::SeqCst));
+    Ok(())
 }

@@ -337,7 +337,8 @@ async fn completion_order_detector_rejects_the_original_post_before_commit_path(
     let projection = json!({"kind":"json", "value":result.value});
     assert!(matches!(StockExecution::ordinary(&executor)
         .complete_with_post_hook::<false>(hooks.journal.as_ref(), (input().operation_id,0),
-            &invocation, &result, &projection).await,
+            &invocation, &result, &projection,
+            super::super::phase::PreparedPhase::new(hooks.journal.as_ref(), None)?).await,
         Err(Error::Invalid(message)) if message == "post-tool effect has no retained completion"));
     Ok(())
 }

@@ -34,7 +34,7 @@ where
         &'a self,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || self.seal_phase(io))
+        self.prepare_phase_seal(io)
     }
 
     fn claim_execution<'a>(

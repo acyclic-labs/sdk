@@ -153,20 +153,41 @@ pub(crate) async fn run<T>(
     io: Option<&PreparationIo>,
     future: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    if journal.supports_deferred_durability() {
-        let result = acyclic_stream::deferring_durability(future).await;
-        // Seal even a failed stream's accepted prefix before returning its error.
-        journal.durability_barrier(io)?.await?;
-        return result;
-    }
-    let _ = (journal, io);
-    future.await
+    PreparedPhase::new(journal, io)?.run(future).await
 }
 
-pub(crate) async fn seal(journal: &dyn ExecutionJournal, io: Option<&PreparationIo>) -> Result<()> {
-    if journal.supports_deferred_durability() {
-        journal.durability_barrier(io)?.await?;
+/// Completion custody acquired before dispatch or a cancellable phase begins.
+pub(crate) struct PreparedPhase<'a> {
+    barrier: Option<crate::conversation::BoundedContentFuture<'a, ()>>,
+}
+
+impl<'a> PreparedPhase<'a> {
+    pub(crate) fn new(
+        journal: &'a dyn ExecutionJournal,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if journal.supports_deferred_durability() {
+            return Ok(Self {
+                barrier: Some(journal.durability_barrier(io)?),
+            });
+        }
+        let _ = (journal, io);
+        Ok(Self { barrier: None })
     }
-    Ok(())
+
+    pub(crate) async fn run<T>(
+        self,
+        future: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some(barrier) = self.barrier {
+            let result = acyclic_stream::deferring_durability(future).await;
+            // Includes errors and the winning branch of a cancellation race.
+            barrier.await?;
+            return result;
+        }
+        let _ = self.barrier;
+        future.await
+    }
 }

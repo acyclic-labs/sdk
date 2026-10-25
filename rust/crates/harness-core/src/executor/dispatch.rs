@@ -21,20 +21,24 @@ impl StockExecution<'_> {
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
+        let completion = super::phase::PreparedPhase::new(journal, self.io)?;
         let cancellation = journal.model_cancellation();
         let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> = Box::pin(
             self.dispatch_model_step(journal, input, step, prior_messages, purpose, phase),
         );
-        match futures::future::select(cancellation, execution).await {
-            Either::Left((result, _)) => {
-                super::phase::seal(journal, self.io).await?;
-                result?;
-                Err(Error::InteractionRejected(
-                    crate::InteractionRejection::Cancelled,
-                ))
-            }
-            Either::Right((result, _)) => result,
-        }
+        completion
+            .run(async {
+                match futures::future::select(cancellation, execution).await {
+                    Either::Left((result, _)) => {
+                        result?;
+                        Err(Error::InteractionRejected(
+                            crate::InteractionRejection::Cancelled,
+                        ))
+                    }
+                    Either::Right((result, _)) => result,
+                }
+            })
+            .await
     }
 
     /// Replays or resolves one model step.
@@ -120,19 +124,16 @@ impl StockExecution<'_> {
             let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
             Either::Right(generated)
         };
-        let observed = super::phase::run(
-            journal,
-            io,
-            self.record_model_events(
+        let observed = self
+            .record_model_events(
                 journal,
                 input.operation_id,
                 (step, purpose, purpose_key),
                 replayed,
                 &mut admission,
                 stream,
-            ),
-        )
-        .await?;
+            )
+            .await?;
         if purpose == ModelPurpose::Response && admission.completed {
             self.retain_response_request(journal, input, step, prior_messages.len(), request)
                 .await?;

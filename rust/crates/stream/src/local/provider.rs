@@ -35,6 +35,24 @@ impl StreamProvider for LocalStream {
         })
     }
 
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
+        let work = crate::memory::Work::new(Arc::clone(&meter))?;
+        // This ticket survives original cancellation and excludes competing
+        // work from consuming the phase's final durability allowance.
+        work.prepare_durability(1)?;
+        let stream = Self {
+            work: Some(Arc::clone(&work)),
+            ..self.clone()
+        };
+        crate::NativeProviderFuture::try_new(&meter, async move {
+            let result = stream.seal_accepted_with_reservation(true).await;
+            work.finish(result.map(|()| ((), None)))
+        })
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,

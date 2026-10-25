@@ -64,6 +64,15 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> NativeProviderFuture<'_, ()> {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
+    /// Reserves a phase's completion before writes are deferred. Polling seals
+    /// the then-current accepted prefix without admitting new caller work.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_durability_barrier(
+        &self,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
