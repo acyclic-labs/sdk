@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import socket
 import signal
@@ -525,6 +526,7 @@ finally:a.close();b.close()
             command='import sys;print("RUNNING",flush=True);sys.stdin.buffer.read(1)'
             first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             cleanup.callback(retire,first)
+            self.assertTrue(select.select([first.stdout],[],[],2)[0],'fixture command did not become ready')
             self.assertEqual(first.stdout.readline(),b'RUNNING\n')
             marker=self.d/'new-ticket'
             with (root/'upgrade.lock').open('a') as lock:
