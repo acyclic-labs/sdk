@@ -106,8 +106,8 @@ fn journal(
         &SchemaRegistry::new(),
         acyclic_harness::filesystem::FilesystemJournalBinding {
             volume: private,
-            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
-            scope: scope,
+            verifier: &issuer.verifier(&mut None)?,
+            scope,
             maximum_bytes: 4_096,
             io: None,
         },
@@ -127,7 +127,7 @@ async fn bind_conversation(
                 kind: AggregateKind::Conversation,
                 id: id.into(),
             },
-            issuer.verifier(&mut None).expect("verifier copy"),
+            issuer.verifier(&mut None)?,
             SchemaRegistry::new(),
         ),
         None,
@@ -143,15 +143,13 @@ async fn bind_conversation(
                 operation_id: OperationId::from_bytes([30; 16]),
                 idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
                 expected_revision: 0,
-                scope: issuer
-                    .issue(
-                        "owner",
-                        &Capabilities::new(["conversation:bind"]),
-                        None,
-                        None,
-                        &mut None,
-                    )
-                    .expect("scope proof"),
+                scope: issuer.issue(
+                    "owner",
+                    &Capabilities::new(["conversation:bind"]),
+                    None,
+                    None,
+                    &mut None,
+                )?,
                 causal_parent: None,
                 action: Action::BindConversation { agent },
             },

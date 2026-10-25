@@ -256,13 +256,14 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         arguments: json!({"data":""}),
     };
     let bare_bytes = serde_json::to_vec(&wrapped_invocation)
-        .expect("fixture serialization")
+        .map_err(|error| Error::Invalid(error.to_string()))?
         .len();
-    wrapped_invocation.arguments["data"] =
-        json!("x".repeat(limits.file_bytes as usize - bare_bytes));
+    let file_bytes =
+        usize::try_from(limits.file_bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    wrapped_invocation.arguments["data"] = json!("x".repeat(file_bytes - bare_bytes));
     assert_eq!(
         serde_json::to_vec(&wrapped_invocation)
-            .expect("fixture serialization")
+            .map_err(|error| Error::Invalid(error.to_string()))?
             .len() as u64,
         limits.file_bytes
     );

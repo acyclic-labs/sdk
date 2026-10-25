@@ -9,7 +9,7 @@ pub(super) async fn stage_fixture_json<T: serde::Serialize>(
     let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?;
     journal
-        .stage(operation, &key, &bytes, "application/json", None)?
+        .stage(operation, key, &bytes, "application/json", None)?
         .await
 }
 
@@ -121,7 +121,7 @@ pub(super) async fn fabricate_checkpoint(
 #[tokio::test]
 pub(super) async fn canonical_publication_rejects_fabricated_source_and_summary_then_recovers()
 -> Result<()> {
-    use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
+    use acyclic_harness::executor::ExecutionEvent;
     for mode in [1, 2] {
         let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
         let (provider, _counts) = summary_model(5);
@@ -178,26 +178,7 @@ pub(super) async fn canonical_publication_rejects_fabricated_source_and_summary_
             .await?;
         assert_eq!(output.text, "retained summary");
         let records = storage.journal().replay(operation, 0, 64, None)?.await?;
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(
-                    record.event,
-                    ExecutionEvent::ModelStarted {
-                        purpose: ModelPurpose::Summary,
-                        ..
-                    }
-                ))
-                .count(),
-            1
-        );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
-                .count(),
-            1
-        );
+        assert_single_summary_checkpoint(&records);
         assert_eq!(provider.requests().len(), 3);
         let previous_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
             storage.journal().as_ref(),

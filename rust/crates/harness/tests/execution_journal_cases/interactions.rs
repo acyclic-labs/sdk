@@ -7,21 +7,18 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         filesystem("interaction-e2e", "interaction-owner", agent, 8).await?;
     let scope = scope(&issuer, &private, agent, &["interaction:open".into()])?;
     let id = InteractionId::from_bytes([11; 16]);
-    let responder = issuer
-        .issue(
-            "human",
-            &Capabilities::new([
-                "interaction:resolve".to_owned(),
-                format!("interaction:respond:{id}"),
-            ]),
-            None,
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let unauthorized = issuer
-        .issue("bystander", &Capabilities::default(), None, None, &mut None)
-        .expect("scope proof");
+    let responder = issuer.issue(
+        "human",
+        &Capabilities::new([
+            "interaction:resolve".to_owned(),
+            format!("interaction:respond:{id}"),
+        ]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let unauthorized =
+        issuer.issue("bystander", &Capabilities::default(), None, None, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -40,7 +37,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         &SchemaRegistry::new(),
         acyclic_harness::filesystem::FilesystemJournalBinding {
             volume: &private.clone(),
-            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            verifier: &issuer.verifier(&mut None)?,
             scope: &scope.clone(),
             maximum_bytes: 4_096,
             io: None,

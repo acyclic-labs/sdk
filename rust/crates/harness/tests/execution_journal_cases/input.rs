@@ -34,7 +34,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         ],
     )?;
     let grant = ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &scope,
         &project,
         VolumeOperation::Write,
@@ -63,18 +63,16 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: AgentId::from_bytes([45; 16]).to_string(),
         },
     );
-    let foreign_scope = foreign_issuer
-        .issue(
-            "foreign-owner",
-            &Capabilities::new([foreign.capability(VolumeOperation::Write, &mut None)?]),
-            Some(AgentId::from_bytes([45; 16])),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let foreign_scope = foreign_issuer.issue(
+        "foreign-owner",
+        &Capabilities::new([foreign.capability(VolumeOperation::Write, &mut None)?]),
+        Some(AgentId::from_bytes([45; 16])),
+        None,
+        &mut None,
+    )?;
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier copy"),
+            &issuer.verifier(&mut None)?,
             &scope,
             &foreign,
             VolumeOperation::Write,
@@ -84,7 +82,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         .is_err()
     );
     let foreign_grant = ContentGrant::verify(
-        &foreign_issuer.verifier(&mut None).expect("verifier copy"),
+        &foreign_issuer.verifier(&mut None)?,
         &foreign_scope,
         &foreign,
         VolumeOperation::Write,

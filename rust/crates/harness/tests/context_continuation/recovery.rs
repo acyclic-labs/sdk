@@ -212,6 +212,18 @@ pub(super) async fn default_canonical_checkpoint_recovers_lost_commit_ack_withou
     assert_eq!(counts.load(Ordering::SeqCst), counted);
     assert_eq!(calls.load(Ordering::SeqCst), transformed);
     let records = storage.journal().replay(operation, 0, 64, None)?.await?;
+    assert_single_summary_checkpoint(&records);
+    storage
+        .run_prompt(&bundle, "after recovery", Vec::new())
+        .await?;
+    assert_checkpoint_read_admission(&storage, &journal, operation).await?;
+    assert_eq!(provider.remaining(), 0);
+    Ok(())
+}
+
+pub(super) fn assert_single_summary_checkpoint(
+    records: &[acyclic_harness::executor::ExecutionRecord],
+) {
     assert_eq!(
         records
             .iter()
@@ -235,12 +247,6 @@ pub(super) async fn default_canonical_checkpoint_recovers_lost_commit_ack_withou
             .count(),
         1
     );
-    storage
-        .run_prompt(&bundle, "after recovery", Vec::new())
-        .await?;
-    assert_checkpoint_read_admission(&storage, &journal, operation).await?;
-    assert_eq!(provider.remaining(), 0);
-    Ok(())
 }
 
 pub(super) async fn assert_checkpoint_read_admission(
@@ -313,7 +319,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         .stage(
             operation,
             "summary-request",
-            &request.bytes(),
+            request.bytes(),
             "application/json",
             None,
         )?
@@ -340,14 +346,14 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     };
     assert!(
         journal
-            .append_if_tail(operation, 0, &"premature", &compacted, None)?
+            .append_if_tail(operation, 0, "premature", &compacted, None)?
             .await
             .is_err()
     );
     journal
         .append(
             operation,
-            &"started",
+            "started",
             &ExecutionEvent::Started {
                 request_digest: [1; 32],
             },
@@ -357,7 +363,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     journal
         .append(
             operation,
-            &"prepared",
+            "prepared",
             &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection: context.clone(),
@@ -368,14 +374,14 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         .await?;
     assert!(
         journal
-            .append(operation, &"no-summary", &compacted, None)?
+            .append(operation, "no-summary", &compacted, None)?
             .await
             .is_err()
     );
     journal
         .append(
             operation,
-            &"summary-started",
+            "summary-started",
             &ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: ModelPurpose::Summary,
@@ -387,7 +393,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         .await?;
     assert!(
         journal
-            .append(operation, &"unsettled-summary", &compacted, None)?
+            .append(operation, "unsettled-summary", &compacted, None)?
             .await
             .is_err()
     );
@@ -403,7 +409,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     journal
         .append(
             operation,
-            &"summary-completed",
+            "summary-completed",
             &ExecutionEvent::Model {
                 step: 0,
                 purpose: ModelPurpose::Summary,
@@ -414,22 +420,22 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         .await?;
     assert!(
         !journal
-            .append_if_tail(operation, 3, &"stale-tail", &compacted, None)?
+            .append_if_tail(operation, 3, "stale-tail", &compacted, None)?
             .await?
     );
     assert!(
         journal
-            .append_if_tail(operation, 4, &"compacted", &compacted, None)?
+            .append_if_tail(operation, 4, "compacted", &compacted, None)?
             .await?
     );
     assert!(
         journal
-            .append_if_tail(operation, 4, &"compacted", &compacted, None)?
+            .append_if_tail(operation, 4, "compacted", &compacted, None)?
             .await?
     );
     assert!(
         journal
-            .append(operation, &"duplicate-compacted", &compacted, None)?
+            .append(operation, "duplicate-compacted", &compacted, None)?
             .await
             .is_err()
     );
@@ -437,7 +443,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
     journal
         .append(
             other,
-            &"started",
+            "started",
             &ExecutionEvent::Started {
                 request_digest: [2; 32],
             },
@@ -451,7 +457,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
             .append_if_tail(
                 operation,
                 4,
-                &"compacted",
+                "compacted",
                 &journal
                     .replay(operation, 4, 1, None)?
                     .await?

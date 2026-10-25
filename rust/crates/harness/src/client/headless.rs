@@ -23,10 +23,10 @@ pub enum HeadlessOutcome {
 impl HeadlessOutcome {
     pub(crate) fn from_error(error: &Error) -> Self {
         #[cfg(feature = "filesystem")]
-        if let Error::TaskFiles(error) = error {
-            if let crate::task_volume::Error::FileRead(cause) = error.as_ref() {
-                return Self::from_error(cause);
-            }
+        if let Error::TaskFiles(error) = error
+            && let crate::task_volume::Error::FileRead(cause) = error.as_ref()
+        {
+            return Self::from_error(cause);
         }
         if matches!(error, Error::GoalBlocked(_)) {
             return Self::Blocked;

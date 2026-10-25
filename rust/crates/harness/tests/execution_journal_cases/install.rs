@@ -34,19 +34,17 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let operation = OperationId::from_bytes([14; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
-    let responder = issuer
-        .issue(
-            "human",
-            &Capabilities::new([
-                "interaction:resolve".to_owned(),
-                format!("interaction:respond:{denied_id}"),
-                format!("interaction:respond:{approved_id}"),
-            ]),
-            None,
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let responder = issuer.issue(
+        "human",
+        &Capabilities::new([
+            "interaction:resolve".to_owned(),
+            format!("interaction:respond:{denied_id}"),
+            format!("interaction:respond:{approved_id}"),
+        ]),
+        None,
+        None,
+        &mut None,
+    )?;
     let approval = Interaction::approval("Install echo".into(), operation, digest)?;
     journal
         .open_interaction(denied_id, &approval, None)?
@@ -67,7 +65,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 tool.clone(),
                 operation,
                 &scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
+                &issuer.verifier(&mut None)?,
                 approved_id,
                 &journal
             )
@@ -90,7 +88,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 tool.clone(),
                 operation,
                 &scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
+                &issuer.verifier(&mut None)?,
                 denied_id,
                 &journal
             )
@@ -113,7 +111,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 tool.clone(),
                 OperationId::from_bytes([17; 16]),
                 &scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
+                &issuer.verifier(&mut None)?,
                 approved_id,
                 &journal
             )
@@ -125,7 +123,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             tool,
             operation,
             &scope,
-            &issuer.verifier(&mut None).expect("verifier copy"),
+            &issuer.verifier(&mut None)?,
             approved_id,
             &journal,
         )

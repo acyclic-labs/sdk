@@ -183,19 +183,16 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             .await
             .map_err(FileClientError::publication)?;
         while self.scanned.position < cut.position {
-            if self.buffered.is_none() {
-                self.buffered = Some(
-                    self.changes
-                        .next()
-                        .await
-                        .ok_or_else(|| Error::Storage("outbox follow ended".into()))?
-                        .map_err(FileClientError::publication)?,
-                );
-            }
-            let change = self
-                .buffered
-                .as_ref()
-                .expect("buffer filled before validation");
+            let change = match self.buffered.take() {
+                Some(change) => change,
+                None => self
+                    .changes
+                    .next()
+                    .await
+                    .ok_or_else(|| Error::Storage("outbox follow ended".into()))?
+                    .map_err(FileClientError::publication)?,
+            };
+            let change = self.buffered.insert(change);
             if let Some(write) = &change.file {
                 if !matches!(
                     write.key,
@@ -368,7 +365,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             let done = self
                 .pending
                 .retire_front()
-                .expect("front retained across publication");
+                .ok_or_else(|| Error::Storage("pending outbox request disappeared".into()))?;
             self.cursor = done.cursor;
             if let Some(reason) = rejected {
                 return Err(FileClientError::Rejected {
