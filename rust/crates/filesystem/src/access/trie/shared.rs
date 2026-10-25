@@ -632,9 +632,7 @@ fn program(
     mut matches: impl FnMut(&ProgramRule) -> bool,
 ) -> Outcome {
     let (rule, denial) = super::super::decision::policy_layers(
-        layers
-            .iter()
-            .map(|layer| matching.iter().filter(|index| layer.contains(index))),
+        matching_layers(layers, matching, |index, end| index < end).map(|layer| layer.iter()),
         |&index| {
             rules.get(index).and_then(|rule| {
                 (rule.actions & (1 << action as u16) != 0 && matches(rule))
@@ -643,6 +641,24 @@ fn program(
         },
     );
     Outcome { rule, denial }
+}
+
+// Both the flattened layer ranges and DFA matches follow rule order. Consume
+// each matching index once; empty layers must still reach the policy reducer.
+fn matching_layers<'a>(
+    layers: &'a [std::ops::Range<usize>],
+    mut matching: &'a [usize],
+    mut before_end: impl FnMut(usize, usize) -> bool + 'a,
+) -> impl Iterator<Item = &'a [usize]> {
+    layers.iter().map(move |layer| {
+        let count = matching
+            .iter()
+            .take_while(|index| before_end(**index, layer.end))
+            .count();
+        let (current, remaining) = matching.split_at(count);
+        matching = remaining;
+        current
+    })
 }
 
 struct Paths {

@@ -1,5 +1,62 @@
 use super::*;
 
+fn layer_work_oracle(repeated_scan: bool) {
+    let layers: Vec<_> = (0..1024).map(|index| index..index + 1).collect();
+    for matching in [
+        (0..1024).collect::<Vec<_>>(),
+        (0..1024).step_by(3).collect(),
+    ] {
+        let mut examined = 0;
+        let actual: Vec<Vec<usize>> = if repeated_scan {
+            layers
+                .iter()
+                .map(|layer| {
+                    matching
+                        .iter()
+                        .filter(|index| {
+                            examined += 1;
+                            layer.contains(index)
+                        })
+                        .copied()
+                        .collect()
+                })
+                .collect()
+        } else {
+            matching_layers(&layers, &matching, |index, end| {
+                examined += 1;
+                index < end
+            })
+            .map(<[usize]>::to_vec)
+            .collect()
+        };
+        for (layer, indexes) in layers.iter().zip(actual) {
+            assert_eq!(
+                indexes,
+                matching
+                    .iter()
+                    .copied()
+                    .filter(|index| layer.contains(index))
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            examined <= matching.len() + layers.len(),
+            "policy layers must consume matching indexes once: {examined}"
+        );
+    }
+}
+
+#[test]
+fn policy_layers_partition_matching_rules_in_linear_work() {
+    layer_work_oracle(false);
+}
+
+#[test]
+#[should_panic(expected = "policy layers must consume matching indexes once")]
+fn negative_control_policy_layers_rescan_all_matching_rules() {
+    layer_work_oracle(true);
+}
+
 fn literal_view() -> Result<(Arc<CompiledPolicy>, PathTrie), InvalidPolicy> {
     let mut policy: Policy = serde_json::from_slice(crate::access::INITIAL_POLICY)
         .map_err(|_| InvalidPolicy("invalid initial policy"))?;

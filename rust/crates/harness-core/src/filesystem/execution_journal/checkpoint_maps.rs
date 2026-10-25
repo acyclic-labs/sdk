@@ -401,13 +401,8 @@ mod tests {
         );
         let json = serde_json::to_vec(&Cell { value: &value }).expect("fixture model JSON");
         assert!(
-            io.decode(
-                std::marker::PhantomData::<Cell<Option<ModelEventAdmission>>>,
-                &json,
-                crate::wire::ErrorCode::Storage,
-            )
-            .is_err(),
-            "generic JSON negative control fit the bounded model-cell decoder"
+            <Option<ModelEventAdmission>>::decode(&json, Some(&io)).is_err(),
+            "model-cell decoder accepted the generic JSON negative control"
         );
         let key = (0, crate::executor::ModelPurpose::Response);
         let mut writer = Writer::new(&provider, &path, 0, Some(&io), None)?;
