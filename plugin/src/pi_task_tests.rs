@@ -559,6 +559,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
             settled.0,
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(settled.1)),
         )
+        .unwrap()
         .await
         .unwrap();
     let operation = OperationId::from_bytes([152; 16]);
@@ -587,6 +588,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
             admitted.0,
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(admitted.1)),
         )
+        .unwrap()
         .await
         .unwrap();
     drop(journal);
@@ -608,18 +610,22 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
     let left_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(left.1);
     let right_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(right.1);
     let (left, right) = tokio::join!(
-        first.step(
-            OperationId::from_bytes([155; 16]),
-            IdempotencyKey::new("native-large-left").unwrap(),
-            left.0,
-            Some(&left_io)
-        ),
-        second.step(
-            OperationId::from_bytes([156; 16]),
-            IdempotencyKey::new("native-large-right").unwrap(),
-            right.0,
-            Some(&right_io)
-        )
+        first
+            .step(
+                OperationId::from_bytes([155; 16]),
+                IdempotencyKey::new("native-large-left").unwrap(),
+                left.0,
+                Some(&left_io)
+            )
+            .unwrap(),
+        second
+            .step(
+                OperationId::from_bytes([156; 16]),
+                IdempotencyKey::new("native-large-right").unwrap(),
+                right.0,
+                Some(&right_io)
+            )
+            .unwrap()
     );
     assert_ne!(left.is_ok(), right.is_ok());
     let (accepted, rejected, stale, stale_window, operation, key) = if left.is_ok() {
@@ -659,6 +665,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
                 next.0,
                 Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(next.1))
             )
+            .unwrap()
             .await
             .err()
             .unwrap()
@@ -682,6 +689,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
             retry.0,
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1)),
         )
+        .unwrap()
         .await
         .unwrap();
     assert_eq!(retried.0.state, checkpoint.state);
@@ -723,6 +731,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
                 retry.0,
                 Some(&io),
             )
+            .unwrap()
             .await
             .unwrap();
         assert_eq!(replayed.0.state, checkpoint.state);
@@ -768,7 +777,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
     );
     let denied = guard(&input, &work);
     work.cancellation().cancel();
-    assert!(
+    assert_eq!(
         recovered
             .step(
                 OperationId::from_bytes([158; 16]),
@@ -776,8 +785,10 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
                 denied.0,
                 Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(denied.1))
             )
-            .await
-            .is_err()
+            .err()
+            .unwrap()
+            .code(),
+        acyclic_harness::wire::ErrorCode::Cancelled
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     // A later request has its own ledger, so it is issued its own task context.
@@ -806,6 +817,7 @@ async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usiz
                 retry.0,
                 Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1))
             )
+            .unwrap()
             .await
             .is_err()
     );
