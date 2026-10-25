@@ -137,7 +137,7 @@ impl Store {
             path.file_name()
                 .ok_or_else(|| Error::new("configuration_error", "credentials need a filename"))?,
         );
-        private_file::validate_destination(&path)?;
+        private_file::validate_destination_for_upgrade(&path)?;
         let path = match fs::canonicalize(&path) {
             Ok(path) => path,
             Err(error) if error.kind() == io::ErrorKind::NotFound => path,
@@ -163,6 +163,7 @@ impl Store {
                 "credential filenames must not end in a space or dot",
             ));
         }
+        private_file::validate_destination_for_upgrade(&sidecar(&path, ".lock"))?;
         let lock = acyclic_native_runtime::FileLock::try_acquire(
             private_file::open_or_create(&sidecar(&path, ".lock"))?,
             acyclic_native_runtime::FileLockMode::Exclusive,
@@ -175,6 +176,7 @@ impl Store {
         })?;
         // All writers retain this lock. Its acquisition proves any unpublished
         // fixed sidecar belongs to an interrupted former writer.
+        private_file::validate_destination_for_upgrade(&sidecar(&path, ".next"))?;
         private_file::discard_unpublished(&sidecar(&path, ".next"))?;
         Ok(Self { path, _lock: lock })
     }

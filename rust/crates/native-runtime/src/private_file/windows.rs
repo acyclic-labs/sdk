@@ -375,6 +375,10 @@ mod tests {
             install_untrusted_acl(&file, kind)?;
             drop(file);
             assert!(
+                crate::private_file::validate_destination_for_upgrade(&path).is_err(),
+                "untrusted {kind} ACL reached credential admission"
+            );
+            assert!(
                 crate::private_file::read_for_upgrade_with::<(), io::Error>(
                     &path,
                     100,

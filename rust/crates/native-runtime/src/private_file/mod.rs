@@ -108,7 +108,23 @@ pub fn open_or_create(path: &Path) -> io::Result<File> {
 
 /// Reject an existing nonprivate entry while permitting a missing destination.
 pub fn validate_destination(path: &Path) -> io::Result<()> {
-    match open(path, false) {
+    validate_destination_with(path, |path| open(path, false))
+}
+
+/// Admit a missing destination or an existing trusted legacy owner record.
+/// Windows tightens its descriptor under exclusive ownership before returning;
+/// shared ACLs, aliases and live writers remain refused. Other OSes stay strict.
+/// No payload is read or replaced, so original credentials and lock identities
+/// survive migration through the same guard as [`read_for_upgrade_with`].
+pub fn validate_destination_for_upgrade(path: &Path) -> io::Result<()> {
+    validate_destination_with(path, open_for_upgrade)
+}
+
+fn validate_destination_with(
+    path: &Path,
+    open: impl FnOnce(&Path) -> io::Result<File>,
+) -> io::Result<()> {
+    match open(path) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -355,17 +371,21 @@ pub fn read_for_upgrade_with<T, E: From<io::Error>>(
     maximum: u64,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
+    read_held_with(path, open_for_upgrade(path)?, maximum, read)
+}
+
+fn open_for_upgrade(path: &Path) -> io::Result<File> {
     #[cfg(windows)]
     let file = match open(path, false) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             windows::open_for_upgrade(path).map_err(windows::io_error)?
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
     #[cfg(not(windows))]
     let file = open(path, false)?;
-    read_held_with(path, file, maximum, read)
+    Ok(file)
 }
 
 fn read_held_with<T, E: From<io::Error>>(

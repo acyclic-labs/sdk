@@ -1317,8 +1317,9 @@ async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
 // Advances only production device-poll timers that actually become pending.
 pub(super) mod poll_clock;
 
+#[cfg(unix)]
 #[test]
-fn inherited_credential_permissions_are_rejected_before_decode() {
+fn public_credential_permissions_are_rejected_before_decode() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("identity.json");
     let file = fs::File::create(&path).expect("inherited fixture");
@@ -1334,6 +1335,80 @@ fn inherited_credential_permissions_are_rejected_before_decode() {
     // reject it before parsing even an empty credential record.
     assert!(fs::read(&path).expect("unchecked read").is_empty());
     assert!(Store::open(&path).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn legacy_credentials_and_sidecars_upgrade_without_changing_original_identity() {
+    let directory = tempfile::tempdir().expect("directory");
+    let parent = directory.path().join("private");
+    private_file::create_directory_all(&parent).expect("private directory");
+    let path = parent.join("identity.json");
+    let original = serde_json::to_vec(&agent_credentials("https://example.test"))
+        .expect("original credentials");
+    // Reproduce the previous Windows writer for every retained pathname.
+    fs::write(&path, &original).expect("ordinary credential writer");
+    for suffix in [".lock", ".next"] {
+        fs::write(sidecar(&path, suffix), b"original legacy sidecar")
+            .expect("ordinary sidecar writer");
+    }
+    assert!(
+        private_file::open(&path, false).is_err(),
+        "old strict guard"
+    );
+    let live_reader = fs::File::open(&path).expect("live original reader");
+    assert!(Store::open(&path).is_err(), "migration must be exclusive");
+    drop(live_reader);
+    let alias = parent.join("alias");
+    fs::hard_link(&path, &alias).expect("alias");
+    assert!(
+        Store::open(&path).is_err(),
+        "aliased credentials must be refused"
+    );
+    fs::remove_file(alias).expect("remove fixture alias");
+    for suffix in [".lock", ".next"] {
+        let live_sidecar = fs::File::open(sidecar(&path, suffix)).expect("live legacy sidecar");
+        assert!(
+            Store::open(&path).is_err(),
+            "live {suffix} must prevent migration"
+        );
+        drop(live_sidecar);
+    }
+    let store = Store::open(&path).expect("guarded legacy migration");
+    assert_eq!(
+        serde_json::to_vec(
+            &store
+                .credentials("https://example.test")
+                .expect("credentials")
+        )
+        .expect("retained identity"),
+        original,
+    );
+    assert_eq!(fs::read(&path).expect("unchanged original bytes"), original);
+    for entry in [&path, &sidecar(&path, ".lock")] {
+        assert!(
+            private_file::is_private(
+                &private_file::open(entry, false).expect("private migrated entry")
+            )
+            .expect("private descriptor")
+        );
+    }
+    assert!(!sidecar(&path, ".next").exists());
+    assert_eq!(
+        Store::open(&path).err().expect("same lock").code,
+        "credentials_busy"
+    );
+    drop(store);
+    let reopened = Store::open(&path).expect("private reopen");
+    assert_eq!(
+        serde_json::to_vec(
+            &reopened
+                .credentials("https://example.test")
+                .expect("original identity")
+        )
+        .expect("encoded identity"),
+        original
+    );
 }
 
 #[test]
