@@ -70,6 +70,20 @@ class RuntimeTests(unittest.TestCase):
             env.pop(key,None)
         env.update(extra or {})
         return env
+    def observed_admission(self,cleanup,env,observer,*args):
+        events,writer=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        cleanup.callback(events.close);cleanup.callback(writer.close)
+        # Both admission fixtures load and observe the one production module.
+        loader='''import importlib.util,json,socket,sys
+from pathlib import Path
+source=Path(sys.argv[1]);sys.path.insert(0,str(source.parent))
+spec=importlib.util.spec_from_file_location('observed_admit',source)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+events=socket.socket(fileno=int(sys.argv[2]))
+'''
+        process=subprocess.Popen([sys.executable,'-c',loader+observer,str(HERE/'bb-admit.py'),str(writer.fileno()),*args],env=env,pass_fds=[writer.fileno()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        cleanup.callback(retire_process,process);writer.close()
+        return process,events
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
         env=self.worker_env({'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
@@ -532,8 +546,19 @@ finally:a.close();b.close()
             marker=self.d/'new-ticket'
             with (root/'upgrade.lock').open('a') as lock:
                 fcntl.flock(lock,fcntl.LOCK_EX)
-                second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-                cleanup.callback(retire_process,second)
+                observer='''flock=module.fcntl.flock
+def observe(file,operation):
+    if operation==module.fcntl.LOCK_SH:
+        try:flock(file,operation|module.fcntl.LOCK_NB)
+        except BlockingIOError:events.send(b'blocked')
+        else:events.send(b'acquired')
+    return flock(file,operation)
+module.fcntl.flock=observe
+raise SystemExit(module.client(sys.argv[3:]))
+'''
+                second,events=self.observed_admission(cleanup,env,observer,'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()')
+                self.assertTrue(select.select([events],[],[],2)[0],'second ticket did not reach the upgrade lock')
+                self.assertEqual(events.recv(4096),b'blocked')
                 first.communicate(input=b'R',timeout=2);self.assertEqual(first.returncode,0)
                 self.assertFalse(marker.exists())
                 # Without the upgrade flock, a new ticket incorrectly enters.
@@ -660,13 +685,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
         # Observe the actual scheduler decision, without replacing admission.
         # A marker's absence cannot distinguish queued work from a slow child.
-        observer='''import importlib.util,json,socket,sys
-from pathlib import Path
-source=Path(sys.argv[1]);sys.path.insert(0,str(source.parent))
-spec=importlib.util.spec_from_file_location('observed_admit',source)
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-events=socket.socket(fileno=int(sys.argv[2]))
-take=module.Scheduler.take
+        observer='''take=module.Scheduler.take
 reported=False
 def observe(scheduler,cls):
     global reported
@@ -680,10 +699,7 @@ module.Scheduler.take=observe
 module.serve()
 '''
         with contextlib.ExitStack() as cleanup:
-            events,writer=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
-            cleanup.callback(events.close);cleanup.callback(writer.close)
-            daemon=subprocess.Popen([sys.executable,'-c',observer,str(HERE/'bb-admit.py'),str(writer.fileno())],env={**env,'BB_ADMIT_READY_FD':'1'},pass_fds=[writer.fileno()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-            cleanup.callback(retire_process,daemon);writer.close()
+            daemon,events=self.observed_admission(cleanup,{**env,'BB_ADMIT_READY_FD':'1'},observer)
             self.assertTrue(select.select([daemon.stdout],[],[],5)[0],'admission daemon did not become ready')
             self.assertEqual(daemon.stdout.read(5),b'ready')
             command='import os,sys;print(os.getpid(),flush=True);sys.stdin.buffer.read(1)'
