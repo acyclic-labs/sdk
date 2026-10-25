@@ -1,6 +1,6 @@
 use super::model_provider::{
-    Pending, PublicationCut, block_on, declare_fixture, finish_publications, pause_before_publish,
-    publish_until_cut, start_fixture,
+    Pending, PublicationCut, block_on, declare_fixture, finish_publications, model_assert,
+    model_with_oracle, pause_before_publish, publish_until_cut, start_fixture,
 };
 use super::*;
 use crate::distributed::JournalWrite;
@@ -134,7 +134,7 @@ fn committed_at(client: &MemoryStream, path: &str, sequence: u64) -> u64 {
 }
 
 fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
-    loom::model(move || {
+    model_with_oracle(move || {
         let client = Arc::new(MemoryStream::new_with_clock(
             MemoryLimits::default(),
             Arc::new(TickClock(AtomicU64::new(1))),
@@ -230,15 +230,18 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
                 )
             });
         if published != 0 {
-            assert!(
+            model_assert(
                 published_at.is_some_and(|time| time < revoked_at),
-                "revoked owner published a journal record"
-            );
+                "revoked owner published a journal record",
+            )?;
         }
-        assert_eq!(published, u64::from(committed));
+        model_assert(
+            published == u64::from(committed),
+            "journal acknowledgement differs from publication",
+        )?;
         let mut reopened = Box::new(block_on(open(&client)).unwrap());
         let verifier = issuer.verifier(&mut None).unwrap();
-        assert!(
+        model_assert(
             block_on(reopened.journal_condition(
                 &owner,
                 &scope,
@@ -248,8 +251,9 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
                 JournalWrite::Fresh,
                 &mut None,
             ))
-            .is_err()
-        );
+            .is_err(),
+            "revoked owner retains a fresh journal condition",
+        )?;
         let retained = block_on(reopened.journal_condition(
             &owner,
             &scope,
@@ -259,7 +263,11 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
             JournalWrite::Settlement,
             &mut None,
         ));
-        assert_eq!(retained.is_ok(), !release);
+        model_assert(
+            retained.is_ok() != release,
+            "settlement ownership differs from lease retirement",
+        )?;
+        Ok(())
     });
 }
 
@@ -281,7 +289,7 @@ fn host_publication_cannot_cross_lease_release_or_cancellation() {
 }
 
 fn origin_model<const FENCE: bool>() {
-    loom::model(|| {
+    model_with_oracle(|| {
         let client = Arc::new(MemoryStream::default());
         let writers: Vec<_> = (0..2)
             .map(|writer| {
@@ -313,11 +321,11 @@ fn origin_model<const FENCE: bool>() {
         for writer in writers {
             let _ = writer.join().unwrap();
         }
-        assert_eq!(
-            block_on(client.tail(StreamPath::new(COORDINATOR_PATH).unwrap())).unwrap(),
-            1,
-            "stale writer published an origin"
-        );
+        model_assert(
+            block_on(client.tail(StreamPath::new(COORDINATOR_PATH).unwrap())).unwrap() == 1,
+            "stale writer published an origin",
+        )?;
+        Ok(())
     });
 }
 

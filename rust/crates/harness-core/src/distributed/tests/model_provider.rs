@@ -17,6 +17,30 @@ pub(super) fn block_on<F: Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
 
+// Oracle failures are observations, not modeled synchronization. Record the
+// first counterexample without unwinding a Loom coroutine; report it only once
+// every schedule and its owned production state have been physically retired.
+pub(super) fn model_assert(
+    condition: bool,
+    message: &'static str,
+) -> std::result::Result<(), &'static str> {
+    condition.then_some(()).ok_or(message)
+}
+
+pub(super) fn model_with_oracle(
+    check: impl Fn() -> std::result::Result<(), &'static str> + Send + Sync + 'static,
+) {
+    let oracle = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observed = oracle.clone();
+    loom::model(move || {
+        if let Err(message) = check() {
+            observed.lock().unwrap().get_or_insert(message);
+        }
+    });
+    let failure = *oracle.lock().unwrap();
+    assert!(failure.is_none(), "{}", failure.unwrap_or(""));
+}
+
 // Only pause at the publication boundary. All storage state, exclusion and
 // wakeups still belong to MemoryStream's production Loom-visible locks.
 pub(super) struct PublicationCut {

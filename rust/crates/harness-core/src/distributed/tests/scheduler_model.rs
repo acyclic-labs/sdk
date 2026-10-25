@@ -1,6 +1,6 @@
 use super::model_provider::{
     Pending, PublicationCut, block_on, declare_fixture, finish_publications, fixture_event,
-    pause_before_publish, publish_until_cut, start_fixture,
+    model_assert, model_with_oracle, pause_before_publish, publish_until_cut, start_fixture,
 };
 use super::*;
 use crate::{
@@ -164,7 +164,7 @@ fn prepared(
 }
 
 fn settlement_model(join: bool, broken: bool) {
-    loom::model(move || {
+    model_with_oracle(move || {
         let client = Arc::new(MemoryStream::default());
         let contents = Arc::new(Contents::new());
         initialized(
@@ -186,35 +186,42 @@ fn settlement_model(join: bool, broken: bool) {
         let (published, first, second) = finish_publications(first, second, || {
             block_on(client.tail(StreamPath::new(COORDINATOR_PATH).unwrap())).unwrap()
         });
-        assert_eq!(published, tail + 1, "settlement appended more than once");
+        model_assert(published == tail + 1, "settlement appended more than once")?;
         let results = [first, second];
-        assert!(
+        model_assert(
             results
                 .iter()
-                .all(|result| matches!(result, Ok(_) | Err(Error::Conflict(_))))
-        );
-        assert_eq!(
+                .all(|result| matches!(result, Ok(_) | Err(Error::Conflict(_)))),
+            "settlement returned an unexpected error",
+        )?;
+        model_assert(
             results
                 .into_iter()
                 .filter(|result| matches!(result, Ok(true)))
-                .count(),
-            1
-        );
+                .count()
+                == 1,
+            "settlement did not have exactly one successful publisher",
+        )?;
         let reopened = coordinator(&client, &contents);
         let parent = reopened
             .scheduler
             .operation(OperationId::from_bytes([1; 16]))
             .unwrap();
-        assert_eq!(parent.phase, OperationPhase::Terminal);
-        assert!(parent.reservation.is_none());
-        assert_eq!(
-            parent.outcome,
-            Some(Outcome::Succeeded(contents.reference(if join {
-                JOIN
-            } else {
-                b"11"
-            })))
-        );
+        model_assert(
+            parent.phase == OperationPhase::Terminal,
+            "parent is not terminal",
+        )?;
+        model_assert(parent.reservation.is_none(), "parent retains a reservation")?;
+        model_assert(
+            parent.outcome
+                == Some(Outcome::Succeeded(contents.reference(if join {
+                    JOIN
+                } else {
+                    b"11"
+                }))),
+            "settlement published the wrong result",
+        )?;
+        Ok(())
     });
 }
 

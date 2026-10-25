@@ -141,6 +141,17 @@ harness=("$@")
 run_tests targets --all-targets; rc=$?
 run_tests docs --doc; doc_rc=$?
 [ "$rc" != 0 ] || rc=$doc_rc
+loom_started=$SECONDS
+echo "GATE_HARNESS_LOOM_START target=$target_root/.gate-pr-loom"
+CARGO_TARGET_DIR="$target_root/.gate-pr-loom" bash scripts/check-harness-models.sh --packages-file .gate-tests-packages 2>&1 | tee "$gate_output/.gate-harness-loom.out"
+loom_status=("${PIPESTATUS[@]}")
+loom_rc=${loom_status[0]}
+if [ "${loom_status[1]}" != 0 ]; then
+  echo 'error: gate could not retain harness Loom output'
+  loom_rc=2
+fi
+echo "GATE_HARNESS_LOOM_WALL seconds=$((SECONDS-loom_started)) rc=$loom_rc"
+[ "$rc" != 0 ] || rc=$loom_rc
 wait "$clippy"
 gate_cache_finish "$test_target" "$gate_output/.gate-tests.out" "$rc"
 gate_cache_finish "$clippy_target" "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")"
