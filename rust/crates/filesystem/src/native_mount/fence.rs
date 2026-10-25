@@ -430,6 +430,8 @@ impl MountDestinationGuard {
             .as_ref()
             .and_then(|guard| guard.registry_file.as_ref())
             .ok_or(NativeMountError::ControlPending)?;
+        #[cfg(test)]
+        super::tests::fence::before_registry_unlock(native);
         work.attempt_io(
             crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
             || fence_io::unlock(registry),

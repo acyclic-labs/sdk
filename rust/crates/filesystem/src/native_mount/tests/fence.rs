@@ -1,5 +1,28 @@
 use super::*;
 
+type UnlockCut = Box<dyn FnOnce(&crate::NativeMaterializationWork)>;
+
+thread_local! {
+    static BEFORE_REGISTRY_UNLOCK: std::cell::RefCell<Option<UnlockCut>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(in crate::native_mount) fn before_registry_unlock(work: &crate::NativeMaterializationWork) {
+    let cut = BEFORE_REGISTRY_UNLOCK.take();
+    if let Some(cut) = cut {
+        cut(work);
+    }
+}
+
+struct RestoreUnlockCut;
+
+impl Drop for RestoreUnlockCut {
+    fn drop(&mut self) {
+        BEFORE_REGISTRY_UNLOCK.take();
+    }
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
@@ -123,20 +146,38 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     let destination = parent.path().join("mount");
     std::fs::create_dir(&destination)?;
     let (lock_path, _) = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?;
-    let baseline =
+    let denied =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, &baseline)?;
-    let writes = baseline.receipt().backend_write_operations;
-    await_recovery_worker(owner)?;
-    let mut budget = WorkBudget::UNBOUNDED;
-    // Successful acquisition spends its final write unlocking the registry.
-    // Keep that one write unavailable while funding the accepted fence
-    // retirement (lock, unlink, unlock) and the administrative final close.
-    let retirement_writes = 3 + 1 + u64::from(cfg!(windows));
-    budget.backend_write_operations = writes - 1 + retirement_writes;
-    let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
-        .map_err(|(error, _)| error)?;
+    let prefix = std::rc::Rc::new(std::cell::Cell::new(None));
+    let credit = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let _restore = RestoreUnlockCut;
+    BEFORE_REGISTRY_UNLOCK.set(Some(Box::new({
+        let prefix = prefix.clone();
+        let credit = credit.clone();
+        let lock_path = lock_path.clone();
+        move |work| {
+            assert!(
+                matches!(
+                    acquire_existing_mount_lock(&lock_path),
+                    Err(NativeMountError::DestinationBusy)
+                ),
+                "the semantic cut holds the actual destination fence"
+            );
+            prefix.set(Some(work.receipt().backend_write_operations));
+            // Withhold only still-uncommitted work. The preborn worker's
+            // original final-close credit remains available. No I/O count
+            // from a different acquisition selects this failure boundary.
+            let remaining = work.remaining().unwrap().backend_write_operations;
+            credit.replace(Some(
+                work.reserve_work(crate::WorkCounters {
+                    backend_write_operations: remaining,
+                    ..crate::WorkCounters::UNCHARGED
+                })
+                .unwrap(),
+            ));
+        }
+    })));
     let error = NativeMountRecoveryOwner::acquire_with_original(&destination, &denied)
         .expect_err("the actual post-lock registry unlock is denied");
     assert!(matches!(
@@ -150,7 +191,7 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     ));
     assert_eq!(
         denied.receipt().backend_write_operations,
-        writes,
+        prefix.get().expect("the actual post-lock cut was reached") + 1,
         "actual prefix plus original physical fence close"
     );
     assert!(

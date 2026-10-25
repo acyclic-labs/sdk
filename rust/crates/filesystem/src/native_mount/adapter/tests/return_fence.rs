@@ -52,10 +52,15 @@ pub(in crate::native_mount) fn with_omitted<T>(broken: bool, run: impl FnOnce() 
 }
 
 struct Pause {
-    remaining: usize,
+    cut: ReadCut,
     entered: mpsc::Sender<()>,
     release: tokio::sync::oneshot::Receiver<()>,
     after: Option<u64>,
+}
+
+enum ReadCut {
+    Ordinal(usize),
+    PolicyAfterData,
 }
 
 struct Objects {
@@ -84,17 +89,23 @@ impl Objects {
             self.data_reads.fetch_add(1, Ordering::Relaxed);
         }
     }
-    async fn before_read(&self) {
+    async fn before_read(&self, id: ObjectId) {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let pause = {
             let mut slot = self.pause.lock().unwrap();
             if let Some(pause) = slot.as_mut() {
-                pause.remaining -= 1;
-                if pause.remaining == 0 {
-                    slot.take()
-                } else {
-                    None
-                }
+                let reached = match &mut pause.cut {
+                    ReadCut::Ordinal(remaining) => {
+                        *remaining -= 1;
+                        *remaining == 0
+                    }
+                    ReadCut::PolicyAfterData => {
+                        OBSERVE_DATA.get()
+                            && self.data_reads.load(Ordering::Relaxed) > 0
+                            && id.kind == crate::ObjectKind::GenerationRoot
+                    }
+                };
+                if reached { slot.take() } else { None }
             } else {
                 None
             }
@@ -154,7 +165,7 @@ impl AsyncObjectStore for Objects {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
         self.data_read(id);
-        self.before_read().await;
+        self.before_read(id).await;
         self.inner.read(id, maximum, work).await
     }
     async fn read_many(
@@ -164,7 +175,7 @@ impl AsyncObjectStore for Objects {
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
         for request in requests {
             self.data_read(request.object_id);
-            self.before_read().await;
+            self.before_read(request.object_id).await;
         }
         self.inner.read_many(requests, work).await
     }
@@ -340,6 +351,15 @@ fn revoked_return(
     broken: bool,
     change: Change,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    revoked_return_after_prefix(op, broken, change, false)
+}
+
+fn revoked_return_after_prefix(
+    op: Read,
+    broken: bool,
+    change: Change,
+    prefix_read: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let expiry = if matches!(change, Change::Expiry) {
         Some(
             super::super::access::access_time(&crate::native_mount::clock::Clock::capture())?
@@ -352,20 +372,28 @@ fn revoked_return(
     // Calibrate the last real storage read of this exact operation without the
     // return fence. Pausing that read establishes authorization-before-storage,
     // rather than pausing the policy lookup that precedes authorization.
-    objects.reads.store(0, Ordering::Relaxed);
-    {
-        let _old = Omit::enter(!matches!(change, Change::Data));
-        read(&source, pinned.as_ref(), op)?;
-    }
-    let remaining = objects.reads.load(Ordering::Relaxed);
-    assert_ne!(remaining, 0);
+    let cut = if matches!(change, Change::Data) {
+        // This root belongs to the return-policy observation: data has
+        // already been read, and the observer has sampled the authority head.
+        // Prefix reads and cold/warm paths cannot move this semantic cut.
+        ReadCut::PolicyAfterData
+    } else {
+        objects.reads.store(0, Ordering::Relaxed);
+        {
+            let _old = Omit::enter(true);
+            read(&source, pinned.as_ref(), op)?;
+        }
+        let remaining = objects.reads.load(Ordering::Relaxed);
+        assert_ne!(remaining, 0);
+        ReadCut::Ordinal(remaining)
+    };
     let (entered, pending) = mpsc::channel();
     let (release, released) = tokio::sync::oneshot::channel();
     *objects
         .pause
         .lock()
         .map_err(|_| "fixture pause lock poisoned")? = Some(Pause {
-        remaining,
+        cut,
         entered,
         release: released,
         after: expiry,
@@ -377,6 +405,9 @@ fn revoked_return(
             OBSERVE_DATA.set(true);
             let _old = Omit::enter(broken && !matches!(change, Change::Data));
             let _retry = Retry::enter(broken && matches!(change, Change::Data));
+            if prefix_read {
+                source.lookup(&MountPath::root())?;
+            }
             read(&source, pinned.as_ref(), op)
         }
     });
@@ -412,7 +443,8 @@ fn revoked_return(
     if matches!(change, Change::Data) {
         assert!(
             result.is_ok() && objects.data_reads.load(Ordering::Relaxed) == 1,
-            "data-only commit invalidated native result: {result:?}"
+            "data-only commit invalidated native result: {op:?} {result:?}; data reads: {}",
+            objects.data_reads.load(Ordering::Relaxed)
         );
         return Ok(());
     }
@@ -487,14 +519,23 @@ fn removed_pinned_expiry_fence_negative_control() {
 #[test]
 fn policy_observation_retries_data_only_publication_without_rereading_data()
 -> Result<(), Box<dyn std::error::Error>> {
-    revoked_return(Read::Bytes, false, Change::Data)?;
-    revoked_return(Read::Pinned, false, Change::Data)
+    for prefix_read in [false, true] {
+        revoked_return_after_prefix(Read::Bytes, false, Change::Data, prefix_read)?;
+        revoked_return_after_prefix(Read::Pinned, false, Change::Data, prefix_read)?;
+    }
+    Ok(())
 }
 
 #[test]
 #[should_panic(expected = "data-only commit invalidated native result")]
 fn missing_policy_observation_retry_negative_control() {
     revoked_return(Read::Bytes, true, Change::Data).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "data-only commit invalidated native result")]
+fn missing_policy_observation_retry_after_prefix_negative_control() {
+    revoked_return_after_prefix(Read::Bytes, true, Change::Data, true).unwrap();
 }
 
 pub(in crate::native_mount::adapter) fn omitted_deadline() -> bool {
