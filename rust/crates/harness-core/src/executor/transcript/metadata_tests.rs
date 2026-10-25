@@ -4,7 +4,7 @@ mod malformed;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(transparent)]
-struct CoarseMetadata<T>(T);
+struct ScratchRetainingControl<T>(T);
 
 fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
     let value =
@@ -73,11 +73,52 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
     Ok(())
 }
 
-// The previous admission policy, with exactly the same wire representation.
-impl<T: PreparationRecord> PreparationRecord for CoarseMetadata<T> {
+// Same layout and wire representation, but deliberately retains decode scratch.
+impl<T: PreparationRecord> PreparationRecord for ScratchRetainingControl<T> {
+    fn diagnostic_label_bytes() -> u64 {
+        T::diagnostic_label_bytes()
+    }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         T::json_value_schema()
     }
+}
+
+// A missing resident substitution must remain observable even when the shared
+// layout's whole decode is already much smaller than the retired coarse bound.
+fn check_scratch_control<T: PreparationRecord + Serialize>(value: &T) -> Result<()> {
+    let bytes = crate::contract::canonical_json_bytes(value)?;
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let (decoded, hold) = io.decode(
+            std::marker::PhantomData::<ScratchRetainingControl<T>>,
+            &bytes,
+            crate::wire::ErrorCode::Storage,
+        )?;
+        let resident = decoded
+            .0
+            .decoded_owned_bytes()?
+            .ok_or_else(|| invalid(None))?;
+        assert!(
+            hold.bytes() > resident,
+            "negative control did not retain transient decode storage: {} <= {resident}",
+            hold.bytes()
+        );
+        drop(decoded);
+        drop(hold);
+        assert_eq!(io.owned_bytes()?, 0);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
 }
 
 fn check_decode<T: PreparationRecord + Serialize>(
@@ -142,6 +183,11 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
                 "ref-only metadata reserved unrelated workflow slots: {peak}; bound={maximum_peak}"
             );
             if let Ok((decoded, hold)) = &result {
+                assert_eq!(
+                    Some(hold.bytes()),
+                    decoded.decoded_owned_bytes()?,
+                    "decoded record retained transient scratch"
+                );
                 assert_eq!(
                     serde_json::to_value(decoded)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -218,7 +264,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
     };
     check_decode(&manifest, 2 * 1024 * 1024, true)?;
     check_manifest_diagnostics(&manifest)?;
-    check_decode(&CoarseMetadata(manifest), 2 * 1024 * 1024, false)?;
+    check_scratch_control(&manifest)?;
     let compaction = crate::context::CompactionReference {
         source_digest: [255; 32],
         maximum_messages: 10,
@@ -232,12 +278,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         }),
     };
     check_decode_with_field(&compaction, 1024 * 1024, true, Some("retention"))?;
-    check_decode_with_field(
-        &CoarseMetadata(compaction),
-        1024 * 1024,
-        false,
-        Some("retention"),
-    )?;
+    check_scratch_control(&compaction)?;
     for count in [1, 8, 64] {
         let checkpoint = crate::context::CanonicalContextCheckpoint {
             operation_id: OperationId::new(),
@@ -300,19 +341,7 @@ async fn contexts_retain_values_and_sparse_nodes_without_decoder_scratch() -> Re
             current_input_index: Some(0),
         };
         check_decode(&context, 16 * 1024 * 1024, true)?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
-        let io = PreparationIo::from_budget(budget, &cancellation)?;
-        let bytes = crate::contract::canonical_json_bytes(&context)?;
-        let (_decoded, hold) = io.decode(
-            std::marker::PhantomData::<CoarseMetadata<crate::context::Context>>,
-            &bytes,
-            crate::wire::ErrorCode::Storage,
-        )?;
-        assert!(
-            hold.bytes() > 256 * 1024,
-            "negative control did not retain context decode scratch"
-        );
+        check_scratch_control(&context)?;
     }
     Ok(())
 }
@@ -350,30 +379,7 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
         // Includes physical peak/residence, malformed diagnostics, sparse maps,
         // original native custody, and resident-Value decoding through one codec.
         check_decode(&projection, 16 * 1024 * 1024, true)?;
-        let bytes = crate::contract::canonical_json_bytes(&projection)?;
-        for native in [false, true] {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
-            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let io = if native {
-                PreparationIo::from_native_work(&work)?
-            } else {
-                PreparationIo::from_budget(budget, &cancellation)?
-            };
-            let (decoded, hold) = io.decode(
-                std::marker::PhantomData::<CoarseMetadata<ResponseProjection>>,
-                &bytes,
-                crate::wire::ErrorCode::Storage,
-            )?;
-            assert!(
-                hold.bytes() > 256 * 1024,
-                "negative control did not retain projection decode scratch"
-            );
-            drop(decoded);
-            drop(hold);
-            assert_eq!(io.owned_bytes()?, 0);
-        }
+        check_scratch_control(&projection)?;
     }
     Ok(())
 }
