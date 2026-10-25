@@ -1,5 +1,5 @@
 use std::io;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::mem::{size_of, zeroed};
 use std::os::windows::process::CommandExt as _;
 #[cfg(test)]
@@ -10,16 +10,18 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState};
+use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
+
+#[path = "windows_job_wait.rs"]
+mod job_wait;
 
 #[path = "windows_wait.rs"]
 pub(super) mod wait;
@@ -30,85 +32,9 @@ pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()
 }
 #[cfg(test)]
 pub(super) use wait::wait_for_exit_coarse;
-
-pub(super) fn write_pipe(
-    pipe: &mut (impl Write + Pipe),
-    bytes: &[u8],
-    meter: Option<&dyn crate::NativeReadMeter>,
-) -> io::Result<(Option<usize>, io::Result<()>)> {
-    let mode = PIPE_NOWAIT;
-    let (changed, recorded) =
-        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
-            // SAFETY: this exclusively owned byte pipe has no pending I/O.
-            if unsafe {
-                SetNamedPipeHandleState(
-                    pipe.as_raw_handle().cast(),
-                    &mode,
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            } == 0
-            {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })?;
-    if let Err(error) = changed {
-        if error.kind() == io::ErrorKind::BrokenPipe {
-            return Ok((Some(0), recorded));
-        }
-        recorded?;
-        return Err(error);
-    }
-    recorded?;
-    let mut candidate = bytes;
-    loop {
-        let mut actual = 0;
-        let (written, recorded) =
-            super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: synchronous WriteFile borrows the existing input
-                // only for this call and reports its physical prefix.
-                if unsafe {
-                    windows_sys::Win32::Storage::FileSystem::WriteFile(
-                        pipe.as_raw_handle().cast(),
-                        candidate.as_ptr(),
-                        u32::try_from(candidate.len()).unwrap_or(u32::MAX),
-                        &raw mut actual,
-                        std::ptr::null_mut(),
-                    )
-                } == 0
-                {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(actual as usize)
-                }
-            })?;
-        if actual != 0 {
-            return Ok((Some(actual as usize), recorded.and(written.map(|_| ()))));
-        }
-        match written {
-            Ok(0) if candidate.len() > 1 => {
-                recorded?;
-                candidate = candidate
-                    .get(..candidate.len() / 2)
-                    .ok_or_else(|| io::Error::other("invalid process write prefix"))?;
-            }
-            Ok(0) => return Ok((None, recorded)),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                return Ok((None, recorded));
-            }
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
-                return Ok((Some(0), recorded));
-            }
-            Err(error) => {
-                recorded?;
-                return Err(error);
-            }
-            Ok(written) => return Ok((Some(written), recorded)),
-        }
-    }
-}
+#[cfg(test)]
+#[path = "windows_job_wait_tests.rs"]
+mod job_wait_tests;
 
 pub(super) fn read_pipe(
     pipe: &mut (impl Read + Pipe),
@@ -440,41 +366,9 @@ impl Guard {
                 Ok(())
             })?;
         }
-        let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
-        loop {
-            // SAFETY: this plain output structure accepts zero for every field.
-            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                // SAFETY: writable fixed ABI structure and owned live Job.
-                if unsafe {
-                    QueryInformationJobObject(
-                        self.job,
-                        JobObjectBasicAccountingInformation,
-                        (&raw mut accounting).cast(),
-                        u32::try_from(size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>())
-                            .map_err(|_| io::ErrorKind::InvalidInput)?,
-                        std::ptr::null_mut(),
-                    )
-                } == 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                if accounting.ActiveProcesses == 0 {
-                    self.active = false;
-                }
-                Ok(())
-            })?;
-            if !self.active {
-                return Ok(());
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
-            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
-                Ok(())
-            })?;
-        }
+        job_wait::wait_empty(self.job, meter)?;
+        self.active = false;
+        Ok(())
     }
 }
 
@@ -512,15 +406,11 @@ fn denied_job_cleanup_retains_child_and_reports_failure() {
         )
     };
     assert_ne!(duplicated, 0);
-    let original = std::mem::replace(
-        &mut tree.guard,
-        Guard {
-            job: restricted,
-            active: true,
-            assigned: true,
-            ..Guard::empty(true)
-        },
-    );
+    let mut restricted_guard = Guard::empty(true);
+    restricted_guard.job = restricted;
+    restricted_guard.active = true;
+    restricted_guard.assigned = true;
+    let original = std::mem::replace(&mut tree.guard, restricted_guard);
     let started = std::time::Instant::now();
     let result = tree
         .wait_with_output(
@@ -529,6 +419,7 @@ fn denied_job_cleanup_retains_child_and_reports_failure() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -541,6 +432,7 @@ fn denied_job_cleanup_retains_child_and_reports_failure() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -585,11 +477,10 @@ fn denied_admission_still_observes_unassigned_child_exit() {
         )
     };
     assert_ne!(duplicated, 0);
-    let mut restricted = Guard {
-        job: restricted,
-        active: true,
-        ..Guard::empty(true)
-    };
+    let mut restricted_guard = Guard::empty(true);
+    restricted_guard.job = restricted;
+    restricted_guard.active = true;
+    let mut restricted = restricted_guard;
     let mut command = super::tests::command("child", temporary.path());
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     let mut child = command.spawn().expect("spawn suspended child");
@@ -608,3 +499,7 @@ fn denied_admission_still_observes_unassigned_child_exit() {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(!temporary.path().join("tree-ready").exists());
 }
+
+#[cfg(test)]
+#[path = "termination_wait_tests.rs"]
+mod termination_wait_tests;

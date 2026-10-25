@@ -120,6 +120,9 @@ fuser = { version = "=0.18.0", default-features = false, optional = true }
 nix = { version = "0.31.3", default-features = false, features = ["fs", "user", "mount"], optional = true }
 rustix = { workspace = true, features = ["fs", "net"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1.2.56"
 

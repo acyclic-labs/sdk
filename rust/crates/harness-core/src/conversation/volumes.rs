@@ -465,11 +465,12 @@ impl ContentGrant {
                     version,
                     descriptor,
                     display_name,
+                    ..
                 } = file.clone();
                 return Ok(Boundary {
                     volume,
                     operation: VolumeOperation::Read,
-                    exact_file: Some((path, version, descriptor, display_name)),
+                    exact_file: Some((path, version.into_string(), descriptor, display_name)),
                     directory_prefix: None,
                 });
             }
@@ -679,11 +680,12 @@ impl ContentGrant {
                 version,
                 descriptor,
                 display_name,
+                ..
             } = file.clone();
             Ok(Boundary {
                 volume,
                 operation: VolumeOperation::Read,
-                exact_file: Some((path, version, descriptor, display_name)),
+                exact_file: Some((path, version.into_string(), descriptor, display_name)),
                 directory_prefix: None,
             })
         })
@@ -741,13 +743,17 @@ impl ContentGrant {
                 .exact_file
                 .as_ref()
                 .is_some_and(|(path, version, descriptor, display_name)| {
-                    (path, version, descriptor, display_name)
-                        != (
-                            &file.path,
-                            &file.version,
-                            &file.descriptor,
-                            &file.display_name,
-                        )
+                    (
+                        path.as_str(),
+                        version.as_str(),
+                        descriptor,
+                        display_name.as_str(),
+                    ) != (
+                        file.path(),
+                        file.version(),
+                        file.descriptor(),
+                        file.display_name(),
+                    )
                 })
             || self.directory_prefix.as_deref().is_some_and(|prefix| {
                 is_internal_path(file.path()) || !path_below(file.path(), prefix)

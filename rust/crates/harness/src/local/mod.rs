@@ -49,6 +49,7 @@ mod runtime;
 mod settings;
 #[cfg(test)]
 mod tests;
+mod tool_metadata;
 mod turn;
 #[cfg(feature = "search-http")]
 pub mod web;

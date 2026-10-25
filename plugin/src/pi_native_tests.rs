@@ -11,6 +11,103 @@ fn work() -> NativeMaterializationWork {
     .unwrap()
 }
 
+#[test]
+fn native_invocation_decodes_the_current_process_contract() -> Result<()> {
+    let work = work();
+    let root = root_path();
+    let scratch = root.join("scratch");
+    let binding = crate::pi_binding::tests::binding("child", 7);
+    let PiScratchAllocation::Created(creation) = &binding.scratch.allocation else {
+        return Err(invalid("fixture scratch must have its creation record"));
+    };
+    let manifest = NativeViewManifest {
+        options: NativeViewOptions {
+            root: root.clone(),
+            maximum_volumes: 1,
+            work_per_volume: super::super::native_root_source::budget(),
+        },
+        volumes: vec![NativeVolumeMapping {
+            volume: binding.scratch.volume.clone(),
+            generation: creation.generation.clone(),
+            namespace: NativeVolumeNamespace::MaterializedDirectory,
+            path: scratch.clone(),
+            writable: true,
+            authority_revision: [1; 32],
+        }],
+    };
+    for prefix in [false, true] {
+        let host = PiNativeHostRuntime {
+            version: PI_NATIVE_VERSION.into(),
+            executable: root.join("pi"),
+            executable_prefix: if prefix {
+                vec![root.join("pi-cli.js").to_string_lossy().into_owned()]
+            } else {
+                Vec::new()
+            },
+            extension: root.join("acyclic.ts"),
+            provider_extension: prefix.then(|| root.join("provider.ts")),
+            environment: BTreeMap::from([("HOME".into(), root.to_string_lossy().into_owned())]),
+        };
+        let invocation = host.intent_invocation(
+            &scratch.join("child.jsonl"),
+            &scratch,
+            "fixture-provider",
+            "fixture-model",
+            "fixture prompt",
+            capture_limits(Default::default(), 65_536)?,
+            &work,
+        )?;
+        let mut invocation = invocation.0;
+        invocation.environment =
+            BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "fixture-caller".into())]);
+        let request = invocation.request_with_work(&host, &binding, &manifest, &work)?;
+        assert!(request.0.has_valid_capture_allowances());
+        assert_eq!(
+            request.0.standard_input.as_deref(),
+            Some(b"fixture prompt".as_slice())
+        );
+        assert_eq!(request.0.view, manifest);
+        assert_eq!(
+            request
+                .0
+                .environment
+                .get("ACYCLIC_PI_CALLER")
+                .map(String::as_str),
+            Some("fixture-caller")
+        );
+        assert_eq!(
+            request.0.argv.first().map(String::as_str),
+            if prefix {
+                host.executable_prefix.first().map(String::as_str)
+            } else {
+                Some("--print")
+            }
+        );
+        let mut obsolete =
+            serde_json::to_value(&invocation).map_err(|error| invalid(&error.to_string()))?;
+        assert!(obsolete.get("cancellation_poll_ms").is_none());
+        obsolete
+            .as_object_mut()
+            .ok_or_else(|| invalid("invocation fixture must serialize as an object"))?
+            .insert("cancellation_poll_ms".into(), json!(250));
+        assert!(serde_json::from_value::<PiNativeInvocation>(obsolete).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn native_capture_policy_rejects_the_removed_polling_override() -> Result<()> {
+    let limits = capture_limits(Default::default(), 65_536)?;
+    let mut obsolete = serde_json::to_value(limits).map_err(|error| invalid(&error.to_string()))?;
+    assert!(obsolete.get("cancellation_poll_ms").is_none());
+    obsolete
+        .as_object_mut()
+        .ok_or_else(|| invalid("capture policy fixture must serialize as an object"))?
+        .insert("cancellation_poll_ms".into(), json!(250));
+    assert!(serde_json::from_value::<PiNativeCaptureLimits>(obsolete).is_err());
+    Ok(())
+}
+
 fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
     let entry = json!({"type":"message","id":"first","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
         "message":{"role":"user","content":"original instruction","timestamp":1}});

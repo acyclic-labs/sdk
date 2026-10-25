@@ -1,6 +1,6 @@
 use super::*;
 use std::io::{BufRead as _, Write as _};
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use windows_sys::Win32::Foundation::{FILETIME, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentThread, GetThreadTimes, SetEvent, WaitForSingleObject,
@@ -186,7 +186,7 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
         } else {
             None
         };
-        let mut armed = Some((armed, resume.event.try_clone()?));
+        let mut armed = Some((armed, resume.event.as_handle().try_clone_to_owned()?));
         let mut checked = Some(checked);
         let result = platform::wait::wait_with_resume(
             tree.child.as_mut().ok_or(io::ErrorKind::NotFound)?,

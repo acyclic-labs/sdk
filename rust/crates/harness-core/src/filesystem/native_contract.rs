@@ -243,8 +243,6 @@ pub struct NativeProcessRequest {
     pub timeout_ms: u32,
     /// Positive finite wait for each durable task-intent check.
     pub control_timeout_ms: u32,
-    /// Positive interval between durable task-intent checks during capture.
-    pub cancellation_poll_ms: u32,
     /// Positive bound across stdout and stderr together.
     pub maximum_output_bytes: u32,
     /// Positive bound for the complete serialized result, including metadata.
@@ -286,7 +284,6 @@ impl NativeProcessRequest {
         super::native_capture_bounds::capture_allowances_valid(
             self.timeout_ms,
             self.control_timeout_ms,
-            self.cancellation_poll_ms,
             self.maximum_output_bytes,
             self.maximum_result_bytes,
         )
@@ -431,7 +428,6 @@ mod native_result_decode_tests {
             environment: BTreeMap::from([("KEY".into(), "value".into())]),
             timeout_ms: 1,
             control_timeout_ms: 1,
-            cancellation_poll_ms: 1,
             maximum_output_bytes: 1,
             maximum_result_bytes: 1,
             mcp_stdio: Some(crate::mcp::stdio::McpStdioRequest {

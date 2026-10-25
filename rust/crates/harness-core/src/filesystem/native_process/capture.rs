@@ -3,6 +3,9 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
+mod owner;
+#[doc(hidden)]
+pub use owner::OwnerControl;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =
@@ -13,19 +16,23 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
     request: &NativeProcessRequest,
     observer: Option<Arc<NativeProcessObserver>>,
 ) -> Result<Option<NativeProcessResult>> {
+    let control = OwnerControl::open(Arc::clone(owner)).await?;
     owner.verify(false, &mut None).await?;
     let check_owner = Arc::clone(owner);
     let invocation = Invocation::from(request);
     let runtime = tokio::runtime::Handle::current();
     let control_timeout = Duration::from_millis(u64::from(invocation.control_timeout_ms));
+    let wake = control.wake();
     let check = move || {
-        check_on_runtime(
-            &runtime,
-            control_timeout,
-            check_owner.verify(false, &mut None),
-        )
+        control.check(|| {
+            check_on_runtime(
+                &runtime,
+                control_timeout,
+                check_owner.verify(false, &mut None),
+            )
+        })
     };
-    capture_checked(invocation, observer, check).await
+    capture_checked(invocation, observer, check, Some(wake)).await
 }
 
 // Both production checks and the runtime-construction regression enter the
@@ -70,6 +77,7 @@ pub(crate) async fn capture_checked(
     invocation: Invocation,
     observer: Option<Arc<NativeProcessObserver>>,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
+    wake: Option<acyclic_native_runtime::ProcessWake>,
 ) -> Result<Option<NativeProcessResult>> {
     capture_with_custody(
         invocation,
@@ -81,6 +89,7 @@ pub(crate) async fn capture_checked(
         },
         check,
         (),
+        wake,
     )
     .await
     .map(|(output, ())| output)
@@ -102,39 +111,15 @@ pub async fn capture_with_custody<T: Send + 'static>(
     + 'static,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
     custody: T,
+    wake: Option<acyclic_native_runtime::ProcessWake>,
 ) -> Result<(Option<NativeProcessResult>, T)> {
     // Native capture callbacks may await durable publication on Tokio's
     // blocking pool, so retain main's independent native host service.
     let (output, custody) = acyclic_native_runtime::run_blocking_io(
         move || {
             with_custody(custody, |custody| {
-                let mut command = Command::new(&invocation.executable);
-                if !invocation.inherit_environment {
-                    command.env_clear();
-                }
-                command
-                    .args(&invocation.argv)
-                    .current_dir(&invocation.cwd)
-                    .envs(&invocation.environment)
-                    .stdin(
-                        if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
-                            Stdio::piped()
-                        } else {
-                            Stdio::null()
-                        },
-                    )
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
+                let mut command = command_for(&invocation);
                 check()?;
-                let mut next_check = std::time::Instant::now();
-                let poll = || {
-                    if std::time::Instant::now() >= next_check {
-                        check()?;
-                        next_check = std::time::Instant::now()
-                            + Duration::from_millis(u64::from(invocation.cancellation_poll_ms));
-                    }
-                    Ok(())
-                };
                 let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
                 let maximum_output = invocation.maximum_output_bytes;
                 let exchange = invocation
@@ -205,10 +190,11 @@ pub async fn capture_with_custody<T: Send + 'static>(
                     timeout,
                     maximum_output,
                     input,
-                    poll,
+                    check,
                     observe,
                     None,
                     None,
+                    wake.as_ref().map(std::slice::from_ref),
                 );
                 Ok::<_, std::io::Error>(output)
             })
@@ -219,6 +205,27 @@ pub async fn capture_with_custody<T: Send + 'static>(
     .await
     .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
     Ok((result(output), custody))
+}
+
+fn command_for(invocation: &Invocation) -> Command {
+    let mut command = Command::new(&invocation.executable);
+    if !invocation.inherit_environment {
+        command.env_clear();
+    }
+    command
+        .args(&invocation.argv)
+        .current_dir(&invocation.cwd)
+        .envs(&invocation.environment)
+        .stdin(
+            if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            },
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
 }
 
 fn result(

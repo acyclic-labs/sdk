@@ -206,6 +206,8 @@ pub use directory::{
     PrivateDirectoryPage,
 };
 pub use files::{FileDescriptor, FileRef};
+#[cfg(feature = "filesystem")]
+pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
 pub use volumes::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};

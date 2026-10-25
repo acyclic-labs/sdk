@@ -47,7 +47,7 @@ pub use process_tree::PreparedClosedProcess;
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
     CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessCustodyLease, ProcessInput,
-    ProcessOutput, ProcessTree,
+    ProcessOutput, ProcessTree, ProcessWake,
 };
 
 mod file;

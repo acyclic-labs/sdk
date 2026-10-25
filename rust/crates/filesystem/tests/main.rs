@@ -2,6 +2,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
+mod core_group_commit;
 mod distributed;
 #[cfg(feature = "local")]
 mod linux_ext4_perf;

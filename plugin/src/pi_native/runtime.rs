@@ -19,7 +19,6 @@ pub(crate) struct PiNativeHostRuntime {
 pub(crate) struct PiNativeCaptureLimits {
     pub(crate) timeout_ms: u32,
     pub(crate) control_timeout_ms: u32,
-    pub(crate) cancellation_poll_ms: u32,
     pub(crate) maximum_output_bytes: u32,
     pub(crate) maximum_result_bytes: u32,
 }
@@ -43,7 +42,6 @@ pub(crate) fn capture_limits(
     Ok(PiNativeCaptureLimits {
         timeout_ms: 180_000,
         control_timeout_ms: 5_000,
-        cancellation_poll_ms: 250,
         maximum_output_bytes: u32::try_from(output).map_err(|error| invalid(&error.to_string()))?,
         maximum_result_bytes: u32::try_from(result).map_err(|error| invalid(&error.to_string()))?,
     })
@@ -219,7 +217,6 @@ impl PiNativeHostRuntime {
             environment: &BTreeMap::new(),
             timeout_ms: capture.timeout_ms,
             control_timeout_ms: capture.control_timeout_ms,
-            cancellation_poll_ms: capture.cancellation_poll_ms,
             maximum_output_bytes: capture.maximum_output_bytes,
             maximum_result_bytes: capture.maximum_result_bytes,
         };
@@ -265,7 +262,6 @@ impl PiNativeHostRuntime {
             environment: caller_environment,
             timeout_ms: input.timeout_ms,
             control_timeout_ms: input.control_timeout_ms,
-            cancellation_poll_ms: input.cancellation_poll_ms,
             maximum_output_bytes: input.maximum_output_bytes,
             maximum_result_bytes: input.maximum_result_bytes,
         }
@@ -285,7 +281,6 @@ struct PiBoundInvocation<'a> {
     environment: &'a BTreeMap<String, String>,
     timeout_ms: u32,
     control_timeout_ms: u32,
-    cancellation_poll_ms: u32,
     maximum_output_bytes: u32,
     maximum_result_bytes: u32,
 }
@@ -349,7 +344,6 @@ pub(crate) struct PiNativeInvocation {
     pub(crate) environment: BTreeMap<String, String>,
     pub(crate) timeout_ms: u32,
     pub(crate) control_timeout_ms: u32,
-    pub(crate) cancellation_poll_ms: u32,
     pub(crate) maximum_output_bytes: u32,
     pub(crate) maximum_result_bytes: u32,
 }
@@ -480,7 +474,6 @@ impl PiNativeInvocation {
             },
             timeout_ms: self.timeout_ms,
             control_timeout_ms: self.control_timeout_ms,
-            cancellation_poll_ms: self.cancellation_poll_ms,
             maximum_output_bytes: self.maximum_output_bytes,
             maximum_result_bytes: self.maximum_result_bytes,
             standard_input: Some(self.prompt.as_bytes()),
@@ -509,7 +502,6 @@ struct PiNativeRequestProjection<'a> {
     environment: PiCallerEnvironment<'a>,
     timeout_ms: u32,
     control_timeout_ms: u32,
-    cancellation_poll_ms: u32,
     maximum_output_bytes: u32,
     maximum_result_bytes: u32,
     #[serde(skip_serializing_if = "Option::is_none")]

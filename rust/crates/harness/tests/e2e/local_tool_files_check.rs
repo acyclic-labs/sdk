@@ -26,31 +26,7 @@ pub(super) fn check(
     {
         return Err("model steps alias the same task turn".into());
     }
-    let mut expected = BTreeMap::new();
-    for (step, call) in calls {
-        let turn = *turns.get(step).ok_or("missing model turn binding")?;
-        let invocation = ToolInvocation::for_model_call(
-            operation,
-            u32::try_from(*step)?,
-            call.call_id.clone(),
-            call.name.clone(),
-            call.arguments.clone(),
-            None,
-        )?;
-        let identity = Component::new(invocation.operation_id.to_string())?;
-        let result = results
-            .get(&call.call_id)
-            .ok_or("missing expected bash result")?;
-        let value = result["content"]
-            .get("value")
-            .ok_or("missing expected bash value")?;
-        if expected
-            .insert((turn, identity), (serde_json::to_value(invocation)?, value))
-            .is_some()
-        {
-            return Err("duplicate expected bash identity".into());
-        }
-    }
+    let expected = expected_calls(operation, calls, results, turns)?;
     let mut requests = 0;
     let mut completed = 0;
     let mut output: BTreeMap<_, (u64, Vec<u8>)> = BTreeMap::new();
@@ -85,7 +61,13 @@ pub(super) fn check(
                 requests += 1;
             }
             ToolFile::Result => {
-                if serde_json::from_slice::<Value>(bytes)? != **result {
+                let mut metadata = (*result).clone();
+                let fields = metadata
+                    .as_object_mut()
+                    .ok_or("process result is not an object")?;
+                fields.remove("stdout");
+                fields.remove("stderr");
+                if serde_json::from_slice::<Value>(bytes)? != metadata {
                     return Err("published tool result differs".into());
                 }
                 completed += 1;
@@ -127,4 +109,40 @@ pub(super) fn check(
         }
     }
     Ok(())
+}
+
+type ExpectedCalls<'a> = BTreeMap<(u64, Component), (Value, &'a Value)>;
+
+fn expected_calls<'a>(
+    operation: OperationId,
+    calls: &[(u64, ToolCall)],
+    results: &'a BTreeMap<String, Value>,
+    turns: &BTreeMap<u64, u64>,
+) -> TestResult<ExpectedCalls<'a>> {
+    let mut expected = BTreeMap::new();
+    for (step, call) in calls {
+        let turn = *turns.get(step).ok_or("missing model turn binding")?;
+        let invocation = ToolInvocation::for_model_call(
+            operation,
+            u32::try_from(*step)?,
+            call.call_id.clone(),
+            call.name.clone(),
+            call.arguments.clone(),
+            None,
+        )?;
+        let identity = Component::new(invocation.operation_id.to_string())?;
+        let result = results
+            .get(&call.call_id)
+            .ok_or("missing expected bash result")?;
+        let value = result["content"]
+            .get("value")
+            .ok_or("missing expected bash value")?;
+        if expected
+            .insert((turn, identity), (serde_json::to_value(invocation)?, value))
+            .is_some()
+        {
+            return Err("duplicate expected bash identity".into());
+        }
+    }
+    Ok(expected)
 }

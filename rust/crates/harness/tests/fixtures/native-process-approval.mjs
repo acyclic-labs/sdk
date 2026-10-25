@@ -30,7 +30,7 @@ const mapping = (id, writable) => ({
 const base = {
   executable: "/bin/bash", argv: ["--noprofile", "--norc", "-c", "printf '%s' '$1'", "literal", "argument space"],
   cwd: "/view", environment: { TOKEN: "selected", OTHER: "value" },
-  timeout_ms: 10_000, control_timeout_ms: 250, cancellation_poll_ms: 10,
+  timeout_ms: 10_000, control_timeout_ms: 250,
   maximum_output_bytes: 8192, maximum_result_bytes: 65_536,
   view: { kind: "materialized_directories", options: {
     root: "/view", maximum_volumes: 2, work_per_volume: { authorityRecordsRead: "EXACT_U64" },
@@ -62,7 +62,6 @@ add("cwd", r => r.cwd = "/view/destination");
 add("selected environment", r => r.environment.TOKEN = "changed");
 add("capture allowance", r => r.timeout_ms++);
 add("control allowance", r => r.control_timeout_ms++);
-add("poll allowance", r => r.cancellation_poll_ms++);
 add("output allowance", r => r.maximum_output_bytes++);
 add("result allowance", r => r.maximum_result_bytes++);
 add("namespace root", r => r.view.options.root = "/other-view");

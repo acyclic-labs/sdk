@@ -83,6 +83,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
             |_| Ok(acyclic_native_runtime::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)?;
     if !output.status.success() {

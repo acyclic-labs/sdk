@@ -239,19 +239,23 @@ impl LocalCoreStateStore {
         &self,
         id: T::Id,
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        if self.inspection {
+            return self.load_inspected_logged::<T>(id).await;
+        }
         let work = self.journal_work.as_ref();
         if let Some(work) = work {
             work.charge(crate::WorkCounters::UNCHARGED)?;
         }
         if let Ownership::Owned(owner) = &self.ownership
             && let Ok(residents) = owner.residents.read()
+            && !owner.pending.load(Ordering::Acquire)
+            && !owner.failed.load(Ordering::Acquire)
             && owner
                 .cache_limit
-                .is_none_or(|limit| residents.0.len() < limit)
+                .is_none_or(|limit| residents.len() < limit)
             && let Some(index) = residents.position(T::key(id), work)?
         {
             return Ok(residents
-                .0
                 .get(index)
                 .ok_or(LocalCoreStateStoreError::Integrity)?
                 .value
@@ -298,8 +302,8 @@ impl LocalCoreStateStore {
 
 impl Owner {
     pub(super) fn log(&self) -> MutexGuard<'_, Option<CoreLog>> {
-        // A transaction that panics has taken the log, so a poisoned slot is
-        // empty and the next transaction reopens and replays.
+        // Unwinding transactions poison the owner separately; retaining the
+        // slot keeps uncertain after-images from silently being replayed away.
         self.log.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -336,28 +340,7 @@ impl Namespace {
                     execute(Arc::default(), control)
                 })
             }
-            Admission::Owned(owner) => {
-                let mut slot = owner.log();
-                let mut log = match slot.take().filter(|log| !log.broken) {
-                    Some(log) => log,
-                    None => CoreLog::open(self, Arc::clone(&owner.residents))?,
-                };
-                let full = owner
-                    .cache_limit
-                    .is_some_and(|limit| log.residents().0.len() >= limit);
-                let result = if log.sequence >= OWNED_CHECKPOINT || full {
-                    log.checkpoint(self).map(|()| {
-                        if owner.cache_limit.is_some() {
-                            *log.residents() = Residents::default();
-                        }
-                    })
-                } else {
-                    Ok(())
-                }
-                .and_then(|()| operation(&mut log));
-                *slot = Some(log);
-                result
-            }
+            Admission::Owned(owner) => super::group::with_owned(self, owner, operation),
         }
     }
 }

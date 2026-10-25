@@ -41,6 +41,7 @@ pub struct LocalCoreStateStore {
     ownership: Ownership,
     /// Open while this handle's commits defer durability.
     deferral: Option<Arc<AtomicBool>>,
+    inspection: bool,
     journal_work: Option<crate::materializer::NativeMaterializationWork>,
     // Last: retained storage owners must outlive the namespace's open WAL and locks.
     ownership_anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
@@ -73,6 +74,12 @@ struct Owner {
     residents: Arc<RwLock<Residents>>,
     /// Core-state log, opened by the first logged transaction. Its mutex
     log: Mutex<Option<CoreLog>>,
+    /// Serializes physical barriers and checkpoints without blocking appends.
+    flush_gate: Mutex<()>,
+    /// Cached after-images cannot escape an outstanding durability barrier.
+    pending: AtomicBool,
+    /// An uncertain append/barrier requires closing and reopening this owner.
+    failed: AtomicBool,
     cache_limit: Option<usize>,
 }
 
@@ -129,6 +136,17 @@ impl OwnerLock {
             Err(error) => Err(error.into()),
         }
     }
+
+    fn inspect(root: &Path) -> Result<Self, LocalCoreStateStoreError> {
+        let lock = File::open(root.join(OWNER_LOCK))?;
+        match FileLock::try_acquire(lock, FileLockMode::Shared) {
+            Ok(lock) => Ok(Self::new(lock, None)),
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Err(
+                LocalCoreStateStoreError::OwnershipConflict(root.to_path_buf()),
+            ),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 impl Drop for OwnerLock {
@@ -141,8 +159,10 @@ impl Drop for OwnerLock {
 #[derive(Debug)]
 struct Namespace {
     root: PathBuf,
+    inspection: bool,
     admission: Admission,
     durability: Durability,
+    barrier: Mutex<Option<crate::NativeWorkReservation>>,
     _allocation: Option<crate::materializer::NativeAllocation>,
 }
 
@@ -177,6 +197,7 @@ impl LocalCoreStateStore {
             root: Arc::new(root.into()),
             ownership: Ownership::Shared,
             deferral: None,
+            inspection: false,
             journal_work: None,
             ownership_anchor: None,
         }
@@ -192,9 +213,13 @@ impl LocalCoreStateStore {
                 _lock: lock,
                 residents: Arc::default(),
                 log: Mutex::default(),
+                flush_gate: Mutex::default(),
+                pending: AtomicBool::new(false),
+                failed: AtomicBool::new(false),
                 cache_limit: None,
             })),
             deferral: None,
+            inspection: false,
             journal_work: None,
             ownership_anchor: None,
         })
@@ -232,6 +257,15 @@ impl LocalCoreStateStore {
         &self.root
     }
 
+    /// Selects nonpublishing reads, including recovery-copy and WAL inspection.
+    #[must_use]
+    pub fn inspecting(&self) -> Self {
+        Self {
+            inspection: true,
+            ..self.clone()
+        }
+    }
+
     fn namespace(&self) -> Result<Namespace, LocalCoreStateStoreError> {
         let work = self.journal_work.as_ref();
         let (root, allocation) = match work {
@@ -243,13 +277,21 @@ impl LocalCoreStateStore {
         };
         let admission = match (&self.ownership, work) {
             (Ownership::Shared, Some(work)) => {
-                let parent = crate::native_host::create_directories(&root, &mut &*work)?;
+                let parent = if self.inspection {
+                    crate::native_host::HostRoot::open(&root, &mut &*work)?
+                } else {
+                    crate::native_host::create_directories(&root, &mut &*work)?
+                };
                 let mut paths_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
                 let path = measured_record_path(&root, OWNER_LOCK, work, &mut paths_allocation)?;
                 let lock = materialization_open_at(
                     &parent.directory,
                     &path,
-                    &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                    &if self.inspection {
+                        crate::native_host::NativeOpenOptions::Read
+                    } else {
+                        crate::native_host::NativeOpenOptions::ReadWriteCreate
+                    },
                     work,
                 )?;
                 let cleanup = work.reserve_cleanup_write()?;
@@ -274,7 +316,11 @@ impl LocalCoreStateStore {
                 }
             }
             (Ownership::Shared, None) => Admission::Shared {
-                _lock: OwnerLock::acquire(&root, LockMode::Shared)?,
+                _lock: if self.inspection {
+                    OwnerLock::inspect(&root)?
+                } else {
+                    OwnerLock::acquire(&root, LockMode::Shared)?
+                },
             },
             (Ownership::Owned(owner), _) => Admission::Owned(Arc::clone(owner)),
         };
@@ -285,7 +331,9 @@ impl LocalCoreStateStore {
                 .is_some_and(|deferral| deferral.load(Ordering::Acquire));
         Ok(Namespace {
             root,
+            inspection: self.inspection,
             admission,
+            barrier: Mutex::default(),
             durability: if deferred {
                 Durability::Deferred
             } else {
@@ -295,8 +343,31 @@ impl LocalCoreStateStore {
         })
     }
 
-    /// Runs one admitted transaction without blocking an async executor.
     async fn transaction<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(Namespace) -> Result<T, LocalCoreStateStoreError> + Send + 'static,
+    ) -> Result<T, LocalCoreStateStoreError> {
+        if self.inspection {
+            return Err(LocalCoreStateStoreError::Integrity);
+        }
+        self.run_transaction(operation).await
+    }
+
+    async fn read_transaction<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(Namespace) -> Result<Option<T>, LocalCoreStateStoreError>
+        + Send
+        + 'static,
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        let result = self.run_transaction(operation).await;
+        match result {
+            Err(error) if self.inspection && inspection::is_missing(&error) => Ok(None),
+            result => result,
+        }
+    }
+
+    /// Runs one admitted transaction without blocking an async executor.
+    async fn run_transaction<T: Send + 'static>(
         &self,
         operation: impl FnOnce(Namespace) -> Result<T, LocalCoreStateStoreError> + Send + 'static,
     ) -> Result<T, LocalCoreStateStoreError> {
@@ -330,8 +401,18 @@ impl LocalCoreStateStore {
         family: &'static str,
         key: [u8; 16],
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        self.transaction(move |namespace| read_locked(&mut namespace.record(family, &key)?))
-            .await
+        self.read_transaction(move |namespace| {
+            let mut paths = namespace.record(family, &key)?;
+            if namespace.inspection {
+                inspection::with_record(&mut paths, |paths| {
+                    records::read_recoverable_mode(paths, false)
+                        .map(|value: Option<(T, _)>| value.map(|(value, _)| value))
+                })
+            } else {
+                read_locked(&mut paths)
+            }
+        })
+        .await
     }
 
     /// Replaces one journaled record only at `expected_revision` (`0` means absent).
@@ -545,6 +626,9 @@ impl Drop for DeferredDurability {
 /// Journaled companion-state failure.
 #[derive(Debug, Error)]
 pub enum LocalCoreStateStoreError {
+    /// A previous append or barrier has an uncertain durability outcome.
+    #[error("core state owner must be reopened after an uncertain durability outcome")]
+    DurabilityPoisoned,
     /// Native filesystem operation failed.
     #[error("core state I/O failed: {0}")]
     Io(#[source] std::io::Error),
@@ -615,10 +699,16 @@ impl From<crate::NativeTreeMaterializationError> for LocalCoreStateStoreError {
 }
 
 mod contexts;
+mod group;
+mod inspection;
 mod owners;
 use contexts::*;
 mod values;
 use values::*;
+mod residents;
+use residents::{
+    AdoptedResident, PreparedChange, PreparedResident, Residents, reserve_retained_slots,
+};
 mod log;
 use log::*;
 mod native_io;

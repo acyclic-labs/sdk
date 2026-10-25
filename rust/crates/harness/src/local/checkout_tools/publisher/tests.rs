@@ -1,6 +1,11 @@
 use super::*;
 
+mod admission_cost;
+mod observed_cost;
+
 thread_local! {
+    /// Counterfactual: reread and hash even an identical authenticated payload.
+    pub(super) static REREAD_MATCHING_PAYLOAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Stops a publication after its physical write, before its capture.
     pub(super) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: a replay never captures, as before the fix.
@@ -1362,6 +1367,163 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
         std::fs::read(directory.path().join("other.txt")).map_err(storage)?,
         b"other bytes
 "
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Result<()> {
+    let (directory, _harness, publisher) = fixture().await?;
+    publisher
+        .stage(
+            OperationId::new(),
+            "same.txt",
+            b"same bytes",
+            "text/plain",
+            "same.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let tools = &publisher.tools;
+    let view = tools.workspace.view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let staged = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    let operation = publication_operation(OperationId::new(), "same.txt");
+    let owed = (
+        operation,
+        acyclic_fs::GitGenerationRef {
+            workspace_id: view.workspace().id(),
+            generation: staged,
+        },
+    );
+    serialized(&tools.state, async |mut state| {
+        tools
+            .owe_write_capture((&*tools.workspace, view), &mut state.watcher, owed)
+            .await?;
+        tools
+            .finish_owed_write(
+                (&*tools.workspace, view),
+                &mut state.watcher,
+                PublicationPermit::Unrestricted,
+            )
+            .await
+    })
+    .await?;
+    let key = acyclic_fs::IdempotencyKey::from_bytes(
+        capture::capture_operation(OperationId::from_bytes(operation.into_bytes()), 1).into_bytes(),
+    );
+    let settled = view
+        .workspace()
+        .operation_generation(key, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    assert!(
+        settled.is_some(),
+        "a capture with no changes must still durably settle its debt"
+    );
+    let before = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    std::fs::write(directory.path().join("same.txt"), b"later user edit").map_err(storage)?;
+    serialized(&tools.state, async |mut state| {
+        tools
+            .owe_write_capture((&*tools.workspace, view), &mut state.watcher, owed)
+            .await?;
+        tools
+            .finish_owed_write(
+                (&*tools.workspace, view),
+                &mut state.watcher,
+                PublicationPermit::Unrestricted,
+            )
+            .await
+    })
+    .await?;
+    assert_eq!(
+        view.workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        before
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("same.txt")).map_err(storage)?,
+        b"later user edit"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> {
+    let (directory, _harness, publisher) = fixture().await?;
+    let source = publisher
+        .stage(
+            OperationId::new(),
+            "same.txt",
+            b"same bytes",
+            "text/plain",
+            "same.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let operation = OperationId::new();
+    let captured = publisher
+        .stage_at(operation, &source, b"same bytes", None, None)?
+        .await?
+        .0;
+    let view = publisher.tools.workspace.view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let key = acyclic_fs::IdempotencyKey::from_bytes(
+        capture::capture_operation(write_capture(operation, "same.txt"), 1).into_bytes(),
+    );
+    let settlement = view
+        .workspace()
+        .operation_generation(key, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    assert!(
+        settlement.is_some(),
+        "even a clean capture must durably settle its operation"
+    );
+    let before = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    std::fs::write(directory.path().join("same.txt"), b"later user edit").map_err(storage)?;
+    let replayed = publisher
+        .stage_at(operation, &source, b"same bytes", None, None)?
+        .await?
+        .0;
+    assert_eq!(replayed, captured);
+    assert_eq!(
+        std::fs::read(directory.path().join("same.txt")).map_err(storage)?,
+        b"later user edit"
+    );
+    assert_eq!(
+        view.workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        before
     );
     Ok(())
 }

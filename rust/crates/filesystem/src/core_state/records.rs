@@ -316,20 +316,45 @@ pub(super) fn retry_record_lock_at(
 fn acquire_lock_with_retry(
     paths: &mut RecordPaths,
     mode: LockMode,
+    retry: impl FnMut(Instant) -> bool,
+) -> Result<OwnerLock, LocalCoreStateStoreError> {
+    acquire_lock_mode(paths, mode, retry, true)
+}
+
+pub(super) fn acquire_existing_lock(
+    paths: &mut RecordPaths,
+) -> Result<OwnerLock, LocalCoreStateStoreError> {
+    acquire_lock_mode(paths, LockMode::Shared, retry_record_lock, false)
+}
+
+fn acquire_lock_mode(
+    paths: &mut RecordPaths,
+    mode: LockMode,
     mut retry: impl FnMut(Instant) -> bool,
+    create: bool,
 ) -> Result<OwnerLock, LocalCoreStateStoreError> {
     let work = paths
         .allocation
         .as_ref()
         .map(|allocation| allocation.work().clone());
     let lock = FileLock::new(if let Some(work) = &work {
-        let parent = crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+        let parent = if create {
+            crate::native_host::create_directories(paths.directory(), &mut &*work)?
+        } else {
+            crate::native_host::HostRoot::open(paths.directory(), &mut &*work)?
+        };
         materialization_open_at(
             &parent.directory,
             &paths.lock,
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            &if create {
+                crate::native_host::NativeOpenOptions::ReadWriteCreate
+            } else {
+                crate::native_host::NativeOpenOptions::Read
+            },
             work,
         )?
+    } else if !create {
+        File::open(&paths.lock)?
     } else {
         std::fs::create_dir_all(paths.directory())?;
         OpenOptions::new()
@@ -381,10 +406,19 @@ fn acquire_lock_with_retry(
 pub(super) fn read_recoverable<T: DeserializeOwned>(
     paths: &RecordPaths,
 ) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
+    read_recoverable_mode(paths, true)
+}
+
+pub(super) fn read_recoverable_mode<T: DeserializeOwned>(
+    paths: &RecordPaths,
+    repair: bool,
+) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
     match paths.read(&paths.current) {
         Ok(Some(value)) => Ok(Some(value)),
+        Err(error) if !repair && !recoverable_codec_error(&error) => Err(error),
         Err(error)
-            if paths.allocation.is_some()
+            if repair
+                && paths.allocation.is_some()
                 && (matches!(
                     error,
                     LocalCoreStateStoreError::Io(_) | LocalCoreStateStoreError::LazyWork(_)
@@ -394,7 +428,9 @@ pub(super) fn read_recoverable<T: DeserializeOwned>(
         }
         current => match paths.read(&paths.previous) {
             Ok(Some(value)) => {
-                promote_previous(paths)?;
+                if repair {
+                    promote_previous(paths)?;
+                }
                 Ok(Some(value))
             }
             Err(previous) if paths.allocation.is_some() || current.is_ok() => Err(previous),
@@ -403,6 +439,17 @@ pub(super) fn read_recoverable<T: DeserializeOwned>(
                 current => current,
             },
         },
+    }
+}
+
+fn recoverable_codec_error(error: &LocalCoreStateStoreError) -> bool {
+    match error {
+        LocalCoreStateStoreError::Json(error)
+        | LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::NativeRecordJson(
+            error,
+            _,
+        )) => !error.is_io(),
+        _ => false,
     }
 }
 
@@ -530,7 +577,7 @@ fn write_journaled_in<T: Serialize>(
             {
                 let _ = paths.rename(&paths.previous, &paths.current, parent);
             }
-            return Err(error.into());
+            return Err(error);
         }
         paths.sync_in(parent)?;
         paths.remove_in(&paths.previous, parent)?;

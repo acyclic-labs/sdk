@@ -63,6 +63,7 @@ impl LocalCoreStateStore {
             root: Arc::new(root),
             ownership: Ownership::Owned(owner),
             deferral: None,
+            inspection: false,
             journal_work: None,
             ownership_anchor: None,
         })
@@ -104,7 +105,7 @@ mod tests {
                 .unwrap()
                 .is_none()
             );
-            peak = peak.max(owner.residents.read().unwrap().0.len());
+            peak = peak.max(owner.residents.read().unwrap().len());
         }
         assert_eq!(
             WorkspaceLineageStore::load(store, value.workspace_id)

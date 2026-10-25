@@ -5,6 +5,14 @@ impl CoreLog {
         root: &Namespace,
         residents: Arc<RwLock<Residents>>,
     ) -> Result<Self, LocalCoreStateStoreError> {
+        Self::open_prefix(root, residents, None)
+    }
+
+    pub(in crate::core_state) fn open_prefix(
+        root: &Namespace,
+        residents: Arc<RwLock<Residents>>,
+        maximum: Option<u64>,
+    ) -> Result<Self, LocalCoreStateStoreError> {
         let work = root
             ._allocation
             .as_ref()
@@ -16,12 +24,13 @@ impl CoreLog {
                 .adopt_native(work)?;
         }
         let paths = root.record(CORE_LOG_FAMILY, &[0; 16])?;
-        let mut file = open_log_file(&paths, work)?;
-        let image = read_log_image(&mut file, work)?;
+        let file = open_log_file(root, &paths, work)?;
+        let buffer = read_log_bytes(&file, work, maximum)?;
+        let bytes = &buffer.bytes;
         {
             let mut previous = residents.write().unwrap_or_else(PoisonError::into_inner);
             if let Some(work) = work {
-                for record in &previous.0 {
+                for record in previous.iter() {
                     let children = match &record.value {
                         Some(RecordValue::Context(context)) => context.roots.len(),
                         Some(RecordValue::Children(children)) => children.0.len(),
@@ -35,8 +44,8 @@ impl CoreLog {
             }
             previous.clear();
         }
-        let published =
-            matches!(&root.admission, Admission::Owned(_)).then(|| Arc::clone(&residents));
+        let published = (!root.inspection && matches!(&root.admission, Admission::Owned(_)))
+            .then(|| Arc::clone(&residents));
         let _provisional_allocation = if published.is_some() {
             work.map(|work| {
                 work.claim(
@@ -54,9 +63,10 @@ impl CoreLog {
         } else {
             residents
         };
-        let length = image.bytes.len() as u64;
+        let length = bytes.len() as u64;
+        let file_control = work.map(super::super::group::file_control).transpose()?;
         let mut log = Self {
-            file,
+            file: Arc::new(file),
             length,
             flushed: 0,
             epoch: crate::identity::fresh_time_uuid(),
@@ -66,9 +76,10 @@ impl CoreLog {
             broken: false,
             slots: None,
             residents_control: None,
+            file_control,
         };
-        log.replay_frames(&image.bytes, paths, work)?;
-        if length != 0 {
+        log.replay_frames(bytes, paths, work)?;
+        if !root.inspection && length != 0 {
             log.checkpoint(root)?;
         }
         if let Some(published) = published {
@@ -81,19 +92,123 @@ impl CoreLog {
         }
         Ok(log)
     }
+    fn replay_frames(
+        &mut self,
+        bytes: &[u8],
+        paths: RecordPaths<'_>,
+        work: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        let mut epoch = None;
+        let mut sequence = 0;
+        let mut line_start = 0;
+        while line_start < bytes.len() {
+            let Some(frame) = checked_log_frame(bytes, &mut line_start, work)? else {
+                break;
+            };
+            let (frame, allocation): (LogFrame<Change>, _) = match work {
+                Some(work) => match measured_decode_reader(
+                    std::io::Cursor::new(frame),
+                    frame.len() as u64,
+                    work,
+                ) {
+                    Ok((frame, allocation)) => (frame, Some(allocation)),
+                    Err(error @ LocalCoreStateStoreError::LazyWork(_)) => return Err(error),
+                    Err(_) => return Err(native_corrupt_log(paths)?),
+                },
+                None => (
+                    serde_json::from_slice(frame)
+                        .map_err(|_| LocalCoreStateStoreError::Corrupt(paths.current.clone()))?,
+                    None,
+                ),
+            };
+            // Payload drops before its allocation on every early exit.
+            let frame = frame;
+            if *epoch.get_or_insert(frame.epoch) != frame.epoch || frame.sequence != sequence {
+                break;
+            }
+            self.apply_replayed(frame.change, allocation, work)?;
+            sequence += 1;
+        }
+        Ok(())
+    }
+
+    fn apply_replayed(
+        &mut self,
+        change: Change,
+        allocation: Option<crate::NativeAllocation>,
+        work: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        if let Some(work) = work {
+            // The decoded records retire before the frame's allocation.
+            let mut frame_allocation =
+                allocation.ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
+            for mut record in change.0 {
+                let owned_bytes = record
+                    .value
+                    .as_ref()
+                    .map(|value| native_records::native_record_owned_bytes(value, work))
+                    .transpose()?
+                    .unwrap_or(0);
+                let installation = self.admit_lazy_slots(record.key, work)?;
+                let key = record.key;
+                record.allocation = Some(frame_allocation.split_off(owned_bytes)?);
+                let prepared = PreparedResident::Native(AdoptedResident::new(record, work)?);
+                let mut residents = self.residents();
+                let mut examined = 0;
+                let dirty = residents.install(prepared, Some(self.epoch), &mut examined);
+                installation.record_completed(crate::WorkCounters {
+                    items_examined: examined,
+                    ..crate::WorkCounters::UNCHARGED
+                })?;
+                let dirty = dirty?;
+                drop(residents);
+                if dirty {
+                    self.dirty.push(key);
+                }
+            }
+        } else {
+            let change = PreparedChange::new(change, None)?;
+            let installation = self.admit_installation(change.change(), None)?;
+            self.apply(change, installation.as_ref())?;
+        }
+        Ok(())
+    }
 }
 
-// Fields retire in ownership order: the image backing before its charge.
-struct LogImage {
-    bytes: Vec<u8>,
-    _allocation: Option<crate::NativeAllocation>,
+fn native_corrupt_log(
+    mut paths: RecordPaths<'_>,
+) -> Result<LocalCoreStateStoreError, LocalCoreStateStoreError> {
+    let mut allocation = paths
+        .allocation
+        .take()
+        .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
+    let current = paths.current;
+    drop((paths.previous, paths.temporary, paths.lock));
+    allocation.resize(current.capacity() as u64)?;
+    Ok(LocalCoreStateStoreError::LazyWork(
+        crate::LazyWorkspaceError::NativeRecordCorrupt(current, Some(allocation)),
+    ))
 }
 
 fn open_log_file(
+    root: &Namespace,
     paths: &RecordPaths<'_>,
     work: Option<&crate::NativeMaterializationWork>,
 ) -> Result<File, LocalCoreStateStoreError> {
-    let file = if let Some(work) = work {
+    let file = if root.inspection {
+        match work {
+            Some(work) => {
+                let parent = crate::native_host::HostRoot::open(paths.directory(), &mut &*work)?;
+                materialization_open_at(
+                    &parent.directory,
+                    &paths.current,
+                    &crate::native_host::NativeOpenOptions::Read,
+                    work,
+                )?
+            }
+            None => File::open(&paths.current)?,
+        }
+    } else if let Some(work) = work {
         let parent = crate::native_host::create_directories(paths.directory(), &mut &*work)?;
         match materialization_open_at(
             &parent.directory,
@@ -139,16 +254,18 @@ fn open_log_file(
     Ok(file)
 }
 
-fn read_log_image(
-    file: &mut File,
+fn read_log_bytes(
+    mut file: &File,
     work: Option<&crate::NativeMaterializationWork>,
-) -> Result<LogImage, LocalCoreStateStoreError> {
+    maximum: Option<u64>,
+) -> Result<LogBuffer, LocalCoreStateStoreError> {
     let mut bytes_allocation = work
         .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
         .transpose()?;
     let mut bytes = Vec::new();
     if let Some(work) = work {
-        let length = crate::native_host::stat_file(file, &mut &*work)?.len();
+        let original_length = crate::native_host::stat_file(file, &mut &*work)?.len();
+        let length = maximum.map_or(original_length, |maximum| original_length.min(maximum));
         let size = usize::try_from(length).map_err(|_| {
             crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)
         })?;
@@ -169,15 +286,22 @@ fn read_log_image(
             file,
             work,
             remaining_file_bytes: length,
-            original_length: length,
+            original_length,
         }
         .read_exact(&mut bytes)?;
     } else {
-        file.read_to_end(&mut bytes)?;
+        match maximum {
+            Some(maximum) => {
+                file.take(maximum).read_to_end(&mut bytes)?;
+            }
+            None => {
+                (&mut file).read_to_end(&mut bytes)?;
+            }
+        }
     }
-    Ok(LogImage {
+    Ok(LogBuffer {
         bytes,
-        _allocation: bytes_allocation,
+        allocation: bytes_allocation,
     })
 }
 
@@ -228,91 +352,4 @@ fn checked_log_frame<'a>(
         return Ok(None);
     }
     Ok(Some(frame))
-}
-
-impl CoreLog {
-    fn replay_frames(
-        &mut self,
-        bytes: &[u8],
-        paths: RecordPaths<'_>,
-        work: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let mut epoch = None;
-        let mut sequence = 0;
-        let mut line_start = 0;
-        while line_start < bytes.len() {
-            let Some(frame) = checked_log_frame(bytes, &mut line_start, work)? else {
-                break;
-            };
-            let (frame, allocation): (LogFrame<Change>, _) = match work {
-                Some(work) => match measured_decode_reader(
-                    std::io::Cursor::new(frame),
-                    frame.len() as u64,
-                    work,
-                ) {
-                    Ok((frame, allocation)) => (frame, Some(allocation)),
-                    Err(error @ LocalCoreStateStoreError::LazyWork(_)) => return Err(error),
-                    Err(_) => return Err(native_corrupt_log(paths)?),
-                },
-                None => (
-                    serde_json::from_slice(frame)
-                        .map_err(|_| LocalCoreStateStoreError::Corrupt(paths.current.clone()))?,
-                    None,
-                ),
-            };
-            // Payload drops before its allocation on every early exit.
-            let frame = frame;
-            if *epoch.get_or_insert(frame.epoch) != frame.epoch || frame.sequence != sequence {
-                break;
-            }
-            if let Some(work) = work {
-                // The decoded records retire before the frame's allocation.
-                let mut frame_allocation =
-                    allocation.ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
-                for mut record in frame.change.0 {
-                    let owned_bytes = record
-                        .value
-                        .as_ref()
-                        .map(|value| native_records::native_record_owned_bytes(value, work))
-                        .transpose()?
-                        .unwrap_or(0);
-                    let (index, dirty) = self.admit_lazy_slots(record.key, work)?;
-                    let key = record.key;
-                    record.allocation = Some(frame_allocation.split_off(owned_bytes)?);
-                    let mut residents = self.residents();
-                    if let Some(index) = index {
-                        *residents
-                            .0
-                            .get_mut(index)
-                            .ok_or(LocalCoreStateStoreError::Integrity)? = record;
-                    } else {
-                        residents.0.push(record);
-                    }
-                    drop(residents);
-                    if dirty {
-                        self.dirty.push(key);
-                    }
-                }
-            } else {
-                self.apply(frame.change, None)?;
-            }
-            sequence += 1;
-        }
-        Ok(())
-    }
-}
-
-fn native_corrupt_log(
-    mut paths: RecordPaths<'_>,
-) -> Result<LocalCoreStateStoreError, LocalCoreStateStoreError> {
-    let mut allocation = paths
-        .allocation
-        .take()
-        .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
-    let current = paths.current;
-    drop((paths.previous, paths.temporary, paths.lock));
-    allocation.resize(current.capacity() as u64)?;
-    Ok(LocalCoreStateStoreError::LazyWork(
-        crate::LazyWorkspaceError::NativeRecordCorrupt(current, Some(allocation)),
-    ))
 }

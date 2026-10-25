@@ -56,7 +56,6 @@ impl PiNativeCommandHost {
         )?;
         if intent.invocation.timeout_ms != limits.timeout_ms
             || intent.invocation.control_timeout_ms != limits.control_timeout_ms
-            || intent.invocation.cancellation_poll_ms != limits.cancellation_poll_ms
             || intent.invocation.maximum_output_bytes != limits.maximum_output_bytes
             || intent.invocation.maximum_result_bytes != limits.maximum_result_bytes
         {

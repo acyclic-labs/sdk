@@ -57,9 +57,11 @@ proptest! {
 #[test]
 fn negative_control_detects_unfunded_production_digest() {
     let long = format!("mcp.server.{}", "t".repeat(80));
-    let request = crate::tests::tool_name_tests::request_with(&[&long]);
     SKIP_HASH_ADMISSION.with(|flag| flag.set(true));
-    let detected = std::panic::catch_unwind(|| funded(&request, 0, 116, true));
+    let detected = std::panic::catch_unwind(|| {
+        let request = crate::tests::tool_name_tests::request_with(&[&long]);
+        funded(&request, 0, 116, true);
+    });
     SKIP_HASH_ADMISSION.with(|flag| flag.set(false));
     let panic = detected.expect_err("unfunded production hashing must fail the ledger oracle");
     assert!(

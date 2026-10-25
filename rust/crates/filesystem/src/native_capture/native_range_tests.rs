@@ -26,7 +26,8 @@ fn fixture_file(path: &Path) -> std::io::Result<std::fs::File> {
 
 /// Counts this process's descriptors open on `path`'s file. Unlike an
 /// advisory-lock probe, a census is exact while a concurrently spawned child
-/// shares those descriptions until it execs.
+/// shares those descriptions until it execs. Inspect a held duplicate: Darwin
+/// synthesizes a different device identity for stat on a /dev/fd pathname.
 #[cfg(unix)]
 fn descriptors_open_on(path: &Path) -> std::io::Result<usize> {
     use std::os::unix::fs::MetadataExt as _;
@@ -34,7 +35,7 @@ fn descriptors_open_on(path: &Path) -> std::io::Result<usize> {
     let mut count = 0;
     for entry in std::fs::read_dir("/dev/fd")? {
         // Entries such as the listing's own directory may close meanwhile.
-        let Ok(found) = std::fs::metadata(entry?.path()) else {
+        let Ok(found) = std::fs::File::open(entry?.path()).and_then(|file| file.metadata()) else {
             continue;
         };
         count += usize::from(found.dev() == target.dev() && found.ino() == target.ino());

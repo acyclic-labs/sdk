@@ -1,5 +1,103 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<()> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "process_tree::capture_events_tests::event_capture_child",
+            "--nocapture",
+        ])
+        .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    let meter = ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    meter.deny_allocations.store(true, Ordering::Release);
+    let maximum = 16 * 1024;
+    let failure = tree
+        .wait_with_output(
+            Duration::from_secs(1),
+            maximum,
+            Some(CaptureInput::Literal(b"refused input")),
+            || Ok(()),
+            |_| Ok(ProcessInput::default()),
+            Some(&meter),
+            Some([
+                Vec::with_capacity(maximum),
+                Vec::with_capacity(maximum),
+                Vec::new(),
+            ]),
+            None,
+        )
+        .expect_err("unadmitted pending input must not be submitted");
+    assert!(failure.cleanup_completed);
+    assert_eq!(
+        meter.read.load(Ordering::Acquire),
+        (failure.stdout.len() + failure.stderr.len()) as u64
+    );
+    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    assert!(tree.is_reaped());
+    Ok(())
+}
+
+#[test]
+fn duplex_capture_records_each_physical_input_byte_and_retires_pending_storage() -> io::Result<()> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "process_tree::capture_events_tests::event_capture_child",
+            "--nocapture",
+        ])
+        .env("ACYCLIC_TEST_EVENT_CAPTURE", "backpressure")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    let meter = ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    let input: Vec<_> = (0u8..251).cycle().take(8 * 1024 * 1024).collect();
+    let maximum = 512 * 1024;
+    let output = tree
+        .wait_with_output(
+            Duration::from_secs(3),
+            maximum,
+            Some(CaptureInput::Literal(&input)),
+            || Ok(()),
+            |_| Ok(ProcessInput::default()),
+            Some(&meter),
+            Some([
+                Vec::with_capacity(maximum),
+                Vec::with_capacity(maximum),
+                Vec::new(),
+            ]),
+            None,
+        )
+        .map_err(|failure| failure.error)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("INPUT_BYTES=8388608"));
+    assert_eq!(
+        meter.read.load(Ordering::Acquire),
+        (input.len() + output.stdout.len() + output.stderr.len()) as u64
+    );
+    assert_eq!(
+        meter.used_bytes.load(Ordering::Acquire),
+        meter.read.load(Ordering::Acquire)
+    );
+    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    #[cfg(windows)]
+    assert!(meter.used_allocations.load(Ordering::Acquire) > 0);
+    assert!(tree.is_reaped());
+    Ok(())
+}
+
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 fn prepared_read_fixture() -> io::Result<(tempfile::TempDir, NativeFile)> {
     let directory = tempfile::tempdir()?;
@@ -54,6 +152,7 @@ fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Res
                 Vec::with_capacity(16),
                 Vec::with_capacity(1),
             ]),
+            None,
         )
         .unwrap_err();
     assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
@@ -98,6 +197,7 @@ fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<(
                 Vec::with_capacity(16),
                 Vec::with_capacity(1),
             ]),
+            None,
         )
     }));
     assert!(stopped.is_err());

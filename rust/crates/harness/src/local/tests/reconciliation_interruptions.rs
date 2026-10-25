@@ -397,32 +397,46 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
 
 #[test]
 fn reopen_never_captures_over_an_unpublished_rebase() {
-    // Preserve the same four generated/shrinkable byte cases and every cut;
-    // run independent cases concurrently instead of serial model/process turns.
-    std::thread::scope(|scope| {
-        let cases: Vec<_> = (0..4)
-            .map(|_| {
-                scope.spawn(|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
-                        source_file: Some(file!()),
-                        ..ProptestConfig::with_cases(1)
-                    });
-                    runner
-                        .run(&"[a-z]{1,12}", |text| {
-                            runtime
-                                .block_on(sweep(&text))
-                                .map_err(|error| TestCaseError::fail(error.to_string()))
-                        })
-                        .unwrap();
-                })
-            })
-            .collect();
-        for case in cases {
-            case.join().unwrap();
-        }
+    // Preserve four independent fixtures and their parallel blocking work,
+    // but let the parent drive one shared I/O reactor. Each future stays on
+    // its original caller thread, including native values that are not Send.
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        source_file: Some(file!()),
+        ..ProptestConfig::with_cases(1)
     });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let worker = runtime.handle().clone();
+    let cases = proptest::collection::vec("[a-z]{1,12}", 4);
+    runner
+        .run(&cases, |texts| {
+            std::thread::scope(|scope| {
+                let receivers: Vec<_> = texts
+                    .into_iter()
+                    .map(|text| {
+                        let (sender, receiver) = tokio::sync::oneshot::channel();
+                        let worker = &worker;
+                        scope.spawn(move || {
+                            let result = worker
+                                .block_on(sweep(&text))
+                                .map_err(|error| error.to_string());
+                            assert!(sender.send(result).is_ok(), "lost sweep receiver");
+                        });
+                        receiver
+                    })
+                    .collect();
+                // A current-thread Handle cannot drive I/O by itself. Keep
+                // the owning runtime polling until every caller settles.
+                let outcomes = runtime.block_on(futures::future::join_all(receivers));
+                for outcome in outcomes {
+                    outcome
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?
+                        .map_err(TestCaseError::fail)?;
+                }
+                Ok(())
+            })
+        })
+        .unwrap();
 }

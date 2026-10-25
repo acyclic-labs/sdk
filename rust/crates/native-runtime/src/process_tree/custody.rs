@@ -354,31 +354,11 @@ mod unix {
             else {
                 continue;
             };
-            let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-                continue;
-            };
-            // Fields after the command name: state, ppid, pgrp.
-            let mut fields = stat
-                .rsplit_once(')')
-                .map(|(_, rest)| rest.split_whitespace())
-                .into_iter()
-                .flatten();
-            let state = fields.next();
-            let member = fields
-                .nth(1)
-                .and_then(|pgrp| pgrp.parse::<libc::pid_t>().ok());
-            if member != Some(group) || matches!(state, Some("Z" | "X")) {
+            if !linux_group_member(&entry.path().join("stat"), group)? {
                 continue;
             }
-            // SAFETY: pidfd_open takes a PID and zero flags.
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-            if let Ok(fd) = libc::c_int::try_from(fd)
-                && fd >= 0
-            {
-                // SAFETY: the descriptor pidfd_open just returned.
-                watches.push(unsafe {
-                    <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
-                });
+            if let Some(watch) = linux_pin_member(group, pid)? {
+                watches.push(watch);
             }
         }
         if watches.is_empty() {
@@ -401,30 +381,110 @@ mod unix {
         Ok(true)
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_group_member(path: &Path, group: libc::pid_t) -> io::Result<bool> {
+        let stat = match fs::read_to_string(path) {
+            Ok(stat) => stat,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
+        // Fields after the command name: state, ppid, pgrp. Invalid identity
+        // data is an observation failure, never evidence of nonmembership.
+        let (_, rest) = stat.rsplit_once(')').ok_or(io::ErrorKind::InvalidData)?;
+        let mut fields = rest.split_whitespace();
+        let state = fields.next().ok_or(io::ErrorKind::InvalidData)?;
+        let member = fields
+            .nth(1)
+            .ok_or(io::ErrorKind::InvalidData)?
+            .parse::<libc::pid_t>()
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        Ok(member == group && !matches!(state, "Z" | "X"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_pin_member(
+        group: libc::pid_t,
+        pid: libc::pid_t,
+    ) -> io::Result<Option<std::os::fd::OwnedFd>> {
+        // SAFETY: pidfd_open takes a PID and zero flags.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if fd < 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
+        }
+        let fd = libc::c_int::try_from(fd).map_err(io::Error::other)?;
+        // SAFETY: pidfd_open transferred this descriptor, retained through the
+        // second observation. A reused foreign PID can never be a wait target.
+        let watch = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        if linux_group_member(
+            &Path::new("/proc").join(pid.to_string()).join("stat"),
+            group,
+        )? {
+            Ok(Some(watch))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    mod member_tests {
+        use super::*;
+
+        #[test]
+        fn a_pidfd_failure_cannot_prove_a_member_absent() {
+            let result = linux_pin_member(-1, 0);
+            eprintln!("LINUX_FENCE_OPEN_FAILURE result={result:?}");
+            let error = result.expect_err("stale fencing must reject a failed pidfd open");
+            assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+        }
+
+        #[test]
+        fn a_reused_pid_outside_the_group_is_not_a_wait_target() -> io::Result<()> {
+            let pid = libc::pid_t::try_from(std::process::id()).map_err(io::Error::other)?;
+            let pinned = linux_pin_member(-1, pid)?;
+            eprintln!(
+                "LINUX_FENCE_FOREIGN_PID retained={}",
+                usize::from(pinned.is_some())
+            );
+            assert!(
+                pinned.is_none(),
+                "a listed PID can name a live process outside the fenced group"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn unreadable_member_identity_cannot_prove_nonmembership() -> io::Result<()> {
+            let file = tempfile::NamedTempFile::new()?;
+            fs::write(file.path(), [0xff])?;
+            let result = linux_group_member(file.path(), -1);
+            eprintln!("LINUX_FENCE_STAT_FAILURE result={result:?}");
+            let error =
+                result.expect_err("a failed member identity read must not prove nonmembership");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            Ok(())
+        }
+    }
+
     #[cfg(target_vendor = "apple")]
     fn await_members(group: libc::pid_t) -> io::Result<bool> {
-        use super::super::warden::{group_members, next_exit, watch_exit};
-        let mut members = [0; 256];
-        let count = group_members(group, &mut members)?;
-        // SAFETY: kqueue has no preconditions.
-        let queue = unsafe { libc::kqueue() };
-        if queue < 0 {
-            return Err(io::Error::last_os_error());
+        // Stale-owner fencing uses the same complete, creation-fenced group
+        // enumeration as live termination. A fixed PID prefix cannot prove
+        // an entire group empty, and failed observations never acknowledge it.
+        if super::super::platform::group_has_no_live_members(group, None)? {
+            Ok(false)
+        } else {
+            Err(io::ErrorKind::TimedOut.into())
         }
-        // SAFETY: the queue just created.
-        let queue = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(queue) };
-        let mut live = 0_usize;
-        for member in members.iter().take(count).copied() {
-            if member > 0 && watch_exit(queue.as_raw_fd(), member)? {
-                live += 1;
-            }
-        }
-        let any = live > 0;
-        while live > 0 {
-            next_exit(queue.as_raw_fd())?;
-            live -= 1;
-        }
-        Ok(any)
     }
 }
 #[cfg(unix)]

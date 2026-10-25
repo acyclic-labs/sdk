@@ -34,6 +34,21 @@ impl Serialize for Descriptor<'_> {
 mod tests {
     use super::*;
 
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[test]
+    fn non_native_publication_domains_have_no_custody_padding() {
+        assert_eq!(
+            std::mem::size_of::<PublicationDomain>(),
+            0,
+            "a portable domain has no native allocation to retain"
+        );
+        assert_eq!(
+            std::mem::size_of::<PublicationWitness>(),
+            std::mem::size_of::<Arc<PublicationDomain>>() + 32,
+            "a portable witness stores only its domain and identity"
+        );
+    }
+
     fn files() -> Result<Vec<FileRef>> {
         let mut files = Vec::new();
         for class in [
@@ -125,7 +140,7 @@ mod tests {
             ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &file)?;
             ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &scope, &file)?;
             let mut changed = file.clone();
-            changed.version.push_str("-changed");
+            changed.version = format!("{}-changed", changed.version).into_boxed_str();
             assert!(
                 ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &changed).is_err()
             );

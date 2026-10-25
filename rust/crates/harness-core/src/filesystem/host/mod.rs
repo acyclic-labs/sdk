@@ -1,9 +1,12 @@
 use super::*;
 
+use crate::conversation::{PublicationDomain, PublicationWitness};
+
 /// Adapter over any embedded, local, or distributed Filesystem provider pair.
 pub struct FilesystemHost<A, O> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
+    publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
     publication_pause: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
@@ -47,10 +50,12 @@ impl<A, O> FilesystemHost<A, O> {
                     .observer()?
                     .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
             }
+            let publication_domain = PublicationDomain::new(quota.work())?;
             let _native_custody = quota.into_custody()?;
             Ok(Arc::new(Self {
                 filesystem,
                 provider,
+                publication_domain,
                 workspace_binding: None,
                 #[cfg(test)]
                 publication_pause: None,
@@ -87,6 +92,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(Arc::new(Self {
             filesystem: self.filesystem.clone(),
             provider: self.provider.clone(),
+            publication_domain: Arc::clone(&self.publication_domain),
             workspace_binding: Some((
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
                 workspace,
@@ -183,3 +189,73 @@ pub use volumes::{
 };
 
 pub use directory::DirectoryOptions;
+
+impl PublicationDomain {
+    fn new(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Arc<Self>> {
+        let bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64;
+        // The domain can outlive its host through a publication witness. Give
+        // it a separate quota so either construction failure releases only
+        // that owner's charges, and success transfers exactly its storage.
+        let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+        if quota.work().is_some() {
+            quota.observer()?.allocation_attempt(bytes)?;
+        }
+        let _custody = quota.into_custody()?;
+        Ok(Arc::new(Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            _custody,
+        }))
+    }
+}
+
+impl<A, O> FilesystemHost<A, O> {
+    pub(in crate::filesystem) fn seal_publication(
+        &self,
+        reference: FileRef,
+        io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        let identity = crate::executor::with_history_io(io, |work| {
+            reference.identity_digest(
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )
+        })?;
+        crate::executor::with_history_io(io, |work| {
+            let bytes = (std::mem::size_of::<PublicationWitness>()
+                + 2 * std::mem::size_of::<usize>()) as u64;
+            let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+            if quota.work().is_some() {
+                quota.observer()?.allocation_attempt(bytes)?;
+            }
+            let _custody = quota.into_custody()?;
+            Ok(
+                reference.with_publication_witness(Arc::new(PublicationWitness {
+                    _domain: Arc::clone(&self.publication_domain),
+                    _identity: identity,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    _custody,
+                })),
+            )
+        })
+    }
+
+    pub(in crate::filesystem) fn published_here(
+        &self,
+        reference: &FileRef,
+        io: Option<&PreparationIo>,
+    ) -> Result<bool> {
+        let Some(witness) = reference.publication_witness() else {
+            return Ok(false);
+        };
+        if !Arc::ptr_eq(&self.publication_domain, &witness._domain) {
+            return Ok(false);
+        }
+        let identity = crate::executor::with_history_io(io, |work| {
+            reference.identity_digest(
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )
+        })?;
+        Ok(identity == witness._identity)
+    }
+}

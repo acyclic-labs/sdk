@@ -50,10 +50,11 @@ pub(super) fn fixture(
         })
     };
     let value = json!({"stdout":stdout,"stderr":stderr,"exit_code":0,"success":true,"stop":null});
+    let metadata = json!({"exit_code":0,"success":true,"stop":null});
     let mut files = BTreeMap::new();
     for (file, bytes) in [
         (ToolFile::Request, serde_json::to_vec(&invocation)?),
-        (ToolFile::Result, serde_json::to_vec(&value)?),
+        (ToolFile::Result, serde_json::to_vec(&metadata)?),
         (ToolFile::Stdout(0), stdout.as_bytes().to_vec()),
         (ToolFile::Stderr(0), stderr.as_bytes().to_vec()),
     ] {
@@ -77,6 +78,40 @@ mod tests {
     use super::*;
     use crate::local_tool_files_check::check;
     use proptest::prelude::*;
+
+    #[test]
+    fn task_tool_wire_rejects_output_duplicated_in_the_terminal_result() -> TestResult {
+        let task = TaskId::from_bytes([25; 16]);
+        let operation = OperationId::from_bytes([26; 16]);
+        let (mut files, calls, results) = fixture(task, operation, "out", "err")?;
+        check(&files, task, operation, &calls, &results, &[(0, 0)].into())?;
+        let result = files
+            .keys()
+            .find(|key| {
+                matches!(
+                    key,
+                    FileKey::Task {
+                        file: TaskFile::Tool {
+                            file: ToolFile::Result,
+                            ..
+                        },
+                        ..
+                    }
+                )
+            })
+            .ok_or("missing terminal result")?
+            .clone();
+        let repeated = results
+            .get("call")
+            .and_then(|result| result.pointer("/content/value"))
+            .ok_or("missing expected result")?;
+        files.insert(
+            result.clone(),
+            head_file(result, serde_json::to_vec(repeated)?),
+        );
+        assert!(check(&files, task, operation, &calls, &results, &[(0, 0)].into()).is_err());
+        Ok(())
+    }
 
     #[test]
     fn task_tool_wire_uses_the_recorded_turn_not_the_restarted_step() -> TestResult {

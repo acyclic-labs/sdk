@@ -164,10 +164,24 @@ impl FileDescriptor {
     }
 }
 
+// Keep the in-process reference representation identical across provider
+// feature sets. Only a filesystem host can issue this opaque evidence.
+#[derive(Debug)]
+pub(crate) struct PublicationWitness {
+    pub(crate) _domain: Arc<PublicationDomain>,
+    pub(crate) _identity: [u8; 32],
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) _custody: crate::NativeCustody,
+}
+
+#[derive(Debug)]
+pub(crate) struct PublicationDomain {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) _custody: crate::NativeCustody,
+}
+
 /// An immutable version of a file within a scoped volume.
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct FileRef {
@@ -175,16 +189,45 @@ pub struct FileRef {
     #[serde(deserialize_with = "deserialize_path")]
     #[heap_layout(scalar)]
     pub(super) path: String,
-    #[serde(deserialize_with = "deserialize_label")]
+    #[serde(deserialize_with = "deserialize_version")]
     #[heap_layout(scalar)]
-    pub(super) version: String,
+    pub(super) version: Box<str>,
     pub(super) descriptor: FileDescriptor,
     #[serde(deserialize_with = "deserialize_label")]
     #[heap_layout(scalar)]
     pub(super) display_name: String,
+    // Wire identities carry no evidence of an in-process publication.
+    #[serde(skip)]
+    #[schemars(skip)]
+    publication: Option<std::sync::Arc<PublicationWitness>>,
 }
 
+impl PartialEq for FileRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.volume == other.volume
+            && self.path == other.path
+            && self.version == other.version
+            && self.descriptor == other.descriptor
+            && self.display_name == other.display_name
+    }
+}
+impl Eq for FileRef {}
+
 impl FileRef {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn publication_witness(&self) -> Option<&PublicationWitness> {
+        self.publication.as_deref()
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_publication_witness(
+        mut self,
+        witness: std::sync::Arc<PublicationWitness>,
+    ) -> Self {
+        self.publication = Some(witness);
+        self
+    }
+
     pub(crate) fn identity_digest(
         &self,
         maximum_bytes: u64,
@@ -200,7 +243,8 @@ impl FileRef {
     #[cfg(feature = "objects")]
     pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
         validate_label(&version, &mut None)?;
-        self.version = version;
+        self.version = version.into_boxed_str();
+        self.publication = None;
         Ok(self)
     }
 
@@ -216,9 +260,10 @@ impl FileRef {
         let value = Self {
             volume,
             path,
-            version,
+            version: version.into_boxed_str(),
             descriptor,
             display_name,
+            publication: None,
         };
         value.validate(work)?;
         Ok(value)
@@ -262,7 +307,8 @@ impl FileRef {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         validate_label(&version, work)?;
-        self.version = version;
+        self.version = version.into_boxed_str();
+        self.publication = None;
         Ok(())
     }
 
@@ -299,7 +345,7 @@ impl FileRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         [
             self.path.capacity(),
-            self.version.capacity(),
+            self.version.len(),
             self.descriptor.media_type.capacity(),
             self.display_name.capacity(),
         ]
@@ -378,7 +424,7 @@ impl FileRef {
         self.validate(quota.work())?;
         let volume = self.volume.clone_in_quota(quota)?;
         let path = crate::core::copy_text(&self.path, quota)?;
-        let version = crate::core::copy_text(&self.version, quota)?;
+        let version = crate::core::copy_boxed_text(&self.version, quota)?;
         Ok(Self {
             volume,
             path,
@@ -389,6 +435,7 @@ impl FileRef {
                 media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
             },
             display_name: crate::core::copy_text(&self.display_name, quota)?,
+            publication: self.publication.clone(),
         })
     }
 }
@@ -398,10 +445,30 @@ crate::core::ownership::owned_struct!(FileDescriptor {
     byte_length,
     media_type
 });
-crate::core::ownership::owned_struct!(FileRef {
-    volume,
-    path,
-    version,
-    descriptor,
-    display_name
-});
+impl crate::core::ownership::OwnedBytes for FileRef {
+    fn owned_heap_bytes(&self) -> Result<u64> {
+        let Self {
+            volume,
+            path,
+            version,
+            descriptor,
+            display_name,
+            // The shared evidence owns its separate allocation custody.
+            // Cloning this Arc does not allocate another proof or domain.
+            publication: _,
+        } = self;
+        crate::core::owned_sum([
+            volume.owned_heap_bytes()?,
+            path.owned_heap_bytes()?,
+            version.owned_heap_bytes()?,
+            descriptor.owned_heap_bytes()?,
+            display_name.owned_heap_bytes()?,
+        ])
+    }
+}
+
+fn deserialize_version<'de, D: Deserializer<'de>>(
+    decoder: D,
+) -> std::result::Result<Box<str>, D::Error> {
+    deserialize_label(decoder).map(String::into_boxed_str)
+}

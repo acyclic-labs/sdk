@@ -3,6 +3,35 @@ use acyclic_stream::BoxProviderStream;
 use futures::stream;
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
+    /// Follows verified events from an already observed coordinator cut.
+    /// Notification consumers recheck authority before acting on a wakeup.
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    pub(crate) async fn event_changes(
+        client: &Arc<P>,
+        after: u64,
+    ) -> Result<BoxProviderStream<'static, Result<SchedulerEvent>>> {
+        let stream = Stream::new(Arc::clone(client), COORDINATOR_PATH)?;
+        let source = Some(operations::ObservedRecords::Ordinary(
+            stream
+                .follow(after, acyclic_stream::FollowFilter::default())
+                .await?,
+        ));
+        Ok(Box::pin(stream::try_unfold(
+            (source, after),
+            |(mut source, mut next)| async move {
+                let mut work = None;
+                let mut quota = CodecQuota::new(&mut work, 0)?;
+                let Some(record) =
+                    next_record(&mut source, &mut next, u64::MAX, &mut quota).await?
+                else {
+                    return Ok(None);
+                };
+                let event = decode(&record, quota.work())?.4;
+                Ok(Some((event, (source, next))))
+            },
+        )))
+    }
+
     /// Snapshots an operation and follows scheduler changes without a replay/subscription gap.
     pub async fn operation_changes(
         self,

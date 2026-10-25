@@ -9,6 +9,14 @@ pub(crate) fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<
     quota.adopt(text.capacity() as u64)?;
     Ok(text)
 }
+/// Copies immutable text through the same funded text-copy boundary.
+pub(crate) fn copy_boxed_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<Box<str>> {
+    let text = copy_text(source, quota)?;
+    let spare = text.capacity() - text.len();
+    let text = text.into_boxed_str();
+    quota.relinquish(spare as u64)?;
+    Ok(text)
+}
 pub(crate) fn copy_authority(
     source: &Authority,
     quota: &mut CodecQuota<'_, '_>,

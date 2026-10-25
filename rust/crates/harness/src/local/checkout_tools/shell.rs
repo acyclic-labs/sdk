@@ -28,7 +28,6 @@ impl CheckoutTools {
             inherit_environment: false,
             timeout_ms: 300_000,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
-            cancellation_poll_ms: 25,
             maximum_output_bytes: maximum_output,
             standard_input: None,
             mcp_stdio: None,
@@ -41,6 +40,13 @@ impl CheckoutTools {
             self.clock.now_unix_millis() / 1000,
         )?;
         let check_owner = Arc::clone(&files.owner);
+        let control = native_process::capture::OwnerControl::open(Arc::clone(&check_owner)).await?;
+        let wake = control.wake();
+        files
+            .health
+            .wake_on_failure(wake.clone())
+            .map_err(storage)?;
+        let output_health = files.health.clone();
         let runtime = tokio::runtime::Handle::current();
         let (output, (state, files, claims)) = native_process::capture::capture_with_custody(
             invocation,
@@ -51,6 +57,7 @@ impl CheckoutTools {
             ),
              chunk| files.observe(chunk),
             move || {
+                output_health.check()?;
                 if acyclic_fs::capture_root_identity(&workspace.path)
                     .map_err(std::io::Error::other)?
                     != workspace.identity
@@ -62,14 +69,17 @@ impl CheckoutTools {
                 }
                 // Completes when the journal confirms the fence or reports
                 // it lost; no wall-clock deadline applies.
-                output::await_fence(&runtime, || async {
-                    check_owner
-                        .verify(false, &mut None)
-                        .await
-                        .map_err(native_process::capture::control_error)
+                control.check(|| {
+                    output::await_fence(&runtime, || async {
+                        check_owner
+                            .verify(false, &mut None)
+                            .await
+                            .map_err(native_process::capture::control_error)
+                    })
                 })
             },
             (state, files, claims),
+            Some(wake),
         )
         .await?;
         let result = output

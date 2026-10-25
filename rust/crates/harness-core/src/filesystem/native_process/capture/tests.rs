@@ -31,7 +31,6 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         inherit_environment: true,
         timeout_ms: 300_000,
         control_timeout_ms: 1000,
-        cancellation_poll_ms: 25,
         maximum_output_bytes: 32_768,
         standard_input: None,
         mcp_stdio: None,
@@ -54,7 +53,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
             .map_err(std::io::Error::other)
         })
     });
-    let output = runtime.block_on(capture_checked(invocation, Some(observer), || Ok(())))?;
+    let output = runtime.block_on(capture_checked(invocation, Some(observer), || Ok(()), None))?;
     let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
     assert!(output.success, "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("captured"));
@@ -162,7 +161,6 @@ mod simulation {
                 inherit_environment: false,
                 timeout_ms: 1000,
                 control_timeout_ms: 1000,
-                cancellation_poll_ms: 25,
                 maximum_output_bytes: 3,
                 mcp_stdio: None,
                 process_custody: None,
@@ -197,6 +195,7 @@ mod simulation {
                     Ok(())
                 },
                 Vec::new(),
+                None,
             );
             type Capture<'a> =
                 Pin<Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>>;

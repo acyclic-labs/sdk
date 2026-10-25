@@ -54,7 +54,9 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
             Lazy::NativeRecordMaterializationInProgress
         }
         LocalCoreStateStoreError::LazyWork(error) => error,
-        LocalCoreStateStoreError::Integrity => Lazy::NativeRecordIntegrity,
+        LocalCoreStateStoreError::Integrity | LocalCoreStateStoreError::DurabilityPoisoned => {
+            Lazy::NativeRecordIntegrity
+        }
         LocalCoreStateStoreError::Corrupt(path) => Lazy::NativeRecordCorrupt(path, None),
     }
 }
@@ -135,15 +137,17 @@ impl LocalCoreStateStore {
             )));
         }
         self.materialization(work)
-            .transaction(move |namespace| {
+            .read_transaction(move |namespace| {
                 let work = namespace
                     ._allocation
                     .as_ref()
                     .expect("bound native work")
                     .work();
                 let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
-                with_lock(&mut paths, |paths| {
-                    let Some(mut owned) = read_recoverable::<T>(paths)? else {
+                let read = |paths: &RecordPaths| {
+                    let Some(mut owned) =
+                        records::read_recoverable_mode::<T>(paths, !namespace.inspection)?
+                    else {
                         return Ok(None);
                     };
                     owned
@@ -155,7 +159,12 @@ impl LocalCoreStateStore {
                         return Err(LocalCoreStateStoreError::Integrity);
                     }
                     Ok(Some((owned.0, owned.1.expect("native record allocation"))))
-                })
+                };
+                if namespace.inspection {
+                    inspection::with_record(&mut paths, read)
+                } else {
+                    with_lock(&mut paths, read)
+                }
             })
             .await
     }

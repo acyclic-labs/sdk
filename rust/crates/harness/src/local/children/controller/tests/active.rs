@@ -250,6 +250,23 @@ async fn exercise(control: Control) -> Result<()> {
         .map_err(storage)?
         .snapshot
         .unwrap();
+    let stdout: Vec<_> = shell
+        .files
+        .iter()
+        .filter(|file| {
+            matches!(
+                file.key,
+                FileKey::Task {
+                    file: crate::task_volume::TaskFile::Tool {
+                        file: crate::task_volume::ToolFile::Stdout(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .flat_map(|file| file.bytes.iter().copied())
+        .collect();
     let shell = shell
         .files
         .iter()
@@ -267,7 +284,8 @@ async fn exercise(control: Control) -> Result<()> {
         })
         .expect("drained shell result");
     let shell: serde_json::Value = serde_json::from_slice(&shell.bytes).map_err(storage)?;
-    assert_eq!(shell["stdout"].as_str(), Some("child-ready"));
+    assert_eq!(stdout, b"child-ready");
+    assert!(shell.get("stdout").is_none());
     assert_eq!(shell["stop"]["cleanup_completed"].as_bool(), Some(true));
     let snapshot = nested
         .observe(Query::Child(grandchild.clone()), None, 8)

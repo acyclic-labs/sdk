@@ -13,11 +13,24 @@ mod capture;
 mod external_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub use external_host::run_external_process_host;
+#[cfg(unix)]
+mod capture_wait;
+#[cfg(windows)]
+#[path = "capture_wait_windows.rs"]
+mod capture_wait;
+mod wake;
+pub use wake::ProcessWake;
+#[cfg(test)]
+mod capture_events_tests;
 #[cfg(windows)]
 mod custodian;
 #[cfg(windows)]
 mod custodian_admission;
 mod custody;
+#[cfg(unix)]
+mod exit_wait;
+#[cfg(any(windows, test))]
+mod job_members;
 pub use custody::{ProcessCustody, ProcessCustodyLease};
 #[cfg(unix)]
 mod warden;
@@ -429,17 +442,8 @@ impl ProcessTree {
                     deadline,
                 );
                 #[cfg(unix)]
-                loop {
-                    if let Some(status) = self.try_wait(None)? {
-                        return Ok(status);
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "process exit deadline exceeded; termination may be unresolved",
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
+                {
+                    exit_wait::wait(self.owned_child_id()?, deadline)
                 }
             })())
         })
@@ -460,6 +464,7 @@ impl ProcessTree {
         mut observe: impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
         meter: Option<&dyn crate::NativeReadMeter>,
         buffers: Option<[Vec<u8>; 3]>,
+        wake: Option<&[ProcessWake]>,
     ) -> Result<Output, ProcessCaptureFailure> {
         self.select_control_meter(meter);
         let operation = obs::span!(
@@ -508,6 +513,16 @@ impl ProcessTree {
                 self.capture_close_stdin(meter)
                     .map_err(ProcessCaptureFailure::before_capture)?;
             }
+            #[cfg(unix)]
+            let readiness = capture_wait::CaptureWait::new(
+                self.owned_child_id()
+                    .map_err(ProcessCaptureFailure::before_capture)?,
+                meter,
+            )
+            .map_err(ProcessCaptureFailure::before_capture)?;
+            #[cfg(windows)]
+            let mut readiness = capture_wait::CaptureWait::new(meter)
+                .map_err(ProcessCaptureFailure::before_capture)?;
             let child = self.child.as_mut().ok_or_else(|| {
                 ProcessCaptureFailure::before_capture(io::Error::other(
                     "process output was already collected",
@@ -574,10 +589,66 @@ impl ProcessTree {
                         ));
                     }
                     if !progressed {
-                        std::thread::sleep(Duration::from_millis(1));
+                        #[cfg(unix)]
+                        {
+                            use std::os::fd::AsRawFd;
+                            let stdin = input
+                                .as_ref()
+                                .and_then(PendingStdin::waiting_byte)
+                                .and_then(|_| self.child.as_ref()?.stdin.as_ref())
+                                .map(AsRawFd::as_raw_fd);
+                            readiness.wait(
+                                [
+                                    stdout.as_ref().map(AsRawFd::as_raw_fd),
+                                    stderr.as_ref().map(AsRawFd::as_raw_fd),
+                                    stdin,
+                                ],
+                                wake,
+                                status.is_some(),
+                                deadline,
+                                meter,
+                            )?;
+                        }
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::io::AsRawHandle;
+                            let child = self.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
+                            let stdin = input
+                                .as_ref()
+                                .and_then(PendingStdin::waiting_bytes)
+                                .and_then(|bytes| {
+                                    child.stdin.as_ref().map(|pipe| {
+                                        (
+                                            pipe.as_raw_handle(),
+                                            bytes
+                                                .get(..bytes.len().min(64 * 1024))
+                                                .unwrap_or_default(),
+                                        )
+                                    })
+                                });
+                            let (written, completed) = readiness.wait(
+                                child,
+                                [
+                                    stdout.as_ref().map(AsRawHandle::as_raw_handle),
+                                    stderr.as_ref().map(AsRawHandle::as_raw_handle),
+                                ],
+                                stdin,
+                                wake,
+                                status.is_some(),
+                                deadline,
+                            );
+                            if let (Some(input), Some(written)) = (&mut input, written) {
+                                input.advance_written(written)?;
+                            }
+                            completed?;
+                        }
                     }
                 }
             }));
+            // Settle retained overlapped input before cleanup closes its pipe,
+            // including the callback-panic path.
+            #[cfg(windows)]
+            let settled = readiness.finish_input();
             // Both stopped capture and callback panic return outstanding pipe
             // custody to the original supervisor, never an unmetered drop.
             if let Some(child) = self.child.as_mut() {
@@ -588,6 +659,8 @@ impl ProcessTree {
                 Ok(result) => result,
                 Err(panic) => std::panic::resume_unwind(panic),
             };
+            #[cfg(windows)]
+            let result = settled.and(result);
             // Cleanup errors take precedence: a capture timeout alone does not
             // describe an unresolved termination. Keep Child ownership on error.
             let result = self.capture_terminate(meter).and(result).and_then(|()| {
@@ -637,16 +710,7 @@ impl ProcessTree {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-                while self.try_wait(meter)?.is_none() {
-                    if Instant::now() >= deadline {
-                        return Err(io::ErrorKind::TimedOut.into());
-                    }
-                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
-                        Ok(())
-                    })?;
-                }
+                self.await_captured_exit(meter)?;
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
                         process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -674,6 +738,30 @@ impl ProcessTree {
         }
     }
 
+    #[cfg(windows)]
+    fn await_captured_exit(
+        &mut self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<()> {
+        if self.try_wait(meter)?.is_some() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
+        let mut readiness = capture_wait::CaptureWait::new(meter)?;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            let child = self.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
+            readiness
+                .wait(child, [None; 2], None, None, false, deadline)
+                .1?;
+            if self.try_wait(meter)?.is_some() {
+                return Ok(());
+            }
+        }
+    }
+
     #[cfg(unix)]
     fn terminate_with_meter(
         &mut self,
@@ -684,15 +772,7 @@ impl ProcessTree {
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
             let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-            while platform::observe_exit_id(self.owned_child_id()?, meter)?.is_none() {
-                if Instant::now() >= deadline {
-                    return Err(io::ErrorKind::TimedOut.into());
-                }
-                process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
-                    Ok(())
-                })?;
-            }
+            exit_wait::wait_metered(self.owned_child_id()?, deadline, meter)?;
             // Only actually retained standard pipes require a release call.
             // Denial keeps the observed leader unreaped and its remaining
             // streams owned by this same tree, rather than hiding their drops

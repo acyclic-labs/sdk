@@ -40,6 +40,7 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         );
         if literal {
             let output = result.expect("literal input may be closed early");
@@ -106,6 +107,7 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
                 Vec::with_capacity(16),
                 Vec::with_capacity(input.len()),
             ]),
+            None,
         )
         .expect_err("undelivered exchange input must fail");
     assert_eq!(failure.error.kind(), io::ErrorKind::BrokenPipe);
@@ -328,7 +330,7 @@ fn process_tree_helper() {
                 fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
             }
         }
-        "child" | "exit-parent" => {
+        "child" | "child-cancel" | "exit-parent" => {
             let mut grandchild = command("grandchild", &root);
             grandchild.stdout(Stdio::inherit()).stderr(Stdio::inherit());
             let mut grandchild = grandchild.spawn().expect("spawn grandchild");
@@ -338,7 +340,13 @@ fn process_tree_helper() {
                     .map_or(true, |status| status.is_some())
             });
             fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
-            if mode == "child" {
+            if mode == "child-cancel" {
+                std::io::stdout()
+                    .write_all(b"tree-cancel-ready")
+                    .expect("tree readiness");
+                std::io::stdout().flush().expect("flush tree readiness");
+            }
+            if mode != "exit-parent" {
                 let _ = grandchild.wait();
             }
         }
@@ -390,33 +398,51 @@ fn process_tree_helper() {
             }
             std::process::exit(0);
         }
-        "stdin-stall" | "stdin-handshake" => stdin_helper(&mode, &root),
-        "stream-notify" => {
-            let mut peer = std::net::TcpStream::connect(root.to_string_lossy().as_ref())
-                .expect("connect stream observer");
-            peer.set_read_timeout(Some(Duration::from_secs(2)))
-                .expect("stream handshake deadline");
-            std::io::stdout()
-                .write_all(b"stream-stdout")
-                .expect("stream stdout");
-            std::io::stdout().flush().expect("flush stream stdout");
-            std::io::stderr()
-                .write_all(b"stream-stderr")
-                .expect("stream stderr");
-            std::io::stderr().flush().expect("flush stream stderr");
-            let mut acknowledgement = [0];
-            peer.read_exact(&mut acknowledgement)
-                .expect("observer acknowledged both pipes before exit");
-            assert_eq!(acknowledgement, [1]);
-            std::process::exit(0);
-        }
+        "stdin-stall" | "stdin-handshake" | "stdin-cancel" => stdin_helper(&mode, &root),
+        "stream-notify" => stream_notify_helper(&root),
         "exit-code" => std::process::exit(7),
         _ => assert_eq!(mode, "known helper mode"),
     }
 }
 
+fn stream_notify_helper(root: &std::path::Path) {
+    let mut peer = std::net::TcpStream::connect(root.to_string_lossy().as_ref())
+        .expect("connect stream observer");
+    peer.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("stream handshake deadline");
+    std::io::stdout()
+        .write_all(b"stream-stdout")
+        .expect("stream stdout");
+    std::io::stdout().flush().expect("flush stream stdout");
+    std::io::stderr()
+        .write_all(b"stream-stderr")
+        .expect("stream stderr");
+    std::io::stderr().flush().expect("flush stream stderr");
+    let mut acknowledgement = [0];
+    peer.read_exact(&mut acknowledgement)
+        .expect("observer acknowledged both pipes before exit");
+    assert_eq!(acknowledgement, [1]);
+    std::process::exit(0);
+}
+
 fn stdin_helper(mode: &str, root: &std::path::Path) {
     match mode {
+        "stdin-cancel" => {
+            let mut first = [0];
+            std::io::stdin()
+                .read_exact(&mut first)
+                .expect("partial input");
+            assert_eq!(first, [b'i']);
+            std::io::stdout()
+                .write_all(b"stdin-partial-marker")
+                .expect("partial marker");
+            std::io::stdout().flush().expect("flush partial marker");
+            // No further input is consumed. The owner must observe the
+            // cancellation notification and physically reap this child.
+            loop {
+                thread::park();
+            }
+        }
         "stdin-stall" => {
             std::io::stdout()
                 .write_all(b"stdin-stall-marker")
@@ -483,16 +509,19 @@ fn cleanup_is_idempotent_and_drop_contains_descendants() {
 #[test]
 fn capture_check_failure_cleans_up_the_owned_tree() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let mut tree = ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
-    let mut checks = 0;
+    let mut tree =
+        ProcessTree::spawn(&mut command("child-cancel", temporary.path())).expect("spawn tree");
+    let cancelled = std::cell::Cell::new(false);
+    let wake = super::wake::ProcessWake::new().expect("cancellation wake");
+    let mut observed = Vec::new();
+    let started = Instant::now();
     let error = tree
         .wait_with_output(
             Duration::from_secs(5),
             4096,
             None,
             || {
-                checks += 1;
-                if temporary.path().join("tree-ready").exists() {
+                if cancelled.get() {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "cancelled",
@@ -501,16 +530,36 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
                     Ok(())
                 }
             },
-            |_| Ok(crate::ProcessInput::default()),
+            |chunk| {
+                if let crate::ProcessOutput::Stdout(bytes) = chunk {
+                    observed.extend_from_slice(bytes);
+                    if observed
+                        .windows(b"tree-cancel-ready".len())
+                        .any(|bytes| bytes == b"tree-cancel-ready")
+                    {
+                        cancelled.set(true);
+                        wake.notify()?;
+                    }
+                }
+                Ok(crate::ProcessInput::default())
+            },
             None,
             None,
+            Some(std::slice::from_ref(&wake)),
         )
         .expect_err("cancellation must stop capture");
     assert_eq!(error.error.kind(), std::io::ErrorKind::Interrupted);
-    assert!(checks > 0);
-    assert!(tree.child.is_none(), "explicit cleanup reaps the child");
-    thread::sleep(Duration::from_secs(1));
-    assert!(!temporary.path().join("escaped").exists());
+    assert_eq!(error.error.to_string(), "cancelled");
+    assert!(
+        cancelled.get(),
+        "the complete live tree acknowledged readiness"
+    );
+    assert!(error.cleanup_completed && tree.is_reaped());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "notification must interrupt capture before its deadline"
+    );
+    assert_no_escape(temporary.path());
 }
 
 #[test]
@@ -579,6 +628,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
         .expect("collect output");
@@ -593,6 +643,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None
         )
@@ -611,6 +662,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
             None,
+            None,
             None
         )
         .map_err(|failure| failure.error)
@@ -623,34 +675,45 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
 #[test]
 fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let mut command = command("stdin-stall", temporary.path());
+    let mut command = command("stdin-cancel", temporary.path());
     command.stdin(Stdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
-    ready(temporary.path(), "stdin-stall-ready", || {
-        tree_exited(&mut tree)
-    });
     let input = vec![b'i'; BULK_BYTES];
-    let mut checks = 0;
+    let cancelled = std::cell::Cell::new(false);
+    let wake = super::wake::ProcessWake::new().expect("cancellation wake");
+    let mut observed = Vec::new();
     let failure = tree
         .wait_with_output(
             Duration::from_secs(5),
             4096,
             Some(crate::CaptureInput::Literal(&input)),
             || {
-                checks += 1;
-                if checks == 10 {
+                if cancelled.get() {
                     Err(std::io::ErrorKind::Interrupted.into())
                 } else {
                     Ok(())
                 }
             },
-            |_| Ok(crate::ProcessInput::default()),
+            |chunk| {
+                if let crate::ProcessOutput::Stdout(bytes) = chunk {
+                    observed.extend_from_slice(bytes);
+                    if observed
+                        .windows(b"stdin-partial-marker".len())
+                        .any(|bytes| bytes == b"stdin-partial-marker")
+                    {
+                        cancelled.set(true);
+                        wake.notify()?;
+                    }
+                }
+                Ok(crate::ProcessInput::default())
+            },
             None,
             None,
+            Some(std::slice::from_ref(&wake)),
         )
-        .expect_err("intent stops stalled exchange");
+        .expect_err("intent stops stalled exchange after actual partial input");
     assert_eq!(failure.error.kind(), std::io::ErrorKind::Interrupted);
-    assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
+    assert!(failure.stdout.ends_with(b"stdin-partial-marker"));
     assert!(failure.cleanup_completed && tree.is_reaped());
 }
 
@@ -687,6 +750,7 @@ fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
             Some(crate::CaptureInput::Literal(&input)),
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -736,6 +800,7 @@ fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
                     Ok(crate::ProcessInput::default())
                 }
             },
+            None,
             None,
             None,
         )
@@ -792,6 +857,7 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
                     }
                     Ok(crate::ProcessInput::default())
                 },
+                None,
                 None,
                 None,
             )
@@ -871,6 +937,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
                 },
                 None,
                 None,
+                None,
             )
             .expect_err("stop streaming exchange");
         assert_eq!(
@@ -917,6 +984,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .expect_err("deadline stops stalled input");
     assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
@@ -943,6 +1011,7 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -992,6 +1061,7 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
                 |_| Ok(crate::ProcessInput::default()),
                 None,
                 None,
+                None,
             )
             .expect_err("capture must fail");
         assert_eq!(error.error.kind(), kind);
@@ -1020,6 +1090,7 @@ fn bulk_output_is_collected_fully_within_its_exact_bound() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
         .expect("collect bulk output");
@@ -1044,6 +1115,7 @@ fn bulk_output_is_collected_fully_within_its_exact_bound() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
         .expect_err("bulk output exceeds bound");
@@ -1062,6 +1134,7 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )

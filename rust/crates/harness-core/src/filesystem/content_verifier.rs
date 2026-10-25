@@ -199,6 +199,47 @@ where
         })
     }
 
+    fn verify_publication<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if !self.host.published_here(reference, io)? {
+                return self.verify(reference, maximum_bytes, io)?.await;
+            }
+            let temporary = PreparationIo::temporary(io)?;
+            let owned;
+            let io = if let Some(io) = temporary.as_ref().or(io) {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
+            };
+            self.verify_creation(reference.volume(), Some(reference), Some(io))
+                .await?;
+            self.verifier
+                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
+            self.host
+                .read_selection_with_access(
+                    &self.scope,
+                    reference,
+                    maximum_bytes.min(self.maximum_bytes),
+                    self.exact_file.is_some(),
+                    None,
+                    io,
+                )
+                .await?
+                .confirm_publication()
+                .await?;
+            self.verifier
+                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
+            io.remaining()?;
+            Ok(())
+        })
+    }
+
     fn read_private_prefix<'a>(
         &'a self,
         volume: &'a VolumeRef,
@@ -466,6 +507,8 @@ where
             )
             .await?;
         crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("resolved content body", bytes.len() as u64));
         Ok(bytes)
     }
 

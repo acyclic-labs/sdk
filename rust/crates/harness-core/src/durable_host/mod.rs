@@ -170,6 +170,8 @@ pub struct CoordinatorTaskHost<P> {
     // A query must keep driving any sibling which owns this gate across IO.
     coordinator: Arc<crate::sync::Mutex<DistributedCoordinator<P>>>,
     stream: Arc<P>,
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    owner_changes: tokio::sync::OnceCell<owner_changes::OwnerChangeHub>,
     payloads: Arc<dyn SchedulerPayloadStore>,
     reader: Arc<dyn ContentResidencyVerifier>,
     owner: Authority,
@@ -243,6 +245,13 @@ mod journal;
 mod lifecycle;
 mod mail;
 mod observations;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+mod owner_changes;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use owner_changes::OwnerChanges;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use owner_changes::OwnerSignals;
 #[cfg(feature = "filesystem")]
 mod owner_access;
 #[cfg(feature = "filesystem")]

@@ -203,6 +203,7 @@ pub fn process_output(
             |_| Ok(ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
 }

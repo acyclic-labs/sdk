@@ -290,6 +290,7 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
             |_| Ok(Default::default()),
             Some(meter.as_ref()),
             Some([stdout.0, stderr.0, Vec::new()]),
+            None,
         )
         .unwrap_or_else(|error| {
             panic!(

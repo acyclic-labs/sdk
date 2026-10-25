@@ -54,8 +54,8 @@ mod tests {
 
     // Checkout token publication flushes files and each held ancestor. Test
     // both against the real filesystem, and a descriptor that cannot support
-    // F_FULLFSYNC: its ENODEV distinguishes that operation from bare fsync's
-    // EINVAL and prevents a successful no-op from satisfying this detector.
+    // F_FULLFSYNC: only its ENODEV satisfies the detector. Bare fsync may
+    // succeed on /dev/null; neither that nor a swallowed error can pass.
     fn full_flush_contract(flush: impl Fn(BorrowedFd<'_>) -> io::Result<()>) -> io::Result<bool> {
         let directory = tempfile::tempdir()?;
         let mut file = File::create(directory.path().join("record"))?;

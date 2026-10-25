@@ -862,7 +862,6 @@ fn native_request(
         ]),
         timeout_ms: if lost_response { 1_000 } else { 10_000 },
         control_timeout_ms: 250,
-        cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
         standard_input: mcp.is_none().then(|| b"exact native input".to_vec()),

@@ -65,6 +65,11 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         Ok(())
     }
 
+    pub(in crate::filesystem) async fn confirm_publication(self) -> Result<()> {
+        fork_preparer_io::retain(&self.generation, Some(self.io)).await?;
+        self.confirm().await
+    }
+
     pub(in crate::filesystem) async fn read_file(
         self,
         maximum_bytes: u64,

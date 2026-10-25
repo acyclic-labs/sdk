@@ -430,7 +430,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 grant.recheck(io)?;
-                return Ok(reference);
+                return self.seal_publication(reference, io);
             }
             if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
                 return Err(stock_boundary(
@@ -515,8 +515,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }?;
             self.read_retained_file(&generation, &reference, maximum_bytes, io)?
                 .await?;
+            // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;
-            Ok(reference)
+            self.seal_publication(reference, io)
         })
     }
     #[inline(never)]
