@@ -218,6 +218,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-machines",
@@ -374,13 +375,16 @@ dependencies = [
  "compio-buf",
  "compio-driver",
  "futures-core",
+ "getrandom 0.3.4",
  "libc",
  "pin-project-lite",
  "rustix 1.1.5",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

@@ -187,6 +187,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-fs",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -245,17 +246,21 @@ dependencies = [
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "blake3",
  "bytes",
  "compio-buf",
  "compio-driver",
  "futures-core",
+ "getrandom 0.3.4",
  "libc",
  "pin-project-lite",
  "rustix",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
