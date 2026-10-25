@@ -4,7 +4,7 @@ use crate::materializer::NativeWorkReservation;
 pub(super) struct DriverSessionResources {
     pub(super) state: Mutex<LoopState>,
     pub(super) changed: Condvar,
-    pub(super) requested: AtomicBool,
+    pub(super) retirement_wake: acyclic_native_runtime::NativeWake,
     pub(super) provider_exited: AtomicBool,
     pub(super) credit: NativeWorkReservation,
     pub(super) native: Mutex<DarwinOwned<usize>>,
@@ -96,7 +96,7 @@ impl DriverSessionResources {
                 failure: None,
             }),
             changed: Condvar::new(),
-            requested: AtomicBool::new(false),
+            retirement_wake: acyclic_native_runtime::NativeWake::default(),
             provider_exited: AtomicBool::new(false),
             credit,
             native: Mutex::new(DarwinOwned::empty(0)),

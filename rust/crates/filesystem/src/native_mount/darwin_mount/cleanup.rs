@@ -89,7 +89,7 @@ impl std::task::Wake for DriverSessionResources {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.requested.store(true, Ordering::Release);
+        self.retirement_wake.notify();
         self.changed.notify_all();
     }
 }

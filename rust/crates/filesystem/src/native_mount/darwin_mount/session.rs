@@ -47,7 +47,6 @@ impl DriverSessionResources {
 
     pub(super) fn finish(&self) {
         let mut state = self.state();
-        self.requested.store(false, Ordering::Release);
         self.changed.notify_all();
         if let Err(error) = self.retire(&mut state, None) {
             state.failure = Some(error);
@@ -56,10 +55,11 @@ impl DriverSessionResources {
         }
         self.credit.started_drop_io(READ_WORK);
         loop {
-            state = self
-                .changed
-                .wait_while(state, |_| !self.requested.swap(false, Ordering::AcqRel))
-                .unwrap_or_else(PoisonError::into_inner);
+            // Completion can arrive while retire polls under the session lock.
+            // The shared notifier owns a separate lock and retains that wake.
+            drop(state);
+            self.retirement_wake.wait(None);
+            state = self.state();
             match self.retire(&mut state, None) {
                 Ok(()) => return,
                 Err(error) => {
@@ -208,7 +208,7 @@ impl DarwinMountSession {
             if let Some(error) = state.failure.take() {
                 return Err(error);
             }
-            events.requested.store(true, Ordering::Release);
+            events.retirement_wake.notify();
             if self.loop_finished_before_teardown.is_none() {
                 self.loop_finished_before_teardown =
                     Some(self.thread.is_none() || events.provider_exited.load(Ordering::Acquire));
@@ -293,7 +293,7 @@ impl Drop for DarwinMountSession {
         reason = "Interrupt without a wait token consumes birth-paid credit and has no fallible path."
     )]
     fn drop(&mut self) {
-        self.unmount.requested.store(true, Ordering::Release);
+        self.unmount.retirement_wake.notify();
         self.unmount.changed.notify_all();
         if !self.unmount.provider_exited.load(Ordering::Acquire) {
             self.unmount

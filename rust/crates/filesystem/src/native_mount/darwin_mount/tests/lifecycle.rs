@@ -116,7 +116,7 @@ fn accepted_retirement_wakes_its_owner_after_the_caller_leaves() -> TestResult {
                 0,
                 "old shape retains the SDK after completion"
             );
-            owner.requested.store(true, Ordering::Release);
+            owner.retirement_wake.notify();
             owner.changed.notify_all();
         }
         completion.recv_timeout(Duration::from_secs(1))?;

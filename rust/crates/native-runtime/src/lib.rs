@@ -91,6 +91,8 @@ pub use meter::{
     NativeOperationReservation, NativeReadMeter, ReadAllocation, ReadAllocationReservation,
     arc_allocation_bytes,
 };
+mod wake;
+pub use wake::NativeWake;
 mod blocking;
 mod task;
 #[cfg(feature = "test-support")]

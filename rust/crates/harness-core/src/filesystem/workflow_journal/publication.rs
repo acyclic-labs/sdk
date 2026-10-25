@@ -292,33 +292,36 @@ where
         appended: Result<bool>,
         record: &'a WorkflowRecord,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        // The physical append already determined this outcome. Only an
+        // unresolved append starts another admitted reconciliation operation.
+        let indeterminate = match appended {
+            Ok(true) => return Ok(None),
+            Ok(false) => false,
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => true,
+            Err(error) => return Err(error),
+        };
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            match appended {
-                Ok(true) => Ok(()),
-                Ok(false) => match self.reconcile(record, io)?.await? {
+            if !indeterminate {
+                return match self.reconcile(record, io)?.await? {
                     Some(_) => Ok(()),
                     None => Err(Error::Conflict(
                         "workflow checkpoint or ownership changed".into(),
                     )),
-                },
-                Err(Error::Indeterminate(_)) if self.owner.is_none() => {
-                    match self.reconcile(record, io)?.await {
-                        Ok(Some(_)) => Ok(()),
-                        Ok(None) | Err(Error::Storage(_)) => {
-                            Err(Error::Indeterminate(record.operation_id))
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Err(Error::NativeStream {
-                            source: StreamError::Unavailable,
-                            ..
-                        }) => Err(Error::Indeterminate(record.operation_id)),
-                        Err(error) => Err(error),
-                    }
-                }
+                };
+            }
+            match self.reconcile(record, io)?.await {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(record.operation_id)),
+                #[cfg(not(target_arch = "wasm32"))]
+                Err(Error::NativeStream {
+                    source: StreamError::Unavailable,
+                    ..
+                }) => Err(Error::Indeterminate(record.operation_id)),
                 Err(error) => Err(error),
             }
         })
+        .map(Some)
     }
 
     pub(crate) async fn commit_with_io(
@@ -434,7 +437,10 @@ where
                     io,
                 )?
                 .await;
-            self.resolve_commit_append(appended, record, io)?.await
+            if let Some(reconciliation) = self.resolve_commit_append(appended, record, io)? {
+                reconciliation.await?;
+            }
+            Ok(())
         })
     }
 }
@@ -447,6 +453,119 @@ mod polling_graph_storage_tests {
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >;
+
+    use crate::{AgentId, conversation::VolumeOwner, resources::ProviderRef};
+    struct Clock;
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            1234
+        }
+    }
+
+    async fn fixture() -> Result<Arc<Journal>> {
+        fixture_with_filesystem(acyclic_fs::Fs::memory()).await
+    }
+
+    async fn fixture_with_filesystem(filesystem: acyclic_fs::MemoryFs) -> Result<Arc<Journal>> {
+        let provider =
+            ProviderRef::new("future".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let host = FilesystemHost::new(filesystem, &provider, None)?;
+        let agent = AgentId::from_bytes([1; 16]);
+        let volume = VolumeRef::new(
+            provider,
+            "future".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let issuer = crate::core::AuthorityIssuer::new(
+            "future",
+            [2; 32],
+            crate::core::Authority {
+                kind: crate::core::AggregateKind::Conversation,
+                id: crate::ConversationId::from_bytes([3; 16]).to_string(),
+            },
+        );
+        let scope = issuer.issue(
+            "owner",
+            &crate::Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
+        FilesystemWorkflowJournal::new(
+            Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+                Default::default(),
+                Arc::new(Clock),
+            )),
+            host,
+            "confirmed",
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &volume,
+                verifier: &issuer.verifier(&mut None)?,
+                scope: &scope,
+                maximum_bytes: 4096,
+                io: None,
+            },
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn confirmed_append_survives_cancelled_completion_admission() -> Result<()> {
+        use crate::workflow::{MachineCheckpoint, MachineIdentity, MachineTransition};
+        let journal = fixture().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let record = WorkflowRecord {
+            operation_id: crate::OperationId::from_bytes([1; 16]),
+            idempotency_key: IdempotencyKey::new("confirmed")?,
+            prior: MachineCheckpoint {
+                machine: MachineIdentity {
+                    name: "confirmed".into(),
+                    version: "1".into(),
+                    digest: [1; 32],
+                },
+                revision: 0,
+                state: serde_json::Value::Null,
+            },
+            input: serde_json::Value::Null,
+            transition: MachineTransition {
+                state: serde_json::Value::Null,
+                commands: vec![],
+                status: MachineStatus::Suspended,
+            },
+        };
+        cancellation.cancel();
+        assert!(io.check_cancellation().is_err());
+        let result = journal.resolve_commit_append(Ok(true), &record, Some(&io))?;
+        assert!(
+            result.is_none(),
+            "confirmed publication must not start reconciliation"
+        );
+        assert!(
+            journal
+                .resolve_commit_append(Ok(false), &record, Some(&io))
+                .is_err()
+        );
+        assert!(matches!(
+            journal.resolve_commit_append(
+                Err(Error::Conflict("confirmed error".into())),
+                &record,
+                Some(&io)
+            ),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
     type Input = (
         &'static Journal,
         &'static WorkflowAdmission,
