@@ -355,7 +355,7 @@ pub(crate) fn ensure_slot<T>(
 }
 
 /// Explicit archival position. Revisions are inclusive; later appends are excluded.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryCursor {
     /// Aggregate whose admission attestations must verify.
@@ -367,7 +367,7 @@ pub struct HistoryCursor {
 }
 
 /// Finite work and output bounds for one history read.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct HistoryReadLimits {
@@ -379,7 +379,7 @@ pub struct HistoryReadLimits {
 }
 
 /// One verified page and its resumable position. An empty page is terminal.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryPage {
     /// Ordered, gapless events attested by this aggregate's owner.

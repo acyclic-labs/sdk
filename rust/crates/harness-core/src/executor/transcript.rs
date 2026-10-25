@@ -24,7 +24,7 @@ mod tests;
 ))]
 mod metadata_tests;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestManifest {
     header: FileRef,
@@ -98,7 +98,7 @@ impl RequestManifest {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct RequestHeader {
     model: Model,
@@ -113,7 +113,7 @@ struct HeaderView<'a> {
     max_output_tokens: Option<u32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct MessagePrefix {
     reference: FileRef,
@@ -122,7 +122,7 @@ struct MessagePrefix {
     chain_digest: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct MessageSegment {
     parent: Option<MessagePrefix>,
@@ -175,18 +175,7 @@ impl PreparationRecord for RequestManifest {
         .len() as u64
     }
 
-    fn maximum_slot_bytes() -> u64 {
-        // Heap collections contain closed FileRef metadata or serde Content.
-        // The root manifest is funded separately, including fixed signatures.
-        crate::filesystem::preparation_file_record_slot_bytes()
-    }
 
-    fn container_collection_slots() -> bool {
-        // Large typed values are FileRef/MessagePrefix objects. Digest bytes,
-        // counts and limits need Content buffering, not workflow-sized slots.
-        // Resident values without a container census keep the coarse bound.
-        true
-    }
 
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([

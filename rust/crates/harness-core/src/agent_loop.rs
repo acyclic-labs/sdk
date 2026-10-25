@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One typed invocation of a custom agent loop.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct AgentInput {
     /// Current human prompt, bounded before local admission.
@@ -27,7 +27,7 @@ impl AgentInput {
 }
 
 /// One custom-loop result. Canonical publication stages its text and refs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct AgentOutput {
     /// User-visible text produced by this invocation.

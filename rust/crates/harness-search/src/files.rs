@@ -38,7 +38,9 @@ fn ready(task: &Component, id: &Component) -> FileKey {
 }
 
 /// Contents of `requests/search-<id>/result.json`. Credentials are never published.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SearchOutcome {
     /// The provider returned the normalized, ranked sources.

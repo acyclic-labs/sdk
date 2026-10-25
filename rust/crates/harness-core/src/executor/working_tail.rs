@@ -4,7 +4,7 @@ use super::*;
 mod history;
 mod retirement;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkingCut {
     operation: OperationId,
@@ -37,12 +37,6 @@ impl WorkingCut {
 
 #[cfg(feature = "filesystem")]
 impl PreparationRecord for WorkingCut {
-    fn container_collection_slots() -> bool {
-        true
-    }
-    fn maximum_slot_bytes() -> u64 {
-        crate::filesystem::preparation_file_record_slot_bytes()
-    }
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([
             std::mem::size_of::<Self>() as u64,

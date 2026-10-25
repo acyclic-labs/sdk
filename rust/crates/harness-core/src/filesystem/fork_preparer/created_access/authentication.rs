@@ -93,16 +93,18 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .resources()
         .position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
-    let volume = creation_volumes(&fork)
+    creation_volumes(&fork)
         .nth(index)
         .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
-    let evidence = allocation_ref(&host.provider, volume, Some(io))?;
-    if evidence.as_resource() != &proof.evidence {
+    // The created volume's own creation commit is checked below against the
+    // operation key derived from this journal's request; the journal holds
+    // the allocation and the seed binding.
+    let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
+    if journal.as_resource() != &proof.evidence {
         return Err(Error::Unauthorized(
-            "proof does not name this protected allocation journal".into(),
+            "proof does not name this protected fork journal".into(),
         ));
     }
-    let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
     if !read_claim(host, &journal, &fork, maximum, Some(io)).await? {
         return Err(Error::Unauthorized(
             "fork preparation request is not retained".into(),
@@ -228,7 +230,12 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .task_origin
                     .take()
                     .ok_or_else(|| io.invalid("authenticated allocation has no task origin"))?,
-                volume: claim.volume,
+                volume: {
+                    let mut history = io.history_io();
+                    volume.copy(&mut Some(
+                        &mut history as &mut dyn crate::store::history::HistoryIo,
+                    ))?
+                },
                 generation,
                 prepared_generation: bounded_io::generation_ref(
                     &host.provider,

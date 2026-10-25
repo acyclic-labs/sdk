@@ -3,7 +3,7 @@ use super::*;
 mod projection;
 
 /// Model-visible tool definition with immutable schemas.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolDefinition {
@@ -16,14 +16,17 @@ pub struct ToolDefinition {
     /// JSON Schema for invocation arguments.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub input_schema: Value,
     /// JSON Schema for the canonical successful executor value.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub projection_schema: Value,
 }
 

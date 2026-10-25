@@ -57,7 +57,7 @@ impl<'de> Deserialize<'de> for ScriptedTurn {
 }
 
 /// One event or failure in an exact streaming response.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScriptedEvent {
     /// Provider-neutral stream event.
@@ -72,7 +72,7 @@ pub enum ScriptedEvent {
 }
 
 /// One reconciliation of a previously admitted model request.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedReconciliation {
     /// Explicitly permits recovery on a fresh provider that never generated this dispatch.

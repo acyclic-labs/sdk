@@ -7,6 +7,11 @@ pub(crate) enum ControlRequestError {
     Unavailable(String),
     Indeterminate(String),
     Response(String),
+    /// The service refused the request with a stable wire code.
+    Refused {
+        code: acyclic_harness::wire::ErrorCode,
+        message: String,
+    },
     NativeWork(acyclic_harness::Error),
 }
 
@@ -15,6 +20,9 @@ impl std::fmt::Display for ControlRequestError {
         match self {
             Self::Unavailable(message) | Self::Indeterminate(message) | Self::Response(message) => {
                 formatter.write_str(message)
+            }
+            Self::Refused { code, message } => {
+                write!(formatter, "{message} ({})", code.as_str_name())
             }
             Self::NativeWork(error) => std::fmt::Display::fmt(error, formatter),
         }
@@ -205,12 +213,18 @@ pub(crate) fn decode_control_response(
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     } else {
-        Err(ControlRequestError::Response(
-            response
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Acyclic service request failed")
-                .to_owned(),
-        ))
+        let message = response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("Acyclic service request failed")
+            .to_owned();
+        match response
+            .get("code")
+            .and_then(Value::as_str)
+            .and_then(acyclic_harness::wire::ErrorCode::from_str_name)
+        {
+            Some(code) => Err(ControlRequestError::Refused { code, message }),
+            None => Err(ControlRequestError::Response(message)),
+        }
     }
 }

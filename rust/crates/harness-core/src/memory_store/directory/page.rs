@@ -1,11 +1,13 @@
 /// One entry in a bounded directory page.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
 pub(crate) struct MemoryStoreEntry {
     pub(crate) name: String,
     pub(crate) kind: MemoryStoreEntryKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum MemoryStoreEntryKind {
     File,
@@ -13,7 +15,7 @@ pub(crate) enum MemoryStoreEntryKind {
 }
 
 /// A generation-pinned page produced by the shared content core.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "camelCase")]
 #[doc(hidden)]
 pub struct MemoryStorePage {

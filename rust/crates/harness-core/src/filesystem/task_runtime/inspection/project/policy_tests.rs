@@ -244,6 +244,7 @@ impl Source {
             handle,
             Limits::default(),
             io,
+            Default::default(),
         )
         .await?;
         let mut effective: Capability =
@@ -320,9 +321,16 @@ async fn late_selected_verification(protected: bool) -> TestResult {
     // still outstanding. Its journal remains valid; only the volume cut changed.
     source.deny_secret().await?;
     let result = if protected {
-        Reader::finish_verification(&reader.workspace, &reader.owner, &view.0, &reader.io).await
+        Reader::finish_verification(
+            &reader.workspace,
+            &reader.owner,
+            &view.0,
+            &reader.io,
+            &reader.owner_work,
+        )
+        .await
     } else {
-        Reader::verify_owner(&reader.owner, &reader.io).await?;
+        Reader::verify_owner(&reader.owner, &reader.io, &reader.owner_work).await?;
         crate::filesystem::access::require_unrestricted(
             &view.0,
             &[Action::List, Action::Read],

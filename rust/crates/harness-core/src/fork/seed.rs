@@ -7,8 +7,37 @@ pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Re
         source.owned_heap_bytes()
     })
 }
+/// A child volume a custom preparation allocates for a seed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForkSeedVolume {
+    /// The child-owned private volume.
+    Private,
+    /// The child project volume.
+    Project,
+    /// The optional child result volume.
+    Result,
+}
+
+impl ForkSeed {
+    /// The idempotency key that must create a child volume a custom
+    /// preparation allocates for `operation`. A volume has exactly one
+    /// creation, so it belongs to exactly one fork operation; a seed naming a
+    /// volume created any other way is refused when it is claimed.
+    pub fn creation_key(
+        operation: OperationId,
+        volume: ForkSeedVolume,
+    ) -> Result<crate::IdempotencyKey> {
+        let role = match volume {
+            ForkSeedVolume::Private => "private",
+            ForkSeedVolume::Project => "project",
+            ForkSeedVolume::Result => "result",
+        };
+        crate::IdempotencyKey::new(format!("fork-seed:{operation}:{role}"))
+    }
+}
+
 /// Immutable, validated child environment published by the parent aggregate.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ForkSeed {
     /// Stable publication identity.

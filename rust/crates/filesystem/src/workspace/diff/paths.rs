@@ -29,15 +29,9 @@ pub(super) fn sort_and_coalesce(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), WorkspaceError> {
     let count = paths.0.len();
-    // In-place heapsort bounds both work and live allocation on adversarial
-    // namespaces. Every comparison and swap uses the original caller's ledger.
-    for start in (0..count / 2).rev() {
-        sift_down(&mut paths.0, start, count, accounting)?;
-    }
-    for end in (1..count).rev() {
-        swap(&mut paths.0, 0, end, accounting)?;
-        sift_down(&mut paths.0, 0, end, accounting)?;
-    }
+    crate::kernel::sort_by_with_accounting(&mut paths.0, accounting, |left, right| {
+        left.path.components().cmp(right.path.components())
+    })?;
     let mut retained = 0_usize;
     let mut retired_bytes = 0_u64;
     for index in 0..count {
@@ -69,18 +63,6 @@ pub(super) fn sort_and_coalesce(
     Ok(())
 }
 
-fn compare(
-    values: &[ChangedPath],
-    left: usize,
-    right: usize,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<std::cmp::Ordering, WorkspaceError> {
-    accounting.charge_items(1)?;
-    let left = values.get(left).ok_or(FsError::InvalidDiff)?;
-    let right = values.get(right).ok_or(FsError::InvalidDiff)?;
-    Ok(left.path.components().cmp(right.path.components()))
-}
-
 fn swap(
     values: &mut [ChangedPath],
     left: usize,
@@ -92,34 +74,6 @@ fn swap(
     values.swap(left, right);
     accounting.record_completed(copied)?;
     Ok(())
-}
-
-fn sift_down(
-    values: &mut [ChangedPath],
-    mut root: usize,
-    end: usize,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(), WorkspaceError> {
-    loop {
-        let Some(left) = root
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(1))
-            .filter(|left| *left < end)
-        else {
-            return Ok(());
-        };
-        let right = left + 1;
-        let greater = if right < end && compare(values, left, right, accounting)?.is_lt() {
-            right
-        } else {
-            left
-        };
-        if !compare(values, root, greater, accounting)?.is_lt() {
-            return Ok(());
-        }
-        swap(values, root, greater, accounting)?;
-        root = greater;
-    }
 }
 
 #[cfg(test)]

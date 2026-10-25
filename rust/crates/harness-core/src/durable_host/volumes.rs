@@ -4,7 +4,7 @@ use super::*;
 use crate::{conversation::VolumeClass, resources::GenerationRef};
 
 /// Exact volume and generation selected by authenticated allocation metadata.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct TaskVolumeSnapshot {

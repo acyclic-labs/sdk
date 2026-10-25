@@ -1,7 +1,7 @@
 use super::*;
 
 /// Frontmatter only; the body is not fetched or injected by discovery.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SkillMetadata {
@@ -150,7 +150,7 @@ pub(super) fn discovery_error(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 struct Frontmatter {
     name: String,
     description: String,

@@ -246,8 +246,8 @@ impl Formatter for Format<'_, '_, '_> {
                     return Err(boundary("incomplete JSON document", code));
                 }
                 let shape = JsonValueShape {
+                    longest_string: 0,
                     input_bytes: fragment.len() as u64,
-                    value_string_bytes: 0,
                     lexical_items: lexical.items,
                     containers: lexical.containers,
                     virtual_items: 0,
@@ -422,8 +422,8 @@ fn output<T: Serialize + ?Sized>(
 fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Value> {
     let (mut bytes, prefix) = output(value, scope, true, true)?;
     let shape = JsonValueShape {
+        longest_string: 0,
         input_bytes: (bytes.len() - prefix) as u64,
-        value_string_bytes: 0,
         lexical_items: scope.lexical.items,
         containers: scope.lexical.containers,
         virtual_items: 0,

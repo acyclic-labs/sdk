@@ -9,7 +9,7 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
 
 /// Exact text to locate and replace once in a pinned source file.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ExactTextReplacement {
     /// Nonempty exact needle; overlapping matches are ambiguous.

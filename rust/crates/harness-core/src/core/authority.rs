@@ -5,7 +5,9 @@ mod verified_scope;
 mod workload;
 pub(crate) use verified_scope::VerifiedScope;
 /// Kind of independently ordered durable aggregate.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AggregateKind {
@@ -28,7 +30,9 @@ pub const AUTHORITY_ID_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
 pub const AUTHORITY_ID_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 
 /// Stable identity of one independently ordered history.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Authority {
@@ -89,7 +93,7 @@ impl Authority {
 }
 
 /// Immutable authorization scope captured at admission.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
@@ -110,6 +114,7 @@ pub struct Scope {
     /// Ed25519 workload chain, including only its restricted append tip.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     #[serde(with = "super::capability_bytes")]
+    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub(in crate::core) workload: Vec<u8>,
 }
 

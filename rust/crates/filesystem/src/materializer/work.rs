@@ -227,13 +227,17 @@ impl NativeMaterializationWork {
             .as_ref()
             .filter(|invocation| invocation.owns_resource(self.resource.as_ref()))
     }
+    /// The typed failure recorded by this context's runtime meter, if any. Inside an
+    /// invocation window only that window's own failure is visible.
+    pub(crate) fn take_native_io_failure(&self) -> Option<crate::DemandError> {
+        self.state(crate::demand::DemandWork::take_native_io_failure)
+    }
     /// Original typed runtime failure.
     pub fn runtime_error(&self, error: std::io::Error) -> NativeTreeMaterializationError {
-        self.state(|state| state.take_native_io_failure())
-            .map_or_else(
-                || NativeTreeMaterializationError::from_runtime_error(error),
-                native_materialization_work_error,
-            )
+        self.take_native_io_failure().map_or_else(
+            || NativeTreeMaterializationError::from_runtime_error(error),
+            native_materialization_work_error,
+        )
     }
     /// Remaining finite allowance.
     pub fn remaining(&self) -> Result<WorkBudget, NativeTreeMaterializationError> {

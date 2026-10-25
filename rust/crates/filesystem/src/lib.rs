@@ -192,13 +192,13 @@ pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStor
 pub use distributed::StreamAuthorityStore;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    ContentAddress, ContentChange, ContentFile, ContentTimes, DetachedFile, DirectoryBindingChange,
-    DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest,
-    FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff, JoinCommitWitness,
-    LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation,
-    NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
-    ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
-    VolumeInitialization,
+    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationOperation, DetachedFile,
+    DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
+    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff,
+    JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation, MergeConflict,
+    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
+    StagedContent, Volume, VolumeInitialization,
 };
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use facade::{

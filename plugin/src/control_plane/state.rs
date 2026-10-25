@@ -2,13 +2,15 @@
 
 use super::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct DiscardWorkspace {
     pub(crate) name: String,
     pub(crate) delete_key: [u8; 16],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct DiscardAgent {
     pub(crate) agent_id: String,
     pub(crate) path: PathBuf,
@@ -17,7 +19,8 @@ pub(crate) struct DiscardAgent {
     pub(crate) workspaces: VecDeque<DiscardWorkspace>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct PendingDiscard {
     pub(crate) parent_context_id: [u8; 16],
     pub(crate) child_context_id: [u8; 16],
@@ -25,7 +28,8 @@ pub(crate) struct PendingDiscard {
     pub(crate) agents: VecDeque<DiscardAgent>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct AdapterState {
     pub(crate) task_binding: PluginTaskBinding,
     pub(crate) version: u32,

@@ -352,11 +352,13 @@ test("required pinned Pi recursively launches original native effects and reopen
 test("installed Pi retains split spawn, import and cancellation identities across lost replies and extension reload", async () => {
   const directory = hostFixtureDirectory(".pi-native-cuts-");
   const oracleDirectory = join(directory, "native-oracles");
+  const crashAfterPublish = join(directory, "crash-after-fork-publish");
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     mkdirSync(oracleDirectory);
     fixture = await installedNativeFixture(directory, recursiveProvider, {
       ACYCLIC_NATIVE_ORACLE_DIRECTORY: oracleDirectory, ACYCLIC_NATIVE_PAUSE: "1",
+      ACYCLIC_TEST_CRASH_AFTER_FORK_PUBLISH: crashAfterPublish,
     });
     const { nativeChildSession, observePiOperation } = await loadPiContextHelpers();
     await fixture.start();
@@ -377,6 +379,13 @@ test("installed Pi retains split spawn, import and cancellation identities acros
     assert.deepEqual(await control("SpawnPrepare", spawn), prepared);
     assert.equal(existsSync(prepared.child.session_file), false, "prepare retry must not start native work");
     const commit = { ...spawn, ...nativeChildSession(fixture.manager, prepared.child.cwd) };
+    // The service dies after publishing the fork and before recording it; the retry must
+    // resume that same published fork from its durable records.
+    writeFileSync(crashAfterPublish, "crash");
+    await assert.rejects(() => control("SpawnCommit", commit));
+    assert.equal(existsSync(crashAfterPublish), false, "the service must die at its post-publish fault point");
+    assert.equal(existsSync(prepared.child.session_file), false, "a crash before recording must not start native work");
+    await restart();
     const started = await control("SpawnCommit", commit);
     assert.equal(started.child.task, prepared.child.task);
     const nativeOracle = join(oracleDirectory, `${started.child.native_session_id}.CHILD_B.json`);

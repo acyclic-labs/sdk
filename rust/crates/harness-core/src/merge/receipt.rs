@@ -2,7 +2,7 @@ use super::proof::provider_operation_has_nonzero;
 use super::*;
 
 /// Exact result of a parent-authorized Filesystem join.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectMergeReceipt {
     /// Stable Harness publication identity.

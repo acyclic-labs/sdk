@@ -54,8 +54,8 @@ pub(crate) use provider::{admit_fork_future, boundary_error, release_fork_guard_
 pub(crate) use quota::CodecQuota;
 pub use report::ForkReport;
 pub use request::ForkRequest;
-pub use seed::ForkSeed;
 pub(crate) use seed::copy_seed;
+pub use seed::{ForkSeed, ForkSeedVolume};
 pub(in crate::fork) use selection::validate_child_result_generation;
 pub use selection::{
     AttestedBoundary, ForkCaptureProvider, ForkHistoryPolicy, ForkPreparation, ForkPreparer,

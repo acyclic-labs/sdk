@@ -66,49 +66,87 @@ fn reverse_insert(
     record: crate::kernel::FileRecord,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    let position =
-        binary_search_with_accounting(records, accounting, |entry| entry.0.cmp(&record.file_id))?;
-    let (Ok(index) | Err(index)) = position;
-    if position.is_err() {
-        reverse_grow(records, allocation, accounting)?;
-        accounting.charge(copy_work(
-            ((records.len() - index)
-                * std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>())
-                as u64,
-        ))?;
-        records.insert(index, (record.file_id, Vec::new()));
-    }
-    let (_, entries) = records.get_mut(index).ok_or(FsError::InvalidDiff)?;
-    reverse_grow(entries, allocation, accounting)?;
+    // Namespace order and file-identity order are independent. Append during
+    // discovery; sorting and grouping once avoids shifting every prior file.
+    reverse_grow(records, allocation, accounting)?;
+    let mut entries = Vec::new();
+    reverse_grow(&mut entries, allocation, accounting)?;
     let mut path = path;
+    accounting.charge(copy_work(
+        (std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>()
+            + std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>())
+            as u64,
+    ))?;
     allocation.absorb(&mut path.1)?;
     entries.push((path.0, record));
+    records.push((record.file_id, entries));
     Ok(())
 }
 
 pub(super) fn reverse_sort(
     records: &mut NamespaceRecords,
+    allocation: &mut KernelOwnedAllocation,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    for (_, entries) in records {
-        for index in 1..entries.len() {
-            let mut current = index;
-            while current != 0 {
-                accounting.charge_items(1)?;
-                let left = entries.get(current - 1).ok_or(FsError::InvalidDiff)?;
-                let right = entries.get(current).ok_or(FsError::InvalidDiff)?;
-                if left.0 <= right.0 {
-                    break;
-                }
+    crate::kernel::sort_by_with_accounting(records, accounting, |left, right| {
+        left.0.cmp(&right.0)
+    })?;
+    let mut retained = 0_usize;
+    for index in 0..records.len() {
+        accounting.charge_items(1)?;
+        let previous = retained.checked_sub(1);
+        let duplicate = previous.is_some_and(|previous| {
+            records.get(previous).map(|entry| entry.0) == records.get(index).map(|entry| entry.0)
+        });
+        if duplicate {
+            merge_reverse_group(
+                records,
+                previous.ok_or(FsError::InvalidDiff)?,
+                index,
+                allocation,
+                accounting,
+            )?;
+        } else {
+            if retained != index {
                 accounting.charge(copy_work(
-                    (2 * std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>()) as u64,
+                    (2 * std::mem::size_of::<(
+                        FileId,
+                        Vec<(NamespacePath, crate::kernel::FileRecord)>,
+                    )>()) as u64,
                 ))?;
-                entries.swap(current - 1, current);
-                current -= 1;
+                records.swap(retained, index);
             }
+            retained += 1;
         }
     }
+    records.truncate(retained);
+    for (_, entries) in records {
+        crate::kernel::sort_by_with_accounting(entries, accounting, |left, right| {
+            left.0.cmp(&right.0)
+        })?;
+    }
     Ok(())
+}
+
+fn merge_reverse_group(
+    records: &mut NamespaceRecords,
+    target: usize,
+    source: usize,
+    allocation: &mut KernelOwnedAllocation,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let mut source = std::mem::take(&mut records.get_mut(source).ok_or(FsError::InvalidDiff)?.1);
+    let bytes = workspace_vec_bytes(&source);
+    let entries = &mut records.get_mut(target).ok_or(FsError::InvalidDiff)?.1;
+    for entry in source.drain(..) {
+        reverse_grow(entries, allocation, accounting)?;
+        accounting.charge(copy_work(
+            std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>() as u64,
+        ))?;
+        entries.push(entry);
+    }
+    drop(source);
+    accounting.release_owned(allocation, bytes)
 }
 
 pub(crate) async fn namespace_records_to_file_root_with_accounting<
@@ -183,7 +221,6 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     {
         return Ok(matches);
     }
-    reverse_sort(&mut matches.0.records, accounting)?;
     let (bytes, allocation) =
         crate::path_index::encode_records(generation, ids, &matches.0.records, accounting)?;
     let bytes = (bytes, allocation);
@@ -281,6 +318,7 @@ async fn answer_from_cache<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
             accounting.release_owned(&mut cached.allocation, vector_bytes)?;
             reverse_drop(lookup, lookup_bytes, accounting)?;
+            reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
             matches.0.complete = true;
             return Ok(true);
         }
@@ -328,6 +366,7 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
         None
     };
     if remaining == Some(0) {
+        reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
         return Ok(true);
     }
     let limits = view.config.limits;
@@ -361,6 +400,7 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
         }
     }
     if remaining == Some(0) {
+        reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
         return Ok(true);
     }
     let pending = initial_walk(limits, accounting)?;
@@ -450,8 +490,7 @@ async fn walk_namespace<O: AsyncObjectStore>(
             for entry in &page.0.entries {
                 accounting.charge_items(1)?;
                 if examined == maximum_entries {
-                    reverse_sort(&mut matches.0.records, accounting)?;
-                    drop_page(page, accounting)?;
+                    finish_walk_page(matches, page, accounting)?;
                     abandon_walk(after, directory, pending, accounting)?;
                     return Ok(false);
                 }
@@ -493,8 +532,7 @@ async fn walk_namespace<O: AsyncObjectStore>(
                         accounting,
                     )?;
                     if remaining == Some(0) {
-                        reverse_sort(&mut matches.0.records, accounting)?;
-                        drop_page(page, accounting)?;
+                        finish_walk_page(matches, page, accounting)?;
                         abandon_walk(after, directory, pending, accounting)?;
                         return Ok(true);
                     }
@@ -503,8 +541,7 @@ async fn walk_namespace<O: AsyncObjectStore>(
                 if remaining == Some(0) {
                     let bytes = path.0.retained_bytes();
                     reverse_drop(path, bytes, accounting)?;
-                    reverse_sort(&mut matches.0.records, accounting)?;
-                    drop_page(page, accounting)?;
+                    finish_walk_page(matches, page, accounting)?;
                     abandon_walk(after, directory, pending, accounting)?;
                     return Ok(true);
                 }
@@ -520,7 +557,19 @@ async fn walk_namespace<O: AsyncObjectStore>(
     }
     let pending_bytes = workspace_vec_bytes(&pending.0);
     reverse_drop(pending, pending_bytes, accounting)?;
+    reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
     Ok(true)
+}
+
+// Every bounded exit authenticates the same canonical ordering before the
+// completed page is retired. Remaining walk state is then abandoned by caller.
+fn finish_walk_page(
+    matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
+    page: (super::namespace_view::NamespacePage, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
+    drop_page(page, accounting)
 }
 
 // Already located directory identities remain eligible for descendant matches,

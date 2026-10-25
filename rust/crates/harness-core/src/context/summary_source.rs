@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// The exact conversation boundary covered by one retained summary input.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SummaryBoundary {
     /// Task owning the covered turns.
@@ -28,7 +28,7 @@ pub struct SummaryBoundary {
 }
 
 /// One pinned source file; execution never reserializes or republishes it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SummarySource {
     /// Active summary plus subsequent turns.
@@ -38,7 +38,7 @@ pub struct SummarySource {
 }
 
 /// Immutable checkpoint contents. Large source and summary bytes remain in their files.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SummaryCheckpoint {
     /// Durable summary execution.
@@ -52,7 +52,7 @@ pub struct SummaryCheckpoint {
 }
 
 /// A file selecting a checkpoint. A fixed cursor denotes a rewind; absence follows new turns.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SummarySelection {
     /// Original prompt and parent history, present only on protected continuations.
@@ -66,7 +66,7 @@ pub struct SummarySelection {
 }
 
 /// A continuation pins its parent's history without copying any summary text.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SummaryContinuation {
     /// Completed conversation whose subsequent turns are retained.

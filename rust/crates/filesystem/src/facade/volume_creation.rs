@@ -23,6 +23,37 @@ impl<'a> VolumeInitialization<'a> {
     }
 }
 
+/// One creation of a volume: the operation a retry repeats, and the files its
+/// creation commit publishes in the initial generation. Files belong to a
+/// named creation, so only a creation with an operation can hold them.
+#[derive(Clone, Copy, Debug)]
+pub struct CreationOperation<'a> {
+    /// The creation's operation identity.
+    pub operation_id: OperationId,
+    /// Files the creation commit publishes, each a child of the root.
+    pub files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
+}
+
+impl<'a> CreationOperation<'a> {
+    /// A creation whose initial generation holds exactly `files`.
+    pub const fn populated(
+        operation_id: OperationId,
+        files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
+    ) -> Self {
+        Self {
+            operation_id,
+            files,
+        }
+    }
+}
+
+impl From<OperationId> for CreationOperation<'_> {
+    /// A creation of an empty initial generation.
+    fn from(operation_id: OperationId) -> Self {
+        Self::populated(operation_id, &[])
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a fresh volume and its authenticated empty generation.
     pub async fn create_volume(
@@ -134,11 +165,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await;
         measured(result, &accounting)
     }
+    /// Publishes the creation commit whose initial generation holds exactly
+    /// the creation's files: every volume and workspace is created here, an
+    /// empty one being the case without files.
     pub(super) async fn create_volume_operation<E, G>(
         &self,
         volume_id: VolumeId,
         initialization: VolumeInitialization<'_>,
-        operation_id: Option<OperationId>,
+        creation: Option<CreationOperation<'_>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
         guard: Option<&mut G>,
@@ -152,10 +186,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let config = initialization.config;
         validate_volume_capabilities(config, self.inner.capabilities)?;
         let proven_at = self.inner.objects.collection_sweeps();
-        let produced = self
-            .build_empty_generation(volume_id, initialization, accounting, cancellation)
+        let generation_root = self
+            .initial_generation_root(
+                volume_id,
+                initialization,
+                creation,
+                accounting,
+                cancellation,
+            )
             .await?;
-        let generation_root = produced[3];
+        let operation_id = creation.map(|creation| creation.operation_id);
         let proof = self
             .publication_proof(
                 generation_root,
@@ -316,6 +356,218 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             error => error,
         })?;
         decode_first_creation_record(volume_id, &records, accounting)
+    }
+
+    /// The initial generation a creation publishes: the empty generation when
+    /// it has no files, else that generation's one checkpoint creating each
+    /// file. It is a function of the volume, its configuration and the
+    /// creation alone, so a retried creation rebuilds exactly the generation
+    /// the original published.
+    pub(super) async fn initial_generation_root(
+        &self,
+        volume_id: VolumeId,
+        initialization: VolumeInitialization<'_>,
+        creation: Option<CreationOperation<'_>>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ObjectId, FsError> {
+        let config = initialization.config;
+        let [.., empty] = self
+            .build_empty_generation(volume_id, initialization, accounting, cancellation)
+            .await?;
+        // Populated files are authored by the creation itself, under the
+        // operation a retry repeats.
+        let Some(creation) = creation.filter(|creation| !creation.files.is_empty()) else {
+            return Ok(empty);
+        };
+        // The checkout and its transaction run in an admitted heap frame, so
+        // no caller's future embeds them.
+        let mut frame_allocation = None;
+        let (mut future, frame_bytes) = crate::heap_future::in_heap_admitted(
+            (self, &mut *accounting),
+            |(_, accounting), bytes| {
+                frame_allocation = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
+                Ok::<_, FsError>(())
+            },
+            |(this, accounting)| async move {
+                this.populate_initial_generation(
+                    volume_id,
+                    config,
+                    empty,
+                    creation,
+                    accounting,
+                    cancellation,
+                )
+                .await
+            },
+        )?;
+        let result = future.as_mut().await;
+        drop(future);
+        if let Some(mut allocation) = frame_allocation {
+            accounting.release_owned(&mut allocation, frame_bytes)?;
+        }
+        result
+    }
+
+    /// Whether a recovered initial generation holds exactly `files`, decided
+    /// by reads alone: each file holds its bytes and the root lists nothing
+    /// else. The creation commit has no directories to create parents in, so
+    /// every file it publishes is a child of the root. A retry with other,
+    /// fewer or no files therefore never adopts the creation, and recovery
+    /// writes nothing. The caller releases the standalone read custody.
+    pub(super) async fn initial_generation_matches(
+        &self,
+        volume_id: VolumeId,
+        config: VolumeConfig,
+        generation_root: ObjectId,
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, FsError> {
+        let volume = Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
+        };
+        let mut checkout = volume
+            .unpublished_checkout(generation_root, accounting, cancellation)
+            .await?;
+        // Repeated paths are never one creation's files: the commit would
+        // refuse the second, so a retry naming one twice is rejected here.
+        let mut paths =
+            crate::kernel::Owned::<Vec<NamespacePath>>::allocate(files.len(), accounting)?;
+        for (path, bytes) in files {
+            let (path, mut allocation) = NamespacePath::parse_in_profile(
+                path,
+                config.profile,
+                config.limits,
+                accounting,
+                cancellation,
+            )?;
+            paths.allocation.absorb(&mut allocation)?;
+            paths.bytes = paths
+                .bytes
+                .checked_add(path.retained_bytes())
+                .ok_or(WorkError::Overflow)?;
+            let record = match checkout
+                .lookup_content_record(&path, accounting, cancellation)
+                .await
+            {
+                Ok(record) => record,
+                Err(FsError::NotFound) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            // Each file is a regular child of the root holding its bytes,
+            // read in chunks the volume allows.
+            let expected: &[u8] = bytes.as_ref();
+            let logical_bytes = match record.payload {
+                _ if path.depth() != 1 || record.kind != FileKind::Regular => return Ok(false),
+                FilePayload::InlineRegular(data) if data.as_bytes() == expected => 0,
+                FilePayload::Regular { logical_bytes, .. }
+                    if logical_bytes == expected.len() as u64 =>
+                {
+                    logical_bytes
+                }
+                _ => return Ok(false),
+            };
+            let step = config.limits.maximum_read_bytes.max(1);
+            let mut offset = 0;
+            while offset < logical_bytes {
+                let length = step.min(logical_bytes - offset);
+                let range = ByteRange { offset, length };
+                let read = checkout
+                    .read_record_range_with_accounting(
+                        record,
+                        range,
+                        range,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                let start = usize::try_from(offset).map_err(|_| WorkError::Overflow)?;
+                let end = usize::try_from(offset + length).map_err(|_| WorkError::Overflow)?;
+                if expected.get(start..end) != Some(read.bytes.as_ref()) {
+                    return Ok(false);
+                }
+                offset += length;
+            }
+            accounting.charge(WorkCounters {
+                bytes_copied: std::mem::size_of::<NamespacePath>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            paths.value.push(path);
+        }
+        if !initial_paths_are_distinct(&paths.value, accounting)? {
+            return Ok(false);
+        }
+        paths.retire(accounting)?;
+        initial_root_has_file_count(
+            &mut checkout,
+            files.len(),
+            config.limits,
+            accounting,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn populate_initial_generation(
+        &self,
+        volume_id: VolumeId,
+        config: VolumeConfig,
+        empty: ObjectId,
+        creation: CreationOperation<'_>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ObjectId, FsError> {
+        let CreationOperation {
+            operation_id,
+            files,
+        } = creation;
+        let volume = Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
+        };
+        let mut checkout = volume
+            .unpublished_checkout(empty, accounting, cancellation)
+            .await?;
+        checkout.bind_authored_operation(operation_id);
+        let mut operations =
+            crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(files.len(), accounting)?;
+        let moved = WorkCounters {
+            bytes_copied: std::mem::size_of::<AuthoredMutation>() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        for (path, bytes) in files {
+            let (path, mut allocation) = NamespacePath::parse_in_profile(
+                path,
+                config.profile,
+                config.limits,
+                accounting,
+                cancellation,
+            )?;
+            let retained = path.retained_bytes();
+            accounting.admit(moved)?;
+            operations.allocation.absorb(&mut allocation)?;
+            operations.bytes = operations
+                .bytes
+                .checked_add(retained)
+                .ok_or(WorkError::Overflow)?;
+            operations.value.push(AuthoredMutation::CreateFile {
+                path,
+                bytes: bytes.clone(),
+                metadata: FileMetadata::default(),
+            });
+            accounting.record_completed(moved)?;
+        }
+        checkout
+            .apply_authored_transaction_with_accounting(operations, accounting, cancellation)
+            .await?
+            .retire(accounting)?;
+        checkout
+            .checkpoint_root_with_accounting(accounting, cancellation)
+            .await
     }
 
     pub(super) async fn build_empty_generation(
@@ -499,4 +751,85 @@ pub(super) fn merge_creation_backend_work(
     *work = work.with_backend(spent, allocations.live_bytes())?;
     work.verify(budget)?;
     Ok(())
+}
+
+/// Once every requested file is a distinct child of the root, its complete
+/// paged entry count proves that the generation contains nothing else.
+async fn initial_root_has_file_count<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    count: usize,
+    limits: crate::VolumeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    let root = NamespacePath::new(Vec::new(), limits)?;
+    let mut listed = 0_usize;
+    let mut after: Option<LogicalName> = None;
+    loop {
+        let bound = after
+            .as_ref()
+            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+        let (mut page, _allocation) = checkout
+            .list_directory_with_accounting(
+                &root,
+                bound,
+                limits.maximum_directory_page_entries,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        listed = listed
+            .checked_add(page.entries.len())
+            .ok_or(WorkError::Overflow)?;
+        if listed > count {
+            return Ok(false);
+        }
+        if !page.has_more {
+            return Ok(listed == count);
+        }
+        let Some(last) = page.entries.pop() else {
+            return Ok(false);
+        };
+        after = Some(last.name);
+    }
+}
+
+/// Use the kernel's metered sort rather than scanning every preceding path.
+/// Ordered retries use linear adjacency scans; other request orders use the
+/// same bounded sort as batched namespace operations.
+fn initial_paths_are_distinct(
+    paths: &[NamespacePath],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<bool, FsError> {
+    let mut ordered = crate::kernel::Owned::allocate(paths.len(), accounting)?;
+    let distinct = (|| -> Result<bool, FsError> {
+        for (ordinal, key) in paths.iter().enumerate() {
+            accounting.charge(WorkCounters {
+                bytes_copied: std::mem::size_of::<crate::kernel::IndexedKey<'_, NamespacePath>>()
+                    as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            ordered
+                .value
+                .push(crate::kernel::IndexedKey { ordinal, key });
+        }
+        crate::kernel::sort_indexed(&mut ordered.value, accounting)?;
+        for adjacent in ordered.value.windows(2) {
+            let [previous, current] = adjacent else {
+                return Err(FsError::InvalidDiff);
+            };
+            accounting.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if previous.key == current.key {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    let retired = ordered.retire(accounting);
+    let distinct = distinct?;
+    retired?;
+    Ok(distinct)
 }

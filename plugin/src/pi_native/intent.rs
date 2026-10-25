@@ -3,7 +3,8 @@ use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::store::HistoryIo;
 
 /// Immutable launch content read by its admitted child.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeLaunchIntent {
     pub(crate) agent_alias: String,
@@ -40,7 +41,6 @@ impl PiNativeLaunchIntent {
         let intent = crate::pi_root_provider::guarded_pi_decode::<Self>(
             &bytes,
             maximum,
-            std::mem::size_of::<Self>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::None,
             PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,

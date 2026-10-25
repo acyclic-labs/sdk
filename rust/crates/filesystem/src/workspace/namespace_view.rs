@@ -45,7 +45,6 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
             cancellation,
         )
         .await?;
-        super::reverse_traversal::reverse_sort(&mut matches.0.records, accounting)?;
         Ok(matches)
     }
 

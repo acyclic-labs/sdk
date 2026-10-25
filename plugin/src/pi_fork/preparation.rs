@@ -463,6 +463,33 @@ impl<'a> PiForkCoordinator<'a> {
                 Some(&admission_io),
             )?;
             let mut child = (child, admission_io.take_native_custody(retained)?);
+            // The child never inherits the caller's file-system grants. It holds exactly
+            // read and write on the volumes this fork creates for it, which the
+            // preparation request requires as its authenticated created-volume claims.
+            let created_volume_grants = {
+                let preparation = &request.preparation;
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    PreparationIo::from_native_work(work)?,
+                );
+                let mut grants = crate::pi_native::pi_native_vec(6, work)?;
+                for volume in [
+                    &preparation.child_project_volume,
+                    &preparation.child_private_volume,
+                ]
+                .into_iter()
+                .chain(preparation.child_result_volume.as_ref())
+                {
+                    for operation in [
+                        acyclic_harness::conversation::VolumeOperation::Read,
+                        acyclic_harness::conversation::VolumeOperation::Write,
+                    ] {
+                        grants
+                            .0
+                            .push(volume.capability(operation, &mut Some(&mut io))?);
+                    }
+                }
+                (grants, io.into_custody()?)
+            };
             let mut child_grants = Capabilities::copy(
                 child
                     .0
@@ -473,34 +500,26 @@ impl<'a> PiForkCoordinator<'a> {
                             && !grant.starts_with("directory:")
                             && !grant.starts_with("file:")
                     })
-                    .chain(std::iter::once(input_read.0.as_str())),
+                    .chain(std::iter::once(input_read.0.as_str()))
+                    .chain(created_volume_grants.0.0.iter().map(String::as_str)),
                 work,
             )?;
+            drop(created_volume_grants);
             child.0.grants = child_grants.0;
             child.0.resource_proofs.clear();
             child.1.absorb(&mut child_grants.1)?;
-            let bytes = crate::pi_root_provider::guarded_pi_bytes(
+            // The preparation task's workflow reads its command payload from
+            // the journal its transitions are published in, so the fork input
+            // is staged there, beside the plan, never in the caller's scratch.
+            let mut fork_input = crate::pi_root_provider::stage_pi_input(
+                &self.owner,
+                &self.filesystem,
+                original,
+                "fork-input",
                 &request,
-                self.owner.policy().maximum_payload_bytes,
-                work,
-            )?;
-            let fork_path = work.display(&format_args!("pi-fork/{original}/fork-input.json"))?;
-            let mut fork_input = {
-                let publication_io = PreparationIo::from_native_work(&self.work)?;
-                (context)
-                    .stage_file_once(
-                        derived(original, "fork-input", &self.work)?,
-                        &fork_path.0,
-                        &bytes.0,
-                        "application/json",
-                        "Pi original fork input",
-                        Some(&publication_io),
-                    )
-                    .await
-                    .and_then(|(file, retained)| {
-                        Ok((file, publication_io.take_native_custody(retained)?))
-                    })
-            }?;
+                &self.work,
+            )
+            .await?;
             let command_kind = work.display(&FORK_PREPARE_TASK_COMMAND_KIND)?;
             let command = WorkflowCommand {
                 operation_id: operations.fork,
@@ -574,6 +593,7 @@ impl<'a> PiForkCoordinator<'a> {
                 request,
                 frozen,
                 _input_allocations: Some(request_custody),
+                published: None,
             };
             let allocations = plan
                 ._input_allocations

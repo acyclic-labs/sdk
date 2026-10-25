@@ -19,7 +19,7 @@ use serde_json::Value;
 pub const PROJECT_SOURCE_READ_PURPOSE: &str = "harness.project-source.read.v1";
 
 /// Exact backend snapshot to authenticate.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectSourceSnapshot {
     /// Selected project volume.
@@ -78,7 +78,7 @@ pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Signed project selection retained with the original admission.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectSourceAuthorization {
     /// Trusted service owner.

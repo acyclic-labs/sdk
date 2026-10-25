@@ -112,27 +112,17 @@ pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> 
     Ok(())
 }
 
-pub(super) fn check<T: DeserializeOwned>(value: &Value, work: NativeWork<'_>) -> Result<()> {
+pub(super) fn check<T: DeserializeOwned + crate::HeapLayout>(
+    value: &Value,
+    work: NativeWork<'_>,
+) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         use std::{borrow::Cow, mem::size_of};
-        const SLOT: u64 = (size_of::<rmcp::model::ListToolsResult>()
-            + size_of::<rmcp::model::Tool>()
-            + size_of::<rmcp::model::Resource>()
-            + size_of::<rmcp::model::ResourceTemplate>()
-            + size_of::<rmcp::model::Prompt>()
-            + size_of::<rmcp::model::PromptArgument>()
-            + size_of::<rmcp::model::PromptMessage>()
-            + size_of::<rmcp::model::ContentBlock>()
-            + size_of::<rmcp::model::ResourceContents>()
-            + size_of::<rmcp::model::Icon>()
-            + size_of::<rmcp::model::CallToolRequestParams>()
-            + size_of::<rmcp::model::ReadResourceRequestParams>()
-            + size_of::<rmcp::model::GetPromptRequestParams>()
-            + size_of::<rmcp::model::CallToolResult>()
-            + size_of::<(String, Value)>()) as u64;
         let remaining = work.remaining()?;
-        if remaining.peak_allocation_bytes < SLOT {
+        // Every decode reserves at least the decoded value, so a quota below
+        // it is refused before the value is inspected.
+        if remaining.peak_allocation_bytes < size_of::<T>() as u64 {
             return Err(error(
                 Some(work),
                 ErrorCode::Invalid,
@@ -148,22 +138,25 @@ pub(super) fn check<T: DeserializeOwned>(value: &Value, work: NativeWork<'_>) ->
                 maximum_items: remaining.items_examined,
                 maximum_depth: 256,
             },
-            0,
             Some(ErrorCode::Invalid),
             crate::JsonValueSchema::None,
             &mut |event| {
-                if let crate::JsonCodecCharge::Admission { value_shape, .. } = event {
-                    let owned = crate::executor::json::json_typed_value_decode_owned_bytes(
-                        value_shape,
-                        SLOT,
-                    )?
-                    .checked_add(value_shape.input_bytes().checked_mul(16).ok_or_else(|| {
-                        error(Some(work), ErrorCode::Invalid, "MCP typed quota overflow")
-                    })?)
-                    .and_then(|bytes| bytes.checked_add((16 * size_of::<(String, Value)>()) as u64))
-                    .ok_or_else(|| {
-                        error(Some(work), ErrorCode::Invalid, "MCP typed quota overflow")
-                    })?;
+                if let crate::JsonCodecCharge::Admission {
+                    maximum_owned_bytes,
+                    value_shape,
+                } = event
+                {
+                    // The first decode error quotes one string beside rmcp's labels.
+                    let owned = value_shape
+                        .diagnostic_source_bytes()
+                        .checked_mul(16)
+                        .and_then(|bytes| bytes.checked_add(maximum_owned_bytes))
+                        .and_then(|bytes| {
+                            bytes.checked_add((16 * size_of::<(String, Value)>()) as u64)
+                        })
+                        .ok_or_else(|| {
+                            error(Some(work), ErrorCode::Invalid, "MCP typed quota overflow")
+                        })?;
                     held = Some(io.reserve_decode(owned)?);
                     Ok(())
                 } else {

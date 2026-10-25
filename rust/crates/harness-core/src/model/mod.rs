@@ -83,7 +83,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Immutable provider-owned model selection.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Model {
     /// Application-selected provider.
@@ -95,6 +95,7 @@ pub struct Model {
     /// Provider-specific options.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub options: Value,
 }
 impl Model {

@@ -138,13 +138,18 @@ impl crate::pi_host::PiControlHost<'_> {
             return Ok(TaskCommandProgress::Pending);
         };
         let task = prepared.binding.task_id;
-        ready(
+        let reply = ready(
             &PiPreparedReply {
                 task,
                 binding: &prepared.binding,
                 state: "prepared",
             },
             work,
-        )
+        )?;
+        *self
+            .prepared
+            .lock()
+            .map_err(|_| invalid("Pi prepared fork lock poisoned"))? = Some(prepared);
+        Ok(reply)
     }
 }

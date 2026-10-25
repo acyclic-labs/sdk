@@ -4,6 +4,20 @@ use acyclic_harness::filesystem::PreparationIo;
 
 impl<'a> PiForkCoordinator<'a> {
     pub(super) async fn require_original_plan(&self, plan: &PiForkPlan) -> Result<()> {
+        // A plan read back from its publication is that publication while its
+        // bytes are unchanged: compare digests instead of decoding it again.
+        if let Some(published) = plan.published {
+            let (bytes, _custody) =
+                self.read_original_plan(plan.original)
+                    .await?
+                    .ok_or(Error::NativeBoundary {
+                        code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                        reason: "Pi preparation lost its protected original fork publication",
+                    })?;
+            if blake3::hash(&bytes) == published {
+                return Ok(());
+            }
+        }
         let original =
             self.load_original_plan(plan.original)
                 .await?

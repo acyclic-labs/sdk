@@ -28,17 +28,29 @@ impl Resident {
         Ok(())
     }
 }
-struct Frame<'a> {
+struct Frame<'a, 'c> {
     schema: &'static JsonValueSchema,
     array: std::iter::Enumerate<std::slice::Iter<'a, Value>>,
     object: Option<std::iter::Enumerate<serde_json::map::Iter<'a>>>,
     counts: Branches,
     tag: Option<u8>,
     gate: u8,
+    /// Layout charge of this container, made when the frame is dropped.
+    entries: Option<Entries<'c>>,
 }
-impl<'a> Frame<'a> {
-    fn new(value: &'a Value, schema: &'static JsonValueSchema, gate: u8) -> Self {
+impl<'a, 'c> Frame<'a, 'c> {
+    fn new(
+        value: &'a Value,
+        schema: &'static JsonValueSchema,
+        gate: u8,
+        layout: Option<Placement<'c>>,
+    ) -> Self {
+        if let (Some(layout), Some(text)) = (layout, value.as_str()) {
+            layout.string(text.as_bytes(), true);
+        }
         Self {
+            entries: (value.is_array() || value.is_object())
+                .then(|| Entries::new(layout, value.is_object())),
             schema,
             array: value
                 .as_array()
@@ -52,21 +64,22 @@ impl<'a> Frame<'a> {
         }
     }
 }
-fn tree(
+fn tree<'c>(
     value: &Value,
     schema: &'static JsonValueSchema,
+    layout: Option<Placement<'c>>,
     resident: &mut Resident,
     charge: &Charge<'_>,
 ) -> Result<Branches> {
     resident.visit(0, value.as_str().map_or(0, str::len), charge)?;
-    let mut stack: [Option<Frame<'_>>; 257] = [const { None }; 257];
+    let mut stack: [Option<Frame<'_, 'c>>; 257] = [const { None }; 257];
     let invalid_frame = || {
         boundary(
             "JSON nesting limit exceeded",
             Some(crate::wire::ErrorCode::Invalid),
         )
     };
-    *stack.first_mut().ok_or_else(invalid_frame)? = Some(Frame::new(value, schema, 0));
+    *stack.first_mut().ok_or_else(invalid_frame)? = Some(Frame::new(value, schema, 0, layout));
     let mut depth = 0;
     loop {
         let frame = stack
@@ -101,7 +114,15 @@ fn tree(
             continue;
         };
         let child_depth = u32::try_from(depth).map_err(|_| invalid_frame())? + 1;
-        if frame.object.is_some() {
+        let object = frame.object.is_some();
+        let placement = frame.entries.as_mut().and_then(|entries| {
+            entries.count += 1;
+            if object {
+                entries.key(key.as_bytes(), true);
+            }
+            entries.child(object.then_some(key.as_bytes()), index)
+        });
+        if object {
             resident.visit(child_depth, key.len(), charge)?;
         }
         let (child, gate) = frame
@@ -111,17 +132,23 @@ fn tree(
             frame.tag = Some(frame.schema.mask(field.as_str().map_or(b"", str::as_bytes)));
         }
         resident.visit(child_depth, field.as_str().map_or(0, str::len), charge)?;
+        // A `Value` expands a raw member into the document its text holds.
+        let expands = placement.is_some_and(|placement| placement.decodes_value());
         if index == 0
             && key.as_bytes() == RAW
-            && std::ptr::eq(child, &ROOT)
+            && (std::ptr::eq(child, &ROOT) || expands)
             && let Some(text) = field.as_str()
         {
+            if let Some(placement) = placement {
+                placement.string(text.as_bytes(), true);
+            }
             charge.borrow_mut()(JsonCodecCharge::Inspect {
                 items: text.len() as u64,
             })?;
             let mut selected = super::document(
                 text.as_bytes(),
                 &ROOT,
+                placement.map(Placement::expanded),
                 child_depth,
                 true,
                 charge,
@@ -138,7 +165,8 @@ fn tree(
             frame.counts.add(selected, gate)?;
         } else {
             depth += 1;
-            *stack.get_mut(depth).ok_or_else(invalid_frame)? = Some(Frame::new(field, child, gate));
+            *stack.get_mut(depth).ok_or_else(invalid_frame)? =
+                Some(Frame::new(field, child, gate, placement));
         }
     }
 }
@@ -146,6 +174,7 @@ pub(super) fn inspect(
     value: &Value,
     bounds: JsonBounds,
     schema: &'static JsonValueSchema,
+    layout: Option<Placement<'_>>,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
     let charge = RefCell::new(charge);
@@ -154,7 +183,7 @@ pub(super) fn inspect(
         nodes: 0,
         bounds,
     };
-    let counts = tree(value, schema, &mut resident, &charge)?.always;
+    let counts = tree(value, schema, layout, &mut resident, &charge)?.always;
     finish(
         resident.bytes,
         resident.nodes,

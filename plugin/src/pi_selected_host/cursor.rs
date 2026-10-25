@@ -1,7 +1,8 @@
 //! Bounded selected-page continuation protocol.
 use super::*;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CursorEnvelope<S = String, C = PageCursor> {
     pub(super) caller: TaskId,
@@ -11,7 +12,8 @@ pub(super) struct CursorEnvelope<S = String, C = PageCursor> {
     pub(super) directory: S,
     pub(super) cursor: C,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(tag = "kind", content = "value")]
 pub(super) enum PageCursor<I = PiNativeInspectionCursor, D = PiNativeDiffCursor> {
     Inspect(I),
@@ -75,7 +77,6 @@ pub(super) fn decode_cursor(
     crate::pi_root_provider::guarded_pi_decode(
         &bytes,
         (crate::MAXIMUM_CONTROL_MESSAGE_BYTES / 2) as u64,
-        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
         acyclic_harness::wire::ErrorCode::Invalid,
         acyclic_harness::JsonValueSchema::None,
         SELECTED_DIAGNOSTIC_LABEL_BYTES,

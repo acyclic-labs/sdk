@@ -25,7 +25,7 @@ pub struct WorkspaceObservation {
 }
 
 /// One code-defined member of an atomic workspace mutation batch.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkspaceMutation {
     /// Creates every missing directory on an absolute path.

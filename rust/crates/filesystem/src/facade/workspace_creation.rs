@@ -33,12 +33,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         self.create_workspace_with_config_operation(name, config, None, budget, cancellation)
             .await
     }
-    /// Creates or recovers the immutable initial generation under one guarded work context.
-    pub async fn create_workspace_with_operation<W, G, E>(
+    /// Creates or recovers the immutable initial generation, holding exactly
+    /// the creation's files, under one guarded work context. The creation
+    /// commit publishes the files, so an empty workspace is the case without
+    /// files. Recovery accepts only the generation this creation produces.
+    pub async fn create_workspace_with_operation<'c, W, G, E>(
         &self,
         name: impl AsRef<str>,
         initialization: VolumeInitialization<'_>,
-        operation_id: OperationId,
+        creation: impl Into<crate::CreationOperation<'c>>,
         budget: W,
         cancellation: &CancellationToken,
         guard: Option<&mut G>,
@@ -49,6 +52,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + Send,
     {
+        let creation = creation.into();
+        let crate::CreationOperation {
+            operation_id,
+            files,
+        } = creation;
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let config = initialization.config;
@@ -58,8 +66,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .read_creation(id.volume_id(), &mut accounting, cancellation)
                 .await
                 .map_err(WorkspaceError::from);
-            let (creation, operation) = match observed {
-                Ok(record) => record,
+            let ((creation, operation), recovered) = match observed {
+                Ok(record) => (record, true),
                 Err(WorkspaceError::Filesystem(FsError::Authority(
                     AuthorityStoreError::Missing,
                 ))) => {
@@ -67,7 +75,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .create_volume_operation(
                             id.volume_id(),
                             initialization,
-                            Some(operation_id),
+                            Some(creation),
                             &mut accounting,
                             cancellation,
                             guard,
@@ -80,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     if observed.0.initial_generation_root != root {
                         return Err(E::from(FsError::CreationRejected));
                     }
-                    observed
+                    (observed, false)
                 }
                 Err(WorkspaceError::Filesystem(FsError::VolumeMismatch)) => {
                     return Err(E::from(FsError::CreationRejected));
@@ -94,6 +102,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 config,
                 operation_id,
             )?;
+            // A recovered creation of this operation must also be the one
+            // these files yield, so no retry with other (or no) files adopts
+            // it. Recovery decides that by reads and never writes.
+            if recovered {
+                let before = super::read_accounting::readonly_standalone_live(&accounting);
+                let holds = self
+                    .initial_generation_matches(
+                        id.volume_id(),
+                        config,
+                        creation.initial_generation_root,
+                        files,
+                        &mut accounting,
+                        cancellation,
+                    )
+                    .await;
+                super::read_accounting::readonly_cleanup_standalone(&mut accounting, before, 0)?;
+                if !holds? {
+                    return Err(E::from(FsError::CreationRejected));
+                }
+            }
             let workspace = crate::Workspace {
                 name,
                 id,
@@ -222,7 +250,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         config,
                         access_policy: None,
                     },
-                    operation_id,
+                    operation_id.map(crate::CreationOperation::from),
                     &mut accounting,
                     cancellation,
                     None::<&mut ()>,

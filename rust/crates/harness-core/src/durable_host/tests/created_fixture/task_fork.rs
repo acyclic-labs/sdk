@@ -125,3 +125,52 @@ async fn task_fork_allocations_admit_only_the_original_child_and_isolate_its_fil
     ));
     Ok(())
 }
+
+/// Two fork operations naming the same child volumes meet only at the child
+/// volumes' creation commits, which are keyed by the creating operation: in
+/// either order, and interleaved on one task, exactly one operation prepares.
+#[tokio::test]
+async fn two_fork_operations_naming_one_volume_have_exactly_one_winner() -> Result<()> {
+    for order in 0..3 {
+        let fixture = CreationFixture::new().await?;
+        let setup = fixture.fork_setup(false).await?;
+        let first = setup.fork.clone();
+        let mut second = setup.fork.clone();
+        second.operation_id = OperationId::from_bytes([93; 16]);
+        let prepare = |fork| crate::fork::ForkPreparer::prepare(&setup.preparer, fork);
+        let (a, b) = match order {
+            0 => {
+                let a = prepare(first.clone()).await;
+                (a, prepare(second.clone()).await)
+            }
+            1 => {
+                let b = prepare(second.clone()).await;
+                (prepare(first.clone()).await, b)
+            }
+            _ => futures::join!(prepare(first.clone()), prepare(second.clone())),
+        };
+        let (winner, loser, report) = match (a, b) {
+            (Ok(report), Err(_)) => (first, second, report),
+            (Err(_), Ok(report)) => (second, first, report),
+            (a, b) => panic!(
+                "order {order}: exactly one operation must win, got {:?} / {:?}",
+                a.is_ok(),
+                b.is_ok()
+            ),
+        };
+        assert_eq!(report.request.operation_id, winner.operation_id);
+        // The loser stays lost on retry; the winner's retry replays its report.
+        assert!(prepare(loser).await.is_err(), "order {order}");
+        assert_eq!(prepare(winner).await?, report, "order {order}");
+        // The winner's seed authenticates through its child volumes' creation.
+        let seed = report.into_seed(&mut None)?;
+        let verifier = crate::filesystem::FilesystemForkVerifier::new(
+            fixture.filesystem.clone(),
+            65_536,
+            None,
+            None,
+        )?;
+        crate::fork::ForkSeedVerifier::verify(verifier.as_ref(), &seed, &mut None)?.await?;
+    }
+    Ok(())
+}

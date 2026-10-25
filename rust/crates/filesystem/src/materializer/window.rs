@@ -12,9 +12,18 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct NativeWorkWindow {
     // Locked only under the original leaf, which serializes every window of the ledger.
-    ledger: Mutex<WindowLedger>,
+    state: Mutex<WindowState>,
     // The handle's live bytes, claimed on the opening context outside every window.
     metadata: NativeAllocation,
+}
+
+/// Everything a window owns on its shared ledger.
+#[derive(Debug, Default)]
+struct WindowState {
+    ledger: WindowLedger,
+    /// The first runtime failure inside this window, not yet reported. Each window has
+    /// its own, so a failure is reported only to the invocation that caused it.
+    failure: Option<crate::DemandError>,
 }
 
 /// The only cumulative state a window's budget is derived from.
@@ -94,8 +103,8 @@ impl NativeWorkWindow {
     ) -> Option<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
         self.base().view_meter().allocation_owner()
     }
-    fn ledger(&self) -> crate::sync::MutexGuard<'_, WindowLedger> {
-        self.ledger
+    fn state(&self) -> crate::sync::MutexGuard<'_, WindowState> {
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -124,7 +133,7 @@ impl NativeMaterializationWork {
         let metadata = base.claim(bytes, 0, WorkCounters::UNCHARGED)?;
         let mut work = self.allocation_work();
         work.window = Some(Arc::new(NativeWorkWindow {
-            ledger: Mutex::new(WindowLedger::default()),
+            state: Mutex::new(WindowState::default()),
             metadata,
         }));
         drop(work.claim(0, 1, WorkCounters::UNCHARGED)?);
@@ -150,7 +159,8 @@ impl crate::demand::DemandWork {
     /// left, from that window's own state alone: work and reservations of other windows
     /// and of the unwindowed ledger are never part of its view. The shared ledger keeps
     /// only live allocation and peak. The unwindowed budget is raised by exactly what
-    /// the window charged, so no other view counts it.
+    /// the window charged, so no other view counts it. Runtime failures recorded inside
+    /// the window go to the window's own slot and are reported only through it.
     ///
     /// Arithmetic is exact. A view or settlement that cannot be represented is an
     /// accounting invariant failure, which fails the ledger closed; nothing is clamped.
@@ -165,7 +175,11 @@ impl crate::demand::DemandWork {
         let stored = self.budget;
         let work = self.work;
         let pending = self.pending_reservations();
-        let ledger = *window.ledger();
+        let (ledger, failure) = {
+            let mut state = window.state();
+            (state.ledger, state.failure.take())
+        };
+        let outside = self.replace_native_io_failure(failure);
         self.budget = match ledger.view(&self.original_budget(), &work) {
             Ok(view) => view,
             Err(error) => {
@@ -187,17 +201,17 @@ impl crate::demand::DemandWork {
                     stored.checked_add_bounded(&charged, &self.original_budget())?,
                 ))
             });
-        self.budget = match settled {
-            Ok((settled, budget)) => {
-                *window.ledger() = settled;
-                budget
-            }
-            Err(error) => {
-                self.fail_window_invariant(error);
-                stored
-            }
-        };
+        let (settled, budget) = settled.unwrap_or_else(|error| {
+            self.fail_window_invariant(error);
+            (ledger, stored)
+        });
+        self.budget = budget;
         self.budget.peak_allocation_bytes = peak;
+        let failure = self.replace_native_io_failure(outside);
+        let mut state = window.state();
+        state.ledger = settled;
+        state.failure = failure;
+        drop(state);
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
     fn fail_window_invariant(&mut self, error: WorkError) {

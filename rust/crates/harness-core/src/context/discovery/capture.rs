@@ -2,7 +2,7 @@ use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
 /// Immutable discovery revision.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct DiscoveredContext {

@@ -11,11 +11,10 @@ impl PiControlHost<'_> {
         reconcile: bool,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
-        let caller = self.caller(&context, &fence, work).await?;
-        let owner = &caller.0;
-        let scratch = &caller.1.binding.scratch.volume;
+        let caller = self.context(context, &fence, work).await?;
+        let (context, owner) = (caller.0.clone(), &caller.1);
+        let scratch = &caller.2.binding.scratch.volume;
         let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let context = context.with_output_volume(scratch).await?;
         if !context
             .scope()
             .grants()
@@ -35,7 +34,6 @@ impl PiControlHost<'_> {
         let input = crate::pi_root_provider::guarded_pi_decode::<PiSelectedCommand>(
             &bytes.0,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             SELECTED_DIAGNOSTIC_LABEL_BYTES,
@@ -232,7 +230,7 @@ impl PiControlHost<'_> {
                 }
                 let Some(imported) = self
                     .import_selection(
-                        &caller.1.binding,
+                        &caller.2.binding,
                         input,
                         &source,
                         import_operation,

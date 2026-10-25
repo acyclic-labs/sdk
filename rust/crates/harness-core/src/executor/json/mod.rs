@@ -22,9 +22,7 @@ pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
 #[cfg(feature = "filesystem")]
 pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
-pub(crate) use diagnostics::{
-    audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,
-};
+pub(crate) use diagnostics::{audited_serde_diagnostic_bytes, history_diagnostic_bytes};
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
@@ -33,11 +31,22 @@ pub(crate) use serialization::canonical_digest_with_work;
 pub(crate) use serialization::count_json_bytes_trusted;
 mod copy;
 mod decode;
+pub(crate) mod layout;
+#[cfg(test)]
+pub(crate) use layout::JsonLayout;
+#[cfg(feature = "filesystem")]
+pub(crate) use layout::LayoutCost;
 mod schema;
 mod serialization;
+#[cfg(test)]
+pub(crate) use admission::admit_json_layout;
+pub(crate) use admission::admit_value_layout;
+pub(crate) use admission::json_owned_value_shape_bounded;
+pub(crate) use admission::serialized_layout_bytes;
 #[cfg(feature = "filesystem")]
 pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
-pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
+#[cfg(test)]
+pub(crate) use admission::{assert_layout_covers_decode, layout_reservation};
 pub use records::json_value_logical_owned_bytes;
 pub(crate) use records::json_value_retained_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
@@ -59,6 +68,9 @@ pub enum JsonInputError {
     /// A value exceeds the fixed nesting limit.
     #[error("JSON nesting limit exceeded")]
     Depth,
+    /// The document has a shape its typed decode rejects.
+    #[error("JSON shape is outside its typed layout")]
+    Shape,
 }
 
 fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
@@ -94,7 +106,6 @@ enum Origin {
 #[derive(Clone, Copy, Debug)]
 pub struct JsonValueShape {
     input_bytes: u64,
-    value_string_bytes: u64,
     lexical_items: u64,
     containers: u64,
     virtual_items: u64,
@@ -102,23 +113,19 @@ pub struct JsonValueShape {
     raw_frames: u64,
     unresolved_raw: bool,
     origin: Origin,
+    /// Longest string or key a typed layout walk decodes, which bounds the
+    /// source text a decode diagnostic quotes.
+    longest_string: u64,
 }
 impl JsonValueShape {
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn typed_diagnostic_source_bytes(self) -> u64 {
-        if self.origin == Origin::Slice && !self.unresolved_raw {
-            // Decoded lengths are at most their encoded source spans. Retain
-            // the quotes, escapes and all typed metadata in this upper bound.
+    /// Longest string or key of a typed decode, or the input when the shape
+    /// came from an untyped walk.
+    pub const fn diagnostic_source_bytes(self) -> u64 {
+        if self.longest_string == 0 {
             self.input_bytes
-                .checked_sub(self.value_string_bytes)
-                .unwrap_or(self.input_bytes)
         } else {
-            self.input_bytes
+            self.longest_string
         }
-    }
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(crate) fn is_slice(self) -> bool {
-        self.origin == Origin::Slice
     }
     /// Object and array openings when the original source was bytes.
     pub const fn lexical_containers(self) -> Option<u64> {
@@ -276,40 +283,9 @@ pub fn json_owned_value_conversion_additional_bytes(shape: JsonValueShape) -> Re
     }
     checked(storage(shape), "JSON owned bound overflow")
 }
-#[cfg(feature = "filesystem")]
-pub(crate) fn json_typed_value_decode_owned_bytes(
-    shape: JsonValueShape,
-    maximum_slot_bytes: u64,
-) -> Result<u64> {
-    if shape.origin != Origin::Borrowed {
-        return Err(boundary(
-            "JSON typed decode shape is not borrowed",
-            Some(crate::wire::ErrorCode::Invalid),
-        ));
-    }
-    checked(
-        nodes(shape)
-            .and_then(|nodes| nodes.checked_mul(8))
-            .and_then(|nodes| nodes.checked_mul(maximum_slot_bytes))
-            .and_then(|typed| full(shape).and_then(|bytes| typed.checked_add(bytes))),
-        "JSON typed owned bound overflow",
-    )
-}
-pub(crate) fn json_value_virtual_owned_bytes(shape: JsonValueShape) -> Result<u64> {
-    let normal = JsonValueShape {
-        virtual_items: 0,
-        raw_bytes: 0,
-        raw_frames: 0,
-        unresolved_raw: false,
-        ..shape
-    };
-    checked(
-        storage(shape)
-            .and_then(|actual| storage(normal).and_then(|normal| actual.checked_sub(normal))),
-        "JSON virtual owned bound overflow",
-    )
-}
 
+#[cfg(test)]
+mod layout_guard_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

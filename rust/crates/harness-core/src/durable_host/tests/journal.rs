@@ -663,3 +663,36 @@ async fn expired_deadline_rejects_fresh_execution_publication() -> Result<()> {
     ));
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn an_owner_digests_its_immutable_admission_once() -> Result<()> {
+    let f = fixture::fixture().await?;
+    let owner = f.running(132).await?;
+    let expected = owner.admission().canonical_digest_with_work(&mut None)?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let mut history = io.history_io();
+    let examined = || work.receipt().items_examined;
+    let before = examined();
+    assert_eq!(owner.admission_digest(&mut Some(&mut history))?, expected);
+    let first = examined() - before;
+    assert_eq!(owner.admission_digest(&mut Some(&mut history))?, expected);
+    let second = examined() - before - first;
+    // Negative control: the record's own digest pays its encoding every time.
+    let before = examined();
+    assert_eq!(
+        owner
+            .admission()
+            .canonical_digest_with_work(&mut Some(&mut history))?,
+        expected
+    );
+    let uncached = examined() - before;
+    assert!(first > 0 && uncached > 0, "the first digest is charged");
+    assert_eq!(second, 0, "a later check reuses the owner's digest");
+    Ok(())
+}

@@ -153,10 +153,8 @@ impl HistoryIo for &PreparationIo {
         match charge {
             crate::executor::json::JsonCodecCharge::Admission {
                 maximum_owned_bytes,
-                value_shape,
-            } => self.retain_owned(maximum_owned_bytes.max(
-                crate::executor::json::json_value_decode_owned_bytes(value_shape)?,
-            )),
+                ..
+            } => self.retain_owned(maximum_owned_bytes),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }

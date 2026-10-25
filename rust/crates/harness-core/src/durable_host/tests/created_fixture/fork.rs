@@ -25,11 +25,9 @@ impl CreationFixture {
         self.create_child_fork(&[], true)
     }
 
-    async fn create_child_fork(
-        &self,
-        additional: &[&str],
-        task_fork: bool,
-    ) -> Result<PreparedFilesystemChild> {
+    /// The parent volumes, a preparer over them and one fork request naming
+    /// two child volumes. Parent volumes are created once per fixture.
+    pub(crate) async fn fork_setup(&self, task_fork: bool) -> Result<ForkSetup> {
         let parent = if task_fork {
             self.host.verifier.audience().clone()
         } else {
@@ -198,6 +196,8 @@ impl CreationFixture {
                     .await?,
             )
         };
+        let (reserved, peak) = crate::executor::json::assert_layout_covers_decode(&fork);
+        eprintln!("ForkRequest layout reserved {reserved} B, decode peak {peak} B");
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(),
             reducer,
@@ -211,6 +211,31 @@ impl CreationFixture {
             #[cfg(not(target_arch = "wasm32"))]
             None,
         )?;
+        Ok(ForkSetup {
+            preparer,
+            fork,
+            project,
+            private,
+            parent_scope,
+            verifier,
+            issuer,
+        })
+    }
+
+    async fn create_child_fork(
+        &self,
+        additional: &[&str],
+        task_fork: bool,
+    ) -> Result<PreparedFilesystemChild> {
+        let ForkSetup {
+            preparer,
+            fork,
+            project,
+            private,
+            parent_scope,
+            verifier,
+            issuer,
+        } = self.fork_setup(task_fork).await?;
         if task_fork {
             assert!(matches!(
                 crate::fork::ForkPreparer::prepare(&preparer, fork.clone()).await,

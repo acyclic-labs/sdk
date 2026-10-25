@@ -58,7 +58,7 @@ mod config;
 pub use config::{SearchBackend, SearchConfig};
 
 /// A bounded query, independent of a provider's wire protocol.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchRequest {
     /// Natural-language query, at most 4,096 Unicode characters, sent verbatim.
@@ -102,7 +102,7 @@ impl SearchRequest {
 }
 
 /// One ranked source. Provider-specific metadata and credentials stay private.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchResult {
     /// Source URL for citations.
@@ -114,7 +114,7 @@ pub struct SearchResult {
 }
 
 /// Canonical successful search output.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchResponse {
     /// Sources in provider relevance order.

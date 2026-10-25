@@ -60,6 +60,9 @@ pub(crate) struct PiControlHost<'a> {
     pub(crate) work: acyclic_fs::NativeMaterializationWork,
     pub(crate) pending:
         std::sync::Mutex<Option<(crate::PendingSpawn, acyclic_fs::NativeAllocation)>>,
+    /// The fork this invocation prepared, handed to its session as the typed value so the
+    /// session never re-derives a fork it is holding.
+    pub(crate) prepared: std::sync::Mutex<Option<crate::pi_fork::PreparedPiFork>>,
 }
 
 impl<'a> PiControlHost<'a> {
@@ -94,6 +97,7 @@ impl<'a> PiControlHost<'a> {
             root_source: None,
             work: work.clone(),
             pending: std::sync::Mutex::new(None),
+            prepared: std::sync::Mutex::new(None),
         })
     }
     pub(crate) fn native(&self) -> Result<&Arc<PiNativeCommandHost>> {
@@ -233,9 +237,6 @@ impl<'a> PiControlHost<'a> {
         let result = crate::pi_root_provider::guarded_pi_decode(
             &encoded.0,
             maximum,
-            maximum
-                .checked_mul(8)
-                .ok_or_else(|| invalid("admission ownership bound overflow"))?,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             SELECTED_DIAGNOSTIC_LABEL_BYTES,

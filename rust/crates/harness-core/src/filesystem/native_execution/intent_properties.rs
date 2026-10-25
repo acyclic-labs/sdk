@@ -51,8 +51,11 @@ fn intent(labels: &[String], key: &[u8], owner: u8) -> Intent {
 }
 
 fn verify(input: &[u8]) {
-    let items = super::super::journal_verification::lexical_items(input);
-    let bound = intent_decode_owned_bytes(items, input.len() as u64, 0, true).unwrap();
+    // An admitted document's decode stays within its layout reservation.
+    let Some(bound) = crate::executor::json::layout_reservation::<Intent>(input) else {
+        assert!(serde_json::from_slice::<Intent>(input).is_err());
+        return;
+    };
     let mut result = None;
     let measured = acyclic_test_support::measure(|| {
         result = Some(serde_json::from_slice::<Intent>(input));

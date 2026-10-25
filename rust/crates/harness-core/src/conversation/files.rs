@@ -2,15 +2,19 @@ use super::*;
 mod canonical;
 
 /// Immutable byte descriptor checked before a file is admitted.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct FileDescriptor {
     pub(super) sha256: [u8; 32],
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
     #[serde(deserialize_with = "deserialize_file_length")]
+    #[heap_layout(scalar)]
     pub(super) byte_length: u64,
     #[serde(deserialize_with = "deserialize_media_type")]
+    #[heap_layout(scalar)]
     pub(super) media_type: String,
 }
 
@@ -161,17 +165,22 @@ impl FileDescriptor {
 }
 
 /// An immutable version of a file within a scoped volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct FileRef {
     pub(super) volume: VolumeRef,
     #[serde(deserialize_with = "deserialize_path")]
+    #[heap_layout(scalar)]
     pub(super) path: String,
     #[serde(deserialize_with = "deserialize_label")]
+    #[heap_layout(scalar)]
     pub(super) version: String,
     pub(super) descriptor: FileDescriptor,
     #[serde(deserialize_with = "deserialize_label")]
+    #[heap_layout(scalar)]
     pub(super) display_name: String,
 }
 

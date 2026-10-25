@@ -33,7 +33,7 @@ pub(in crate::filesystem) use journal::journal_absent;
 mod preparation;
 mod references;
 pub(crate) use allocations::AllocationClaim;
-use allocations::{creation_volumes, same_task_origin};
+use allocations::{creation_volumes, same_allocation_claim, same_task_origin};
 pub(crate) use journal::seed_digest;
 use journal::*;
 use references::add_summary_readers;

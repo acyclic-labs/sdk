@@ -16,7 +16,17 @@ fn finite(value: u64, field: &str) -> Result<()> {
 
 /// Exact UTF-8 byte interval; offsets refer to the original immutable source.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct TextRange {
     /// Inclusive byte offset.
@@ -31,7 +41,17 @@ pub struct TextRange {
 
 /// Consumer-selected finite literal-search allowances.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct SearchOptions {
     /// Maximum verified source bytes, checked before I/O by adapters.
@@ -68,7 +88,9 @@ impl SearchOptions {
 
 /// Complete literal-search accounting with bounded retained match positions.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct SearchMatches {
     /// Ordered, possibly overlapping exact UTF-8 match intervals.

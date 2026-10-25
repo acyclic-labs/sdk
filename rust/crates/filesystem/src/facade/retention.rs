@@ -218,22 +218,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<ObjectId, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = if self.prepared_merge_parent.is_some() || !self.has_pending_mutations() {
-            Ok(self.generation_root)
-        } else {
-            crate::kernel::build_checkpoint_with_accounting(
-                &self.volume.fs.inner.objects,
-                CheckpointRequest {
-                    base: self.root.base,
-                    file_table: self.root.file_table,
-                    merge_parent: None,
-                },
-                DecodeLimits::for_volume(self.volume.config),
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        };
+        let result = self
+            .checkpoint_root_with_accounting(&mut accounting, cancellation)
+            .await;
         budget.finish(result, &accounting)
+    }
+
+    pub(super) async fn checkpoint_root_with_accounting(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ObjectId, FsError> {
+        if self.prepared_merge_parent.is_some() || !self.has_pending_mutations() {
+            return Ok(self.generation_root);
+        }
+        crate::kernel::build_checkpoint_with_accounting(
+            &self.volume.fs.inner.objects,
+            CheckpointRequest {
+                base: self.root.base,
+                file_table: self.root.file_table,
+                merge_parent: None,
+            },
+            DecodeLimits::for_volume(self.volume.config),
+            accounting,
+            cancellation,
+        )
+        .await
     }
 }

@@ -1,9 +1,12 @@
 use super::*;
 
-pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
+pub(super) fn decode_interaction_json<
+    'loan,
+    'io,
+    T: serde::de::DeserializeOwned + crate::HeapLayout,
+>(
     bytes: &[u8],
     schema: &'static crate::executor::json::JsonValueSchema,
-    typed_slot: u64,
     work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(T, crate::wire_codec::CodecQuota<'loan, 'io>)> {
     if work.is_none() {
@@ -12,10 +15,6 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
         return Ok((value, crate::wire_codec::CodecQuota::new(work, 0)?));
     }
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-    // Request/response Serde labels, including UUID and RawValue errors.
-    let diagnostic =
-        crate::executor::json::audited_serde_diagnostic_bytes(bytes.len() as u64, 1477)?;
-    let mut items = 0_u64;
     let native = custody
         .work()
         .as_deref()
@@ -27,49 +26,27 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
     };
     let decoded = {
         let mut charge = |charge| -> Result<()> {
-            match charge {
-                crate::executor::json::JsonCodecCharge::Work { items: visited, .. } => {
-                    items = items.checked_add(visited).ok_or_else(|| {
-                        boundary(
-                            custody.work(),
-                            Invalid,
-                            "interaction JSON item count overflows",
-                        )
-                    })?;
-                }
-                crate::executor::json::JsonCodecCharge::Admission {
-                    maximum_owned_bytes,
-                    value_shape,
-                } => {
-                    let value_owned =
-                        crate::executor::json::json_value_decode_owned_bytes(value_shape)?;
-                    let content_slot =
-                        std::mem::size_of::<serde::__private229::de::Content<'static>>().max(
-                            std::mem::size_of::<(
-                                serde::__private229::de::Content<'static>,
-                                serde::__private229::de::Content<'static>,
-                            )>(),
-                        ) as u64;
-                    let planned = content_slot
-                        .checked_add(typed_slot)
-                        .and_then(|slot| items.checked_mul(10)?.checked_mul(slot))
-                        .and_then(|owned| owned.checked_add(value_owned))
-                        .and_then(|owned| owned.checked_add(maximum_owned_bytes))
-                        .and_then(|owned| owned.checked_add(diagnostic))
-                        .ok_or_else(|| {
-                            boundary(
-                                custody.work(),
-                                Invalid,
-                                "interaction JSON custody overflows",
-                            )
-                        })?;
-                    let observer = custody.observer()?;
-                    observer.admit_owned(planned)?;
-                    observer.retain_owned(planned)?;
-                    custody.adopt(planned)?;
-                    return Ok(());
-                }
-                _ => {}
+            if let crate::executor::json::JsonCodecCharge::Admission {
+                maximum_owned_bytes,
+                value_shape,
+            } = charge
+            {
+                // Request/response Serde labels, including UUID and RawValue errors.
+                let diagnostic = crate::executor::json::audited_serde_diagnostic_bytes(
+                    value_shape.diagnostic_source_bytes(),
+                    1477,
+                )?;
+                let planned = maximum_owned_bytes.checked_add(diagnostic).ok_or_else(|| {
+                    boundary(
+                        custody.work(),
+                        Invalid,
+                        "interaction JSON custody overflows",
+                    )
+                })?;
+                let observer = custody.observer()?;
+                observer.admit_owned(planned)?;
+                observer.retain_owned(planned)?;
+                return custody.adopt(planned);
             }
             custody.observer()?.codec_charge(charge)
         };
@@ -77,7 +54,6 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
             std::marker::PhantomData::<T>,
             bytes,
             bounds,
-            bytes.len() as u64,
             native.then_some(Invalid),
             native.then_some(schema),
             &mut charge,

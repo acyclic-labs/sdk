@@ -5,6 +5,10 @@ acyclic_test_support::counting_allocator!();
 #[cfg(test)]
 use acyclic_harness::OperationId;
 use acyclic_harness::{Error, ProcessError, Result};
+// The included production records derive `crate::HeapLayout`, which names
+// its crate by the core package path that `acyclic_harness` re-exports.
+extern crate acyclic_harness as acyclic_harness_core;
+use acyclic_harness::HeapLayout;
 use acyclic_harness::{TaskId, tool};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;

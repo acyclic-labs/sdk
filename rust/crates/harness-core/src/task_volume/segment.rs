@@ -10,7 +10,7 @@ const PREFIX: usize = 12;
 #[path = "segment_tests.rs"]
 mod tests;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 struct Entry {
     key: FileKey,
     channel: Option<Channel>,

@@ -40,6 +40,8 @@ async fn b24_sdk_preparation_validates_proofs_duplicates_and_finite_bounds() -> 
         read_authorization: None,
     };
     request.validate(&mut None)?;
+    let (reserved, peak) = crate::executor::json::assert_layout_covers_decode(&request);
+    eprintln!("ResourcePreparationRequest layout reserved {reserved} B, decode peak {peak} B");
     for control in 0..8 {
         let mut invalid = request.clone();
         match control {

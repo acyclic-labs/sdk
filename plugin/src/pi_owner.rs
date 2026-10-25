@@ -64,7 +64,8 @@ const MAXIMUM_OWNER_BYTES: u64 = super::MAXIMUM_ADAPTER_STATE_BYTES;
 const ISSUER: &str = "acyclic.pi";
 
 /// Host-selected root policy.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerPolicy {
     pub(crate) root_task: TaskId,
@@ -111,7 +112,8 @@ impl PiOwnerPolicy {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerConfig {
     version: u32,
@@ -141,6 +143,24 @@ impl Drop for PiOwnerConfig {
 impl PiOwnerConfig {
     pub(crate) fn policy(&self) -> &PiOwnerPolicy {
         &self.policy
+    }
+
+    /// The record of one successful fork plan validation: a MAC under this
+    /// owner's key over the published plan bytes' digest, the caller and the
+    /// policy the validation read. Records never cross owners, callers or
+    /// policies, and the key itself never leaves the owner.
+    pub(crate) fn validated_plan_key(
+        &self,
+        published: &blake3::Hash,
+        caller: TaskId,
+    ) -> super::pi_fork::ValidatedPlanKey {
+        let mut mac = blake3::Hasher::new_keyed(&self.key);
+        mac.update(b"acyclic.pi-fork-plan.validated.v1");
+        mac.update(published.as_bytes());
+        mac.update(&caller.into_bytes());
+        mac.update(&self.policy.root_task.into_bytes());
+        mac.update(&self.policy.maximum_payload_bytes.to_le_bytes());
+        super::pi_fork::ValidatedPlanKey(*mac.finalize().as_bytes())
     }
 
     /// Initial owner creation borrows admitted configuration sources and copies only through their genuine original-ledger producers.
@@ -505,7 +525,6 @@ impl PiOwnerConfig {
         let owner = super::pi_root_provider::guarded_pi_decode::<Self>(
             &plain.bytes,
             MAXIMUM_OWNER_BYTES,
-            std::mem::size_of::<Self>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             OWNER_DIAGNOSTIC_LABEL_BYTES,

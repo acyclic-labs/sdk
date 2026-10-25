@@ -557,6 +557,30 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         Err(Error::Indeterminate(_))
     ));
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 1);
+    // A changed request under the same operation, before any report binds
+    // it, never adopts the first request's capture attempt: it starts its own.
+    let mut changed_uncertain = uncertain.clone();
+    changed_uncertain.preparation.child_project_volume = VolumeRef::new(
+        provider.clone(),
+        "changed-uncertain-project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+        &mut None,
+    )?;
+    changed_uncertain.preparation.child_private_volume = VolumeRef::new(
+        provider.clone(),
+        "changed-uncertain-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(another_agent),
+        &mut None,
+    )?;
+    assert!(matches!(
+        aggregate.prepare_fork(&composed, changed_uncertain).await,
+        Err(Error::Indeterminate(_))
+    ));
+    assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 1);
     lost_reply.observation_ready.store(true, Ordering::SeqCst);
     let recovered = aggregate.prepare_fork(&composed, uncertain.clone()).await?;
     assert!(matches!(
@@ -590,7 +614,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     attached_resolver
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
-    assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 2);
     assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         aggregate
@@ -638,7 +662,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         .generation,
         recovered.child_private_generation,
     );
-    assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 2);
     aggregate
         .publish_fork_report(
             report.clone(),

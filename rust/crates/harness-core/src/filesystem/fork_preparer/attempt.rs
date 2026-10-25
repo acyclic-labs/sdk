@@ -266,43 +266,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         Ok(())
     }
     pub(super) async fn verify_task_allocations(&self, request: &ForkRequest) -> Result<()> {
-        let Some(task) = self.task_preparation else {
+        if self.task_preparation.is_none() {
             return Ok(());
-        };
-        let maximum = self.journal_limit(MAX_REQUEST_BYTES);
-        let digest = record_digest(request, maximum, self.io)?;
-        for volume in creation_volumes(request) {
-            let journal = allocation_ref(&self.preparer.host.provider, volume, self.io)?;
-            let claim: AllocationClaim = read_record(
-                &self.preparer.host,
-                &journal,
-                "/claim.json",
-                maximum,
-                self.io,
-            )
-            .await?
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "task-bound allocation is missing",
-                )
-            })?;
-            if claim.operation_id != request.operation_id
-                || claim.preparation_digest != digest
-                || claim.parent != request.parent
-                || claim.child != request.child
-                || &claim.volume != volume
-                || !same_task_origin(claim.task_origin.as_ref(), Some(task.origin()))
-            {
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "allocation belongs to another preparation task",
-                ));
-            }
         }
-        Ok(())
+        let journal =
+            preparation_journal(&self.preparer.host.provider, request.operation_id, self.io)?;
+        let expected = self.allocation_claim(request)?;
+        self.require_allocation(&journal, &expected).await
     }
     pub(super) async fn reconcile(&self, request: &ForkRequest) -> Result<Option<ForkReport>> {
         let host = &self.preparer.host;
@@ -336,65 +306,100 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         }
         Ok(report)
     }
-    pub(super) async fn claim(&self, request: &ForkRequest) -> Result<WorkspaceRef> {
-        let host = &self.preparer.host;
-        let journal = preparation_journal(&host.provider, request.operation_id, self.io)?;
-        let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| {
+    /// The allocation this attempt publishes for `request`.
+    fn allocation_claim(&self, request: &ForkRequest) -> Result<AllocationClaim> {
+        Ok(AllocationClaim {
+            operation_id: request.operation_id,
+            preparation_digest: record_digest(
+                request,
+                self.journal_limit(MAX_REQUEST_BYTES),
+                self.io,
+            )?,
+            task_origin: self
+                .task_preparation
+                .map(|task| self.clone_origin(task.origin()))
+                .transpose()?,
+            parent: self.clone_authority(&request.parent)?,
+            child: self.clone_authority(&request.child)?,
+        })
+    }
+
+    /// Requires the journal's published allocation to be exactly `expected`.
+    async fn require_allocation(
+        &self,
+        journal: &WorkspaceRef,
+        expected: &AllocationClaim,
+    ) -> Result<()> {
+        let retained = read_allocation_claim(
+            &self.preparer.host,
+            journal,
+            self.journal_limit(MAX_REQUEST_BYTES),
+            self.io,
+        )
+        .await?
+        .ok_or_else(|| {
             stock_boundary(
                 self.io,
-                crate::wire::ErrorCode::Invalid,
-                "fork journal name is not UTF-8",
+                crate::wire::ErrorCode::Unauthorized,
+                "fork request has no allocation",
             )
         })?;
-        let creation = self.journal_key(request.operation_id, "journal")?;
-        bounded_io::create(host, name, &creation, self.io, self.task_preparation).await?;
-        let key = self.journal_key(request.operation_id, "claim")?;
-        let prior = write_once(
-            host,
-            &journal,
-            "/request.json",
-            request,
-            self.journal_limit(MAX_REQUEST_BYTES),
-            &key,
-            request.operation_id,
-            self.io,
-            self.task_preparation,
-        )
-        .await?;
-        if prior != *request {
+        if !same_allocation_claim(&retained, expected) {
             return Err(stock_boundary(
                 self.io,
-                crate::wire::ErrorCode::Conflict,
-                "fork operation is claimed by another request",
+                crate::wire::ErrorCode::Unauthorized,
+                "allocation belongs to another preparation task",
             ));
         }
-        Ok(journal)
+        Ok(())
     }
+    /// Publishes the request, its allocation, the report and, when every
+    /// required capture completed, the digest of the seed it yields, all in
+    /// one commit: the journal never holds one without the others. Without a
+    /// capture that commit is the journal's creation, both claim and evidence.
     pub(super) async fn commit_report(
         &self,
         journal: &WorkspaceRef,
         report: &ForkReport,
+        seed: Option<[u8; 32]>,
     ) -> Result<ForkReport> {
-        let key = self.journal_key(report.request.operation_id, "report")?;
-        let prior = write_once(
+        let request = &report.request;
+        let key = self.journal_key(request.operation_id, "report")?;
+        let maximum = self.journal_limit(MAX_REQUEST_BYTES);
+        let allocation = self.allocation_claim(request)?;
+        let mut companions = crate::model::vec_with_capacity(3, self.io)?;
+        companions.push(("/request.json", encode(request, maximum, self.io)?));
+        companions.push((ALLOCATION_RECORD, encode(&allocation, maximum, self.io)?));
+        if let Some(digest) = seed {
+            companions.push((SEED_RECORD, encode(&digest, maximum, self.io)?));
+        }
+        let prior = write_once_alongside(
             &self.preparer.host,
             journal,
-            "/report.json",
-            report,
-            self.journal_limit(MAX_REPORT_BYTES),
-            &key,
-            report.request.operation_id,
+            OnceRecord {
+                path: "/report.json",
+                value: report,
+                maximum: self.journal_limit(MAX_REPORT_BYTES),
+                key: &key,
+                operation: request.operation_id,
+            },
+            companions,
             self.io,
             self.task_preparation,
         )
         .await?;
-        if prior != *report {
+        let retained = read_seed_binding(&self.preparer.host, journal, maximum, self.io).await?;
+        if prior != *report
+            || retained != seed
+            || !read_claim(&self.preparer.host, journal, request, maximum, self.io).await?
+        {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Conflict,
                 "fork operation has a different committed report",
             ));
         }
+        self.require_allocation(journal, &allocation).await?;
         Ok(prior)
     }
     fn journal_key(&self, operation: OperationId, suffix: &str) -> Result<IdempotencyKey> {

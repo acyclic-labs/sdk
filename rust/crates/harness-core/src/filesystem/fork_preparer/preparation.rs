@@ -17,17 +17,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             ));
         }
         self.verify_task_lease(false).await?;
-        let journal = self.claim(&request).await?;
-        if let Some(report) = read_report(
-            host,
-            &journal,
-            &request,
-            self.journal_limit(MAX_REPORT_BYTES),
-            io,
-        )
-        .await?
-        {
-            self.verify_task_allocations(&request).await?;
+        if let Some(report) = self.reconcile(&request).await? {
             return Ok(report);
         }
         let policy = &request.preparation;
@@ -72,25 +62,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let mut work = observer
             .as_mut()
             .map(|io| io as &mut dyn crate::store::history::HistoryIo);
-        for volume in creation_volumes(&request) {
-            self.verify_task_lease(false).await?;
-            host.claim_fork_allocation(
-                AllocationClaim {
-                    operation_id: operation,
-                    preparation_digest: *digest.as_bytes(),
-                    task_origin: task
-                        .map(|task| self.clone_origin(task.origin()))
-                        .transpose()?,
-                    parent: self.clone_authority(&request.parent)?,
-                    child: self.clone_authority(&request.child)?,
-                    volume: volume.copy(&mut work)?,
-                },
-                self.journal_limit(MAX_REQUEST_BYTES),
-                io,
-                task,
-            )
-            .await?;
-        }
         let private = policy.child_private_volume.copy(&mut work)?;
         let private_key = key("scratch")?;
         let private_grant = self.read_grant(source_private)?;
@@ -154,6 +125,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             } else {
                 (None, None)
             };
+        // Every child volume's creation commit now names this operation and
+        // request; only a winner of all of them reaches its journal, which its
+        // first write creates.
+        let journal = preparation_journal(&host.provider, request.operation_id, io)?;
         let context_key = if policy.inherited_through_sequence == 0 {
             None
         } else {
@@ -303,8 +278,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
                         Some(provider) => {
-                            self.capture(&journal, &request, index, selection, provider.as_ref())
-                                .await?
+                            self.capture(
+                                &journal,
+                                &request,
+                                &digest,
+                                index,
+                                selection,
+                                provider.as_ref(),
+                            )
+                            .await?
                         }
                         None => Capture::Unsupported(stock_string_copy(
                             "resource capture provider is not installed",
@@ -357,6 +339,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 }
             }
         }
+        let mut binding = None;
         if report
             .request
             .selections
@@ -376,10 +359,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 )?;
                 report.history_witness = seed.history_witness.clone();
             }
-            host.bind_fork_seed(&seed, self.journal_limit(MAX_REQUEST_BYTES), io, task)
-                .await?;
+            binding = Some(seed_digest(
+                &seed,
+                self.journal_limit(MAX_REQUEST_BYTES),
+                io,
+            )?);
         }
         self.verify_task_lease(false).await?;
-        self.commit_report(&journal, &report).await
+        self.commit_report(&journal, &report, binding).await
     }
 }

@@ -2,6 +2,13 @@ use super::*;
 type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
 mod incremental;
 
+#[derive(Default)]
+struct NamespaceFact {
+    links: u64,
+    reachable: bool,
+    visited_directory: bool,
+}
+
 pub(crate) struct ProofContext<'a, S> {
     store: &'a S,
     limits: ClosureLimits,
@@ -619,57 +626,113 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         records: &ProofVec<'a, (FileId, FileRecord)>,
         directories: &ProofVec<'a, (FileId, ProofVec<'a, (TreePage, ProofGuard)>)>,
     ) -> Result<(), crate::FsError> {
-        let mut links = ProofVec::new(&self.meter);
-        map_insert(&mut links, root, 1_u64)?;
+        let mut facts = self.namespace_link_facts(root, records, directories)?;
+        let root_index = self.namespace_record_index(records, root)?;
+        let mut pending = ProofVec::new(&self.meter);
+        pending.push(root_index)?;
+        while let Some(index) = pending.values.pop() {
+            self.examine(1)?;
+            let file_id = records
+                .values
+                .get(index)
+                .ok_or(ClosureError::MissingRootFile)?
+                .0;
+            let fact = facts
+                .values
+                .get_mut(index)
+                .ok_or(ClosureError::MissingFileRecord(file_id))?;
+            if fact.visited_directory {
+                return Err(ClosureError::DirectoryHardLink(file_id).into());
+            }
+            fact.visited_directory = true;
+            fact.reachable = true;
+            let pages = map_get(directories, &file_id)
+                .ok_or(ClosureError::MissingDirectoryTree(file_id))?;
+            for entry in Self::tree_entries(pages) {
+                self.examine(1)?;
+                let index = self.namespace_record_index(records, entry.file_id)?;
+                facts
+                    .values
+                    .get_mut(index)
+                    .ok_or(ClosureError::MissingFileRecord(entry.file_id))?
+                    .reachable = true;
+                if map_get(directories, &entry.file_id).is_some() {
+                    pending.push(index)?;
+                }
+            }
+        }
+        self.examine(facts.values.len())?;
+        if facts.values.iter().any(|fact| !fact.reachable) {
+            return Err(ClosureError::UnreachableFileRecords.into());
+        }
+        Ok(())
+    }
+
+    fn namespace_link_facts(
+        &self,
+        root: FileId,
+        records: &ProofVec<'a, (FileId, FileRecord)>,
+        directories: &ProofVec<'a, (FileId, ProofVec<'a, (TreePage, ProofGuard)>)>,
+    ) -> Result<ProofVec<'a, NamespaceFact>, crate::FsError> {
+        // The authenticated file table already supplies a unique sorted
+        // identity index. Mutable facts use its ordinals rather than copying
+        // a growing sorted map/set for every namespace binding.
+        let mut facts = ProofVec::new(&self.meter);
+        for _ in &records.values {
+            self.examine(1)?;
+            facts.push(NamespaceFact::default())?;
+        }
+        let root_index = self.namespace_record_index(records, root)?;
+        facts
+            .values
+            .get_mut(root_index)
+            .ok_or(ClosureError::MissingRootFile)?
+            .links = 1;
         for pages in directories.values.iter().map(|(_, value)| value) {
             for entry in Self::tree_entries(pages) {
                 self.examine(1)?;
-                let record = map_get(records, &entry.file_id)
-                    .ok_or(ClosureError::MissingFileRecord(entry.file_id))?;
+                let index = self.namespace_record_index(records, entry.file_id)?;
+                let record = &records
+                    .values
+                    .get(index)
+                    .ok_or(ClosureError::MissingFileRecord(entry.file_id))?
+                    .1;
                 if record.kind != entry.kind {
                     return Err(ClosureError::NamespaceKindMismatch(entry.file_id).into());
                 }
-                let count = map_get(&links, &entry.file_id)
-                    .copied()
-                    .unwrap_or(0_u64)
+                let fact = facts
+                    .values
+                    .get_mut(index)
+                    .ok_or(ClosureError::MissingFileRecord(entry.file_id))?;
+                fact.links = fact
+                    .links
                     .checked_add(1)
                     .ok_or(ClosureError::RangeOverflow)?;
-                map_insert(&mut links, entry.file_id, count)?;
             }
         }
-        for record in records.values.iter().map(|(_, value)| value) {
+        for ((_, record), fact) in records.values.iter().zip(&facts.values) {
             self.examine(1)?;
-            if map_get(&links, &record.file_id).copied().unwrap_or(0) != record.link_count {
+            if fact.links != record.link_count {
                 return Err(ClosureError::LinkCountMismatch(record.file_id).into());
             }
             if matches!(record.payload, FilePayload::Directory { .. }) && record.link_count != 1 {
                 return Err(ClosureError::DirectoryHardLink(record.file_id).into());
             }
         }
-        let mut reachable = ProofVec::new(&self.meter);
-        let mut visited_directories = ProofVec::new(&self.meter);
-        let mut pending = ProofVec::new(&self.meter);
-        pending.push(root)?;
-        while let Some(file_id) = pending.values.pop() {
-            self.examine(1)?;
-            if !set_insert(&mut visited_directories, file_id)? {
-                return Err(ClosureError::DirectoryHardLink(file_id).into());
-            }
-            set_insert(&mut reachable, file_id)?;
-            let pages = map_get(directories, &file_id)
-                .ok_or(ClosureError::MissingDirectoryTree(file_id))?;
-            for entry in Self::tree_entries(pages) {
-                self.examine(1)?;
-                set_insert(&mut reachable, entry.file_id)?;
-                if map_get(directories, &entry.file_id).is_some() {
-                    pending.push(entry.file_id)?;
-                }
-            }
-        }
-        if reachable.values.len() != records.values.len() {
-            return Err(ClosureError::UnreachableFileRecords.into());
-        }
-        Ok(())
+        Ok(facts)
+    }
+
+    fn namespace_record_index(
+        &self,
+        records: &ProofVec<'a, (FileId, FileRecord)>,
+        id: FileId,
+    ) -> Result<usize, crate::FsError> {
+        self.meter.with_accounting(|accounting| {
+            crate::kernel::binary_search_with_accounting(&records.values, accounting, |record| {
+                record.0.cmp(&id)
+            })?
+            .map_err(|_| ClosureError::MissingFileRecord(id).into())
+        })
     }
 
     fn require_kind(object: ObjectId, expected: ObjectKind) -> Result<(), crate::FsError> {

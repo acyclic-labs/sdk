@@ -23,7 +23,8 @@ impl ControlPlane {
             }
             Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
         };
-        #[derive(Deserialize)]
+        #[derive(Deserialize, acyclic_harness::HeapLayout)]
+        #[heap_layout(crate = acyclic_harness)]
         #[serde(deny_unknown_fields)]
         struct AuthorConfiguration {
             version: u32,

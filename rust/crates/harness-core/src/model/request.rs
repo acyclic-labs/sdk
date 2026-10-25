@@ -8,7 +8,7 @@ mod continuation;
 mod encoding;
 
 /// Complete immutable provider-neutral model request.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelRequest {
     /// Pinned model selection.

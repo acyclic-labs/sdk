@@ -435,6 +435,15 @@ pub(crate) fn sort_indexed<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
+    sort_by_with_accounting(values, accounting, indexed_order)
+}
+
+/// One bounded in-place sort for metered kernel and namespace buffers.
+pub(crate) fn sort_by_with_accounting<T>(
+    values: &mut [T],
+    accounting: &mut KernelAccounting<'_>,
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+) -> Result<(), crate::FsError> {
     let count = values.len();
     if count < 2 {
         return Ok(());
@@ -453,7 +462,7 @@ pub(crate) fn sort_indexed<K: Ord>(
             unreachable!("windows(2) yields two elements");
         };
         accounting.admit(item)?;
-        let comparison = indexed_order(left, right);
+        let comparison = compare(left, right);
         accounting.record_completed(item)?;
         if comparison.is_gt() {
             ordered = false;
@@ -468,22 +477,22 @@ pub(crate) fn sort_indexed<K: Ord>(
         ..WorkCounters::UNCHARGED
     })?;
     for start in (0..count / 2).rev() {
-        sift_down(values, start, count, accounting)?;
+        sift_down(values, start, count, accounting, &compare)?;
     }
     for end in (1..count).rev() {
-        swap_indexed(values, 0, end, accounting)?;
-        sift_down(values, 0, end, accounting)?;
+        swap_sorted(values, 0, end, accounting)?;
+        sift_down(values, 0, end, accounting, &compare)?;
     }
     Ok(())
 }
 
-fn swap_indexed<K>(
-    values: &mut [IndexedKey<'_, K>],
+fn swap_sorted<T>(
+    values: &mut [T],
     left: usize,
     right: usize,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
-    let bytes = usize_to_u64(std::mem::size_of::<IndexedKey<'_, K>>() * 2);
+    let bytes = usize_to_u64(std::mem::size_of::<T>() * 2);
     let delta = WorkCounters {
         bytes_copied: bytes,
         ..WorkCounters::UNCHARGED
@@ -517,11 +526,12 @@ fn sort_admission_bound(count: usize) -> Result<u64, Error> {
     clippy::indexing_slicing,
     reason = "heap indices stay below end <= values.len()"
 )]
-fn sift_down<K: Ord>(
-    values: &mut [IndexedKey<'_, K>],
+fn sift_down<T>(
+    values: &mut [T],
     mut root: usize,
     end: usize,
     accounting: &mut KernelAccounting<'_>,
+    compare: &impl Fn(&T, &T) -> std::cmp::Ordering,
 ) -> Result<(), crate::FsError> {
     let item = WorkCounters {
         items_examined: 1,
@@ -539,19 +549,19 @@ fn sift_down<K: Ord>(
         let mut greater = left;
         if right < end {
             accounting.admit(item)?;
-            let comparison = indexed_order(&values[left], &values[right]);
+            let comparison = compare(&values[left], &values[right]);
             accounting.record_completed(item)?;
             if comparison.is_lt() {
                 greater = right;
             }
         }
         accounting.admit(item)?;
-        let comparison = indexed_order(&values[root], &values[greater]);
+        let comparison = compare(&values[root], &values[greater]);
         accounting.record_completed(item)?;
         if !comparison.is_lt() {
             return Ok(());
         }
-        swap_indexed(values, root, greater, accounting)?;
+        swap_sorted(values, root, greater, accounting)?;
         root = greater;
     }
 }

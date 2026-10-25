@@ -83,19 +83,14 @@ impl Entry for Option<ModelEventAdmission> {
 }
 
 #[cfg(test)]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct Cell<V> {
     value: V,
 }
 
 #[cfg(test)]
-impl<V: Entry> PreparationRecord for Cell<V> {
-    fn maximum_slot_bytes() -> u64 {
-        // Entry is closed over scalars, a fixed tuple, and a model admission
-        // containing strings. No general model/workflow DTO occurs in a cell.
-        std::mem::size_of::<Self>().max(std::mem::size_of::<String>()) as u64
-    }
+impl<V: Entry + crate::HeapLayout> PreparationRecord for Cell<V> {
 
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([std::mem::size_of::<Self>() as u64, self.value.heap_bytes()?])
