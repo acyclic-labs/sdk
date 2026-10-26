@@ -14,8 +14,7 @@ use crate::{
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAdmission,
-        TurnAuthority,
-        TurnExecutors, TurnLimits,
+        TurnAuthority, TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };

@@ -19,7 +19,10 @@ use acyclic_harness_core::{
     tool::ToolRegistry,
 };
 use acyclic_stream::{
-    BoxProviderFuture, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamProvider,
+    AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
+    CommitOutcome, CommitRequest, CommittedEnvelope, FollowFilter, ForkReceipt, ForkRequest,
+    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds,
+    StreamError, StreamPath, StreamProvider,
 };
 use std::sync::Arc;
 
@@ -291,5 +294,155 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
     let (read_only, calls) = run(&[VolumeOperation::Read]).await?;
     assert!(read_only.is_err(), "a read-only admission cannot write");
     assert_eq!(calls, 0, "refused before the model runs");
+    Ok(())
+}
+
+/// A stream that refuses, and counts, every call.
+#[derive(Default)]
+struct Refusing {
+    claims: acyclic_stream::OperationClaims,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl Refusing {
+    fn refuse<T>(&self) -> std::result::Result<T, StreamError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StreamError::Unsupported)
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamProvider for Refusing {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.claims
+    }
+    async fn inspect_idempotency(
+        &self,
+        _: IdempotencyKey,
+    ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
+        self.refuse()
+    }
+    async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
+        self.refuse()
+    }
+    async fn bounds(&self, _: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
+        self.refuse()
+    }
+    async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
+        self.refuse()
+    }
+    async fn fork(&self, _: ForkRequest) -> std::result::Result<ForkReceipt, StreamError> {
+        self.refuse()
+    }
+    async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
+        self.refuse()
+    }
+    async fn follow(
+        &self,
+        _: StreamPath,
+        _: u64,
+        _: FollowFilter,
+    ) -> std::result::Result<RecordStream, StreamError> {
+        self.refuse()
+    }
+    async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
+        self.refuse()
+    }
+    async fn read_commit(
+        &self,
+        _: CommitId,
+    ) -> std::result::Result<CommittedEnvelope, StreamError> {
+        self.refuse()
+    }
+}
+
+#[tokio::test]
+async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
+    let parent = AgentPath::root(&id(6));
+    let path = parent.child(&id(7))?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "workload".into(),
+    };
+    let other = Authority {
+        kind: AggregateKind::Conversation,
+        id: "other".into(),
+    };
+    let stranger = acyclic_harness_core::AgentId::from_bytes(id(8).to_bytes());
+    // Each case: the audience the admission is issued for, the one the host
+    // is given, its bound agent, and its private-volume operations.
+    let run = |issued: Authority,
+               given: Authority,
+               agent: Option<acyclic_harness_core::AgentId>,
+               operations: &'static [VolumeOperation]| {
+        let (parent, path) = (parent.clone(), path.clone());
+        async move {
+            let root = AuthorityRoot::new("agents", [7; 32], issued);
+            let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                "done".into(),
+            )]));
+            let (host, binding) = private(&path).await?;
+            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
+            for operation in operations {
+                grants.push(binding.volume.capability(*operation, &mut None)?);
+            }
+            let scope =
+                root.bootstrap_scope("admitted", &Capabilities::new(grants), agent, &mut None)?;
+            let stream = Arc::new(Refusing::default());
+            let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+                stream.clone(),
+                host,
+                root,
+                TurnAdmission::Admitted {
+                    audience: given,
+                    scope,
+                },
+                executors(model.clone())?,
+                LIMITS,
+            ));
+            let mut adoption = adopted(id(7));
+            adoption.parent = Some(parent.clone());
+            adoption.volumes = vec![binding];
+            let mut state = AgentState::adopted(path.clone(), &adoption);
+            // Settled history the turn would read first.
+            state.conversation_tail = 3;
+            let stepped = step(&driver, &path, Some(state), 2, requested("r1", &parent)).await;
+            assert!(stepped.is_err());
+            assert_eq!(model.requests().len(), 0);
+            Ok::<_, Box<dyn std::error::Error>>(
+                stream.calls.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }
+    };
+    let both: &'static [VolumeOperation] = &[VolumeOperation::Read, VolumeOperation::Write];
+    // Control: a valid admission reaches the stream (and fails there).
+    let reached = run(audience.clone(), audience.clone(), None, both).await?;
+    assert!(reached > 0, "a valid admission reads its history");
+    for (case, issued, given, agent, operations) in [
+        (
+            "read-only",
+            audience.clone(),
+            audience.clone(),
+            None,
+            &[VolumeOperation::Read][..],
+        ),
+        (
+            "wrong audience",
+            other.clone(),
+            audience.clone(),
+            None,
+            both,
+        ),
+        (
+            "other agent",
+            audience.clone(),
+            audience.clone(),
+            Some(stranger),
+            both,
+        ),
+    ] {
+        let calls = run(issued, given, agent, operations).await?;
+        assert_eq!(calls, 0, "{case}: refused before any stream IO");
+    }
     Ok(())
 }
