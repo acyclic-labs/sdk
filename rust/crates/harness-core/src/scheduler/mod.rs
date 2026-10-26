@@ -48,7 +48,7 @@ impl TaskModelClaims {
 /// Pure projection of dependency, capacity, ownership and cancellation events.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct Scheduler {
-    operations: BTreeMap<OperationId, OperationState>,
+    operations: BTreeMap<OperationId, Box<OperationState>>,
     child_slots: BTreeMap<(OperationId, String), OperationId>,
     completion_order: Vec<OperationId>,
     #[serde(default)]
@@ -71,7 +71,7 @@ impl Scheduler {
     /// Returns one operation's current projection.
     #[must_use]
     pub fn operation(&self, id: OperationId) -> Option<&OperationState> {
-        self.operations.get(&id)
+        self.operations.get(&id).map(Box::as_ref)
     }
     /// Structured children in stable slot order.
     pub fn children(&self, parent: OperationId) -> impl Iterator<Item = (&str, &OperationState)> {
@@ -81,7 +81,7 @@ impl Scheduler {
             .filter_map(|((_, slot), child)| {
                 self.operations
                     .get(child)
-                    .map(|state| (slot.as_str(), state))
+                    .map(|state| (slot.as_str(), state.as_ref()))
             })
     }
 }

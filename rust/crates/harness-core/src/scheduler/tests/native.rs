@@ -22,6 +22,48 @@ fn apply_native(
 }
 
 #[test]
+fn declaration_allocation_cuts_preserve_projection_and_release_failed_storage() -> Result<()> {
+    let before = Scheduler::new();
+    let event = before.declare(spec(id(91), Orchestration::Leaf)?)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let full_work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let context_operations = full_work.receipt().allocation_operations;
+    let mut complete = before.clone();
+    apply_native(&mut complete, &event, &full_work)?;
+    let required_operations = full_work.receipt().allocation_operations;
+    assert!(required_operations > context_operations);
+
+    // Every admitted prefix ends before one real allocation from the successful
+    // declaration. The final cut includes the separately funded state slot.
+    for allocation_operations in context_operations..required_operations {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                allocation_operations,
+                ..budget()
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let live_before = work.live_allocation_bytes();
+        let mut scheduler = before.clone();
+        let result = apply_native(&mut scheduler, &event, &work);
+        assert!(
+            result.is_err(),
+            "allocation cut {allocation_operations} was bypassed"
+        );
+        drop(result);
+        assert_eq!(scheduler, before, "allocation cut changed the projection");
+        assert_eq!(
+            work.live_allocation_bytes(),
+            live_before,
+            "failed declaration retained freed storage at cut {allocation_operations}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
     let mut scheduler = session(
         spec(id(82), Orchestration::Leaf)?,

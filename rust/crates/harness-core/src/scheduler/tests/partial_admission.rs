@@ -555,7 +555,7 @@ fn run(case: &Case, fault: Option<&Fault>, see: See<'_, '_>) -> std::result::Res
     }
     start(&mut scheduler, id(2), held(sibling, [1, 2])).unwrap();
     if fault == Some(Fault::DuplicateHeld) {
-        let mut duplicate = scheduler.operation(id(2)).unwrap().clone();
+        let mut duplicate = scheduler.operations.get(&id(2)).unwrap().clone();
         duplicate.spec.operation_id = id(3);
         scheduler.operations.insert(id(3), duplicate);
     }

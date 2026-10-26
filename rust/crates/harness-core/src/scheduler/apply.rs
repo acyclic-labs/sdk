@@ -24,58 +24,16 @@ impl Scheduler {
         event: SchedulerEvent,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        // Bytes observed for the copied event; the part the projection retains stays charged.
-        let mut observed = if work.is_some() {
+        // The copied event is already charged. One shared guard owns every
+        // further preparation allocation until projection takes ownership.
+        let copied = if work.is_some() {
             event.logical_owned_bytes()?
         } else {
             0
         };
-        let mut retained = 0;
+        let mut retained;
         let mut child_slot = None;
         let mut cancellation = Vec::new();
-        let prepared = (|| {
-            retained = event.retained_clone_owned_bytes()?;
-            if let SchedulerEvent::Declared { spec } = &event {
-                let mut bytes = size_of::<(OperationId, OperationState)>() as u64;
-                if spec.parent.is_some() {
-                    bytes += size_of::<((OperationId, String), OperationId)>() as u64;
-                }
-                if let Some(io) = work.as_deref_mut() {
-                    io.admit_allocation(bytes)?;
-                    io.retain_owned(bytes)?;
-                    observed += bytes;
-                }
-                retained += bytes;
-                if let Some(parent) = &spec.parent {
-                    let slot = match work.as_deref_mut() {
-                        Some(io) => io.clone_text(&parent.slot)?,
-                        None => parent.slot.clone(),
-                    };
-                    if work.is_some() {
-                        observed += slot.capacity() as u64;
-                    }
-                    retained += slot.capacity() as u64;
-                    child_slot = Some(slot);
-                }
-            }
-            if let SchedulerEvent::CancellationRequested {
-                operation_id,
-                recursive,
-            } = &event
-            {
-                cancellation = self.cancellation_frontier(*operation_id, *recursive, work)?;
-                if work.is_some() {
-                    observed += (cancellation.capacity() * size_of::<OperationId>()) as u64;
-                }
-            }
-            self.reserve_completion(&event, &cancellation, work)
-        })();
-        if let Err(error) = prepared {
-            if let Some(io) = work.as_deref_mut() {
-                let _ = io.release_owned(observed);
-            }
-            return Err(error);
-        }
         let id = event.operation_id();
         let parent = match &event {
             SchedulerEvent::Declared { spec } => {
@@ -89,7 +47,69 @@ impl Scheduler {
         } else {
             OperationPhase::WaitingForCapacity
         };
-        self.apply_projected_event(event, child_slot, &cancellation, phase, work)?;
+        let observed = {
+            let mut quota = crate::wire_codec::CodecQuota::from_retained(work, copied);
+            retained = event.retained_clone_owned_bytes()?;
+            if let SchedulerEvent::Declared { spec } = &event {
+                let mut bytes = size_of::<(OperationId, Box<OperationState>)>() as u64;
+                if spec.parent.is_some() {
+                    bytes += size_of::<((OperationId, String), OperationId)>() as u64;
+                }
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.admit_allocation(bytes)?;
+                    io.retain_owned(bytes)?;
+                    quota.adopt(bytes)?;
+                }
+                retained += bytes;
+                if let Some(parent) = &spec.parent {
+                    let slot = match quota.work().as_deref_mut() {
+                        Some(io) => io.clone_text(&parent.slot)?,
+                        None => parent.slot.clone(),
+                    };
+                    if quota.work().is_some() {
+                        quota.adopt(slot.capacity() as u64)?;
+                    }
+                    retained += slot.capacity() as u64;
+                    child_slot = Some(slot);
+                }
+            }
+            if let SchedulerEvent::CancellationRequested {
+                operation_id,
+                recursive,
+            } = &event
+            {
+                cancellation = self.cancellation_frontier(*operation_id, *recursive, quota.work())?;
+                if quota.work().is_some() {
+                    quota.adopt((cancellation.capacity() * size_of::<OperationId>()) as u64)?;
+                }
+            }
+            self.reserve_completion(&event, &cancellation, quota.work())?;
+            match event {
+                SchedulerEvent::Declared { spec } => {
+                    let state = quota.boxed(OperationState {
+                        spec: *spec,
+                        phase: OperationPhase::WaitingForDependencies,
+                        reservation: None,
+                        checkpoint: None,
+                        workflow: None,
+                        outcome: None,
+                        cancellation_requested: false,
+                        revision: 0,
+                    })?;
+                    retained += size_of::<OperationState>() as u64;
+                    let observed = quota.retained();
+                    quota.transfer();
+                    self.apply_declaration(state, child_slot, quota.work())?;
+                    observed
+                }
+                event => {
+                    let observed = quota.retained();
+                    quota.transfer();
+                    self.apply_projected_event(event, &cancellation, phase, quota.work())?;
+                    observed
+                }
+            }
+        };
         if !cancelled {
             self.operations
                 .get_mut(&id)
@@ -248,7 +268,6 @@ impl Scheduler {
     fn apply_projected_event(
         &mut self,
         event: SchedulerEvent,
-        mut child_slot: Option<String>,
         cancellation: &[OperationId],
         phase: OperationPhase,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -272,7 +291,11 @@ impl Scheduler {
             SchedulerEvent::ModelDispatchClaimed { .. } => self.apply_model_claim(&event, work)?,
 
             SchedulerEvent::Declared { .. } => {
-                self.apply_declaration(event, child_slot.take(), work)?;
+                return Err(diagnostic(
+                    work,
+                    crate::wire::ErrorCode::Storage,
+                    "scheduler declaration was not prepared",
+                ));
             }
 
             SchedulerEvent::WaitingForCapacity { .. } => {
@@ -352,21 +375,12 @@ impl Scheduler {
 
     fn apply_declaration(
         &mut self,
-        event: SchedulerEvent,
+        state: Box<OperationState>,
         mut child_slot: Option<String>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let id = event.operation_id();
-        let SchedulerEvent::Declared { spec } = event else {
-            return Err(diagnostic(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "invalid scheduler mutation phase",
-            ));
-        };
-
-        let spec = *spec;
-        if let Some(parent) = &spec.parent {
+        let id = state.spec.operation_id;
+        if let Some(parent) = &state.spec.parent {
             self.child_slots.insert(
                 (
                     parent.operation_id,
@@ -381,19 +395,7 @@ impl Scheduler {
                 id,
             );
         }
-        self.operations.insert(
-            id,
-            OperationState {
-                spec,
-                phase: OperationPhase::WaitingForDependencies,
-                reservation: None,
-                checkpoint: None,
-                workflow: None,
-                outcome: None,
-                cancellation_requested: false,
-                revision: 0,
-            },
-        );
+        self.operations.insert(id, state);
         Ok(())
     }
 
