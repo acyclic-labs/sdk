@@ -43,10 +43,12 @@ if ! docker image inspect "$minio_image" >/dev/null 2>&1; then
 fi
 step=postgres-start
 mkdir -p "$root/postgres" "$root/minio"
-pg=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=storage -v "$root/postgres:/var/lib/postgresql/data" -p 127.0.0.1::5432 postgres:17-alpine)
+# Reserved lane ports, outside the Cloud local-cell range. Docker refuses an
+# occupied port; the EXIT trap reports recovery and removes either container.
+pg=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=storage -v "$root/postgres:/var/lib/postgresql/data" -p 127.0.0.1:15400:5432 postgres:17-alpine)
 step=minio-start
 # Public, disposable emulator values only. Never read host/cloud credentials.
-minio=$(docker run -d --rm -e MINIO_ROOT_USER=storage-local-access -e MINIO_ROOT_PASSWORD=storage-local-secret -v "$root/minio:/data" -p 127.0.0.1::9000 "$minio_image" server /data)
+minio=$(docker run -d --rm -e MINIO_ROOT_USER=storage-local-access -e MINIO_ROOT_PASSWORD=storage-local-secret -v "$root/minio:/data" -p 127.0.0.1:15401:9000 "$minio_image" server /data)
 pg_port=$(docker port "$pg" 5432/tcp)
 minio_port=$(docker port "$minio" 9000/tcp)
 export STORAGE_POSTGRES_URL="postgresql://postgres@127.0.0.1:${pg_port##*:}/storage"
