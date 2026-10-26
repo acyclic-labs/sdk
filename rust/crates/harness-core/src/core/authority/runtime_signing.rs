@@ -109,6 +109,14 @@ mod tests {
         )?;
         public.verify(&scope, &mut None)?;
         let proof = verifier.canonical_proof(b"test-checkpoint", &42u64, &mut None)?;
+        for offset in 0..proof.len() {
+            let mut corrupted = proof;
+            corrupted[offset] ^= 1;
+            assert!(matches!(
+                public.verify_canonical_proof(b"test-checkpoint", &42u64, &corrupted, &mut None),
+                Err(Error::Unauthorized(_))
+            ));
+        }
         let forged_root = AuthorityIssuer::new(
             "runtime",
             verifier.public.metadata_key,

@@ -1,6 +1,15 @@
 use super::*;
 
 /// Host-owned conversation credentials and its signed actor.
+///
+/// Runtime composition supplies the existing issuer handle. A configuration
+/// document cannot import a signing seed or manufacture a new authority root.
+///
+/// ```compile_fail
+/// use acyclic_harness_core::filesystem::ConfiguredRecursiveAuthorityBinding;
+/// let binding: ConfiguredRecursiveAuthorityBinding =
+///     serde_json::from_str(r#"{"issuer":"owner","key":[0],"scope":{}}"#).unwrap();
+/// ```
 #[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
     /// Host-owned signing identity.
@@ -43,32 +52,8 @@ impl ConfiguredRecursiveAuthorityBinding {
         Ok(())
     }
 }
-#[derive(Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-struct Binding {
-    authority: Authority,
-    issuer: String,
-    key: [u8; 32],
-    scope: Scope,
-}
-impl crate::HeapLayout for ConfiguredRecursiveAuthorityBinding {
-    const LAYOUT: &'static crate::heap_layout::JsonLayout = <Binding as crate::HeapLayout>::LAYOUT;
-}
-impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        let binding = Binding::deserialize(deserializer)?;
-        Ok(Self {
-            issuer: AuthorityIssuer::new(binding.issuer, binding.key, binding.authority),
-            scope: binding.scope,
-        })
-    }
-}
-
 /// A configured caller checked against its retained admission.
-#[derive(Clone, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub struct ConfiguredRecursiveCaller {
     /// Admitted caller task.
     pub task: TaskId,
@@ -79,16 +64,13 @@ pub struct ConfiguredRecursiveCaller {
     /// Caller scratch volume.
     pub private_volume: VolumeRef,
     /// Optional artifact volume.
-    #[serde(default)]
     pub result_volume: Option<VolumeRef>,
     /// Retained native snapshot metadata.
-    #[serde(default)]
     pub native_snapshot: Option<Value>,
 }
 
 /// One independently allocated child and its finite preparation bounds.
-#[derive(Clone, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub struct ConfiguredRecursiveFork {
     /// Admitted parent task.
     pub caller: TaskId,
@@ -99,31 +81,18 @@ pub struct ConfiguredRecursiveFork {
     /// Child scratch volume.
     pub private_volume: VolumeRef,
     /// Optional child artifact volume.
-    #[serde(default)]
     pub result_volume: Option<VolumeRef>,
     /// Canonical child admission.
-    #[serde(deserialize_with = "canonical_admission")]
-    #[heap_layout(as = crate::heap_layout::markers::Canonical<TaskAdmissionRecord>)]
     pub admission: TaskAdmissionRecord,
     /// JSON pointer for the child message.
     pub child_message_pointer: String,
     /// Optional JSON pointer for the message file.
-    #[serde(default)]
     pub child_message_file_pointer: Option<String>,
     /// Files available to the child input.
-    #[serde(default)]
     pub input_files: Vec<crate::conversation::FileRef>,
     /// Finite fork preparation limits.
     pub limits: ForkPreparationLimits,
 }
-fn canonical_admission<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<TaskAdmissionRecord, D::Error> {
-    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?, &mut None)
-        .map(|(admission, _)| admission)
-        .map_err(serde::de::Error::custom)
-}
-
 /// An explicit read-only Project import and its canonical notice.
 #[derive(Clone, serde::Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -137,8 +106,13 @@ pub struct ConfiguredRecursiveMerge {
 }
 
 /// Finite provider configuration for the portable recursive tools.
-#[derive(Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
+///
+/// Build this value alongside the runtime that owns its issuer handles.
+///
+/// ```compile_fail
+/// use acyclic_harness_core::filesystem::ConfiguredRecursiveToolsConfig;
+/// let config: ConfiguredRecursiveToolsConfig = serde_json::from_str("{}").unwrap();
+/// ```
 pub struct ConfiguredRecursiveToolsConfig {
     /// Authorized callers.
     pub callers: Vec<ConfiguredRecursiveCaller>,
@@ -156,4 +130,61 @@ pub struct ConfiguredRecursiveToolsConfig {
     pub inherited_references: u32,
     /// Finite content verification budget.
     pub content_budget: WorkBudget,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_binding_uses_runtime_custody_and_rejects_a_foreign_scope() -> Result<()> {
+        let authority = Authority {
+            kind: crate::core::AggregateKind::Task,
+            id: "configured-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("configured", [71; 32], authority.clone());
+        let agent = crate::AgentId::from_bytes([72; 16]);
+        let binding = ConfiguredRecursiveAuthorityBinding {
+            scope: issuer.issue(
+                "owner",
+                &Capabilities::default(),
+                Some(agent),
+                None,
+                &mut None,
+            )?,
+            issuer,
+        };
+        let provider =
+            ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let volume = |id: &str, class, owner| {
+            VolumeRef::new(provider.clone(), id.into(), class, owner, &mut None)
+        };
+        let project = volume(
+            "project",
+            crate::conversation::VolumeClass::Project,
+            VolumeOwner::Project("project".into()),
+        )?;
+        let private = volume(
+            "private",
+            crate::conversation::VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        binding.validate_volumes(&provider, &project, &private, None)?;
+        let foreign = AuthorityIssuer::new("configured", [73; 32], authority);
+        let forged = ConfiguredRecursiveAuthorityBinding {
+            issuer: binding.issuer.clone(),
+            scope: foreign.issue(
+                "owner",
+                &Capabilities::default(),
+                Some(agent),
+                None,
+                &mut None,
+            )?,
+        };
+        assert!(matches!(
+            forged.validate_volumes(&provider, &project, &private, None),
+            Err(Error::Unauthorized(_))
+        ));
+        Ok(())
+    }
 }
