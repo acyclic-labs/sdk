@@ -133,8 +133,11 @@ impl PartialEq for PiOwnerConfig {
     fn eq(&self, other: &Self) -> bool {
         self.version == other.version
             && self.key_ref == other.key_ref
-            && self.key.is_none()
-            && other.key.is_none()
+            && match (&self.key, &other.key) {
+                (Some(left), Some(right)) => acyclic_auth::crypto::authentication_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
             && self.policy == other.policy
             && self.native_runtime == other.native_runtime
     }

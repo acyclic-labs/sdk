@@ -254,12 +254,14 @@ fn owner_reopen_preserves_expired_policy_and_original_authority() {
 }
 
 #[test]
-fn concurrent_initialization_publishes_one_owner() {
+fn concurrent_initialization_publishes_one_owner()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir().unwrap();
     let owners = [
         PiOwnerConfig::new(&policy(), None, &work()).unwrap(),
         PiOwnerConfig::new(&policy(), None, &work()).unwrap(),
     ];
+    let references = owners.each_ref().map(|owner| owner.key_ref);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let accepted = std::thread::scope(|threads| {
         owners
@@ -279,71 +281,77 @@ fn concurrent_initialization_publishes_one_owner() {
         PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap()
             == *owners.get(usize::from(*accepted.get(1).unwrap())).unwrap()
     );
+    drop(owners);
+    for (reference, published) in references.into_iter().zip(accepted) {
+        assert_eq!(
+            reference
+                .ok_or("owner has no signing custody")?
+                .with_seed(|_| ())
+                .is_ok(),
+            published
+        );
+    }
+    Ok(())
 }
 
 #[test]
-fn legacy_pi_seed_moves_to_shared_custody_without_changing_authority() {
+fn legacy_pi_seed_moves_to_shared_custody_without_changing_authority()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let (directory, owner) = credential_fixture(&policy());
-    let original = owner.authority(&work()).unwrap();
-    let seed = owner
-        .signing_key()
-        .unwrap()
-        .with_seed(|seed| *seed)
-        .unwrap();
+    let original = owner.authority(&work())?;
+    let seed = owner.signing_key()?.with_seed(|seed| *seed)?;
     // Actual former writer: its framed private record contains the seed as JSON.
-    let mut legacy = serde_json::to_value(&owner).unwrap();
-    legacy.as_object_mut().unwrap().remove("key_ref");
+    let mut legacy = serde_json::to_value(&owner)?;
     legacy
         .as_object_mut()
-        .unwrap()
+        .ok_or("owner must be an object")?
+        .remove("key_ref");
+    legacy
+        .as_object_mut()
+        .ok_or("owner must be an object")?
         .insert("key".into(), json!(seed));
-    let plain = serde_json::to_vec(&legacy).unwrap();
+    let plain = serde_json::to_vec(&legacy)?;
     let bytes = owner_record::encode_with(&plain, MAXIMUM_OWNER_BYTES, None, |parts| {
         Ok::<_, std::io::Error>(parts.concat())
-    })
-    .unwrap();
+    })?;
     let path = directory.path().join(OWNER_FILE);
-    fs::write(&path, bytes).unwrap();
-    let reopened = PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap();
+    fs::write(&path, bytes)?;
+    let reopened = PiOwnerConfig::load(directory.path(), Path::new(""), &work())?;
     reopened
-        .authority(&work())
-        .unwrap()
+        .authority(&work())?
         .verifier
-        .verify(&original.signed, &mut None)
-        .unwrap();
-    assert_eq!(
-        reopened.signing_key().unwrap(),
-        owner.signing_key().unwrap()
-    );
-    let record = fs::read(&path).unwrap();
+        .verify(&original.signed, &mut None)?;
+    assert_eq!(reopened.signing_key()?, owner.signing_key()?);
+    let record = fs::read(&path)?;
     let value = owner_record::decode_with(&record, MAXIMUM_OWNER_BYTES, None, |plain| {
         serde_json::from_slice::<serde_json::Value>(plain).map_err(std::io::Error::other)
-    })
-    .unwrap();
+    })?;
     assert!(legacy.get("key").is_some());
     assert!(value.get("key").is_none());
     assert_eq!(
         value.get("key_ref"),
-        serde_json::to_value(&owner).unwrap().get("key_ref")
+        serde_json::to_value(&owner)?.get("key_ref")
     );
-    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap() == reopened);
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work())? == reopened);
+    Ok(())
 }
 
 #[test]
-fn pi_refuses_missing_or_ambiguous_signing_custody_before_bootstrap() {
-    let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
-    let value = serde_json::to_value(&owner).unwrap();
+fn pi_refuses_missing_or_ambiguous_signing_custody_before_bootstrap()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let owner = PiOwnerConfig::new(&policy(), None, &work())?;
+    let value = serde_json::to_value(&owner)?;
     for ambiguous in [false, true] {
         let mut invalid = value.clone();
         if ambiguous {
             invalid
                 .as_object_mut()
-                .unwrap()
+                .ok_or("owner must be an object")?
                 .insert("key".into(), json!(vec![9u8; 32]));
         } else {
-            *invalid.get_mut("key_ref").unwrap() = json!(vec![0u8; 32]);
+            *invalid.get_mut("key_ref").ok_or("missing reference")? = json!(vec![0u8; 32]);
         }
-        let invalid: PiOwnerConfig = serde_json::from_value(invalid).unwrap();
+        let invalid: PiOwnerConfig = serde_json::from_value(invalid)?;
         assert!(invalid.authority(&work()).is_err());
         assert!(
             invalid
@@ -351,6 +359,7 @@ fn pi_refuses_missing_or_ambiguous_signing_custody_before_bootstrap() {
                 .is_err()
         );
     }
+    Ok(())
 }
 
 #[test]
