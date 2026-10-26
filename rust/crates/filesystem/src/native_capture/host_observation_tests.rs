@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn root_identity_keeps_the_real_native_open_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("file");
+    std::fs::write(&file, b"not a directory")?;
+    let paths = [file, directory.path().join("missing")];
+    #[cfg(unix)]
+    let paths = {
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink(directory.path(), &link)?;
+        paths.into_iter().chain([link])
+    };
+    for path in paths {
+        // Observe the host's actual failure, rather than inventing errno or
+        // assuming that different kernels reject a no-follow open identically.
+        let Err(DemandError::Io(expected)) =
+            HostRoot::open(&path, &mut crate::native_host::ordinary_work())
+        else {
+            panic!("invalid root did not return a native open error: {path:?}");
+        };
+        match capture_root_identity(&path) {
+            Err(CaptureError::Kernel(error)) => match *error {
+                crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(actual)) => {
+                    assert_eq!(actual.kind(), expected.kind());
+                    assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+                }
+                error => panic!("native root open lost its cause: {error:?}"),
+            },
+            result => panic!("native root open lost its cause: {result:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn only_absent_paths_may_become_deletions() -> Result<(), Box<dyn std::error::Error>> {
     for kind in [
         std::io::ErrorKind::NotFound,

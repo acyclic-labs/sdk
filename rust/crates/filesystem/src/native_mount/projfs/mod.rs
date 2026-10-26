@@ -111,6 +111,7 @@ use staging::*;
 mod replacement;
 use replacement::*;
 mod session;
+pub(super) use session::native_hresult;
 pub(super) use session::*;
 mod lifecycle;
 mod recovery;

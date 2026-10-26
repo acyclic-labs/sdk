@@ -23,17 +23,13 @@ fn cached(cache: &Arc<Cache<Native>>, path: &Path) -> io::Result<Arc<Entry<Nativ
 }
 
 /// Descriptors this process holds on files under `directory`.
-#[cfg(target_os = "linux")]
 fn descriptors_under(directory: &Path) -> io::Result<usize> {
-    let mut count = 0;
-    for entry in std::fs::read_dir("/proc/self/fd")? {
-        if let Ok(target) = std::fs::read_link(entry?.path())
-            && target.starts_with(directory)
-        {
-            count += 1;
-        }
-    }
-    Ok(count)
+    Ok(crate::resources::descriptors()?
+        .into_iter()
+        .filter(|descriptor| {
+            matches!(descriptor, crate::resources::Descriptor::File(path) if path.starts_with(directory))
+        })
+        .count())
 }
 
 fn write_at(entry: &Arc<Entry<Native>>, offset: u64, bytes: &[u8]) -> io::Result<()> {
@@ -62,7 +58,6 @@ fn idle_files_hold_at_most_the_capacity_in_descriptors() -> io::Result<()> {
         write_at(file, 0, format!("file {index}").as_bytes())?;
     }
     assert!(cache.cached() <= 4, "{} cached", cache.cached());
-    #[cfg(target_os = "linux")]
     assert!(descriptors_under(&directory_path)? <= 4);
     // Every file reopens with its contents.
     for (index, file) in files.iter().enumerate() {

@@ -161,14 +161,6 @@ where
         self.retiring
             .store(true, std::sync::atomic::Ordering::Release);
         session.stop_with_context(&cleanup)?;
-        #[cfg(windows)]
-        if let Some((cause, _)) = session
-            .namespace_outcome
-            .as_mut()
-            .and_then(super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures)
-        {
-            return Err(cause.into());
-        }
         owner.take();
         self.source.cancel();
         Ok(())
@@ -191,7 +183,8 @@ where
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
         let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
-        self.mount(destination.path(), options.for_task_view()).await
+        self.mount(destination.path(), options.for_task_view())
+            .await
     }
 
     /// Mounts the complete workspace or one exact subtree as a native

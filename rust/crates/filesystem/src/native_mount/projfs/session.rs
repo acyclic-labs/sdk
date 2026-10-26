@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::retirement::SourceRetirementWait;
 use crate::native_mount::shared::outcome::CallbackFailure;
 
 // SAFETY: the projection loop drains before its owner stops the SDK context.
@@ -31,6 +32,42 @@ pub(in crate::native_mount) struct ProjFsSession {
     /// This view's place in a shared instance; a shared view owns no
     /// virtualization root, callback pool or projector thread.
     pub(super) shared: Option<super::shared::SharedProjFsView>,
+}
+
+/// Exercises the post-namespace physical stop with a real retained source,
+/// independently of the host's optional projection filter installation.
+#[cfg(test)]
+pub(in crate::native_mount) fn retire_source_in_physical_stop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let original = crate::NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let mut session = ProjFsSession {
+        controller: None,
+        context: None,
+        runtime: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+            terminal_source_failure: None,
+            warm_namespace: None,
+        }),
+        original_stop_work: original,
+        sdk_stop_credit: None,
+        worker_close_credit: None,
+        namespace_outcome: None,
+        qualification: None,
+        capture_failure: None,
+        capture_attempted: false,
+        projection_cleanup: None,
+        shared: None,
+    };
+    session.stop_physical()?;
+    Ok(session.retirement.is_none())
 }
 
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
@@ -325,7 +362,7 @@ impl ProjFsSession {
                 drop(self.projection_cleanup.take());
             }
             if let Some(retirement) = self.retirement.as_mut() {
-                retirement.retire(None)?;
+                retirement.retire(None, SourceRetirementWait::Physical)?;
             }
             if self
                 .retirement
@@ -358,7 +395,7 @@ impl ProjFsSession {
             .map(crate::NativeMaterializationWork::allocation_work);
         drop(installed);
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire_source_and_watch_with_cleanup(None)?;
+            retirement.retire_source_and_watch_with_join(None, SourceRetirementWait::Physical)?;
         }
         if let Some(context) = self.context {
             let credit = self
@@ -397,8 +434,10 @@ impl ProjFsSession {
                 });
         let state = std::mem::take(&mut *lock_recover(&runtime.projector.state));
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
-            capture_failure: self.capture_failure.take(),
-            cleanup_failure,
+            failures: crate::native_mount::retirement::TerminalFailures {
+                producer: self.capture_failure.take(),
+                cleanup: cleanup_failure,
+            },
             _state: state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
@@ -412,17 +451,19 @@ impl ProjFsSession {
             // Never delete data whose publication or capture failed: the
             // directory stays, served by no view, and the outcome keeps the
             // cause.
-            let preserve = outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some();
+            let preserve = !outcome.failures.is_empty();
             if let Err(error) = view.finish(preserve) {
-                outcome.cleanup_failure.get_or_insert(error);
+                outcome.failures.cleanup.get_or_insert(error);
             }
             // The last view's drop stops the instance.
             drop(view);
         }
         if let Some(cleanup) = self.projection_cleanup.as_mut() {
-            if self.namespace_outcome.as_ref().is_some_and(|outcome| {
-                outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some()
-            }) {
+            if self
+                .namespace_outcome
+                .as_ref()
+                .is_some_and(|outcome| !outcome.failures.is_empty())
+            {
                 // Never delete data whose publication/capture failed. Remove
                 // only the detached root tag; the outcome retains the cause.
                 cleanup.0.clear();
@@ -431,7 +472,7 @@ impl ProjFsSession {
             drop(self.projection_cleanup.take());
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None)?;
+            retirement.retire(None, SourceRetirementWait::Physical)?;
         }
         if self
             .retirement

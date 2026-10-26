@@ -381,6 +381,18 @@ impl From<crate::watch::NativeWatchError> for DemandError {
 #[cfg(feature = "native-mount")]
 impl From<crate::native_mount::MountSourceError> for DemandError {
     fn from(error: crate::native_mount::MountSourceError) -> Self {
-        Self::Mount(Box::new(error))
+        use crate::native_mount::MountSourceError;
+        match error {
+            MountSourceError::Demand(error) => error,
+            MountSourceError::Work(error) => Self::Work(error),
+            MountSourceError::Cancelled => Self::Cancelled,
+            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(error)) => {
+                Self::Work(error)
+            }
+            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
+                Self::Cancelled
+            }
+            error => Self::Mount(Box::new(error)),
+        }
     }
 }

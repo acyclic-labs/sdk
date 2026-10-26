@@ -13,6 +13,7 @@ source-catalog = []
 acyclic-differential = { path = "../differential" }
 
 [dev-dependencies]
+tempfile = "3.27.0"
 proptest.workspace = true
 
 [lints.rust]

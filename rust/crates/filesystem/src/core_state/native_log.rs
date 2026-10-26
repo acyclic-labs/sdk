@@ -5,9 +5,6 @@ impl CoreLog {
         &mut self,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
-        if self.file_control.is_none() {
-            self.file_control = Some(super::group::file_control(work)?);
-        }
         self.residents().adopt_native(work)?;
         let needed = self.dirty.len();
         reserve_retained_slots(&mut self.dirty, needed, Some(work), &mut self.slots)

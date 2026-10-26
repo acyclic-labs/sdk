@@ -326,7 +326,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let trailing = {
         let mut attempt = 0;
         loop {
-            session.watcher.begin_rescan().map_err(engine)?;
+            let rescan = session.watcher.begin_rescan().map_err(engine)?;
             let policy = session.capture_policy.clone();
             let capture = crate::capture_baseline(
                 &mut session.checkout,
@@ -337,9 +337,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             )
             .await;
             if let Err(error) = capture {
-                let _ = session
-                    .watcher
-                    .abort_rescan(WatchInvalidationReason::BackendError);
+                rescan.abort(WatchInvalidationReason::BackendError);
                 let _ = persist_session_state(
                     session,
                     SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
@@ -348,7 +346,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 discard_unpublished_capture(session).await?;
                 return Err(engine(error));
             }
-            let batch = session.watcher.finish_rescan().map_err(engine)?;
+            let batch = session.watcher.finish_rescan(rescan).map_err(engine)?;
             if matches!(
                 batch,
                 WatchBatch::RescanRequired {
@@ -393,19 +391,14 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 async fn discard_unpublished_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
 ) -> Result<(), SourceError> {
-    let base = session.checkout.generation_id();
-    session.checkout = session
-        .workspace
-        .volume
-        .checkout(
-            GenerationSelector::Exact(base),
-            CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+    // Reset the private tree through the checkout's one discard boundary.
+    // Reopening Exact(base) also reads today's authority head, accepting a
+    // concurrent publication which the original capture never observed.
+    session
+        .checkout
+        .discard(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map_err(engine)?
-        .value;
+        .map_err(engine)?;
     Ok(())
 }
 
@@ -1765,7 +1758,7 @@ mod tests {
     ) -> Result<crate::GenerationId, Box<dyn std::error::Error>> {
         let mut session = source.inner.lock().await;
         begin_source_operation(&mut session, key, operation).await?;
-        session.watcher.begin_rescan()?;
+        let rescan = session.watcher.begin_rescan()?;
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
         crate::capture_baseline(
@@ -1776,7 +1769,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await?;
-        let trailing = session.watcher.finish_rescan()?;
+        let trailing = session.watcher.finish_rescan(rescan)?;
         crate::capture_watch_batch(
             &mut session.checkout,
             trailing,
@@ -2145,6 +2138,140 @@ mod tests {
                 .id(),
             advanced
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discarded_clean_capture_keeps_the_original_authority_fence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        discarded_capture_keeps_the_original_authority_fence(false).await
+    }
+
+    #[tokio::test]
+    async fn discarded_changed_capture_keeps_the_original_authority_fence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        discarded_capture_keeps_the_original_authority_fence(true).await
+    }
+
+    async fn discarded_capture_keeps_the_original_authority_fence(
+        changed: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("source.txt"), b"source")?;
+        let workspace = Box::pin(Fs::memory().attach_directory(
+            "discarded-source-authority-fence",
+            root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        let source = workspace.source().ok_or("source missing")?;
+        let key = IdempotencyKey::new();
+        let acknowledged = {
+            let mut session = source.inner.lock().await;
+            begin_source_operation(&mut session, key, SourceOperation::Rescan).await?;
+            stage_source_file(&mut session.checkout, b"unpublished").await?;
+            assert!(session.checkout.has_pending_mutations());
+            session.checkout.generation_id()
+        };
+
+        // A different publisher can advance authority without changing the
+        // generation digest. The original source still owes that exact fence.
+        let mut unrelated = workspace
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
+        let advance = unrelated
+            .commit_even_if_clean(
+                IdempotencyKey::new().operation_id(),
+                None,
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                &mut |_| async {
+                    crate::FsResult::Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+                None,
+            )
+            .await?
+            .value;
+        match advance {
+            LivePublicationObservation::Committed { generation_id, .. } => {
+                assert_eq!(generation_id, acknowledged);
+            }
+            _ => return Err("independent authority publication was not committed".into()),
+        }
+
+        let outcome = {
+            let mut session = source.inner.lock().await;
+            discard_unpublished_capture(&mut session).await?;
+            assert!(!session.checkout.has_pending_mutations());
+            assert_eq!(session.checkout.generation_id(), acknowledged);
+            if changed {
+                stage_source_file(&mut session.checkout, b"captured").await?;
+                assert!(session.checkout.has_pending_mutations());
+            }
+            publish_session(
+                &mut session,
+                key,
+                SourceOperation::Rescan,
+                SourceState::Clean,
+            )
+            .await?
+        };
+        assert!(
+            matches!(outcome, ReconcileOutcome::Conflict),
+            "discard refreshed the original capture's publication authority"
+        );
+        assert!(matches!(
+            Box::pin(source.rescan_with_key(key)).await?,
+            ReconcileOutcome::Conflict
+        ));
+        assert_eq!(source.state().await, SourceState::Conflict);
+        assert_eq!(
+            workspace
+                .read(
+                    "/source.txt",
+                    16,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await?
+                .value,
+            acyclic_stream::OwnedBytes::from_static(b"source")
+        );
+        Ok(())
+    }
+
+    async fn stage_source_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        checkout: &mut Checkout<A, O>,
+        bytes: &'static [u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let limits = checkout.volume_config().limits;
+        let portable = crate::path::PortablePath::parse("/source.txt", limits)?;
+        let path = crate::kernel::NamespacePath::from_portable(&portable, limits)?;
+        checkout
+            .change_content(
+                path,
+                crate::ContentChange::Write {
+                    offset: 0,
+                    bytes: acyclic_stream::OwnedBytes::from_static(bytes),
+                },
+                crate::ContentTimes::Preserve,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
         Ok(())
     }
 

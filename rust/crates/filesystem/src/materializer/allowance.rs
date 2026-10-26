@@ -1,5 +1,5 @@
+use super::resource_lock::{Mutex, MutexGuard};
 use super::*;
-use crate::sync::{Mutex, MutexGuard};
 use crate::{DemandError, WorkBudget, WorkCounters, WorkError};
 use std::sync::{Arc, Weak};
 
@@ -19,6 +19,31 @@ pub(super) struct NativeResourceState {
     pending: WorkCounters,
     allocations: crate::kernel::allocation::AllocationLedger,
     poisoned: bool,
+}
+// Admission holds every ancestor until the original operation commits. A
+// panic can interrupt that operation after an external effect; retaining an
+// unpoisoned resource would admit new work against an uncertain transaction.
+struct ResourceGuard<'a> {
+    state: MutexGuard<'a, NativeResourceState>,
+    entered_panicking: bool,
+}
+impl std::ops::Deref for ResourceGuard<'_> {
+    type Target = NativeResourceState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for ResourceGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+impl Drop for ResourceGuard<'_> {
+    fn drop(&mut self) {
+        if !self.entered_panicking && std::thread::panicking() {
+            self.state.poisoned = true;
+        }
+    }
 }
 impl NativeResourceState {
     fn check(&self) -> Result<(), DemandError> {
@@ -90,12 +115,16 @@ impl NativeResourceAllowance {
                 self.budget.items_examined.min(parent.admitted_item_limit())
             })
     }
-    fn lock(&self) -> MutexGuard<'_, NativeResourceState> {
-        self.state.lock().unwrap_or_else(|error| {
+    fn lock(&self) -> ResourceGuard<'_> {
+        let state = super::resource_lock::lock(&self.state).unwrap_or_else(|error| {
             let mut state = error.into_inner();
             state.poisoned = true;
             state
-        })
+        });
+        ResourceGuard {
+            state,
+            entered_panicking: std::thread::panicking(),
+        }
     }
     pub(super) fn contains_scope(&self, other: &Self) -> bool {
         std::ptr::eq(self, other)
@@ -338,3 +367,6 @@ impl NativeResourceAllowance {
         })
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod tests;

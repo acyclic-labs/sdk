@@ -7,6 +7,189 @@ enum Event {
     Retired(Result<(), NativeMountError>),
 }
 
+#[derive(Clone, Copy)]
+enum Retirement {
+    Meter,
+    AcceptedWait,
+    LastOwner,
+}
+
+#[test]
+fn failed_worker_retires_its_destination_before_reporting_both_causes()
+-> Result<(), Box<dyn std::error::Error>> {
+    for metered in [false, true] {
+        terminal_worker_retires_destination(false, metered)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn panicked_worker_retires_its_destination_without_losing_its_payload()
+-> Result<(), Box<dyn std::error::Error>> {
+    for metered in [false, true] {
+        terminal_worker_retires_destination(true, metered)?;
+    }
+    Ok(())
+}
+
+fn terminal_worker_retires_destination(
+    panicked: bool,
+    metered: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::tests::retirement::{Fixture, retired};
+
+    let Fixture {
+        root,
+        mut session,
+        work,
+        fence,
+    } = Fixture::new()?;
+    let missing = root.path().join("absent-worker-input");
+    let worker = std::thread::spawn(move || {
+        assert!(!panicked, "retained FUSE worker panic");
+        std::fs::read(missing).map(drop)
+    });
+    let cleanup_error =
+        std::fs::read(root.path()).expect_err("a directory cannot be read as source bytes");
+    let cleanup_code = cleanup_error.raw_os_error();
+    let (callbacks, _) = shared_sources(posix_config())?;
+    let core = projection_core(
+        Arc::new(callbacks),
+        crate::WorkBudget::UNBOUNDED,
+        work.cancellation(),
+    )?;
+    core.stop();
+    let state = Arc::new(Mutex::new(FuseSessionState {
+        path: super::super::FuseOwned::empty(vec![0]),
+        before: None,
+        mount: super::super::mount::Mount::default(),
+        worker: Some(worker),
+        device: None,
+        notifier: None,
+        identity: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: None,
+            destination_guard: session.destination_guard.take(),
+            startup_source_watch: None,
+            terminal_source_failure: Some(cleanup_error.into()),
+        }),
+        cleanup: work.reserve_work(crate::WorkCounters {
+            backend_read_operations: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
+        _allocation: work.claim(
+            std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?,
+    }));
+    let before = work.receipt();
+    // The real physical owner must return after the failed worker and source
+    // have exited. The old early-return path parks here with the fence held.
+    run_fuse_session((Arc::clone(&core), Arc::clone(&state)));
+    assert!(
+        state
+            .lock()
+            .map_err(|_| "retirement state poisoned")?
+            .is_retired()
+    );
+    retired(root.path(), &fence, before, &work)?;
+    let mut facade = super::super::FuseSession {
+        core,
+        state,
+        invalidator: None,
+    };
+    let wait = crate::CancellationToken::new();
+    let stop = if metered {
+        NativeSessionStopWork::Meter(&work)
+    } else {
+        NativeSessionStopWork::AcceptedWait(&wait)
+    };
+    let mut outcomes = facade.stop(&stop)?;
+    let first = outcomes
+        .take()
+        .ok_or("worker error was lost during cleanup")?;
+    if panicked {
+        let NativeMountError::DriverPanicked { panic, .. } = first else {
+            panic!("worker panic changed to {first:?}");
+        };
+        let payload = panic.into_inner().map_err(|_| "panic payload poisoned")?;
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"retained FUSE worker panic")
+        );
+    } else {
+        assert!(
+            matches!(first, NativeMountError::Io(ref cause) if cause.kind() == std::io::ErrorKind::NotFound)
+        );
+    }
+    let second = outcomes
+        .take()
+        .ok_or("source error was lost during cleanup")?;
+    assert!(
+        matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code)
+    );
+    assert!(outcomes.is_empty());
+    assert!(facade.stop(&stop)?.is_empty());
+    assert_eq!(
+        work.receipt().allocation_operations,
+        before.allocation_operations
+    );
+    assert_eq!(
+        work.receipt().peak_allocation_bytes,
+        before.peak_allocation_bytes
+    );
+    Ok(())
+}
+
+/// Runs the real physical loop after namespace/device retirement, retaining a
+/// real caller-supplied source packet. No live kernel mount is needed to drive
+/// the remaining source-join obligation.
+pub(in crate::native_mount) fn retire_source_in_physical_loop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let (callbacks, _) = shared_sources(posix_config())
+        .map_err(|cause| NativeMountError::Driver(cause.to_string()))?;
+    let work = fuse_fixture_work();
+    let core = projection_core(
+        Arc::new(callbacks),
+        crate::WorkBudget::UNBOUNDED,
+        work.cancellation(),
+    )?;
+    core.stop();
+    let state = Arc::new(Mutex::new(FuseSessionState {
+        path: super::super::FuseOwned::empty(vec![0]),
+        before: None,
+        mount: super::super::mount::Mount::default(),
+        worker: None,
+        device: None,
+        notifier: None,
+        identity: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+            terminal_source_failure: None,
+        }),
+        cleanup: work.reserve_work(crate::WorkCounters::UNCHARGED)?,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
+        _allocation: work.claim(
+            std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?,
+    }));
+    run_fuse_session((core, Arc::clone(&state)));
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(error) = state.failure.take() {
+        return Err(error);
+    }
+    Ok(state.is_retired())
+}
+
 fn waiting_mount(
     polling: Sender<Event>,
     acknowledged: Receiver<()>,
@@ -38,7 +221,7 @@ fn waiting_mount(
 fn accepted_unmount_waits_for_kernel_ack_using_birth_credit()
 -> Result<(), Box<dyn std::error::Error>> {
     for interrupted in [false, true] {
-        interleaving(false, interrupted)?;
+        interleaving(Retirement::AcceptedWait, interrupted)?;
     }
     Ok(())
 }
@@ -46,12 +229,22 @@ fn accepted_unmount_waits_for_kernel_ack_using_birth_credit()
 #[test]
 fn accepted_unmount_waits_for_kernel_ack_on_meter() -> Result<(), Box<dyn std::error::Error>> {
     for interrupted in [false, true] {
-        interleaving(true, interrupted)?;
+        interleaving(Retirement::Meter, interrupted)?;
     }
     Ok(())
 }
 
-fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
+#[test]
+fn last_session_drop_waits_for_kernel_ack_using_birth_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    for interrupted in [false, true] {
+        interleaving(Retirement::LastOwner, interrupted)?;
+    }
+    Ok(())
+}
+
+fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let meter = matches!(mode, Retirement::Meter);
     let (source, _) = shared_sources(posix_config())?;
     let core = projection_core(
         Arc::new(source),
@@ -106,7 +299,7 @@ fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error
         identity: None,
         retirement: None,
         cleanup,
-        failure: None,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
         shared: None,
         _allocation: allocation,
     }));
@@ -117,13 +310,32 @@ fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error
     };
     let caller = original.clone();
     let worker = std::thread::spawn(move || {
-        let wait = crate::CancellationToken::new();
-        let work = if meter {
-            NativeSessionStopWork::Meter(&caller)
-        } else {
-            NativeSessionStopWork::AcceptedWait(&wait)
+        let result = match mode {
+            Retirement::Meter => facade
+                .stop(&NativeSessionStopWork::Meter(&caller))
+                .map(|outcome| assert!(outcome.is_empty())),
+            Retirement::AcceptedWait => {
+                let wait = crate::CancellationToken::new();
+                facade
+                    .stop(&NativeSessionStopWork::AcceptedWait(&wait))
+                    .map(|outcome| assert!(outcome.is_empty()))
+            }
+            Retirement::LastOwner => {
+                let mut owner = crate::NativeMountSession::new(
+                    crate::NativeMountRequest {
+                        mount_id: crate::MountId::new(),
+                        volume_id: crate::VolumeId::new(),
+                        destination: Path::new("/not-mounted").to_path_buf(),
+                        writable: false,
+                    },
+                    None,
+                    None,
+                );
+                owner.driver = Some(facade);
+                drop(owner);
+                Ok(())
+            }
         };
-        let result = facade.stop(&work);
         events.send(Event::Retired(result)).unwrap();
     });
     match observed.recv()? {

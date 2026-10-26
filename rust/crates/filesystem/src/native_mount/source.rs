@@ -504,6 +504,9 @@ pub enum MountSourceError {
     /// The canonical filesystem retains its exact original typed cause.
     #[error(transparent)]
     Filesystem(crate::FsError),
+    /// Original source dependency cause, moved without allocating a diagnostic.
+    #[error("source demand failed: {0}")]
+    Demand(#[source] crate::DemandError),
     /// The acknowledged operation has no original logical snapshot evidence.
     #[error("original selected-import snapshot is unavailable")]
     OriginalSnapshotUnavailable,

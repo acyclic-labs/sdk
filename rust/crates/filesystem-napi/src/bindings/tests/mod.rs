@@ -261,6 +261,29 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
     Box::pin(shared.lock())
         .await
         .clear_retained_operation(unresolved);
+    assert!(
+        Box::pin(watcher.reconcile(NapiU32(0), NapiU32(64)))
+            .await
+            .is_err()
+    );
+    Box::pin(shared.lock())
+        .await
+        .ensure_publication_resolved()?;
+    let polled = watcher.inner.lock().map_err(|_| "poisoned watcher")?.poll(
+        64,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    );
+    assert!(
+        matches!(
+            polled,
+            Ok(acyclic_fs::OperationReceipt {
+                value: WatchBatch::RescanRequired { .. },
+                ..
+            })
+        ),
+        "failed binding baseline retained scan custody: {polled:?}"
+    );
     Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
     Ok(())
 }

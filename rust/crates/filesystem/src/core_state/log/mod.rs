@@ -2,7 +2,9 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct CoreLog {
-    pub(super) file: Arc<acyclic_native_runtime::CachedFile>,
+    /// Held open only while recently used, so an idle owner's log costs no
+    /// descriptor; writes name their offsets, since a reopen has no cursor.
+    pub(super) file: acyclic_native_runtime::CachedFile,
     /// Bytes appended to the log.
     pub(super) length: u64,
     /// Bytes of the log known to be durable.
@@ -11,12 +13,10 @@ pub(super) struct CoreLog {
     pub(super) sequence: u64,
     pub(super) residents: Arc<RwLock<Residents>>,
     pub(super) dirty: Vec<RecordKey>,
-    /// The log may hold a frame whose outcome is unknown, so it must be
+    /// Refuse further use when a frame or durability outcome is unknown.
     pub(super) broken: bool,
     pub(super) slots: Option<crate::materializer::NativeAllocation>,
     pub(super) residents_control: Option<crate::materializer::NativeAllocation>,
-    // Last: the shared file and its control block must be released first.
-    pub(super) file_control: Option<crate::materializer::NativeAllocation>,
 }
 
 impl CoreLog {
@@ -29,7 +29,6 @@ impl CoreLog {
         let meter = work.map(crate::materializer::NativeMaterializationWork::runtime_meter);
         self.file.lease_metered(meter.as_deref())
     }
-
 
     pub(in crate::core_state) fn residents(&self) -> RwLockWriteGuard<'_, Residents> {
         self.residents

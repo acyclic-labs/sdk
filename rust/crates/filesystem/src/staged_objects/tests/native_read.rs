@@ -112,7 +112,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
     );
 
     store
-        .spill_file(&mut *store.spill_io.write().await)
+        .spill_file(&mut *store.spill_io.write().await, None)
         .await?
         .write_all_batch_async(vec![OwnedWrite {
             offset: 0,
@@ -252,7 +252,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
         let offset = store.index().spill_end;
         let spill_bytes = second_bytes.clone();
         store
-            .spill_file(&mut spill_file)
+            .spill_file(&mut spill_file, None)
             .await?
             .control_async(
                 move |file, _| {

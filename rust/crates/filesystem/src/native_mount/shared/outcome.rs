@@ -1,15 +1,14 @@
-//! What a failed native callback reports, classified once for every OS.
-//!
-//! Each backend answers its kernel in its own codes (an errno for FUSE and
-//! NFS, an `HRESULT` for `ProjFS`), but what a failure means is decided here,
-//! once: a cancellation is always [`CallbackFailure::Cancelled`] however it
-//! arrives, and only a stale node, view or source is
-//! [`CallbackFailure::Stale`]. An adapter only spells the classification.
-
+//! One semantic classification for every native namespace adapter.
 use crate::native_mount::{MountSourceError, NativeMountError};
+
+mod retention;
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+pub(crate) use retention::callback_is_terminal;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallbackFailure {
+    Denied,
+    ReadOnly,
     NotFound,
     AlreadyExists,
     NotDirectory,
@@ -17,132 +16,24 @@ pub(crate) enum CallbackFailure {
     DirectoryNotEmpty,
     Invalid,
     Unsupported,
+    Stale,
+    Cancelled,
     OutOfMemory,
     TooLarge,
-    Denied,
-    /// A write to a read-only tree.
-    ReadOnly,
-    Cancelled,
-    Stale,
-    /// The OS's own code, from a host call that failed with it.
     Os(i32),
     Io,
 }
 
 impl CallbackFailure {
-    pub(crate) fn of(error: &NativeMountError) -> Self {
-        match error {
-            NativeMountError::Source(error) => Self::of_source(error),
-            NativeMountError::Demand(crate::DemandError::Mount(error)) => Self::of_source(error),
-            NativeMountError::Demand(crate::DemandError::Cancelled) => Self::Cancelled,
-            NativeMountError::Materialization(error) => Self::of_materialization(error),
-            NativeMountError::Io(error) => Self::of_io(error),
-            NativeMountError::Allocation(_) => Self::OutOfMemory,
-            NativeMountError::CallbackDenied { .. } => Self::Denied,
-            #[cfg(target_os = "linux")]
-            NativeMountError::FuseUnsupportedCapabilities(_) => Self::Unsupported,
-            _ => Self::Io,
-        }
-    }
-
-    pub(crate) fn of_source(error: &MountSourceError) -> Self {
-        match error.semantic_error() {
-            MountSourceError::NotFound => Self::NotFound,
-            MountSourceError::AlreadyExists => Self::AlreadyExists,
-            MountSourceError::NotDirectory => Self::NotDirectory,
-            MountSourceError::IsDirectory => Self::IsDirectory,
-            MountSourceError::DirectoryNotEmpty => Self::DirectoryNotEmpty,
-            MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => Self::Invalid,
-            MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => {
-                Self::Unsupported
-            }
-            MountSourceError::Allocation(_) => Self::OutOfMemory,
-            MountSourceError::Io(error, _) => Self::of_io(error),
-            MountSourceError::NativeWork(error) => Self::of_materialization(error),
-            MountSourceError::WorkspaceCause(error) => Self::of_workspace(error),
-            MountSourceError::NativeCallbackDenied { .. } | MountSourceError::AccessDenied => {
-                Self::Denied
-            }
-            MountSourceError::ReadOnly => Self::ReadOnly,
-            MountSourceError::Filesystem(crate::FsError::Cancelled(_))
-            | MountSourceError::Cancelled => Self::Cancelled,
-            MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale)
-            | MountSourceError::Stale => Self::Stale,
-            MountSourceError::Engine(_)
-            | MountSourceError::Work(_)
-            | MountSourceError::Filesystem(_)
-            | MountSourceError::ServicesNotInitialized
-            | MountSourceError::ServiceUnavailable(_)
-            | MountSourceError::MutationFinalization { .. }
-            | MountSourceError::OriginalSnapshotUnavailable
-            | MountSourceError::Indeterminate
-            | MountSourceError::PublicationRetryLimit
-            | MountSourceError::NativeRecordJson(_, _)
-            | MountSourceError::NativeRecordLockTimeout(_, _)
-            | MountSourceError::NativeRecordOwnershipConflict(_, _)
-            | MountSourceError::NativeRecordContextTransaction(_, _)
-            | MountSourceError::NativeRecordCorrupt(_, _)
-            | MountSourceError::Metadata(_) => Self::Io,
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            MountSourceError::NativeWatchOriginalIo(_)
-            | MountSourceError::NativeWatchOriginalBackend(_) => Self::Io,
-        }
-    }
-
-    pub(crate) fn of_materialization(error: &crate::NativeTreeMaterializationError) -> Self {
-        match error {
-            crate::NativeTreeMaterializationError::Io(error) => Self::of_io(error),
-            crate::NativeTreeMaterializationError::Cancelled => Self::Cancelled,
-            crate::NativeTreeMaterializationError::AllocationFailed(_) => Self::OutOfMemory,
-            crate::NativeTreeMaterializationError::PayloadTooLarge { .. } => Self::TooLarge,
-            _ => Self::Io,
-        }
-    }
-
-    pub(crate) fn of_workspace(error: &crate::WorkspaceError) -> Self {
-        use crate::WorkspaceError;
-        use crate::kernel::NamespacePathError;
-        match error {
-            WorkspaceError::Cancelled(_)
-            | WorkspaceError::Filesystem(crate::FsError::Cancelled(_))
-            | WorkspaceError::NamespacePath(NamespacePathError::Cancelled) => Self::Cancelled,
-            WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) => {
-                Self::of_materialization(error)
-            }
-            WorkspaceError::NotFound | WorkspaceError::Filesystem(crate::FsError::NotFound) => {
-                Self::NotFound
-            }
-            WorkspaceError::NotDirectory
-            | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => Self::NotDirectory,
-            WorkspaceError::IsDirectory => Self::IsDirectory,
-            WorkspaceError::DirectoryNotEmpty => Self::DirectoryNotEmpty,
-            WorkspaceError::NamespacePath(NamespacePathError::Work(_)) => Self::Io,
-            WorkspaceError::NamespacePath(NamespacePathError::AllocationFailed)
-            | WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed) => {
-                Self::OutOfMemory
-            }
-            WorkspaceError::Name(_)
-            | WorkspaceError::Path(_)
-            | WorkspaceError::NotRegularFile
-            | WorkspaceError::NamespacePath(_) => Self::Invalid,
-            WorkspaceError::ReadLimitExceeded => Self::TooLarge,
-            WorkspaceError::StaleGeneration
-            | WorkspaceError::StaleSource
-            | WorkspaceError::StaleIdentity
-            | WorkspaceError::StaleTarget
-            | WorkspaceError::Filesystem(crate::FsError::SourceSnapshotStale) => Self::Stale,
-            _ => Self::Io,
-        }
-    }
-
-    fn of_io(error: &std::io::Error) -> Self {
+    fn io(error: &std::io::Error) -> Self {
         error.raw_os_error().map_or(Self::Io, Self::Os)
     }
 
-    /// The errno FUSE and NFS answer.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) const fn errno(self) -> i32 {
+    pub(crate) fn errno(self) -> i32 {
         match self {
+            Self::Denied => libc::EACCES,
+            Self::ReadOnly => libc::EROFS,
             Self::NotFound => libc::ENOENT,
             Self::AlreadyExists => libc::EEXIST,
             Self::NotDirectory => libc::ENOTDIR,
@@ -150,89 +41,130 @@ impl CallbackFailure {
             Self::DirectoryNotEmpty => libc::ENOTEMPTY,
             Self::Invalid => libc::EINVAL,
             Self::Unsupported => libc::EOPNOTSUPP,
+            Self::Stale => libc::ESTALE,
+            Self::Cancelled => libc::ECANCELED,
             Self::OutOfMemory => libc::ENOMEM,
             Self::TooLarge => libc::EFBIG,
-            Self::Denied => libc::EACCES,
-            Self::ReadOnly => libc::EROFS,
-            Self::Cancelled => libc::ECANCELED,
-            Self::Stale => libc::ESTALE,
             Self::Os(code) => code,
             Self::Io => libc::EIO,
         }
     }
 }
 
-/// Whether a failed callback stops the mount, on every backend alike.
-///
-/// A failure that answers the one request about the tree (a missing or
-/// existing name, a wrong kind, an invalid or unsupported request, a stale
-/// node, a host I/O error, an access policy's denial or a read-only tree) is
-/// only replied. A failure of the mount's own
-/// machinery (exhausted or cancelled work, a changed control or meter, a
-/// denied callback, failed allocation, a panic, or anything unclassified)
-/// is retained, and the mount reports it at its next sync or unmount.
-/// `ProjFS` notifications fail only with source errors and ask
-/// [`source_stops_mount`] directly.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-pub(crate) fn stops_mount(error: &NativeMountError) -> bool {
-    match error {
-        NativeMountError::Io(_) => false,
-        NativeMountError::Source(error) => source_stops_mount(error),
-        NativeMountError::Demand(crate::DemandError::Mount(error)) => source_stops_mount(error),
-        NativeMountError::Materialization(error) => materialization_stops_mount(error),
-        _ => true,
-    }
-}
-
-pub(crate) fn source_stops_mount(error: &MountSourceError) -> bool {
-    use crate::kernel::NamespacePathError;
+pub(crate) fn source_failure(error: &MountSourceError) -> CallbackFailure {
+    use CallbackFailure as F;
     match error.semantic_error() {
-        MountSourceError::NativeWork(error) => materialization_stops_mount(error),
-        MountSourceError::WorkspaceCause(error) => workspace_stops_mount(error),
-        MountSourceError::NamespacePath(error) => matches!(
-            error,
-            NamespacePathError::Work(_)
-                | NamespacePathError::Cancelled
-                | NamespacePathError::AllocationFailed
-        ),
-        MountSourceError::Io(..)
-        | MountSourceError::AccessDenied
-        | MountSourceError::ReadOnly
-        | MountSourceError::Stale
-        | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale)
-        | MountSourceError::NotFound
-        | MountSourceError::AlreadyExists
-        | MountSourceError::NotDirectory
-        | MountSourceError::IsDirectory
-        | MountSourceError::DirectoryNotEmpty
-        | MountSourceError::Invalid(_)
-        | MountSourceError::Unsupported(_)
-        | MountSourceError::NativeUnsupported => false,
-        _ => true,
+        MountSourceError::AccessDenied | MountSourceError::NativeCallbackDenied { .. } => F::Denied,
+        MountSourceError::ReadOnly => F::ReadOnly,
+        MountSourceError::NotFound => F::NotFound,
+        MountSourceError::AlreadyExists => F::AlreadyExists,
+        MountSourceError::NotDirectory => F::NotDirectory,
+        MountSourceError::IsDirectory => F::IsDirectory,
+        MountSourceError::DirectoryNotEmpty => F::DirectoryNotEmpty,
+        MountSourceError::Invalid(_) => F::Invalid,
+        MountSourceError::NamespacePath(error) => namespace_failure(error),
+        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => F::Unsupported,
+        MountSourceError::Stale => F::Stale,
+        MountSourceError::Cancelled => F::Cancelled,
+        MountSourceError::Allocation(_) => F::OutOfMemory,
+        MountSourceError::Io(error, _) => F::io(error),
+        MountSourceError::NativeWork(error) => materialization_failure(error),
+        MountSourceError::WorkspaceCause(error) => workspace_failure(error),
+        MountSourceError::Filesystem(error) => filesystem_failure(error),
+        _ => F::Io,
     }
 }
 
-fn materialization_stops_mount(error: &crate::NativeTreeMaterializationError) -> bool {
-    matches!(
-        error,
-        crate::NativeTreeMaterializationError::Work(_)
-            | crate::NativeTreeMaterializationError::Cancelled
-            | crate::NativeTreeMaterializationError::AllocationFailed(_)
-            | crate::NativeTreeMaterializationError::ExternalMutation
-            | crate::NativeTreeMaterializationError::AllocationChanged { .. }
-    )
-}
-
-fn workspace_stops_mount(error: &crate::WorkspaceError) -> bool {
-    if let crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) = error {
-        return materialization_stops_mount(error);
+fn namespace_failure(error: &crate::kernel::NamespacePathError) -> CallbackFailure {
+    use crate::kernel::NamespacePathError;
+    match error {
+        NamespacePathError::Cancelled => CallbackFailure::Cancelled,
+        NamespacePathError::AllocationFailed => CallbackFailure::OutOfMemory,
+        NamespacePathError::Work(_) => CallbackFailure::Io,
+        _ => CallbackFailure::Invalid,
     }
-    matches!(
-        CallbackFailure::of_workspace(error),
-        CallbackFailure::Cancelled | CallbackFailure::OutOfMemory | CallbackFailure::Io
-    )
 }
 
+fn filesystem_failure(error: &crate::FsError) -> CallbackFailure {
+    use CallbackFailure as F;
+    match error {
+        crate::FsError::Cancelled(_) => F::Cancelled,
+        crate::FsError::SourceSnapshotStale => F::Stale,
+        crate::FsError::NativeKernel(error) => materialization_failure(error),
+        crate::FsError::NotFound => F::NotFound,
+        crate::FsError::NotDirectory => F::NotDirectory,
+        crate::FsError::HandleAllocationFailed => F::OutOfMemory,
+        _ => F::Io,
+    }
+}
+
+pub(crate) fn materialization_failure(
+    error: &crate::NativeTreeMaterializationError,
+) -> CallbackFailure {
+    use CallbackFailure as F;
+    match error {
+        crate::NativeTreeMaterializationError::Io(error) => F::io(error),
+        crate::NativeTreeMaterializationError::Cancelled => F::Cancelled,
+        crate::NativeTreeMaterializationError::AllocationFailed(_) => F::OutOfMemory,
+        crate::NativeTreeMaterializationError::PayloadTooLarge { .. } => F::TooLarge,
+        _ => F::Io,
+    }
+}
+
+pub(crate) fn workspace_failure(error: &crate::WorkspaceError) -> CallbackFailure {
+    use crate::WorkspaceError;
+    use CallbackFailure as F;
+    match error {
+        WorkspaceError::AccessDenied => F::Denied,
+        WorkspaceError::Cancelled(_) => F::Cancelled,
+        WorkspaceError::Filesystem(error) => filesystem_failure(error),
+        WorkspaceError::NotFound => F::NotFound,
+        WorkspaceError::NotDirectory => F::NotDirectory,
+        WorkspaceError::IsDirectory => F::IsDirectory,
+        WorkspaceError::DirectoryNotEmpty => F::DirectoryNotEmpty,
+        WorkspaceError::NamespacePath(error) => namespace_failure(error),
+        WorkspaceError::Name(_) | WorkspaceError::Path(_) | WorkspaceError::NotRegularFile => {
+            F::Invalid
+        }
+        WorkspaceError::ReadLimitExceeded => F::TooLarge,
+        WorkspaceError::StaleGeneration
+        | WorkspaceError::StaleSource
+        | WorkspaceError::StaleIdentity
+        | WorkspaceError::StaleTarget => F::Stale,
+        _ => F::Io,
+    }
+}
+
+pub(crate) fn callback_failure(error: &NativeMountError) -> CallbackFailure {
+    use CallbackFailure as F;
+    match error {
+        NativeMountError::Source(error) => source_failure(error),
+        NativeMountError::Demand(crate::DemandError::Mount(error)) => source_failure(error),
+        NativeMountError::Materialization(error) => materialization_failure(error),
+        NativeMountError::Io(error) => F::io(error),
+        NativeMountError::Allocation(_) => F::OutOfMemory,
+        NativeMountError::CallbackDenied { .. } => F::Denied,
+        NativeMountError::Demand(crate::DemandError::Cancelled) => F::Cancelled,
+        #[cfg(target_os = "linux")]
+        NativeMountError::FuseUnsupportedCapabilities(_) => F::Unsupported,
+        _ => F::Io,
+    }
+}
+
+impl CallbackFailure {
+    pub(crate) fn of(error: &NativeMountError) -> Self {
+        callback_failure(error)
+    }
+    pub(crate) fn of_source(error: &MountSourceError) -> Self {
+        source_failure(error)
+    }
+    pub(crate) fn of_workspace(error: &crate::WorkspaceError) -> Self {
+        workspace_failure(error)
+    }
+}
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+pub(crate) use retention::callback_is_terminal as stops_mount;
+pub(crate) use retention::source_is_terminal as source_stops_mount;
 #[cfg(all(test, not(acyclic_fs_loom)))]
 mod tests {
     use super::*;

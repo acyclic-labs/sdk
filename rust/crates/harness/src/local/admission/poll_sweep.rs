@@ -656,7 +656,7 @@ fn durable(point: &str) -> bool {
 // different exhaustive partitions concurrently. Each cut still owns its files.
 static SWEEP_EXECUTOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -> Result<()> {
+fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: (&[usize], usize)) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let _executor = SWEEP_EXECUTOR.lock().map_err(storage)?;
     let started = std::time::Instant::now();
@@ -669,10 +669,17 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
     for &scenario in scenarios {
         let seed = runtime.block_on(Seed::new(scenario))?;
         let observed = runtime.block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?;
-        let admission = observed
+        let submission = observed
             .admission_submission
             .expect("missing admission submission");
         let baseline = observed.points;
+        // Every partition must include a real pre-admission cut. Durable
+        // recovery counts submissions/effects only, so its witness is the
+        // preceding durable cut, not an arbitrary completion ordinal.
+        let witness = (1..submission)
+            .rev()
+            .find(|cut| recovery == Recovery::Resume || durable(baseline[cut - 1]))
+            .expect("no pre-admission crash witness");
         // The resume sweep owns the reviewed manifest for this same baseline.
         if recovery == Recovery::Resume {
             coverage::check_boundaries(scenario, &baseline)?;
@@ -682,16 +689,16 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
             "{scenario:?}: {} deterministic cancellation points",
             baseline.len()
         );
-        schedules.push((scenario, baseline, seed, admission));
+        schedules.push((scenario, baseline, seed, witness));
     }
     // Replays own independent filesystems. Each bounded worker polls its driver
     // and owned completions together, without cross-thread barrier handoffs.
     let mut cuts: Vec<_> = schedules
         .iter()
-        .flat_map(|(scenario, baseline, seed, admission)| {
+        .flat_map(|(scenario, baseline, seed, witness)| {
             (1..=baseline.len())
                 .filter(move |cut| recovery == Recovery::Resume || durable(baseline[cut - 1]))
-                .map(move |cut| (*scenario, baseline, seed, cut, *admission))
+                .map(move |cut| (*scenario, baseline, seed, cut, *witness))
         })
         .collect();
     if recovery != Recovery::Resume {
@@ -719,15 +726,16 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
                 .map(|(_, _, _, cut, _)| *cut),
         )?;
     }
-    if let Some(selected) = partition {
-        assert_eq!(recovery, Recovery::Resume);
-        let indices =
-            coverage::partition_indices(cuts.len(), RESUME_PARTITIONS, selected, |index| {
-                let (_, _, _, cut, admission) = cuts[index];
-                cut.checked_add(1) == Some(admission)
-            })?;
+    {
+        let (partitions, selected) = partition;
+        let indices = coverage::partition_indices(cuts.len(), partitions, selected, |index| {
+            let (_, baseline, _, cut, witness) = cuts[index];
+            cut == witness || recovery != Recovery::Resume && baseline[cut - 1] == "tool:dispatch"
+        })?;
         cuts = indices.into_iter().map(|index| cuts[index]).collect();
-        coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _, _)| *scenario))?;
+        if scenarios.len() > 1 {
+            coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _, _)| *scenario))?;
+        }
         eprintln!("replay partition {selected}: {} cuts", cuts.len());
     }
     let next = AtomicUsize::new(0);
@@ -759,7 +767,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
                             return Ok(());
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&(scenario, baseline, seed, cut, admission)) = cuts.get(index)
+                        let Some(&(scenario, baseline, seed, cut, witness)) = cuts.get(index)
                         else {
                             assert_eq!(
                                 io_threads.load(Ordering::Relaxed),
@@ -785,7 +793,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
                                 failed.store(true, Ordering::Relaxed);
                                 error
                             })?;
-                        if partition.is_some() && cut.checked_add(1) == Some(admission) {
+                        if cut == witness {
                             assert!(
                                 coverage.unadmitted,
                                 "admission witness missed the crash window"
@@ -824,23 +832,26 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
 
 // One registration defines both the tests and their checked ownership manifest.
 // Removing a registration redistributes every cut; holes or duplicates fail.
-macro_rules! resume_sweep_tests {
-    ($($partition:literal => $name:ident),+ $(,)?) => {
-        const RESUME_PARTITIONS: &[usize] = &[$($partition),+];
+// Resume and durable replacement use the same planner and execution path.
+macro_rules! sweep_tests {
+    ($partitions:ident, $recovery:ident, $scenarios:expr;
+     $($partition:literal => $name:ident),+ $(,)?) => {
+        const $partitions: &[usize] = &[$($partition),+];
         $(
             #[test]
             fn $name() -> Result<()> {
                 sweep(
-                    &[Scenario::Text, Scenario::EffectAndContinuation, Scenario::Compaction],
-                    Recovery::Resume,
-                    Some($partition),
+                    $scenarios,
+                    Recovery::$recovery,
+                    ($partitions, $partition),
                 )
             }
         )+
     };
 }
 
-resume_sweep_tests! {
+sweep_tests! {
+    RESUME_PARTITIONS, Resume, &[Scenario::Text, Scenario::EffectAndContinuation, Scenario::Compaction];
     0 => run_cancellation_at_every_poll_recovers_head_and_admission,
     1 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_1,
     2 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_2,
@@ -855,18 +866,20 @@ resume_sweep_tests! {
     11 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_11,
 }
 
-#[test]
-fn new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch() -> Result<()> {
-    sweep(
-        &[Scenario::EffectAndContinuation],
-        Recovery::Supersede,
-        None,
-    )
+sweep_tests! {
+    SUPERSEDE_PARTITIONS, Supersede, &[Scenario::EffectAndContinuation];
+    0 => new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch,
+    1 => new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch_partition_1,
+    2 => new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch_partition_2,
+    3 => new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch_partition_3,
 }
 
-#[test]
-fn new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver() -> Result<()> {
-    sweep(&[Scenario::EffectAndContinuation], Recovery::SameHost, None)
+sweep_tests! {
+    SAME_HOST_PARTITIONS, SameHost, &[Scenario::EffectAndContinuation];
+    0 => new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver,
+    1 => new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver_partition_1,
+    2 => new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver_partition_2,
+    3 => new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver_partition_3,
 }
 
 /// The supersession sweep's kill, recovered without orphan supersession,

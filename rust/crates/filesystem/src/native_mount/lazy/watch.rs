@@ -1,19 +1,5 @@
 use super::*;
 
-fn demand_error(error: MountSourceError) -> DemandError {
-    match error {
-        MountSourceError::Work(error) => DemandError::Work(error),
-        MountSourceError::Cancelled => DemandError::Cancelled,
-        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(error)) => {
-            DemandError::Work(error)
-        }
-        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
-            DemandError::Cancelled
-        }
-        error => DemandError::from(error),
-    }
-}
-
 impl<A, O, D, S> SourceChangeSink for SourceChangeRecorder<A, O, D, S>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -27,7 +13,7 @@ where
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
         if let Some(original) = accounting.native_work() {
-            return self.record(changes, original).map_err(demand_error);
+            return self.record(changes, original).map_err(DemandError::from);
         }
         let cancellation = match &*accounting {
             crate::kernel::KernelAccounting::Standalone { cancellation, .. }
@@ -41,10 +27,10 @@ where
             Ok(work) => work,
             Err((error, completed)) => {
                 crate::demand::merge_source_work(*completed, accounting)?;
-                return Err(demand_error(MountSourceError::NativeWork(error)));
+                return Err(DemandError::from(MountSourceError::NativeWork(error)));
             }
         };
-        let result = self.record(changes, &work).map_err(demand_error);
+        let result = self.record(changes, &work).map_err(DemandError::from);
         crate::demand::accept_source_result(
             result
                 .map(|value| crate::OperationReceipt {

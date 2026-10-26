@@ -34,16 +34,11 @@ pub(super) fn run(
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let reader = std::thread::spawn(move || -> io::Result<()> {
         let mut stdout = io::BufReader::new(stdout);
+        acyclic_test_support::readiness::wait(&mut stdout, READY)?;
+        let _ = ready_tx.send(());
         let mut line = String::new();
-        let mut ready = Some(ready_tx);
         while stdout.read_line(&mut line)? != 0 {
-            if line.trim_end() == READY {
-                if let Some(sender) = ready.take() {
-                    let _ = sender.send(());
-                }
-            } else {
-                eprint!("{line}");
-            }
+            eprint!("{line}");
             line.clear();
         }
         Ok(())
@@ -71,8 +66,7 @@ pub(super) fn run(
 }
 
 fn start_action() -> io::Result<()> {
-    println!("\n{READY}");
-    io::stdout().flush()?;
+    acyclic_test_support::readiness::signal(&mut io::stdout().lock(), READY)?;
     let mut signal = [0];
     io::stdin().read_exact(&mut signal)?;
     if signal != *b"g" {

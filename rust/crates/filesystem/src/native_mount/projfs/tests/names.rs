@@ -99,7 +99,7 @@ async fn a_scoped_name_query_keeps_the_callback_budget_and_cancellation()
     cancellation.cancel();
     assert_eq!(
         cached_name_query(&runtime, lookup.node.file_id, basis),
-        HR_FILE_INVALID
+        windows::Win32::Foundation::ERROR_OPERATION_ABORTED.to_hresult()
     );
     assert_eq!(cancellable.receipt(), before);
     Ok(())

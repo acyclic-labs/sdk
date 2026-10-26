@@ -428,6 +428,7 @@ impl MountFilesystem for GatedSource {
         shutdown_with_meter(work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
         shutdown_with_cleanup_wait(wait: &crate::CancellationToken) -> Result<bool, MountSourceError>;
         shutdown_accepted_cleanup() -> Result<bool, MountSourceError>;
+        shutdown_physical_cleanup() -> Result<bool, MountSourceError>;
         node_unchanged_since_with_meter(file_id: FileId, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
         listing_unchanged_since_with_meter(path: &MountPath, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
     }

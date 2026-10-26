@@ -1,5 +1,4 @@
 use super::*;
-use std::io::{BufRead as _, Write as _};
 use std::process::Stdio;
 
 const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::crashed_owner";
@@ -149,15 +148,7 @@ fn check_startup_recovery(
     }
     let mut child = command.spawn()?;
     let output = child.stdout.take().ok_or("missing child stdout")?;
-    let ready = std::io::BufReader::new(output)
-        .lines()
-        .find_map(|line| match line {
-            Ok(line) if line == "RECLAIM_READY" => Some(Ok(())),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .ok_or("child exited before mounting")?;
-    ready?;
+    acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "RECLAIM_READY")?;
     child.kill()?;
     child.wait()?;
     phase(began, "crash-witness-ready");

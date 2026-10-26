@@ -4,7 +4,7 @@ use super::*;
 pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureError> {
     HostRoot::open(path, &mut crate::native_host::ordinary_work())
         .map(|root| root.identity())
-        .map_err(|_| CaptureError::InvalidOptions)
+        .map_err(capture_demand_error)
 }
 
 /// A root held open from its capture through its binding, so the root a

@@ -249,6 +249,27 @@ impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationTo
     }
 }
 
+/// Cancels from the real native terminal, after serial callback drain and
+/// stream release. The returned demand adapter is the production adapter.
+#[cfg(feature = "native-mount")]
+pub(crate) fn terminal_cancellation_watch(
+    root: &Path,
+    work: &mut crate::NativeMaterializationWork,
+    wait: &CancellationToken,
+) -> TestResult<Box<dyn crate::demand::SourceWatch>> {
+    crate::fsevents::EventStream::initialize_services()?;
+    let held = HostRoot::open(root, work)?;
+    let watch = Arc::new(driver(&held, Arc::new(Ignored), work)?);
+    watch
+        .stream
+        .lock()
+        .map_err(|_| "poisoned actual stream custody")?
+        .as_mut()
+        .ok_or("missing actual event stream")?
+        .set_terminal(Arc::new((Arc::clone(&watch.shared), wait.clone())));
+    Ok(crate::demand::native::native_watch_fixture(watch, work)?)
+}
+
 #[cfg(feature = "native-mount")]
 #[test]
 fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> TestResult {

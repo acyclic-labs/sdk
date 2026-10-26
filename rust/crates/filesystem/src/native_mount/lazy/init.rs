@@ -258,12 +258,22 @@ where
         &self,
         wait: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError> {
-        // A completed source owns no remaining wait. A later caller's cancelled
-        // token cannot revoke the physical drain already proved by this owner.
+        self.cancel_cleanup_with_join(
+            wait,
+            crate::native_mount::retirement::SourceRetirementWait::Caller,
+        )
+    }
+
+    pub(super) fn cancel_cleanup_with_join(
+        &self,
+        wait: Option<&CancellationToken>,
+        join: crate::native_mount::retirement::SourceRetirementWait,
+    ) -> Result<(), MountSourceError> {
+        // A completed source owns no remaining wait for a later caller to revoke.
         if self.physically_retired()? {
             return Ok(());
         }
-        self.authored.cancel_cleanup(wait)?;
+        self.authored.cancel_cleanup_with_join(wait, join)?;
         if let Some(wait) = wait {
             wait.check().map_err(|_| MountSourceError::Cancelled)?;
         }

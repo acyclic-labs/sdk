@@ -145,10 +145,10 @@ where
         .map_err(|cause| (cause, work.receipt()))
 }
 
-async fn prepare_generation<'a, A, O, F, Fut>(
+async fn prepare_generation<A, O, F, Fut>(
     from: &crate::Generation<A, O>,
     to: &crate::Generation<A, O>,
-    state: &'a crate::LocalCoreStateStore,
+    state: &crate::LocalCoreStateStore,
     request: NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
     before_effect: &mut F,

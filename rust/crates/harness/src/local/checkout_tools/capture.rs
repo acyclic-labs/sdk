@@ -9,7 +9,6 @@ use acyclic_fs::{
 };
 use std::time::Duration;
 
-mod arrivals;
 mod converge;
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
@@ -29,8 +28,6 @@ pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
     unreadable_diff_source: bool,
-    #[cfg(target_os = "macos")]
-    work: acyclic_fs::NativeMaterializationWork,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     injection: Option<tests::Injection>,
 }
@@ -74,8 +71,6 @@ impl Cursor {
             watcher,
             initial: None,
             unreadable_diff_source: false,
-            #[cfg(target_os = "macos")]
-            work,
             #[cfg(all(test, not(acyclic_harness_loom)))]
             injection: None,
         })
@@ -83,9 +78,9 @@ impl Cursor {
 
     pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
         let mut cursor = Self::open(workspace, policy)?;
-        cursor.watcher.begin_rescan().map_err(storage)?;
+        let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
         cursor.watcher.watch_tree(EXCLUDED).map_err(storage)?;
-        cursor.initial = Some(cursor.watcher.finish_rescan().map_err(storage)?);
+        cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
         Ok(cursor)
     }
 }
@@ -148,7 +143,8 @@ impl CheckoutTools {
 
     /// Captures a file publication's physical write under the write's own
     /// operation while its staged generation is still the head, then clears
-    /// the debt. Once the head has moved on nothing is left to capture.
+    /// the debt. A durable companion receipt also acknowledges a clean capture,
+    /// so replay cannot capture a later edit under this write's identity.
     #[inline(never)]
     pub(in crate::local) fn finish_owed_write<'a>(
         &'a self,
@@ -194,7 +190,16 @@ pub(in crate::local) async fn capture(
     // Settle a file publication under its own operation before this capture.
     let verify = || async { verify_owner(&owner).await };
     finish_owed_write(configuration, selected, slot, permit, &verify).await?;
-    record_changes(configuration, selected, slot, operation, permit, &verify, None).await
+    record_changes(
+        configuration,
+        selected,
+        slot,
+        operation,
+        permit,
+        &verify,
+        None,
+    )
+    .await
 }
 
 async fn verify_owner(
@@ -225,10 +230,17 @@ where
     };
     let (operation, staged) = owed;
     let capture = capture_operation(OperationId::from_bytes(operation.into_bytes()), 1);
-    let settled = view.workspace().operation_generation(
-        acyclic_fs::IdempotencyKey::from_bytes(capture.into_bytes()),
-        WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    ).await.map_err(storage)?.value.is_some();
+    let settled = view
+        .workspace()
+        .operation_generation(
+            acyclic_fs::IdempotencyKey::from_bytes(capture.into_bytes()),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .is_some();
     let head = view
         .workspace()
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())

@@ -116,6 +116,9 @@ pub use meter::{
 mod wake;
 pub use wake::NativeWake;
 mod blocking;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "testing/resources.rs"]
+pub mod resources;
 mod task;
 #[cfg(feature = "test-support")]
 pub mod testing;

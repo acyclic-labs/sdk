@@ -13,6 +13,27 @@ pub(super) fn collect_host_walk_measured(
         &NativeMaterializationWork,
     ) -> Result<(), CaptureError>,
 ) -> Result<(), CaptureError> {
+    walk_host_tree(
+        root,
+        (profile, limits),
+        volume_root,
+        policy,
+        meter,
+        |path, stat, meter| insert(path, stat, meter).map(|()| true),
+    )
+}
+
+// The visitor runs before a directory is enumerated. Returning false prunes
+// that subtree; capture and watch registration use the same held traversal.
+fn walk_host_tree<E: From<CaptureError>>(
+    root: &HostRoot,
+    volume: (FilesystemProfile, crate::model::VolumeLimits),
+    volume_root: NamespacePath,
+    policy: &CapturePolicy,
+    meter: &NativeMaterializationWork,
+    mut insert: impl FnMut(NamespacePath, HostStat, &NativeMaterializationWork) -> Result<bool, E>,
+) -> Result<(), E> {
+    let (profile, limits) = volume;
     let mut pending = capture_vec(1, meter)?;
     pending.push(volume_root);
     while let Some(parent) = pending.pop() {
@@ -52,7 +73,8 @@ pub(super) fn collect_host_walk_measured(
                 })?;
             let stat = entry.0.stat.take();
             drop(entry);
-            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)?;
+            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+                .map_err(CaptureError::from)?;
             let child = append_path_measured(&parent, name, limits, meter)?;
             if capture_excludes(policy, &child, meter)? {
                 capture_drop_path(child, meter)?;
@@ -77,8 +99,8 @@ pub(super) fn collect_host_walk_measured(
                 insert(child, stat, meter)?;
                 continue;
             }
-            insert(clone_capture_path(&child, meter)?, stat, meter)?;
-            if recurse {
+            let descend = insert(clone_capture_path(&child, meter)?, stat, meter)?;
+            if recurse && descend {
                 capture_reserve(&mut pending, 1, meter)?;
                 pending.push(child);
             } else {
@@ -88,7 +110,52 @@ pub(super) fn collect_host_walk_measured(
         drop(reader);
         capture_drop_path(parent, meter)?;
     }
-    release_capture_paths(pending, meter)
+    release_capture_paths(pending, meter).map_err(E::from)
+}
+
+pub(crate) fn walk_watch_tree(
+    root: &HostRoot,
+    volume: (FilesystemProfile, crate::model::VolumeLimits),
+    directory: &NamespacePath,
+    policy: &CapturePolicy,
+    original: &NativeMaterializationWork,
+    mut visit: impl FnMut(
+        &NamespacePath,
+        HostStat,
+        &NativeMaterializationWork,
+    ) -> Result<bool, crate::NativeWatchError>,
+) -> Result<(), crate::NativeWatchError> {
+    let mut scope = CaptureWorkScope::new(original).map_err(|failure| failure.error)?;
+    let result = (|| {
+        let meter = &scope.native;
+        if capture_excludes(policy, directory, meter)? {
+            return Ok(());
+        }
+        let path = namespace_to_host_path_measured(directory, meter)?;
+        let observed = observe_host_path(root, &path, meter)?;
+        capture_drop_host_path(path, meter)?;
+        let Some(stat) = observed else { return Ok(()) };
+        if stat.file_type() != crate::demand::SourceNodeKind::Directory {
+            return Ok(());
+        }
+        if !visit(directory, stat, meter)? {
+            return Ok(());
+        }
+        walk_host_tree(
+            root,
+            volume,
+            clone_capture_path(directory, meter)?,
+            policy,
+            meter,
+            |path, stat, meter| {
+                let result = visit(&path, stat, meter);
+                let released = capture_drop_path(path, meter);
+                result.and_then(|descend| released.map(|()| descend).map_err(Into::into))
+            },
+        )
+    })();
+    let released = scope.release();
+    result.and(released.map_err(crate::NativeWatchError::from))
 }
 
 pub(super) fn observe_unique_paths(

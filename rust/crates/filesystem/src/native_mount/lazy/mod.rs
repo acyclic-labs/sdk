@@ -186,4 +186,4 @@ use metadata::*;
 use promotion::*;
 
 #[cfg(test)]
-mod tests;
+pub(in crate::native_mount) mod tests;

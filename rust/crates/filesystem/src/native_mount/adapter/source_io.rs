@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::retirement::SourceRetirementWait;
 
 /// Retains a physical source operation until its last alias finishes.
 pub type NativeSourceIoLease = Arc<CaptureProducer>;
@@ -150,6 +151,14 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self,
         wait: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError> {
+        self.cancel_cleanup_with_join(wait, SourceRetirementWait::Caller)
+    }
+
+    pub(in crate::native_mount) fn cancel_cleanup_with_join(
+        &self,
+        wait: Option<&CancellationToken>,
+        join: SourceRetirementWait,
+    ) -> Result<(), MountSourceError> {
         if self.capture_retired() {
             return Ok(());
         }
@@ -203,6 +212,21 @@ impl<A, O> CheckoutMountSource<A, O> {
                 gate.retired = true;
                 self.capture_quiesced.notify_all();
                 return Ok(());
+            }
+            if matches!(join, SourceRetirementWait::Physical) {
+                #[cfg(test)]
+                if let Some(observed) = gate.physical_cleanup_wait_observed.take() {
+                    let _ = observed.send(());
+                }
+                // The original worker already owns this join. A wall-clock
+                // poll is not another source item: wait for the last accepted
+                // producer's actual drop, retaining the same source and ledger.
+                gate = self
+                    .capture_quiesced
+                    .wait_while(gate, |gate| gate.producers != 0 && !gate.retired)
+                    .unwrap_or_else(PoisonError::into_inner);
+                drop(gate);
+                continue;
             }
             if self.native_original.is_some() {
                 let mut credit = self

@@ -166,7 +166,8 @@ pub(super) fn ownership_child(root: &Path) -> Result<std::process::Command, std:
             "core_state::tests::ownership_child_acts_on_its_namespace",
             "--nocapture",
         ])
-        .env("ACYCLIC_CORE_STATE_CHILD_ROOT", root);
+        .env("ACYCLIC_CORE_STATE_CHILD_ROOT", root)
+        .stdout(std::process::Stdio::null());
     Ok(child)
 }
 pub(super) fn rewrite_intact_frame(

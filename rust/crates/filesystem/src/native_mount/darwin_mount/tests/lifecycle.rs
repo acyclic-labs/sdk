@@ -83,7 +83,7 @@ fn accepted_retirement_wakes_its_owner_after_the_caller_leaves() -> TestResult {
         // Taking the state lock observes finish's pending result before its
         // condition-variable wait. No mount or caller-owned poll drives it.
         let deadline = Instant::now() + Duration::from_secs(1);
-        while owner.state().failure.is_none() {
+        while owner.state().failure.is_empty() {
             assert!(
                 Instant::now() < deadline,
                 "provider must retain pending work"
@@ -124,6 +124,79 @@ fn accepted_retirement_wakes_its_owner_after_the_caller_leaves() -> TestResult {
         assert_eq!(owner.pointer(), 0);
         assert!(owner.state().resources.is_none());
     }
+    Ok(())
+}
+
+/// Drives the real finalizer after it proves this fixture has no mounted
+/// namespace, then hands it the original source's remaining physical join.
+pub(in crate::native_mount) fn retire_source_in_physical_loop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let (_, context, _) = checkout_context(MountPublication::Manual)
+        .map_err(|cause| NativeMountError::Driver(cause.to_string()))?;
+    let original = work(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )?;
+    let destination = tempfile::tempdir()?;
+    let resources =
+        DriverSessionResources::new(Arc::new(context), destination.path(), &original, false)?;
+    {
+        let mut state = resources.state();
+        resources.retire(
+            &mut state,
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Physical,
+        )?;
+        assert!(state.resources.is_none());
+        assert!(state.control.namespace_detach_confirmed());
+        state.retirement = Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+            terminal_source_failure: None,
+        });
+    }
+    resources.finish();
+    let mut state = resources.state();
+    if let Some(error) = state.failure.take() {
+        return Err(error);
+    }
+    Ok(state.resources.is_none()
+        && state
+            .retirement
+            .as_ref()
+            .is_some_and(crate::native_mount::NativeMountRetirement::is_retired))
+}
+
+#[test]
+fn recovery_probe_rejects_every_changed_kernel_mount_identity() -> TestResult {
+    let mount = super::super::reclaim::mount_table()?
+        .first()
+        .copied()
+        .ok_or("empty kernel mount table")?;
+    let original = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let probe = MountProbe::for_mount(&mount, &original)?;
+    probe.verify_mount(&mount)?;
+    let mut changed = mount;
+    changed.f_owner = changed.f_owner.wrapping_add(1);
+    assert!(probe.verify_mount(&changed).is_err());
+    changed = mount;
+    changed.f_mntonname[0] ^= 1;
+    assert!(probe.verify_mount(&changed).is_err());
+    changed = mount;
+    changed.f_mntfromname[0] ^= 1;
+    assert!(probe.verify_mount(&changed).is_err());
+    changed = mount;
+    // SAFETY: Darwin's fsid_t is two initialized int32_t values.
+    let mut identity = unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(mount.f_fsid) };
+    identity[0] ^= 1;
+    // SAFETY: the changed values retain the same fsid_t representation.
+    changed.f_fsid = unsafe { std::mem::transmute::<[i32; 2], libc::fsid_t>(identity) };
+    assert!(probe.verify_mount(&changed).is_err());
     Ok(())
 }
 
@@ -236,6 +309,45 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
 }
 
 #[test]
+fn pending_recovery_control_retires_after_its_original_invocation_is_cancelled() -> TestResult {
+    let cancellation = crate::CancellationToken::new();
+    let original = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let credit = original
+        .reserve_work(WorkCounters::UNCHARGED)?
+        .into_runtime_credit()?;
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = credit.clone();
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || -> std::io::Result<c_int> {
+            blocked.recv().map_err(std::io::Error::other)?;
+            Ok(0)
+        },
+        Some((meter, true)),
+    )?;
+    let mut control = DarwinRecoveryControl {
+        direct: Some(DirectDetach {
+            task,
+            credit: Arc::clone(&credit),
+            started: false,
+            wake: std::sync::Weak::new(),
+        }),
+        ..Default::default()
+    };
+    control.poll_direct(&ProbeWork::Cleanup(&credit, None))?;
+    assert!(
+        control.controls_pending(),
+        "the submitted operation remains owned"
+    );
+    cancellation.cancel();
+    release.send(())?;
+    control.retire_controls(&original)?;
+    assert!(!control.controls_pending());
+    assert!(cancellation.is_cancelled());
+    assert!(!control.namespace_detach_confirmed());
+    Ok(())
+}
+
+#[test]
 fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> TestResult {
     let original = work(
         crate::WorkBudget::UNBOUNDED,
@@ -304,8 +416,16 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         loop_result: None,
         native_root_identity: None,
     };
-    session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?;
-    session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?;
+    assert!(
+        session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
+            .is_empty()
+    );
+    assert!(
+        session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
+            .is_empty()
+    );
     assert!(session.unmount.context().is_err());
     assert!(session.namespace_detach_confirmed());
     session.thread = Some(std::thread::spawn(|| 7));
@@ -314,10 +434,58 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         .provider_exited
         .store(true, Ordering::Release);
     session.loop_finished_before_teardown = None;
+    let mut outcome = session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?;
     assert!(matches!(
-        session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work)),
-        Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure(7)))
+        outcome.take(),
+        Some(NativeMountError::DarwinTeardown(DarwinTeardownFailure(7)))
     ));
+    assert!(outcome.is_empty());
+    assert!(
+        session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
+            .is_empty()
+    );
     assert!(session.thread.is_none());
+    Ok(())
+}
+
+#[test]
+fn physical_retirement_finishes_with_its_original_terminal_source_outcome() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let original = work(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )?;
+    let resources = sdk(temporary.path(), &original)?;
+    {
+        let mut state = resources.state();
+        resources.retire(
+            &mut state,
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Physical,
+        )?;
+        assert!(state.resources.is_none());
+        let error = std::fs::read(temporary.path().join("absent-source"))
+            .expect_err("fixture source is actually absent");
+        state.retirement = Some(crate::native_mount::NativeMountRetirement {
+            retained_source: None,
+            destination_guard: None,
+            startup_source_watch: None,
+            terminal_source_failure: Some(NativeMountError::Io(error)),
+        });
+    }
+    resources.finish();
+    let mut state = resources.state();
+    assert!(state.resources.is_none());
+    assert!(
+        state
+            .retirement
+            .as_ref()
+            .is_some_and(crate::native_mount::NativeMountRetirement::is_retired)
+    );
+    assert!(matches!(
+        state.failure.take(),
+        Some(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
     Ok(())
 }

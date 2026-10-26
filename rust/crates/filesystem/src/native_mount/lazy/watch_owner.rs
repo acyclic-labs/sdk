@@ -10,6 +10,17 @@ pub struct NativeMountSourceWatchOwner {
 }
 
 impl NativeMountSourceWatchOwner {
+    #[cfg(all(test, target_os = "macos"))]
+    pub(in crate::native_mount) fn from_native_watch_fixture(watch: Box<dyn SourceWatch>) -> Self {
+        Self {
+            watch: Some(watch),
+            sink: None,
+            startup_failure: None,
+            bytes: 0,
+            custody: None,
+        }
+    }
+
     /// Whether this original watcher has confirmed physical native quiescence.
     #[must_use]
     pub fn is_stopped(&self) -> bool {

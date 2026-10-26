@@ -18,6 +18,8 @@ mod inotify;
 pub(crate) use directory_changes::NativeSourceWatch;
 #[cfg(target_os = "macos")]
 pub(crate) use fsevents::NativeSourceWatch;
+#[cfg(all(test, target_os = "macos", feature = "native-mount"))]
+pub(crate) use fsevents::tests::terminal_cancellation_watch;
 #[cfg(target_os = "linux")]
 pub(crate) use inotify::NativeSourceWatch;
 

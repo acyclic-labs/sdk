@@ -19,9 +19,9 @@ impl From<DemandError> for MountSourceError {
                 crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
                 crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,
                 crate::watch::NativeWatchError::Io(error) => MountSourceError::Io(error, None),
-                other => MountSourceError::Engine(other.to_string().into()),
+                _ => MountSourceError::Demand(DemandError::Observation(error)),
             },
-            _ => MountSourceError::Engine("source demand failed".into()),
+            error => MountSourceError::Demand(error),
         }
     }
 }

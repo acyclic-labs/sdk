@@ -192,7 +192,10 @@ fn request(
             },
             None => CommitCondition::Absent { path: path.clone() },
         }],
-        mutations: vec![CommitMutation::Append { path, records }],
+        mutations: vec![CommitMutation::Append {
+            path,
+            records: records.into_iter().map(Into::into).collect(),
+        }],
         idempotency_key: stream_key(b"head-model", &[key]).unwrap(),
     }
 }

@@ -109,6 +109,9 @@ pub enum NativeMountError {
         /// Same fence and control owner to retain for retry.
         owner: NativeMountRecoveryOwner,
     },
+    /// Independent recovery failures, each retaining its original cause and owner.
+    #[error("native mount recovery batch failed: {0:?}")]
+    RecoveryBatchFailed(Vec<NativeMountError>),
     /// A fallible native owned-buffer allocation failed with its actual cause.
     #[error("native mount allocation failed: {0}")]
     Allocation(#[from] std::collections::TryReserveError),

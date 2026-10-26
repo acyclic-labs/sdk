@@ -114,6 +114,11 @@ pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
     file.write_all_at(bytes, offset)
 }
 
+pub(super) fn sync_once(file: &File) -> io::Result<()> {
+    use std::os::fd::AsFd as _;
+    crate::sync_descriptor_once(file.as_fd())
+}
+
 fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Result<OwnedWrite>> {
     writes
         .into_iter()

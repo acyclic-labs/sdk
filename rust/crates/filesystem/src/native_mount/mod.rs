@@ -182,10 +182,12 @@ fn create_metadata(clock: &clock::Clock, mode: u32, kind: u32, uid: u32, gid: u3
     }
 }
 
-/// The errno every native callback answers for a failure, as the shared
-/// classification spells it.
+#[cfg(test)]
+#[cfg(test)]
+mod outcome;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
+pub(in crate::native_mount) fn callback_errno(error: &NativeMountError) -> i32 {
     shared::outcome::CallbackFailure::of(error).errno()
 }
 
@@ -272,6 +274,8 @@ mod error;
 pub use error::*;
 mod fence_io;
 mod recovery;
+#[cfg(any(target_os = "macos", test))]
+mod recovery_order;
 mod registry;
 pub use recovery::*;
 pub(crate) use shared::shared_view_destination;
@@ -283,6 +287,7 @@ pub use session::*;
 #[cfg(target_os = "linux")]
 mod disconnected;
 mod lifecycle;
+mod retirement;
 #[cfg(target_os = "linux")]
 pub use disconnected::{
     recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,

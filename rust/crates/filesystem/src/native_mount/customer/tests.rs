@@ -56,6 +56,107 @@ async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
 }
 
 #[tokio::test]
+async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::tests::retirement::{Fixture, retired};
+
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    let lazy = native_lazy_source(physical.path(), "terminal-drain-proof", &cancellation).await?;
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let (authored, _, root_text) = admitted_source(
+        &lazy,
+        &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
+        &work,
+    )
+    .await?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(root_custody) =
+        root_text.1
+    else {
+        return Err("authenticated root lost its native allocation".into());
+    };
+    let mut source_allocation = work.claim(
+        std::mem::size_of::<
+            LazyMountSource<
+                crate::facade::MemoryAuthorityBackend,
+                crate::facade::MemoryObjectBackend,
+                NativeDemandSource,
+                MemoryLazyWorkspaceStore,
+            >,
+        >() as u64,
+        1,
+        crate::WorkCounters::default(),
+    )?;
+    let source = Arc::new(LazyMountSource::new(
+        lazy.share(&mut KernelAccounting::native(&work, &cancellation))?,
+        authored,
+        root_text.0,
+        super::super::adapter::NativeDemandCarrier::Native(&work),
+        Some((root_custody, &mut source_allocation)),
+    )?);
+    let Fixture {
+        root,
+        mut session,
+        work: retirement_work,
+        fence,
+    } = Fixture::new()?;
+    let producer = std::fs::read(root.path().join("absent-worker-input"))
+        .expect_err("worker input must be absent");
+    let cleanup =
+        std::fs::read(root.path()).expect_err("a directory cannot be read as cleanup bytes");
+    let producer_code = producer.raw_os_error();
+    let cleanup_code = cleanup.raw_os_error();
+    session.terminal_failures = super::super::retirement::TerminalFailures {
+        producer: Some(producer.into()),
+        cleanup: Some(cleanup.into()),
+    };
+    session.retained_source = Some(source.clone());
+    assert!(session.take_retired_failures().is_none());
+    let mount = LazyMount {
+        source,
+        session: Mutex::new(Some(session)),
+        destination: root.path().join("retired-mount"),
+        _destination_custody: work.path(root.path(), None)?.1,
+    };
+    let before = retirement_work.receipt();
+    let proof = mount.retire(&cancellation)?;
+    retired(root.path(), &fence, before, &retirement_work)?;
+    assert!(mount.source.physically_retired()?);
+    assert!(
+        mount
+            .session
+            .lock()
+            .map_err(|_| "session poisoned")?
+            .is_none()
+    );
+    let MountLifecycleError::Retired(mut proof) = proof
+        .into_result()
+        .expect_err("retirement completion discarded the namespace outcomes")
+    else {
+        return Err("retirement completion changed the original failure owner".into());
+    };
+    let (first, second) = proof
+        .take_retained_capture_failure()
+        .ok_or("drain proof lost the namespace outcomes")?;
+    assert!(matches!(first, NativeMountError::Io(cause) if cause.raw_os_error() == producer_code));
+    assert!(
+        matches!(second, Some(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code)
+    );
+    assert!(proof.take_retained_capture_failure().is_none());
+    proof.into_result()?;
+    assert_eq!(
+        retirement_work.receipt().allocation_operations,
+        before.allocation_operations
+    );
+    assert_eq!(
+        retirement_work.receipt().peak_allocation_bytes,
+        before.peak_allocation_bytes
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn lifecycle_operations_reuse_the_mount_source_context()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
@@ -1055,8 +1156,7 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
     Ok(())
 }
 
-use crate::native_mount::fixture_access;
-pub(super) use fixture_access::options as fixture_options;
+pub(super) use crate::native_mount::fixture_access::options as fixture_options;
 
 async fn admitted_source(
     lazy: &MemoryLazyWorkspace,

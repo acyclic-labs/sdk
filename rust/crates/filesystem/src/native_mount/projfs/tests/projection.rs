@@ -352,11 +352,12 @@ fn source_failures_keep_distinct_statuses() {
         MountSourceError::Unsupported("".into()),
         MountSourceError::Engine("".into()),
         MountSourceError::Stale,
+        MountSourceError::Cancelled,
     ]
     .iter()
     .map(source_hresult)
     .collect::<HashSet<_>>();
-    assert_eq!(statuses.len(), 9);
+    assert_eq!(statuses.len(), 10);
     assert!(!statuses.contains(&super::HR_UNEXPECTED));
     for (error, status) in [
         (MountSourceError::NotDirectory, super::HR_DIRECTORY),

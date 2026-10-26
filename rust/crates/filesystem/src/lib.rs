@@ -389,8 +389,8 @@ pub use streams_record::{
 };
 #[cfg(feature = "native-watch")]
 pub use watch::{
-    NativeWatch, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions, WatchBatch,
-    WatchChange, WatchInvalidationReason, native_watch_capabilities,
+    NativeWatch, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions, NativeWatchRescan,
+    WatchBatch, WatchChange, WatchInvalidationReason, native_watch_capabilities,
 };
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 pub use windows_usn::{

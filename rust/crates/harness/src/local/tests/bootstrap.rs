@@ -1,6 +1,6 @@
 //! Share immutable empty-volume bytes, never live providers or effect ledgers.
-use super::super::admission::snapshot::Snapshot;
 use super::*;
+use acyclic_native_runtime::testing::snapshot::Snapshot;
 
 pub(super) struct Bootstrap {
     source: tempfile::TempDir,
@@ -21,13 +21,15 @@ impl Bootstrap {
         let agent = harness.signed.agent();
         drop(harness);
         Ok(Self {
-            filesystem: Snapshot::capture(&source.path().join("filesystem"))?,
+            filesystem: Snapshot::capture(&source.path().join("filesystem"))
+                .map_err(super::super::storage)?,
             state: Snapshot::capture(
                 &source
                     .path()
                     .join("state")
                     .join(project.storage_name(&mut None)?),
-            )?,
+            )
+            .map_err(super::super::storage)?,
             source,
             project,
             agent,
@@ -38,11 +40,13 @@ impl Bootstrap {
         let directory = tempfile::tempdir().map_err(super::super::storage)?;
         assert_ne!(directory.path(), self.source.path());
         self.filesystem
-            .restore(&directory.path().join("filesystem"))?;
+            .restore(&directory.path().join("filesystem"))
+            .map_err(super::super::storage)?;
         let parent = directory.path().join("state");
         std::fs::create_dir(&parent).map_err(super::super::storage)?;
         self.state
-            .restore(&parent.join(self.project.storage_name(&mut None)?))?;
+            .restore(&parent.join(self.project.storage_name(&mut None)?))
+            .map_err(super::super::storage)?;
         Ok(directory)
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::retirement::SourceRetirementWait;
 
 impl DriverSessionResources {
     pub(super) fn wait_until(&self, timeout: Duration, done: impl Fn(&LoopState) -> bool) {
@@ -14,6 +15,7 @@ impl DriverSessionResources {
         &self,
         state: &mut LoopState,
         wait: Option<&crate::CancellationToken>,
+        join: SourceRetirementWait,
     ) -> Result<(), NativeMountError> {
         let LoopState {
             resources,
@@ -36,7 +38,11 @@ impl DriverSessionResources {
             self.free(wait)?;
         }
         if let Some(packet) = retirement {
-            packet.retire(wait)?;
+            let result = packet.retire(wait, join);
+            if packet.is_retired() {
+                drop(resources.take());
+            }
+            result?;
             if !packet.is_retired() {
                 return Err(NativeMountError::ControlPending);
             }
@@ -48,24 +54,32 @@ impl DriverSessionResources {
     pub(super) fn finish(&self) {
         let mut state = self.state();
         self.changed.notify_all();
-        if let Err(error) = self.retire(&mut state, None) {
-            state.failure = Some(error);
-        } else {
-            return;
-        }
-        self.credit.started_drop_io(READ_WORK);
+        let mut waiting = false;
         loop {
-            // Completion can arrive while retire polls under the session lock.
-            // The shared notifier owns a separate lock and retains that wake.
+            match self.retire(&mut state, None, SourceRetirementWait::Physical) {
+                Ok(()) => return,
+                Err(error) => {
+                    state.failure.cleanup.get_or_insert(error);
+                }
+            }
+            if state.resources.is_none()
+                && state
+                    .retirement
+                    .as_ref()
+                    .is_none_or(crate::native_mount::NativeMountRetirement::is_retired)
+            {
+                // The outcome is retained; no producer remains whose progress
+                // could justify waiting for another cleanup request.
+                return;
+            }
+            if !waiting {
+                self.credit.started_drop_io(READ_WORK);
+                waiting = true;
+            }
+            // Completion retains its wake independently of the session lock.
             drop(state);
             self.retirement_wake.wait(None);
             state = self.state();
-            match self.retire(&mut state, None) {
-                Ok(()) => return,
-                Err(error) => {
-                    state.failure.get_or_insert(error);
-                }
-            }
         }
     }
 }
@@ -190,23 +204,24 @@ impl DarwinMountSession {
     pub(in crate::native_mount) fn stop(
         &mut self,
         work: &crate::native_mount::NativeSessionStopWork<'_>,
-    ) -> Result<(), NativeMountError> {
-        let wait = match work {
-            crate::native_mount::NativeSessionStopWork::Meter(work) => work.cancellation(),
-            crate::native_mount::NativeSessionStopWork::AcceptedWait(wait) => wait,
-        };
-        wait.check()
-            .map_err(|_| NativeMountError::from(crate::DemandError::Cancelled))?;
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
+        work.check_wait()?;
+        let wait = work.wait();
         let events = Arc::clone(&self.unmount);
-        let work = ProbeWork::Cleanup(&events.credit, Some(wait));
+        let work = ProbeWork::Cleanup(&events.credit, wait);
         let was_mounted = {
             let mut state = events.state();
             if state.resources.is_none() && self.thread.is_none() {
-                events.retire(&mut state, Some(wait))?;
                 drop(state);
-                return self.classify_detached_loop(false);
+                return self.retired_outcome(&events, wait, false);
             }
-            if let Some(error) = state.failure.take() {
+            if (state.resources.is_some()
+                || state
+                    .retirement
+                    .as_ref()
+                    .is_some_and(|packet| !packet.is_retired()))
+                && let Some(error) = state.failure.take()
+            {
                 return Err(error);
             }
             events.retirement_wake.notify();
@@ -232,7 +247,7 @@ impl DarwinMountSession {
         };
         events.changed.notify_all();
         if !events.provider_exited.load(Ordering::Acquire) {
-            events.interrupt(Some(wait))?;
+            events.interrupt(wait)?;
         }
         let deadline = Instant::now() + MOUNT_LOOP_EXIT_TIMEOUT;
         while let Some(thread) = &self.thread {
@@ -240,8 +255,17 @@ impl DarwinMountSession {
             if thread.is_finished() {
                 break;
             }
-            if let Some(error) = events.state().failure.take() {
-                return Err(error);
+            {
+                let mut state = events.state();
+                if (state.resources.is_some()
+                    || state
+                        .retirement
+                        .as_ref()
+                        .is_some_and(|packet| !packet.is_retired()))
+                    && let Some(error) = state.failure.take()
+                {
+                    return Err(error);
+                }
             }
             if Instant::now() >= deadline {
                 return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
@@ -250,7 +274,7 @@ impl DarwinMountSession {
             events.wait_until(STOP_POLL_INTERVAL, |_| thread.is_finished());
         }
         if self.thread.is_some() {
-            events.sdk_credit.started_io(READ_WORK, Some(wait))?;
+            events.sdk_credit.started_io(READ_WORK, wait)?;
             self.loop_result = Some(
                 self.thread
                     .take()
@@ -262,28 +286,53 @@ impl DarwinMountSession {
                     }),
             );
         }
-        let mut state = events.state();
-        events.retire(&mut state, Some(wait))?;
-        drop(state);
-        self.classify_detached_loop(was_mounted)
+        self.retired_outcome(&events, wait, was_mounted)
     }
 
-    fn classify_detached_loop(&mut self, was_mounted: bool) -> Result<(), NativeMountError> {
-        let Some(result) = self.loop_result.as_mut() else {
-            return Ok(());
-        };
+    fn retired_outcome(
+        &mut self,
+        events: &DriverSessionResources,
+        wait: Option<&crate::CancellationToken>,
+        was_mounted: bool,
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
+        let mut state = events.state();
+        if let Err(error) = events.retire(&mut state, wait, SourceRetirementWait::Caller) {
+            if state.resources.is_some()
+                || state
+                    .retirement
+                    .as_ref()
+                    .is_some_and(|packet| !packet.is_retired())
+            {
+                return Err(error);
+            }
+            state.failure.cleanup = Some(error);
+        }
+        if let Some(error) = self.classify_detached_loop(was_mounted)? {
+            state.failure.producer = Some(error);
+        }
+        Ok(std::mem::take(&mut state.failure))
+    }
+
+    fn classify_detached_loop(
+        &mut self,
+        was_mounted: bool,
+    ) -> Result<Option<NativeMountError>, NativeMountError> {
+        if self.loop_result.is_none() {
+            return Ok(None);
+        }
         let before = self
             .loop_finished_before_teardown
             .ok_or(NativeMountError::ControlPending)?;
+        let result = self
+            .loop_result
+            .take()
+            .ok_or(NativeMountError::ControlPending)?;
         match result {
-            Ok(0) if !before || !was_mounted => Ok(()),
-            Ok(status) => Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure(
-                *status,
+            Ok(0) if !before || !was_mounted => Ok(None),
+            Ok(status) => Ok(Some(NativeMountError::DarwinTeardown(
+                DarwinTeardownFailure(status),
             ))),
-            Err(error) => Err(std::mem::replace(
-                error,
-                NativeMountError::Lifecycle("Darwin mount loop panicked"),
-            )),
+            Err(error) => Ok(Some(error)),
         }
     }
 }

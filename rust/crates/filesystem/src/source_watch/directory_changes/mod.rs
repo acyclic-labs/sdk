@@ -236,6 +236,13 @@ impl Shared {
     }
 }
 impl NativeSourceWatch {
+    pub(super) fn registration_is_recursive(&self) -> bool {
+        self.shared.recursive
+    }
+
+    pub(super) fn read_authority(&self) -> Arc<Delivery> {
+        Arc::clone(&self.shared.delivery)
+    }
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }

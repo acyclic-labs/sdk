@@ -137,13 +137,7 @@ pub(super) fn partition_indices(
     selected: usize,
     witness: impl Fn(usize) -> bool,
 ) -> Result<Vec<usize>> {
-    check_cuts(partitions.len(), partitions.iter().map(|index| index + 1))?;
-    if !partitions.contains(&selected) {
-        return Err(Error::Storage("unregistered replay partition".into()));
-    }
-    Ok((0..total)
-        .filter(|index| index % partitions.len() == selected || witness(*index))
-        .collect())
+    acyclic_test_support::partitions::indices(total, partitions, selected, witness).map_err(storage)
 }
 
 proptest::proptest! {

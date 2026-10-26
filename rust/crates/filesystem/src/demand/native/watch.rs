@@ -2,6 +2,21 @@ struct NativeWatch {
     watch: Arc<crate::source_watch::NativeSourceWatch>,
     _ownership: SourcePayloadOwnership,
 }
+
+#[cfg(all(test, target_os = "macos", feature = "native-mount"))]
+pub(crate) fn native_watch_fixture(
+    watch: Arc<crate::source_watch::NativeSourceWatch>,
+    original: &mut crate::NativeMaterializationWork,
+) -> Result<Box<dyn SourceWatch>, DemandError> {
+    let ownership = SourcePayloadOwnership::new(original)?;
+    let bytes = std::mem::size_of::<NativeWatch>() as u64;
+    let claim = crate::demand::SourceDemandReadWork::claim(original, bytes)?;
+    ownership.retain(claim, original)?;
+    Ok(Box::new(NativeWatch {
+        watch,
+        _ownership: ownership,
+    }))
+}
 impl SourceWatch for NativeWatch {
     fn fence(
         &self,

@@ -20,6 +20,60 @@ pub(super) async fn native_checkout(
 }
 
 #[tokio::test]
+async fn retained_watch_interval_replays_after_a_rejected_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = NativeMaterializationWork::new(
+        crate::performance::work_budget(1_000_000, 64_000_000),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work).await?;
+    let source = tempfile::tempdir()?;
+    std::fs::write(source.path().join("file"), b"retained hint")?;
+    let options = options(source.path(), 16)?;
+    let interval = std::sync::Arc::new(WatchBatch::Changes {
+        epoch: 1,
+        first_sequence: 1,
+        next_sequence: 2,
+        changes: vec![WatchChange::Created(path("/file")?)],
+        original: Default::default(),
+    });
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(
+        capture_watch_batch(
+            &mut checkout,
+            std::sync::Arc::clone(&interval),
+            &options,
+            &CapturePolicy::default(),
+            &work,
+            &cancelled,
+        )
+        .await
+        .is_err()
+    );
+    assert!(!checkout.has_pending_mutations());
+    let receipt = capture_watch_batch(
+        &mut checkout,
+        std::sync::Arc::clone(&interval),
+        &options,
+        &CapturePolicy::default(),
+        &work,
+        work.cancellation(),
+    )
+    .await?;
+    assert_eq!(receipt.value.first_sequence, 1);
+    assert_eq!(receipt.value.next_sequence, 2);
+    assert_eq!(receipt.value.capture.changed_paths, 1);
+    assert_records(&mut checkout, &[("/file", Some(FileKind::Regular))]).await?;
+    assert!(
+        matches!(interval.as_ref(), WatchBatch::Changes { changes, .. }
+        if changes == &[WatchChange::Created(path("/file")?)])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     let budget = crate::performance::work_budget(1_000_000, 64_000_000);
@@ -140,7 +194,8 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         .read_metadata(record.file_id, &work, &cancellation)
         .await?;
 
-    // Setting the access time advances it as a read does and, on Unix, advances the status-change time as an unrepresented named attribute does.
+    // Setting the access time advances it as a read does. The host may also
+    // advance its status-change time, but both operations can share one tick.
     let captured = std::fs::metadata(&file)?;
     let accessed = captured.accessed()? + std::time::Duration::from_secs(3_600);
     std::fs::File::options()
@@ -149,16 +204,8 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         .set_times(std::fs::FileTimes::new().set_accessed(accessed))?;
     // Negative control: the host stamps now differ from the recorded ones, so whole-record equality alone would stage the file again.
     let accessed_ns = i64::try_from(accessed.duration_since(std::time::UNIX_EPOCH)?.as_nanos())?;
+    assert_eq!(std::fs::metadata(&file)?.accessed()?, accessed);
     assert_ne!(prior.accessed_ns, MetadataField::Value(accessed_ns));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let changed = std::fs::metadata(&file)?;
-        assert_ne!(
-            prior.changed_ns,
-            MetadataField::Value(changed.ctime() * 1_000_000_000 + changed.ctime_nsec())
-        );
-    }
     let mut unchanged = rescan(&initial)?;
     let receipt = capture_subtrees_with_native_work(
         &mut unchanged,

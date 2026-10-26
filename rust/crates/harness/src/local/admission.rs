@@ -49,8 +49,6 @@ mod model;
 #[cfg(all(any(test, feature = "native-execution"), not(acyclic_harness_loom)))]
 mod poll_sweep;
 #[cfg(test)]
-pub(in crate::local) mod snapshot;
-#[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
 mod tests;
 

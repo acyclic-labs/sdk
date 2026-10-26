@@ -265,10 +265,13 @@ impl CoreLog {
                 })
             })
             .transpose()?;
-        // The reset outcome is unknown until truncation, cursor and cached
-        // metadata all agree. Every early return retains the broken fence.
+        // Every early return after reset starts retains the broken fence.
         self.broken = true;
-        let truncated = self.lease(work).and_then(|lease| lease.write(|file| acyclic_native_runtime::truncate_file(file, 0)));
+        // Appends name their offsets, so emptying the log leaves no cursor
+        // to rewind.
+        let truncated = self
+            .lease(work)
+            .and_then(|lease| lease.write(|file| acyclic_native_runtime::truncate_file(file, 0)));
         let truncate_recorded = reset
             .as_mut()
             .map(|reset| {

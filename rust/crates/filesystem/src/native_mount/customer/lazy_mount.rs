@@ -366,7 +366,7 @@ where
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
         self.prepare_unmount_cleanup()?;
-        self.retire(&crate::CancellationToken::new()).map(drop)
+        self.retire(&crate::CancellationToken::new())?.into_result()
     }
 
     /// Prepares namespace cleanup while every route's publication owner is live.
@@ -396,7 +396,9 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
             if let Some(session) = owner.as_mut() {
-                session.stop_with_cleanup_wait(wait)?;
+                session.retire_with_context(&super::super::NativeSessionStopWork::AcceptedWait(
+                    wait,
+                ))?;
                 if !session.cleanup_state().cleanup_complete() {
                     return Err(NativeMountError::ControlPending.into());
                 }
@@ -408,8 +410,12 @@ where
             }
             let proof = NativeMountDrainProof {
                 _source: self.source.clone(),
+                failures: owner
+                    .as_mut()
+                    .and_then(NativeMountSession::take_retired_failures)
+                    .unwrap_or_default(),
                 #[cfg(windows)]
-                namespace_outcome: owner
+                _namespace_outcome: owner
                     .as_mut()
                     .and_then(NativeMountSession::take_retired_namespace_outcome),
             };

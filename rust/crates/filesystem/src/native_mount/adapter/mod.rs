@@ -52,6 +52,8 @@ pub(super) struct CaptureSourceGate {
     cancelled: bool,
     producers: u64,
     retired: bool,
+    #[cfg(test)]
+    physical_cleanup_wait_observed: Option<std::sync::mpsc::Sender<()>>,
     #[cfg(windows)]
     pub(in crate::native_mount) namespace_bound: bool,
     ever_used: bool,
@@ -115,10 +117,7 @@ fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
 }
 
 pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
-    match crate::demand::native_demand_error(error) {
-        crate::DemandError::Io(error) => engine_error(error),
-        error => MountSourceError::from(error),
-    }
+    crate::demand::native_demand_error(error).into()
 }
 
 impl From<FsError> for MountSourceError {

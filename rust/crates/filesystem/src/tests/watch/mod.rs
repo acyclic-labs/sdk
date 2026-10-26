@@ -125,11 +125,12 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
     let original_identity = watch.root_identity();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_work(&mut crate::NativeMaterializationWork::clone(&work))?;
+    let rescan =
+        watch.begin_rescan_with_work(&mut crate::NativeMaterializationWork::clone(&work))?;
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
-    let finished =
-        watch.finish_rescan_with_work(&mut crate::NativeMaterializationWork::clone(&work))?;
+    let finished = watch
+        .finish_rescan_with_work(rescan, &mut crate::NativeMaterializationWork::clone(&work))?;
     assert_eq!(watch.root_identity(), original_identity);
     assert!(matches!(
         finished,
@@ -354,7 +355,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
             ..NativeWatchOptions::new(VolumeLimits::default())
         },
     )?;
-    watch.begin_rescan()?;
+    let rescan = watch.begin_rescan()?;
     watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
         tracker: 7,
         from: relative_namespace_path(
@@ -368,13 +369,13 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
         allocation: None,
     });
     assert!(matches!(
-        watch.finish_rescan()?,
+        watch.finish_rescan(rescan)?,
         WatchBatch::RescanRequired {
             reason: WatchInvalidationReason::AmbiguousRename,
             ..
         }
     ));
-    watch.begin_rescan()?;
+    let rescan = watch.begin_rescan()?;
     assert!(
         watch
             .shared
@@ -383,7 +384,10 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
             .pending_rename
             .is_none()
     );
-    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    assert!(matches!(
+        watch.finish_rescan(rescan)?,
+        WatchBatch::Changes { .. }
+    ));
     watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
         tracker: 8,
         from: relative_namespace_path(
@@ -610,9 +614,10 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
             ..
         }
     ));
-    let failed_epoch = watch.begin_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    let failed_epoch = rescan.epoch();
     assert_eq!(failed_epoch, 1);
-    watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
+    rescan.abort(WatchInvalidationReason::NativeRescanRequired);
     assert!(matches!(
         watch
             .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -622,9 +627,13 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
             ..
         }
     ));
-    let epoch = watch.begin_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    let epoch = rescan.epoch();
     assert_eq!(epoch, 2);
-    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    assert!(matches!(
+        watch.finish_rescan(rescan)?,
+        WatchBatch::Changes { .. }
+    ));
     let _empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
 
     std::fs::write(directory.path().join("observed-0"), b"content")?;
@@ -646,8 +655,8 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
                 // the first baseline. Rebaseline, then demand a precise event
                 // for a fresh write rather than accepting permanent rescans.
                 retries += 1;
-                let _ = watch.begin_rescan()?;
-                let _ = watch.finish_rescan()?;
+                let rescan = watch.begin_rescan()?;
+                let _ = watch.finish_rescan(rescan)?;
                 std::fs::write(
                     directory.path().join(format!("observed-{retries}")),
                     b"content",
@@ -783,8 +792,11 @@ fn live_native_backend_fences_a_replaced_root_without_backend_assistance()
     let displaced = parent.path().join("displaced");
     std::fs::create_dir(&root)?;
     let mut watch = NativeWatch::open(&root, NativeWatchOptions::new(VolumeLimits::default()))?;
-    watch.begin_rescan()?;
-    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    let rescan = watch.begin_rescan()?;
+    assert!(matches!(
+        watch.finish_rescan(rescan)?,
+        WatchBatch::Changes { .. }
+    ));
 
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
@@ -815,8 +827,11 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
     options.maximum_queued_changes = 1;
     let mut watch = NativeWatch::open(directory.path(), options)?;
-    watch.begin_rescan()?;
-    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    let rescan = watch.begin_rescan()?;
+    assert!(matches!(
+        watch.finish_rescan(rescan)?,
+        WatchBatch::Changes { .. }
+    ));
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut attempt = 0_u32;
@@ -848,9 +863,13 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
             | WatchInvalidationReason::UnrepresentablePath
     ));
 
-    let epoch = watch.begin_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    let epoch = rescan.epoch();
     assert!(epoch > 1);
-    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    assert!(matches!(
+        watch.finish_rescan(rescan)?,
+        WatchBatch::Changes { .. }
+    ));
     Ok(())
 }
 
@@ -880,8 +899,8 @@ fn fence_queues_every_completed_write_and_hides_its_cookie()
     watch.exclude_subtrees(&excluded)?;
     let mut observed = Vec::new();
     for attempt in 0..4 {
-        let _ = watch.begin_rescan()?;
-        let _ = watch.finish_rescan()?;
+        let rescan = watch.begin_rescan()?;
+        let _ = watch.finish_rescan(rescan)?;
         std::fs::write(directory.path().join(format!("written-{attempt}")), b"x")?;
         watch.fence(Duration::from_secs(5))?;
         match watch
@@ -968,8 +987,8 @@ fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn
         root.path(),
         NativeWatchOptions::new(VolumeLimits::default()),
     )?;
-    watch.begin_rescan()?;
-    watch.finish_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    watch.finish_rescan(rescan)?;
     // Negative control: a delivered batch leaves the watch confirmable.
     watch.lost_delivery(Ok::<_, crate::demand::DemandError>(()))?;
     assert!(watch.confirmable()?);
@@ -991,8 +1010,8 @@ fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn
             }
         ));
     }
-    watch.begin_rescan()?;
-    watch.finish_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    watch.finish_rescan(rescan)?;
     assert!(watch.confirmable()?);
     Ok(())
 }

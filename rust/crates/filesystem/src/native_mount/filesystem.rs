@@ -299,6 +299,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
         Err(MountSourceError::NativeUnsupported)
     }
+    /// Joins accepted source I/O from the existing physical retirement worker.
+    /// Unlike a caller wait, this owner cannot abandon its last physical lease.
+    fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
+        self.shutdown_accepted_cleanup()
+    }
     /// Traverses actual changes to this file identity under original limits.
     fn node_unchanged_since_with_meter(
         &self,

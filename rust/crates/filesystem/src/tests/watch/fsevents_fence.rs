@@ -15,8 +15,8 @@ fn fenced_batch(watch: &mut NativeWatch) -> Result<WatchBatch, Box<dyn std::erro
 /// temporary root's own creation once after the first baseline.
 fn quiet(watch: &mut NativeWatch) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..3 {
-        let _ = watch.begin_rescan()?;
-        let _ = watch.finish_rescan()?;
+        let rescan = watch.begin_rescan()?;
+        let _ = watch.finish_rescan(rescan)?;
         if let WatchBatch::Changes { changes, .. } = fenced_batch(watch)?
             && changes.is_empty()
         {
@@ -93,8 +93,8 @@ fn a_watch_without_exclusions_fences_by_requiring_a_rescan()
         NativeWatchOptions::new(VolumeLimits::default()),
         &work,
     )?;
-    let _ = watch.begin_rescan()?;
-    let _ = watch.finish_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    let _ = watch.finish_rescan(rescan)?;
     // There is no excluded subtree for a cookie, and the captured tree is
     // never written, so the fence cannot confirm delivery: it succeeds and
     // the consumer rescans.

@@ -14,6 +14,7 @@ pub(super) fn startup_code(error: &crate::source_watch::SourceWatchStartupFailur
 pub(super) fn watch_code(error: &crate::watch::NativeWatchError) -> Code {
     use crate::watch::NativeWatchError as E;
     match error {
+        E::Capture(error) => capture_code(error),
         E::InvalidOptions
         | E::RootIsNotDirectory
         | E::SymbolicLinkDirectory
@@ -29,8 +30,8 @@ pub(super) fn watch_code(error: &crate::watch::NativeWatchError) -> Code {
         | E::StaleVersion
         | E::StaleCursor
         | E::SourceUnavailable
+        | E::RescanOwnerMismatch
         | E::RescanAlreadyInProgress
-        | E::NoRescanInProgress
         | E::RescanInProgress => Code::FailedPrecondition,
         E::CursorBusy => Code::Aborted,
         E::Absent => Code::NotFound,
@@ -75,6 +76,7 @@ pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code 
         E::Cancelled => Code::Cancelled,
         E::Work(_) | E::Allocation(_) | E::PublicationRetryLimit => Code::ResourceExhausted,
         E::NativeWork(error) => native_code(error),
+        E::Demand(error) => kernel::demand_code(error),
         E::NativeRecordJson(_, _) | E::NativeRecordCorrupt(_, _) => Code::DataLoss,
         E::NativeRecordLockTimeout(_, _) => Code::DeadlineExceeded,
         E::ServiceUnavailable(error) => io_code(error),
@@ -88,5 +90,16 @@ pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code 
         E::NativeWatchOriginalIo(error) => io_code(error),
         #[cfg(feature = "native-watch")]
         E::NativeWatchOriginalBackend(_) => Code::Unavailable,
+    }
+}
+
+#[cfg(feature = "native-watch")]
+fn capture_code(error: &crate::CaptureError) -> Code {
+    use crate::CaptureError as E;
+    match error {
+        E::InvalidOptions | E::UnrepresentablePath => Code::InvalidArgument,
+        E::RootChanged | E::RescanRequired { .. } | E::DirtyCheckout => Code::FailedPrecondition,
+        E::UnsupportedKind => Code::Unimplemented,
+        E::Kernel(error) => filesystem_code(error),
     }
 }

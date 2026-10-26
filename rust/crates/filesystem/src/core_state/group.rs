@@ -1,12 +1,6 @@
 //! Acknowledgement barriers shared by concurrent transactions of one owner.
 use super::*;
 
-pub(super) fn file_control(
-    work: &crate::NativeMaterializationWork,
-) -> Result<crate::NativeAllocation, LocalCoreStateStoreError> {
-    shared_control::<acyclic_native_runtime::CachedFile>(work)
-}
-
 pub(super) fn shared_control<T>(
     work: &crate::NativeMaterializationWork,
 ) -> Result<crate::NativeAllocation, LocalCoreStateStoreError> {
@@ -146,12 +140,14 @@ fn flush_through(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take();
-    let file = Arc::clone(&log.file);
+    let file = log.lease(
+        root._allocation
+            .as_ref()
+            .map(|allocation| allocation.work()),
+    )?;
     let covered = (log.epoch, log.length);
     drop(slot);
-    let synced = file.lease_metered(
-        root._allocation.as_ref().map(|allocation| allocation.work().runtime_meter()).as_deref(),
-    ).and_then(|lease| lease.flush(acyclic_native_runtime::flush_file_data));
+    let synced = file.flush(acyclic_native_runtime::flush_file_data);
     let recorded = credit
         .as_ref()
         .map(|credit| {

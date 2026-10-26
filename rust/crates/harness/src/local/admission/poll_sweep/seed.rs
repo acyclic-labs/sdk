@@ -4,8 +4,8 @@ use super::*;
 pub(super) struct Seed {
     scenario: Scenario,
     pub parent: PathBuf,
-    files: super::super::snapshot::Snapshot,
-    stream: super::super::snapshot::Snapshot,
+    files: acyclic_native_runtime::testing::snapshot::Snapshot,
+    stream: acyclic_native_runtime::testing::snapshot::Snapshot,
     pub history: Option<crate::projection::SelectedModelContext>,
 }
 
@@ -19,15 +19,23 @@ impl Seed {
         Ok(Self {
             scenario,
             parent: root.parent().expect("fixture parent").to_owned(),
-            files: super::super::snapshot::Snapshot::capture(&root.join("filesystem"))?,
-            stream: super::super::snapshot::Snapshot::capture(&root.join("tasks"))?,
+            files: acyclic_native_runtime::testing::snapshot::Snapshot::capture(
+                &root.join("filesystem"),
+            )
+            .map_err(storage)?,
+            stream: acyclic_native_runtime::testing::snapshot::Snapshot::capture(
+                &root.join("tasks"),
+            )
+            .map_err(storage)?,
             history: fixture.history.into_inner(),
         })
     }
 
     pub fn restore(&self, scenario: Scenario, root: &Path) -> Result<()> {
         assert_eq!(self.scenario, scenario);
-        self.files.restore(&root.join("filesystem"))?;
-        self.stream.restore(&root.join("tasks"))
+        self.files
+            .restore(&root.join("filesystem"))
+            .map_err(storage)?;
+        self.stream.restore(&root.join("tasks")).map_err(storage)
     }
 }

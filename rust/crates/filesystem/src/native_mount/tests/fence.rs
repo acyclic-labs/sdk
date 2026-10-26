@@ -36,7 +36,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&reported[0], &actual.0);
         proptest::prop_assert_eq!(&reported[1], &actual.1);
         proptest::prop_assert_ne!(&reported[0], &reported[1]);
-        proptest::prop_assert_eq!(reported[0].parent(), Some(parent.as_path()));
+        proptest::prop_assert_eq!(reported[0].parent(), reported[1].parent());
         proptest::prop_assert_eq!(&reported[1], &super::super::registry::path().unwrap());
         proptest::prop_assert_ne!(reported[0].clone(), destination.clone());
         proptest::prop_assert_ne!(reported[1].clone(), destination.clone());
@@ -46,6 +46,111 @@ proptest::proptest! {
             proptest::prop_assert_eq!(reported[2].parent(), Some(parent.as_path()));
         }
     }
+}
+
+#[test]
+fn destination_fences_survive_ancestor_relocation_and_retire_through_original_parents()
+-> Result<(), Box<dyn std::error::Error>> {
+    registry::initialize()?;
+    let root = tempfile::tempdir()?;
+    let ancestor = root.path().join("ancestor");
+    let moved = root.path().join("moved");
+    std::fs::create_dir(&ancestor)?;
+    let destination = ancestor.join("mount");
+    std::fs::create_dir(&destination)?;
+    std::fs::write(ancestor.join("authored"), b"preserve")?;
+    let canonical = destination.canonicalize()?;
+    let (fence, _) = MountDestinationGuard::paths_for_canonical(&canonical)?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut guard = None;
+    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+    let mut guard = guard.unwrap();
+    guard.prepare_destination_cleanup(&destination, &work)?;
+    std::fs::rename(&ancestor, &moved)?;
+    assert!(!ancestor.exists());
+    assert!(
+        fence.is_file(),
+        "ownership recovery must not traverse the destination's ancestors"
+    );
+    assert!(matches!(
+        acquire_existing_mount_lock(&fence),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    assert_eq!(
+        MountDestinationGuard::paths_for_canonical(&canonical)?.0,
+        fence
+    );
+    cancellation.cancel();
+    guard.remove_destination()?;
+    guard.release_cleanup(None)?;
+    assert!(guard.file.is_none());
+    assert!(!fence.exists());
+    assert!(!moved.join("mount").exists());
+    assert_eq!(std::fs::read(moved.join("authored"))?, b"preserve");
+    Ok(())
+}
+
+#[test]
+fn a_mount_cannot_cover_its_ownership_registry() -> Result<(), Box<dyn std::error::Error>> {
+    let registry = registry::path()?;
+    let directory = registry.parent().unwrap();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error)?;
+    for destination in [directory, directory.parent().unwrap()] {
+        let mut guard = None;
+        assert!(matches!(
+            MountDestinationGuard::acquire_with_work(destination, true, &work, &mut guard, false),
+            Err(NativeMountError::InvalidDestination)
+        ));
+        assert!(guard.is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn existing_recovery_fences_need_neither_a_reachable_parent_nor_a_new_marker()
+-> Result<(), Box<dyn std::error::Error>> {
+    registry::initialize()?;
+    let root = tempfile::tempdir()?;
+    let parent = root.path().join("parent");
+    std::fs::create_dir(&parent)?;
+    let destination = parent.canonicalize()?.join("mount");
+    let (fence, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error)?;
+    assert!(NativeMountRecoveryOwner::acquire_existing_canonical(&destination, &original).is_err());
+    assert!(!fence.exists(), "recovery invented mount ownership");
+    drop(acquire_mount_lock(&fence, false)?);
+    std::fs::remove_dir(&parent)?;
+    assert!(NativeMountRecoveryOwner::acquire_with_original(&destination, &original).is_err());
+
+    let owner = NativeMountRecoveryOwner::acquire_existing_canonical(&destination, &original)?;
+    let identity = owner.cleanup_state()?.fence_identity;
+    assert!(matches!(
+        NativeMountRecoveryOwner::acquire_existing_canonical(&destination, &original),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    assert!(
+        fence.is_file(),
+        "a refused contender removed the owner's fence"
+    );
+    let before_close = original.receipt().backend_write_operations;
+    await_recovery_worker(owner)?;
+    assert_eq!(
+        original.receipt().backend_write_operations,
+        before_close + 1
+    );
+    let unlocked = acquire_existing_mount_lock(&fence)?;
+    assert_eq!(
+        crate::native_host::file_identity_and_length(&unlocked, &mut &original)?.0,
+        identity
+    );
+    drop(unlocked);
+    MountDestinationGuard::reclaim_canonical(&destination)?;
+    assert!(!fence.exists());
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -327,7 +432,10 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
                 .stderr(std::process::Stdio::piped())
                 .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination)
                 .env("ACYCLIC_FS_RECLAIM_CHILD_READY", &ready)
-                .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release),
+                .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release)
+                // Child libtest summaries belong to their own invocation. The
+                // parent reports their checked exit statuses in its summary.
+                .stdout(std::process::Stdio::null()),
         )?;
         readiness.push(ready);
         children.push(child);
@@ -518,6 +626,9 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
     assert!(work.work.backend_write_operations > 0);
     assert!(guard.file.is_some());
     assert!(guard.lock_path.is_dir());
+    std::fs::remove_dir(&guard.lock_path)?;
+    guard.release(&mut work)?;
+    assert!(guard.file.is_none());
     Ok(())
 }
 

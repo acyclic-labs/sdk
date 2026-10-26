@@ -141,6 +141,12 @@ pub struct NativeMountRecoveryOwner {
     retirement: Option<RetirementSender>,
 }
 
+enum RecoveryDestination {
+    Parent(Option<cap_std::fs::Dir>),
+    #[cfg(any(target_os = "macos", test))]
+    ExistingCanonical,
+}
+
 impl std::fmt::Debug for NativeMountRecoveryOwner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -182,7 +188,11 @@ impl NativeMountRecoveryOwner {
             },
             || parent.try_clone(),
         )?;
-        Self::acquire_bound(destination, original, Some(parent))
+        Self::acquire_bound(
+            destination,
+            original,
+            RecoveryDestination::Parent(Some(parent)),
+        )
     }
 
     /// Preserves a crashed ProjFS root by an identity-checked, no-replace rename
@@ -230,7 +240,22 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        Self::acquire_bound(destination, original, None)
+        Self::acquire_bound(destination, original, RecoveryDestination::Parent(None))
+    }
+
+    /// Acquires only an existing registry fence, without traversing the mount.
+    /// The OS adapter must authenticate its kernel mount snapshot before detach.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn acquire_existing_canonical(
+        destination: &Path,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        super::registry::initialize()?;
+        Self::acquire_bound(
+            destination,
+            original,
+            RecoveryDestination::ExistingCanonical,
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -246,13 +271,17 @@ impl NativeMountRecoveryOwner {
         .map_err(|(error, _)| NativeMountError::from(error))?;
         original.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
         let directory = cap_std::fs::Dir::from_std_file(parent.try_clone()?.into());
-        Self::acquire_bound(destination, &original, Some(directory))
+        Self::acquire_bound(
+            destination,
+            &original,
+            RecoveryDestination::Parent(Some(directory)),
+        )
     }
 
     fn acquire_bound(
         destination: &Path,
         original: &crate::NativeMaterializationWork,
-        parent: Option<cap_std::fs::Dir>,
+        destination_source: RecoveryDestination,
     ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
@@ -323,7 +352,7 @@ impl NativeMountRecoveryOwner {
                     .ok_or(NativeMountError::ControlPending)?
                     .acquire(
                         &owner.shared.destination,
-                        parent,
+                        destination_source,
                         owner.shared._custody.work(),
                     )
             }))
@@ -403,20 +432,38 @@ impl NativeMountRecoveryOwner {
         parent: std::fs::File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
-        {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let control = &mut state
-                .as_mut()
-                .ok_or(NativeMountError::ControlPending)?
-                .control;
+        self.configure_control(|control, _fence| {
             control.pinned = Some(file);
             control.pinned_parent = Some(parent);
-        }
+            Ok(())
+        })?;
         self.finish(false, work)
+    }
+
+    // OS adapters bind their retained kernel identity while the shared owner
+    // holds the destination fence. They do not create a second retirement path.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn configure_control<T>(
+        &mut self,
+        configure: impl FnOnce(
+            &mut NativeRecoveryControl,
+            &super::fence_io::MountLockFile,
+        ) -> Result<T, NativeMountError>,
+    ) -> Result<T, NativeMountError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state.as_mut().ok_or(NativeMountError::ControlPending)?;
+        configure(
+            &mut state.control,
+            state
+                .guard
+                .as_ref()
+                .and_then(|guard| guard.file.as_ref())
+                .ok_or(NativeMountError::ControlPending)?,
+        )
     }
 
     fn finish(
@@ -459,18 +506,18 @@ impl NativeRecoveryState {
     fn acquire(
         &mut self,
         destination: &Path,
-        parent: Option<cap_std::fs::Dir>,
+        source: RecoveryDestination,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if let Some(directory) = parent {
+        if let RecoveryDestination::Parent(Some(directory)) = source {
             MountDestinationGuard::acquire_recovery_in_directory(
                 destination,
                 directory,
                 work,
                 &mut self.guard,
             )?;
-        } else {
+        } else if matches!(source, RecoveryDestination::Parent(None)) {
             MountDestinationGuard::acquire_with_work(
                 destination,
                 true,
@@ -478,6 +525,9 @@ impl NativeRecoveryState {
                 &mut self.guard,
                 true,
             )?;
+        } else {
+            #[cfg(any(target_os = "macos", test))]
+            MountDestinationGuard::acquire_existing_canonical(destination, work, &mut self.guard)?;
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         return Err(NativeMountError::UnsupportedTarget);

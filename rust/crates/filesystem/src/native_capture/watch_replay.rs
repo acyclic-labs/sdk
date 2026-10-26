@@ -1,6 +1,8 @@
 use super::*;
 
 /// Replays one watcher batch with the caller's full original native resource.
+/// The interval remains owned by the argument, including a shared retry owner;
+/// only paths copied into the private candidate consume this invocation's work.
 #[allow(
     clippy::too_many_lines,
     reason = "Admission, rename validation, replay and commit share one funded candidate frame."
@@ -11,7 +13,7 @@ pub async fn capture_watch_batch<
     W: crate::facade::FsWork,
 >(
     checkout: &mut Checkout<A, O>,
-    batch: WatchBatch,
+    batch: impl std::borrow::Borrow<WatchBatch>,
     options: &CaptureOptions,
     policy: &CapturePolicy,
     budget: W,
@@ -39,61 +41,28 @@ pub async fn capture_watch_batch<
         let meter = &scope.native;
         cancellation.check()?;
         meter.clone().check().map_err(capture_demand_error)?;
+        let batch = batch.borrow();
         let WatchBatch::Changes {
-            original: incoming,
             epoch,
             first_sequence,
             next_sequence,
             changes,
+            ..
         } = batch
         else {
             let WatchBatch::RescanRequired { epoch, reason } = batch else {
                 unreachable!("watch batch variants are exhaustive")
             };
-            return Err(CaptureError::RescanRequired { epoch, reason });
+            return Err(CaptureError::RescanRequired {
+                epoch: *epoch,
+                reason: *reason,
+            });
         };
-        let changes_storage_native = incoming.has_native_changes_storage_custody();
-        // Drop moved hints before their meter allocation guards, including on early failure.
-        let incoming = (changes, incoming);
-        let changes_bytes = vector_bytes(&incoming.0);
-        let mut bytes = if changes_storage_native {
-            0
-        } else {
-            changes_bytes
-        };
-        for (index, change) in incoming.0.iter().enumerate() {
-            if incoming.1.change_has_native_payload_custody(index) {
-                continue;
-            }
-            let (first, second) = match change {
-                WatchChange::Created(path)
-                | WatchChange::Modified(path)
-                | WatchChange::Arrived(path)
-                | WatchChange::Removed(path)
-                | WatchChange::MetadataChanged(path) => (path, None),
-                WatchChange::Renamed { from, to } => (from, Some(to)),
-            };
-            for path in std::iter::once(first).chain(second) {
-                capture_charge(
-                    meter,
-                    WorkCounters {
-                        items_examined: 1 + path.depth() as u64,
-                        source_path_components: path.depth() as u64,
-                        ..WorkCounters::UNCHARGED
-                    },
-                )?;
-                bytes = bytes
-                    .checked_add(path.retained_bytes())
-                    .ok_or(CaptureError::from(WorkError::Overflow))?;
-            }
-        }
-        meter
-            .with_original_leaf(|work| work.claim_allocation(bytes, 0, WorkCounters::UNCHARGED))
-            .map_err(capture_demand_error)?;
+        let (epoch, first_sequence, next_sequence) = (*epoch, *first_sequence, *next_sequence);
         let cancellation = meter.cancellation();
         if options.maximum_paths == 0
             || options.maximum_extent_spans == 0
-            || incoming.0.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
+            || changes.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
         {
             return Err(CaptureError::InvalidOptions);
         }
@@ -104,8 +73,8 @@ pub async fn capture_watch_batch<
         let mut rename_records = Vec::new();
         let mut renamed_directories = Vec::new();
 
-        for (index, change) in incoming.0.into_iter().enumerate() {
-            let (mut path, mut destination, intent) = match change {
+        for change in changes {
+            let (path, destination, intent) = match change {
                 WatchChange::Created(path) => (path, None, CaptureIntent::Replace),
                 WatchChange::Modified(path) | WatchChange::Removed(path) => {
                     (path, None, CaptureIntent::Complete)
@@ -114,15 +83,12 @@ pub async fn capture_watch_batch<
                 WatchChange::MetadataChanged(path) => (path, None, CaptureIntent::MetadataOnly),
                 WatchChange::Renamed { from, to } => (from, Some(to), CaptureIntent::Complete),
             };
-            if incoming.1.change_has_native_payload_custody(index) {
-                let owned = clone_capture_path(&path, meter)?;
-                drop(path);
-                path = owned;
-                if let Some(to) = destination.take() {
-                    destination = Some(clone_capture_path(&to, meter)?);
-                    drop(to);
-                }
-            }
+            // Every retained path is admitted before copying. The immutable
+            // input and its native custody stay together through all exits.
+            let path = clone_capture_path(path, meter)?;
+            let destination = destination
+                .map(|to| clone_capture_path(to, meter))
+                .transpose()?;
             capture_charge(
                 meter,
                 crate::materializer::NativeResourceCredit::Items.delta(1),
@@ -227,13 +193,6 @@ pub async fn capture_watch_batch<
                 _ => {}
             }
         }
-        if !changes_storage_native {
-            meter
-                .clone()
-                .release(changes_bytes)
-                .map_err(capture_demand_error)?;
-        }
-        drop(incoming.1);
 
         expand_directory_hints(
             checkout,

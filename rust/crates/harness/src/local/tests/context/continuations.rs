@@ -22,11 +22,35 @@ fn prompt(goal: bool, plans: bool) -> &'static str {
 
 // Exhaust the independent requested/present booleans. The predecessor carries
 // the opposite guidance, including mode markers in its retained history.
-#[tokio::test]
-async fn new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection()
--> Result<()> {
+acyclic_test_support::partitioned_tests! {
+    #[tokio::test] async fn -> Result<()>;
+    GUIDANCE_PARTITIONS, 16, guidance_partition;
+    0 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection,
+    1 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_1,
+    2 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_2,
+    3 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_3,
+    4 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_4,
+    5 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_5,
+    6 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_6,
+    7 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_7,
+    8 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_8,
+    9 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_9,
+    10 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_10,
+    11 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_11,
+    12 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_12,
+    13 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_13,
+    14 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_14,
+    15 => new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection_partition_15,
+}
+
+async fn guidance_partition(assigned: Vec<usize>) -> Result<()> {
     let bootstrap = super::super::bootstrap::Bootstrap::new().await?;
-    futures::future::try_join_all((0..16).map(|bits| case(bits, &bootstrap))).await?;
+    futures::future::try_join_all(
+        assigned
+            .into_iter()
+            .map(|bits| case(u8::try_from(bits).expect("four boolean bits"), &bootstrap)),
+    )
+    .await?;
     Ok(())
 }
 

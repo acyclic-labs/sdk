@@ -278,6 +278,64 @@ pub(super) const FINITE_HANDLER_POLICY: crate::WorkBudget =
     crate::performance::work_budget(1 << 20, 1 << 26);
 
 #[test]
+fn ordinary_refusal_keeps_the_fuse_session_usable() -> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = shared_sources(posix_config())?;
+    let core = projection_core(
+        Arc::new(source),
+        FINITE_HANDLER_POLICY,
+        &crate::CancellationToken::new(),
+    )?;
+    for source in [
+        MountSourceError::AccessDenied,
+        MountSourceError::WorkspaceCause(crate::WorkspaceError::AccessDenied),
+    ] {
+        let refusal = core.request::<()>(|_| Err(NativeMountError::Source(source)));
+        assert_eq!(core.finish(refusal), Err(libc::EACCES));
+        assert!(
+            core.take_handler_failure().is_none(),
+            "ordinary policy refusal retired the session"
+        );
+        assert!(!core.handler_failed.load(Ordering::Acquire));
+        assert_eq!(core.finish(core.request(|_| Ok(()))), Ok(()));
+    }
+    Ok(())
+}
+
+#[test]
+fn failed_completion_keeps_its_fuse_failure_and_work_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = shared_sources(posix_config())?;
+    let core = projection_core(
+        Arc::new(source),
+        FINITE_HANDLER_POLICY,
+        &crate::CancellationToken::new(),
+    )?;
+    let failure = core.request::<()>(|work| {
+        let _path = super::super::fuse_clone_path(&name("charged-before-completion"), work)?;
+        Err(NativeMountError::Source(
+            MountSourceError::MutationFinalization {
+                primary: Box::new(Some(MountSourceError::NotFound)),
+                cleanup: Box::new(Some(crate::DemandError::Cancelled)),
+                custody: None,
+            },
+        ))
+    });
+    let prefix = failure.as_ref().expect_err("failed completion").1;
+    assert_ne!(prefix, crate::WorkCounters::UNCHARGED);
+    assert_eq!(core.finish(failure), Err(libc::ENOENT));
+    let retained = core
+        .take_handler_failure()
+        .expect("failed accounting was discarded");
+    assert_eq!(retained.1, prefix);
+    assert!(matches!(
+        retained.0,
+        NativeMountError::Source(MountSourceError::MutationFinalization { .. })
+    ));
+    assert!(core.handler_failed.load(Ordering::Acquire));
+    Ok(())
+}
+
+#[test]
 pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, around) = shared_sources(posix_config())?;
@@ -369,7 +427,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    crate::initialize_native_mount_services()?;
+    crate::native_mount::initialize_native_mount_services()?;
     let (source, around) = shared_sources(posix_config())?;
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(
@@ -589,8 +647,9 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
             retained_source: Some(Arc::clone(&core.source)),
             destination_guard: None,
             startup_source_watch: None,
+            terminal_source_failure: None,
         }),
-        failure: None,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
         shared: None,
         _allocation: control_allocation,
     }));
@@ -623,7 +682,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
     let state = state
         .lock()
         .unwrap_or_else(crate::native_mount::fuse::PoisonError::into_inner);
-    assert!(state.is_retired() && state.failure.is_none());
+    assert!(state.is_retired() && state.failure.is_empty());
     assert!(
         state
             .retirement

@@ -529,7 +529,7 @@ fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn s
             _ => "other",
         };
         assert_eq!(reported, expected, "{error:?}");
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert_eq!(
             crate::native_mount::shared::outcome::CallbackFailure::of_source(&error).errno(),
             match expected {

@@ -335,3 +335,24 @@ fn file_import_cannot_spend_payload_only_credit_before_querying_the_file() -> io
     }
     Ok(())
 }
+
+#[test]
+fn file_creation_refuses_unfunded_handle_storage_before_the_host_effect() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let mut policy = ReadBudgetMeter::new(1, 0);
+    policy.allocation_limit = 0;
+    let observed = Arc::new(policy);
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let mut created = false;
+    let result = NativeFile::create_with(
+        || {
+            created = true;
+            tempfile::tempfile()
+        },
+        Some(meter),
+    );
+    assert!(result.is_err());
+    assert!(!created, "unfunded handle storage reached host creation");
+    assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+    Ok(())
+}

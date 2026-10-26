@@ -24,25 +24,6 @@ fn fixture_file(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
-/// Counts this process's descriptors open on `path`'s file. Unlike an
-/// advisory-lock probe, a census is exact while a concurrently spawned child
-/// shares those descriptions until it execs. Inspect a held duplicate: Darwin
-/// synthesizes a different device identity for stat on a /dev/fd pathname.
-#[cfg(unix)]
-fn descriptors_open_on(path: &Path) -> std::io::Result<usize> {
-    use std::os::unix::fs::MetadataExt as _;
-    let target = std::fs::metadata(path)?;
-    let mut count = 0;
-    for entry in std::fs::read_dir("/dev/fd")? {
-        // Entries such as the listing's own directory may close meanwhile.
-        let Ok(found) = std::fs::File::open(entry?.path()).and_then(|file| file.metadata()) else {
-            continue;
-        };
-        count += usize::from(found.dev() == target.dev() && found.ino() == target.ino());
-    }
-    Ok(count)
-}
-
 #[cfg(unix)]
 #[test]
 fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
@@ -51,7 +32,10 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
     let path = temporary.path().join("cancelled-import");
     std::fs::write(&path, b"actual")?;
     let file = fixture_file(&path)?;
-    assert_eq!(descriptors_open_on(&path)?, 1);
+    assert_eq!(
+        acyclic_native_runtime::resources::descriptors_naming(&path)?,
+        1
+    );
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
         .map_err(|(error, _)| error)?;
@@ -61,7 +45,10 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
         native_positional_file(file, &scope.native),
         Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
-    assert_eq!(descriptors_open_on(&path)?, 0);
+    assert_eq!(
+        acyclic_native_runtime::resources::descriptors_naming(&path)?,
+        0
+    );
     scope.release()?;
     Ok(())
 }

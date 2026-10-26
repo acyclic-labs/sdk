@@ -43,39 +43,50 @@ fn directory() -> Result<&'static Path, NativeMountError> {
 
 // Ordinary control-path queries run before any bounded native invocation.
 pub(super) fn path() -> Result<PathBuf, NativeMountError> {
+    initialize()?;
+    with_directory(|directory| Ok(directory.join(NATIVE_REGISTRY_NAME)))
+}
+
+pub(super) fn with_directory<T>(
+    operation: impl FnOnce(&Path) -> Result<T, NativeMountError>,
+) -> Result<T, NativeMountError> {
     #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {
-        return Ok(directory.join(NATIVE_REGISTRY_NAME));
+        return operation(directory);
     }
-    initialize()?;
-    Ok(directory()?.join(NATIVE_REGISTRY_NAME))
+    operation(directory()?)
 }
 
+#[cfg(test)]
 pub(super) fn open<W: crate::native_host::NativeHostWork>(
     work: &mut W,
 ) -> Result<fence_io::MountLockFile, NativeMountError>
 where
     NativeMountError: From<W::Error>,
 {
-    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
-    if let Some(kernel) = super::disconnected::kernel::current()
-        && let Some(directory) = kernel.registry_directory()
-    {
-        return open_in_directory(directory, work);
-    }
-    open_in_directory(directory()?, work)
+    open_with_directory(work).map(|(_, file)| file)
 }
 
-/// The registry as this process holds it: one descriptor, opened by the
-/// first mount to need it and shared by every later one, so mounts hold no
-/// registry descriptor of their own. The file's lock belongs to the open
+pub(super) fn open_with_directory<W: crate::native_host::NativeHostWork>(
+    work: &mut W,
+) -> Result<(cap_std::fs::Dir, fence_io::MountLockFile), NativeMountError>
+where
+    NativeMountError: From<W::Error>,
+{
+    with_directory(|directory| open_in_directory(directory, work))
+}
+
+/// The registry directory and lock, opened once by the first mount to need
+/// them and shared by every later one, so mounts retain no registry
+/// descriptors of their own. The file's lock belongs to the open
 /// descriptor, which every thread here shares; `admission` therefore admits
 /// one thread at a time, and only that thread contends with other processes
 /// for the file's lock.
 pub(super) struct Registry {
     pub(super) file: fence_io::MountLockFile,
+    pub(super) directory: cap_std::fs::Dir,
     admission: crate::sync::native::Mutex<()>,
 }
 
@@ -98,9 +109,10 @@ pub(super) struct RegistryHold<'a> {
 }
 
 impl Registry {
-    pub(super) fn new(file: fence_io::MountLockFile) -> Self {
+    pub(super) fn new(directory: cap_std::fs::Dir, file: fence_io::MountLockFile) -> Self {
         Self {
             file,
+            directory,
             admission: crate::sync::native::Mutex::new(()),
         }
     }
@@ -178,7 +190,12 @@ where
     NativeMountError: From<W::Error>,
 {
     #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
-    return Ok(crate::sync::native::Arc::new(Registry::new(open(work)?)));
+    {
+        let (directory, file) = open_with_directory(work)?;
+        return Ok(crate::sync::native::Arc::new(Registry::new(
+            directory, file,
+        )));
+    }
     #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
     {
         static SHARED: std::sync::Mutex<Option<std::sync::Arc<Registry>>> =
@@ -189,7 +206,8 @@ where
         if let Some(registry) = shared.as_ref() {
             return Ok(std::sync::Arc::clone(registry));
         }
-        let registry = std::sync::Arc::new(Registry::new(open(work)?));
+        let (directory, file) = open_with_directory(work)?;
+        let registry = std::sync::Arc::new(Registry::new(directory, file));
         *shared = Some(std::sync::Arc::clone(&registry));
         Ok(registry)
     }
@@ -198,18 +216,18 @@ where
 fn open_in_directory<W: crate::native_host::NativeHostWork>(
     directory: &Path,
     work: &mut W,
-) -> Result<fence_io::MountLockFile, NativeMountError>
+) -> Result<(cap_std::fs::Dir, fence_io::MountLockFile), NativeMountError>
 where
     NativeMountError: From<W::Error>,
 {
     let (directory, _) = crate::native_host::open_root_directory(directory, work)?;
-    Ok(crate::native_host::open_leaf(
+    let file = crate::native_host::open_leaf(
         &directory,
         Path::new(NATIVE_REGISTRY_NAME),
         &crate::native_host::NativeOpenOptions::ReadWriteCreate,
         work,
-    )?
-    .into())
+    )?;
+    Ok((directory, file.into()))
 }
 
 // Match the service's persistent state-root selection before consulting OS

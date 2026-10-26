@@ -7,6 +7,7 @@ pub(in crate::native_mount) struct DarwinRecoveryControl {
     pub(super) direct: Option<DirectDetach>,
     pub(super) detached: bool,
     pub(super) start_aborted: bool,
+    pub(super) recovery_probe: Option<MountProbe>,
 }
 
 pub(super) struct DirectDetach {
@@ -65,19 +66,39 @@ impl DirectDetach {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             std::pin::Pin::new(&mut self.task).poll(&mut std::task::Context::from_waker(waker))
         }));
-        Ok(match result {
-            Ok(Poll::Pending) => Poll::Pending,
-            Ok(Poll::Ready(result)) => Poll::Ready(
-                result
-                    .and_then(std::convert::identity)
-                    .map(|_| ())
-                    .map_err(|error| self.credit.work().runtime_error(error).into()),
-            ),
-            Err(panic) => Poll::Ready(Err(NativeMountError::DriverPanicked {
+        let completed = match result {
+            Ok(Poll::Pending) => return Ok(Poll::Pending),
+            Ok(Poll::Ready(result)) => Ok(result),
+            Err(panic) => Err(panic),
+        };
+        Ok(Poll::Ready(Self::completed(&self.credit, completed)))
+    }
+
+    fn completed(
+        credit: &crate::NativeWorkReservation,
+        result: std::thread::Result<std::io::Result<std::io::Result<c_int>>>,
+    ) -> Result<(), NativeMountError> {
+        match result {
+            Ok(result) => result
+                .and_then(std::convert::identity)
+                .map(|_| ())
+                .map_err(|error| credit.work().runtime_error(error).into()),
+            Err(panic) => Err(NativeMountError::DriverPanicked {
                 operation: "Darwin direct detach",
                 panic: Mutex::new(panic),
-            })),
-        })
+            }),
+        }
+    }
+
+    fn retire(self) -> Result<(), NativeMountError> {
+        let Self { task, credit, .. } = self;
+        // The runtime owns the completion wake and its birth allocation. A
+        // cancelled invocation cannot revoke retirement of an already started
+        // native call, and no second polling/wake implementation is needed.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            task.wait(None, std::future::pending(), || {})
+        }));
+        Self::completed(&credit, result)
     }
 }
 
@@ -105,6 +126,18 @@ pub(super) const fn control_visits(timeout: Duration, interval: Duration) -> u64
 }
 
 impl DarwinRecoveryControl {
+    pub(super) fn bind_mount(
+        &mut self,
+        mount: &libc::statfs,
+        original: &Work,
+    ) -> Result<(), NativeMountError> {
+        if self.recovery_probe.is_some() || self.controls_pending() || self.detached {
+            return Err(NativeMountError::ControlPending);
+        }
+        self.recovery_probe = Some(MountProbe::for_mount(mount, original)?);
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn controls_pending(&self) -> bool {
         self.direct.as_ref().is_some_and(|task| task.started)
     }
@@ -177,24 +210,33 @@ impl DarwinRecoveryControl {
         original: &Work,
     ) -> Result<(), NativeMountError> {
         let work = ProbeWork::Live(original);
-        self.detach(
-            destination,
-            &mut MountProbe::new(destination, original)?,
-            &work,
-        )?;
-        self.poll_direct(&work)?;
-        if self.controls_pending() {
-            Err(NativeMountError::ControlPending)
-        } else {
-            Ok(())
+        let bound = self.recovery_probe.is_some();
+        let mut probe = match self.recovery_probe.take() {
+            Some(probe) => probe,
+            None => MountProbe::new(destination, original)?,
+        };
+        let result = (|| {
+            self.detach(destination, &mut probe, &work)?;
+            self.poll_direct(&work)?;
+            if self.controls_pending() {
+                Err(NativeMountError::ControlPending)
+            } else {
+                Ok(())
+            }
+        })();
+        if bound {
+            self.recovery_probe = Some(probe);
         }
+        result
     }
 
     pub(in crate::native_mount) fn retire_controls(
         &mut self,
-        original: &Work,
+        _original: &Work,
     ) -> Result<(), NativeMountError> {
-        self.direct = self.direct.take().filter(|task| task.started);
-        self.wait_direct(&ProbeWork::Live(original))
+        self.direct
+            .take()
+            .filter(|task| task.started)
+            .map_or(Ok(()), DirectDetach::retire)
     }
 }

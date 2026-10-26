@@ -123,7 +123,7 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
     Ok(())
 }
 
-async fn sweep(text: &str) -> Result<()> {
+async fn sweep(text: &str, partition: usize) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
@@ -142,7 +142,9 @@ async fn sweep(text: &str) -> Result<()> {
     // Later attempts change only this same file, with identical tree structure.
     let mut effects = 0;
     let mut cut = 0;
+    let mut remaining = Vec::new().into_iter();
     loop {
+        let started = std::time::Instant::now();
         let expected = format!("{text}-{cut}");
         let checkout = harness.workspace().unwrap();
         let selected = checkout.selected_view().await?.0.unwrap();
@@ -225,6 +227,29 @@ async fn sweep(text: &str) -> Result<()> {
             if cut == 0 {
                 effects = count.load(Ordering::SeqCst);
                 result?;
+                assert!(
+                    effects > 0,
+                    "the publication has no observed effect boundaries"
+                );
+                // The measured complete publication is the common witness. The
+                // planner assigns every semantic and native crash cut, including
+                // the terminal cut, without making one test replay them all.
+                let registered: Vec<_> = (0..CUT_PARTITIONS).collect();
+                remaining = acyclic_test_support::partitions::indices(
+                    6 + effects,
+                    &registered,
+                    partition,
+                    |_| false,
+                )
+                .map_err(super::super::storage)?
+                .into_iter()
+                .filter(|cut| *cut != 0)
+                .collect::<Vec<_>>()
+                .into_iter();
+                eprintln!(
+                    "publication effects: {effects}; assigned crash cuts: {:?}",
+                    remaining.as_slice()
+                );
             } else if cut - 5 < effects {
                 assert!(result.is_err(), "publication ignored interruption {cut}");
                 assert_eq!(
@@ -257,15 +282,16 @@ async fn sweep(text: &str) -> Result<()> {
         ))
         .await?;
         assert_published(&harness, &expected).await?;
-        if cut == 5 + effects {
-            // One complete host reopen additionally checks binding and mount
-            // reconstruction after every durable interruption was recovered.
+        eprintln!("recovered crash cut {cut}: {:?}", started.elapsed());
+        let Some(next) = remaining.next() else {
+            // Every partition additionally checks binding and mount reconstruction
+            // after its last recovered cut, including the terminal crash cut.
             drop(harness);
             harness = open(directory.path(), state_directory.path()).await?;
             assert_published(&harness, &expected).await?;
             break;
-        }
-        cut += 1;
+        };
+        cut = next;
     }
     Ok(())
 }
@@ -395,48 +421,68 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
     negative_control("upstream").await
 }
 
-#[test]
-fn reopen_never_captures_over_an_unpublished_rebase() {
-    // Preserve four independent fixtures and their parallel blocking work,
-    // but let the parent drive one shared I/O reactor. Each future stays on
-    // its original caller thread, including native values that are not Send.
-    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
-        source_file: Some(file!()),
-        ..ProptestConfig::with_cases(1)
-    });
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let worker = runtime.handle().clone();
-    let cases = proptest::collection::vec("[a-z]{1,12}", 4);
-    runner
-        .run(&cases, |texts| {
-            std::thread::scope(|scope| {
-                let receivers: Vec<_> = texts
-                    .into_iter()
-                    .map(|text| {
-                        let (sender, receiver) = tokio::sync::oneshot::channel();
-                        let worker = &worker;
-                        scope.spawn(move || {
-                            let result = worker
-                                .block_on(sweep(&text))
-                                .map_err(|error| error.to_string());
-                            assert!(sender.send(result).is_ok(), "lost sweep receiver");
-                        });
-                        receiver
-                    })
-                    .collect();
-                // A current-thread Handle cannot drive I/O by itself. Keep
-                // the owning runtime polling until every caller settles.
-                let outcomes = runtime.block_on(futures::future::join_all(receivers));
-                for outcome in outcomes {
-                    outcome
-                        .map_err(|error| TestCaseError::fail(error.to_string()))?
-                        .map_err(TestCaseError::fail)?;
-                }
-                Ok(())
+// Each crash-cut partition retains four generated text samples, the entire
+// input domain and the original shrink budget. One checked registration owns
+// the Cartesian indices; removing a declaration redistributes its work.
+const TEXT_FIXTURES: usize = 4;
+const CUT_PARTITIONS: usize = 8;
+
+acyclic_test_support::partitioned_tests! {
+    #[test] fn -> ();
+    REOPEN_PARTITIONS, TEXT_FIXTURES * CUT_PARTITIONS, reopen_partition;
+    0 => reopen_never_captures_over_an_unpublished_rebase,
+    1 => reopen_never_captures_over_an_unpublished_rebase_partition_1,
+    2 => reopen_never_captures_over_an_unpublished_rebase_partition_2,
+    3 => reopen_never_captures_over_an_unpublished_rebase_partition_3,
+    4 => reopen_never_captures_over_an_unpublished_rebase_partition_4,
+    5 => reopen_never_captures_over_an_unpublished_rebase_partition_5,
+    6 => reopen_never_captures_over_an_unpublished_rebase_partition_6,
+    7 => reopen_never_captures_over_an_unpublished_rebase_partition_7,
+    8 => reopen_never_captures_over_an_unpublished_rebase_partition_8,
+    9 => reopen_never_captures_over_an_unpublished_rebase_partition_9,
+    10 => reopen_never_captures_over_an_unpublished_rebase_partition_10,
+    11 => reopen_never_captures_over_an_unpublished_rebase_partition_11,
+    12 => reopen_never_captures_over_an_unpublished_rebase_partition_12,
+    13 => reopen_never_captures_over_an_unpublished_rebase_partition_13,
+    14 => reopen_never_captures_over_an_unpublished_rebase_partition_14,
+    15 => reopen_never_captures_over_an_unpublished_rebase_partition_15,
+    16 => reopen_never_captures_over_an_unpublished_rebase_partition_16,
+    17 => reopen_never_captures_over_an_unpublished_rebase_partition_17,
+    18 => reopen_never_captures_over_an_unpublished_rebase_partition_18,
+    19 => reopen_never_captures_over_an_unpublished_rebase_partition_19,
+    20 => reopen_never_captures_over_an_unpublished_rebase_partition_20,
+    21 => reopen_never_captures_over_an_unpublished_rebase_partition_21,
+    22 => reopen_never_captures_over_an_unpublished_rebase_partition_22,
+    23 => reopen_never_captures_over_an_unpublished_rebase_partition_23,
+    24 => reopen_never_captures_over_an_unpublished_rebase_partition_24,
+    25 => reopen_never_captures_over_an_unpublished_rebase_partition_25,
+    26 => reopen_never_captures_over_an_unpublished_rebase_partition_26,
+    27 => reopen_never_captures_over_an_unpublished_rebase_partition_27,
+    28 => reopen_never_captures_over_an_unpublished_rebase_partition_28,
+    29 => reopen_never_captures_over_an_unpublished_rebase_partition_29,
+    30 => reopen_never_captures_over_an_unpublished_rebase_partition_30,
+    31 => reopen_never_captures_over_an_unpublished_rebase_partition_31,
+}
+
+fn reopen_partition(assigned: Vec<usize>) {
+    // The generated-text property is universal over the input domain. Each
+    // crash cut retains four samples across this checked Cartesian registration.
+    for index in assigned {
+        let partition = index % CUT_PARTITIONS;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            source_file: Some(file!()),
+            ..ProptestConfig::with_cases(1)
+        });
+        runner
+            .run(&"[a-z]{1,12}", |text| {
+                runtime
+                    .block_on(sweep(&text, partition))
+                    .map_err(|error| TestCaseError::fail(error.to_string()))
             })
-        })
-        .unwrap();
+            .unwrap();
+    }
 }

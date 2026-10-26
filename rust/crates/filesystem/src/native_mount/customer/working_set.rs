@@ -262,8 +262,9 @@ where
         }
         Ok(NativeMountDrainProof {
             _source: self.source.clone(),
+            failures: super::super::retirement::TerminalFailures::default(),
             #[cfg(windows)]
-            namespace_outcome: None,
+            _namespace_outcome: None,
         })
     }
 }

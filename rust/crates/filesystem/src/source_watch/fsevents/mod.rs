@@ -22,7 +22,7 @@ mod events;
 use events::change;
 use events::identity;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 const ITEM_FLAGS: u32 = 0x00ff_ff00;
 const READ: WorkCounters = WorkCounters {

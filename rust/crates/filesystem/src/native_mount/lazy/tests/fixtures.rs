@@ -1,5 +1,35 @@
 use super::*;
 
+type RetirementAuthored =
+    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+
+type RetirementSource = (
+    Arc<RetirementAuthored>,
+    Arc<dyn MountFilesystem>,
+    adapter::NativeSourceIoLease,
+);
+
+pub(in crate::native_mount) fn native_retirement_source(
+    root: &Path,
+    original: &crate::NativeMaterializationWork,
+) -> Result<RetirementSource, Box<dyn std::error::Error>> {
+    let view = shared_runtime()?.block_on(async {
+        let demand =
+            Arc::new(native_source(root, crate::model::FilesystemProfile::Portable).await?);
+        mounted_view_of_with_authored_work(
+            demand,
+            "physical-retirement",
+            crate::MemoryLazyWorkspaceStore::default(),
+            Some(original),
+        )
+        .await
+    })?;
+    let authored = Arc::clone(&view.authored);
+    let view = Arc::new(view);
+    let lease = view.native_source_io_lease()?;
+    Ok((authored, view, lease))
+}
+
 pub(super) fn shared_runtime() -> std::io::Result<&'static tokio::runtime::Runtime> {
     static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
         std::sync::OnceLock::new();
@@ -108,6 +138,23 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
     >,
     Box<dyn std::error::Error>,
 > {
+    mounted_view_of_with_authored_work(demand, name, store, None).await
+}
+
+async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWorkspaceStore>(
+    demand: Arc<D>,
+    name: &str,
+    store: S,
+    original: Option<&crate::NativeMaterializationWork>,
+) -> Result<
+    LazyMountSource<
+        crate::facade::MemoryAuthorityBackend,
+        crate::facade::MemoryObjectBackend,
+        D,
+        S,
+    >,
+    Box<dyn std::error::Error>,
+> {
     use crate::Fs;
     use crate::model::{CheckoutMode, GenerationSelector};
     use crate::native_mount::{MountPublication, SharedCheckout};
@@ -154,15 +201,56 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
         vec![],
         None,
     )?);
+    // Bind the native authored owner before the source-watch recorder captures
+    // its weak identity. Never swap a live view's owner after registration.
+    let authored = match original {
+        Some(original) => adapter::tests::native_source_io_control(&authored, original)?,
+        None => authored,
+    };
     let cancellation = CancellationToken::new();
     CallbackRuntime::create()?;
     let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    // A physical retirement fixture needs an actual birth-paid watch. Keep its
+    // startup ledger separate from the authored source's exhausted poll bank,
+    // so this test cannot replenish the very credit whose exhaustion it proves.
+    let startup = original
+        .map(|original| {
+            crate::NativeMaterializationWork::new(
+                crate::performance::BOUNDARY_BUDGET,
+                original.cancellation(),
+            )
+            .map_err(|(error, _)| error)
+        })
+        .transpose()?;
+    let root = "/".to_owned();
+    let (root_allocation, mut source_allocation) = match &startup {
+        Some(startup) => (
+            Some(startup.claim(root.capacity() as u64, 1, crate::WorkCounters::UNCHARGED)?),
+            Some(startup.claim(
+                std::mem::size_of::<
+                    LazyMountSource<
+                        crate::facade::MemoryAuthorityBackend,
+                        crate::facade::MemoryObjectBackend,
+                        D,
+                        S,
+                    >,
+                >() as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )?),
+        ),
+        None => (None, None),
+    };
+    let carrier = match &startup {
+        Some(startup) => adapter::NativeDemandCarrier::Native(startup),
+        None => adapter::NativeDemandCarrier::Borrowed(&mut work),
+    };
     Ok(LazyMountSource::new(
         lazy,
         authored,
-        "/".to_owned(),
-        adapter::NativeDemandCarrier::Borrowed(&mut work),
-        None,
+        root,
+        carrier,
+        root_allocation.zip(source_allocation.as_mut()),
     )?)
 }
 
@@ -193,6 +281,11 @@ pub(super) async fn live_lazy_mount_of(
     use crate::native_mount::{MountOptions, MountPublication};
     use crate::{Fs, MemoryLazyWorkspaceStore};
 
+    crate::initialize_native_mount_services()?;
+    let cancellation = CancellationToken::new();
+    let work =
+        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
+            .map_err(|(cause, _)| cause)?;
     let lazy = LazyWorkspace::attach(
         &Fs::memory(),
         name,
@@ -210,13 +303,15 @@ pub(super) async fn live_lazy_mount_of(
     )
     .await?
     .0;
-    std::fs::create_dir_all(destination)?;
-    let options = crate::native_mount::fixture_access::options(
+    let options = crate::native_mount::tests::fixture_access::options(
         lazy.workspace(),
         MountOptions::read_write().publication(MountPublication::Manual),
     )
     .await?;
-    Ok(lazy.mount(destination, options).await?)
+    std::fs::create_dir_all(destination)?;
+    Ok(lazy
+        .mount(destination, options.native_context(&work, None, None))
+        .await?)
 }
 
 pub(super) fn sorted_names(directory: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {

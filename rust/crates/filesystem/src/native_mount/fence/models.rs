@@ -29,7 +29,7 @@ fn cleanup_after_contended_registry(
     // A real failed unlink consumes the original transaction. Retry after
     // caller cancellation must replenish that same ledger before contending
     // with the starter; every following lock schedule remains exhaustive.
-    let saved = fence.with_file_name("retained-fence");
+    let saved = fence.with_extension("retained");
     std::fs::rename(&fence, &saved).unwrap();
     std::fs::create_dir(&fence).unwrap();
     cancellation.cancel();
@@ -160,27 +160,6 @@ fn retirement_preserves_registry_identity_for_pending_and_new_starters() {
     );
 }
 
-fn shared_admission(registry: &registry::Registry, active: &loom::sync::Mutex<u8>) {
-    let work = NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(error, _)| error)
-    .unwrap();
-    let held = registry.lock(&mut &work).unwrap();
-    {
-        let mut active = active.lock().unwrap();
-        *active += 1;
-        assert_eq!(
-            *active, 1,
-            "a shared registry descriptor admitted two threads"
-        );
-    }
-    loom::thread::yield_now();
-    *active.lock().unwrap() -= 1;
-    held.unlock(&mut &work).unwrap();
-}
-
 #[test]
 fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
     let temporary = tempfile::tempdir().unwrap();
@@ -209,14 +188,17 @@ fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
         .map_err(|(error, _)| error)
         .unwrap();
         // One descriptor, as every mount in a process shares.
-        let registry =
-            loom::sync::Arc::new(registry::Registry::new(registry::open(&mut &work).unwrap()));
+        let registry = loom::sync::Arc::new({
+            let (directory, file) = registry::open_with_directory(&mut &work).unwrap();
+            registry::Registry::new(directory, file)
+        });
         let active = loom::sync::Arc::new(loom::sync::Mutex::new(0));
         let peer = {
             let (registry, active) = (registry.clone(), active.clone());
-            loom::thread::spawn(move || shared_admission(&registry, &active))
+            let work = work.clone();
+            loom::thread::spawn(move || shared_admission(&registry, &active, &work))
         };
-        shared_admission(&registry, &active);
+        shared_admission(&registry, &active, &work);
         peer.join().unwrap();
     };
     let candidate = scenario.clone();
@@ -239,4 +221,63 @@ fn rejected(control: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
         message.contains(expected),
         "unexpected control failure: {message}"
     );
+}
+
+#[test]
+fn shared_registry_descriptor_serializes_threads_before_the_kernel_lock() {
+    registry::initialize().unwrap();
+    let fixture = tempfile::tempdir().unwrap();
+    let destination = fixture.path().join("checkout");
+    std::fs::create_dir(&destination).unwrap();
+    let state = fixture.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let base = rustix::fs::statx(
+        rustix::fs::CWD,
+        &destination,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW | rustix::fs::AtFlags::STATX_DONT_SYNC,
+        rustix::fs::StatxFlags::TYPE | rustix::fs::StatxFlags::MNT_ID,
+    )
+    .unwrap();
+    let helper = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
+    loom::model(move || {
+        let kernel =
+            super::super::disconnected::kernel::Kernel::install(base, helper, false, false);
+        kernel.set_registry_directory(state.clone());
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)
+        .unwrap();
+        let registry = registry::shared(&mut &work).unwrap();
+        let active = loom::sync::Arc::new(loom::sync::Mutex::new(0_u8));
+        let peer = {
+            let registry = registry.clone();
+            let active = active.clone();
+            let work = work.clone();
+            loom::thread::spawn(move || shared_admission(&registry, &active, &work))
+        };
+        shared_admission(&registry, &active, &work);
+        peer.join().unwrap();
+        assert_eq!(*active.lock().unwrap(), 0);
+    });
+}
+
+fn shared_admission(
+    registry: &registry::Registry,
+    active: &loom::sync::Mutex<u8>,
+    work: &NativeMaterializationWork,
+) {
+    let held = registry.lock(&mut &*work).unwrap();
+    {
+        let mut active = active.lock().unwrap();
+        *active += 1;
+        assert_eq!(
+            *active, 1,
+            "shared descriptor admitted concurrent registry owners"
+        );
+    }
+    loom::thread::yield_now();
+    *active.lock().unwrap() -= 1;
+    held.unlock(&mut &*work).unwrap();
 }

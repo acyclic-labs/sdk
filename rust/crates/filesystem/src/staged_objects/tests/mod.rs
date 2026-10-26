@@ -109,7 +109,7 @@ async fn spill_fixture(
     let mut spill_file = store.spill_io.write().await;
     let spill_bytes = bytes.clone();
     store
-        .spill_file(&mut spill_file)
+        .spill_file(&mut spill_file, None)
         .await?
         .control_async(
             move |file, _| {

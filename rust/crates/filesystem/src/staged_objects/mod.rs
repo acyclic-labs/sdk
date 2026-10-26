@@ -65,18 +65,60 @@ impl<S> StagedObjects<S> {
     async fn spill_file<'a>(
         &self,
         spill: &'a mut Option<NativeFile>,
-    ) -> std::io::Result<&'a NativeFile> {
+        native: Option<&NativeMaterializationWork>,
+    ) -> Result<&'a NativeFile, ObjectStoreError> {
         if spill.is_none() {
-            let directory = self.spill_directory.clone();
-            let file =
-                acyclic_native_runtime::run_blocking_io(move || create_spill(&directory), None)
-                    .expect("unmetered task construction cannot fail")
-                    .await??;
-            *spill = Some(NativeFile::from_file(file, None).map_err(|(error, _)| error)?);
+            let (directory, allocation) = match native {
+                Some(native) => {
+                    let (directory, allocation) =
+                        crate::native_host::clone_path(&self.spill_directory, &mut &*native)?;
+                    (directory, Some(allocation))
+                }
+                None => (self.spill_directory.clone(), None),
+            };
+            let meter = native.map(NativeMaterializationWork::runtime_meter);
+            let creation = meter
+                .as_ref()
+                .map(|meter| {
+                    acyclic_native_runtime::NativeOperationReservation::new(
+                        Arc::clone(meter),
+                        acyclic_native_runtime::NativeOperationKind::Write,
+                        1,
+                    )
+                })
+                .transpose()
+                .map_err(|error| spill_error(native, error))?;
+            let handle_meter = meter.clone();
+            let file = acyclic_native_runtime::run_blocking_io(
+                move || {
+                    // The worker retains the original path and operation custody.
+                    // Handle storage is funded before the host creates the file.
+                    let _allocation = allocation;
+                    NativeFile::create_with(
+                        || {
+                            if let Some(mut creation) = creation {
+                                let (file, recorded) =
+                                    creation.attempt(|| create_spill(&directory));
+                                recorded?;
+                                file
+                            } else {
+                                create_spill(&directory)
+                            }
+                        },
+                        handle_meter,
+                    )
+                },
+                meter.as_ref().map(|meter| (Arc::clone(meter), true)),
+            )
+            .map_err(|error| spill_error(native, error))?
+            .await
+            .map_err(|error| spill_error(native, error))?
+            .map_err(|error| spill_error(native, error))?;
+            *spill = Some(file);
         }
         spill
             .as_ref()
-            .ok_or_else(|| std::io::ErrorKind::NotFound.into())
+            .ok_or_else(|| spill_error(native, std::io::ErrorKind::NotFound.into()))
     }
     pub(crate) fn inner(&self) -> &S {
         &self.inner
@@ -98,6 +140,16 @@ impl<S> StagedObjects<S> {
             }
             Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
         }
+    }
+}
+
+fn spill_error(
+    native: Option<&NativeMaterializationWork>,
+    error: std::io::Error,
+) -> ObjectStoreError {
+    match native {
+        Some(native) => native.runtime_error(error).into(),
+        None => error.into(),
     }
 }
 

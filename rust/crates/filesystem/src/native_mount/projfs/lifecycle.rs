@@ -111,13 +111,10 @@ impl ProjFsSession {
 
     pub(in crate::native_mount) fn stop(
         &mut self,
-        wait: &crate::CancellationToken,
-    ) -> Result<(), NativeMountError> {
-        wait.check()
-            .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+        work: &crate::native_mount::NativeSessionStopWork<'_>,
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
+        work.check_wait()?;
         if self.controller.is_none() {
-            // A shared view retires on the caller: refuse while a control
-            // holds its original work, as the lifecycle thread waits for it.
             if self.shared.is_some()
                 && self
                     .runtime
@@ -126,7 +123,8 @@ impl ProjFsSession {
             {
                 return Err(NativeMountError::ControlPending);
             }
-            return self.stop_physical();
+            self.stop_physical()?;
+            return Ok(crate::native_mount::retirement::TerminalFailures::default());
         }
         if self
             .runtime
@@ -139,13 +137,12 @@ impl ProjFsSession {
         let mut lifecycle = lock_recover(&projector.lifecycle);
         loop {
             if lifecycle.complete {
-                return Ok(());
+                return Ok(crate::native_mount::retirement::TerminalFailures::default());
             }
             if let Some(error) = lifecycle.failure.take() {
                 return Err(error);
             }
-            wait.check()
-                .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+            work.check_wait()?;
             lifecycle = projector
                 .lifecycle_changed
                 .wait_timeout(lifecycle, HELD_RETRY)

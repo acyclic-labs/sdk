@@ -63,13 +63,17 @@ impl CoreLog {
         } else {
             residents
         };
+        let meter = work.map(crate::materializer::NativeMaterializationWork::runtime_meter);
+        let file = acyclic_native_runtime::CachedFile::new_metered(
+            file,
+            &paths.current,
+            !root.inspection,
+            !root.inspection,
+            meter.as_deref(),
+        )?;
         let length = bytes.len() as u64;
-        let file_control = work.map(super::super::group::file_control).transpose()?;
         let mut log = Self {
-            file: Arc::new(acyclic_native_runtime::CachedFile::new_metered(
-                file, &paths.current, !root.inspection, !root.inspection,
-                work.map(crate::materializer::NativeMaterializationWork::runtime_meter).as_deref(),
-            )?),
+            file,
             length,
             flushed: 0,
             epoch: crate::identity::fresh_time_uuid(),
@@ -79,7 +83,6 @@ impl CoreLog {
             broken: false,
             slots: None,
             residents_control: None,
-            file_control,
         };
         log.replay_frames(bytes, paths, work)?;
         if !root.inspection && length != 0 {

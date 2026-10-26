@@ -40,8 +40,8 @@ fn fixture(names: &[(&str, u32)]) -> Result<Fixture, Box<dyn std::error::Error>>
             std::fs::Permissions::from_mode(*mode),
         )?;
     }
-    watch.begin_rescan()?;
-    watch.finish_rescan()?;
+    let rescan = watch.begin_rescan()?;
+    watch.finish_rescan(rescan)?;
     let hints = RootHints {
         root: watch.root.clone(),
         shared: Arc::clone(&watch.shared),

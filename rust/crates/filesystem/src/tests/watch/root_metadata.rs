@@ -11,8 +11,11 @@ fn root_attributes_are_metadata_hints_and_replacements_still_fail_closed()
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
     options.recursive = false;
     let mut watch = NativeWatch::open(&root, options)?;
-    watch.begin_rescan()?;
-    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    let rescan = watch.begin_rescan()?;
+    assert!(matches!(
+        watch.finish_rescan(rescan)?,
+        WatchBatch::Changes { .. }
+    ));
     let identity = watch.root_identity();
     let mode = std::fs::metadata(&root)?.permissions().mode();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode ^ 0o040))?;

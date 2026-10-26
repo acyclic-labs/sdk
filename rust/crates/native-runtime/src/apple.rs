@@ -758,7 +758,7 @@ fn drain(
 
 #[path = "apple_flush.rs"]
 mod flush;
-pub(super) use flush::sync_once;
+pub(super) use flush::{sync_descriptor_once, sync_once};
 
 #[cfg(test)]
 #[path = "apple_faults.rs"]

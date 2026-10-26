@@ -73,9 +73,9 @@ async fn native_watcher_observes_both_projected_rename_paths()
         &destination,
         NativeWatchOptions::new(crate::model::VolumeLimits::default()),
     )?;
-    watcher.begin_rescan()?;
+    let rescan = watcher.begin_rescan()?;
     assert!(matches!(
-        watcher.finish_rescan()?,
+        watcher.finish_rescan(rescan)?,
         WatchBatch::Changes { .. }
     ));
 

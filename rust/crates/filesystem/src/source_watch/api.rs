@@ -1,6 +1,24 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// Whether this producer already observes the entire held subtree. This is
+    /// registration coverage, not a delivery or restart-continuity guarantee.
+    pub(crate) fn has_subtree_registration(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            // FSEvents registers a root and all its descendants in one stream.
+            true
+        }
+        #[cfg(target_os = "linux")]
+        {
+            false
+        }
+        #[cfg(windows)]
+        {
+            self.registration_is_recursive()
+        }
+    }
+
     /// Retires physical resources on their birth credits, with the caller's wait.
     pub(crate) fn retire_with_work<W: SourceDemandReadWork>(
         &self,

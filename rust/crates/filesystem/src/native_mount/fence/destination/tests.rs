@@ -50,6 +50,7 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
         destination_guard: guard,
         retained_source: None,
         startup_source_watch: None,
+        terminal_source_failure: None,
     };
     let before = work.receipt();
     let live = work.live_allocation_bytes();
@@ -77,9 +78,15 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
         guard.release(&mut &fresh)?;
         drop(packet.destination_guard.take());
     } else {
-        assert!(packet.retire(None)?);
+        assert!(packet.retire(
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Caller
+        )?);
         let completed = work.receipt();
-        assert!(!packet.retire(None)?);
+        assert!(!packet.retire(
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Caller
+        )?);
         assert_eq!(
             work.receipt(),
             completed,

@@ -66,7 +66,7 @@ impl<S> StagedObjects<S> {
                     buffer_allocation.expect("native spill buffer is funded"),
                     native,
                 )?;
-                self.spill_file(spill)
+                self.spill_file(spill, Some(native))
                     .await?
                     .control_async(
                         move |file, meter| {
@@ -95,7 +95,7 @@ impl<S> StagedObjects<S> {
                     peak_allocation_bytes: spilled,
                     ..WorkCounters::UNCHARGED
                 };
-                let result = match self.spill_file(spill).await {
+                let result = match self.spill_file(spill, None).await {
                     Ok(file) => {
                         file.write_all_batch_async(vec![OwnedWrite {
                             offset,
@@ -103,7 +103,7 @@ impl<S> StagedObjects<S> {
                         }])
                         .await
                     }
-                    Err(error) => Err(error),
+                    Err(error) => return Err(error),
                 };
                 work.accounting()
                     .record_completed(delta)

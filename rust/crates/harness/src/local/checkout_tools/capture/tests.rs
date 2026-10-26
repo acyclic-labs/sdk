@@ -93,12 +93,10 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
         original: Default::default(),
     };
     let mut cursor = Cursor::open(&tools.workspace, &tools.capture_policy)?;
-    arrivals::register(
-        &mut cursor.watcher,
-        &batch,
-        &tools.workspace,
-        &tools.capture_policy,
-    )?;
+    cursor
+        .watcher
+        .watch_arrivals(&batch, &tools.capture_policy, MAXIMUM_PATHS)
+        .map_err(storage)?;
     let error = std::fs::symlink_metadata(directory.path().join(relative))
         .err()
         .ok_or_else(|| Error::Invalid("fixture descendant unexpectedly exists".into()))?;
@@ -526,6 +524,7 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
             OperationId::from_bytes([1; 16]),
             0,
             PublicationPermit::Unrestricted,
+            None,
         )
     });
     eprintln!("capture retained bytes: [{capture}, {owed}, {changes}]");

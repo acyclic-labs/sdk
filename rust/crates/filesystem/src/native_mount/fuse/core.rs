@@ -6,7 +6,7 @@ use crate::native_mount::{
 use crate::sync::{Mutex, atomic::AtomicBool};
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
-pub(super) use crate::native_mount::callback_errno;
+pub(in crate::native_mount) use crate::native_mount::callback_errno;
 
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {

@@ -891,7 +891,7 @@ mod callbacks;
 
 mod disclosure;
 mod folded;
-mod lifecycle;
+pub(in crate::native_mount) mod lifecycle;
 mod reclaim;
 
 mod access;

@@ -104,6 +104,23 @@ fn interrupted_flush_retries_once_and_admits_both_attempts() -> io::Result<()> {
 }
 
 #[test]
+fn held_flush_uses_the_same_native_attempt_without_retry_or_fallback() -> io::Result<()> {
+    use std::os::fd::AsFd as _;
+    let file = tempfile::tempfile()?;
+    let (result, calls) = observe(&[], false, || crate::sync_descriptor_once(file.as_fd()));
+    result?;
+    assert_eq!(calls, [libc::F_FULLFSYNC]);
+    for error in [libc::EINTR, libc::ENOTSUP, libc::EIO] {
+        let (result, calls) = observe(&[error], false, || {
+            crate::sync_descriptor_once(file.as_fd())
+        });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(error));
+        assert_eq!(calls, [libc::F_FULLFSYNC]);
+    }
+    Ok(())
+}
+
+#[test]
 fn only_enotsup_falls_back_and_full_never_acknowledges_the_fallback() -> io::Result<()> {
     let file = tempfile::tempfile()?;
     for (errors, expected) in [

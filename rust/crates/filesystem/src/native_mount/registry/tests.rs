@@ -129,3 +129,52 @@ fn empty_state_override_uses_the_fallback_in_a_fresh_process()
     assert!(output.status.success(), "empty {variable}: {output:?}");
     Ok(())
 }
+
+#[test]
+fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn std::error::Error>> {
+    initialize()?;
+    let fixture = tempfile::tempdir()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let registry = shared(&mut &work)?;
+    let before = work.receipt();
+    let same = shared(&mut &work)?;
+    assert!(
+        crate::sync::native::Arc::ptr_eq(&registry, &same),
+        "each mount reopened the registry directory and lock"
+    );
+    assert_eq!(
+        work.receipt(),
+        before,
+        "sharing re-traversed the registry path"
+    );
+    let mut guards = Vec::new();
+    for name in ["first", "second"] {
+        let destination = fixture.path().join(name);
+        std::fs::create_dir(&destination)?;
+        let mut guard = None;
+        MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+        let guard = guard.unwrap();
+        assert!(
+            crate::sync::native::Arc::ptr_eq(&registry, guard.registry_file.as_ref().unwrap()),
+            "destination guard owns a separate registry directory or lock"
+        );
+        guards.push(guard);
+    }
+    for mut guard in guards {
+        guard.release_cleanup(None)?;
+    }
+    assert!(
+        path()?.is_file(),
+        "retirement unlinked the process-shared registry"
+    );
+    // An unrelated process has a separate descriptor and must still acquire it.
+    let probe = open(&mut &work)?;
+    assert!(
+        fence_io::try_lock(&probe).is_ok(),
+        "retirement retained the shared lock"
+    );
+    fence_io::unlock(&probe)?;
+    Ok(())
+}

@@ -6,6 +6,8 @@ pub struct NativeMountSession {
     pub(super) driver: Option<DriverSession>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
+    pub(super) terminal_source_failure: Option<NativeMountError>,
+    pub(super) terminal_failures: retirement::TerminalFailures,
     pub(super) request: NativeMountRequest,
     pub(super) destination_guard: Option<MountDestinationGuard>,
     pub(super) measured_cleanup_failed: bool,
@@ -29,50 +31,20 @@ pub(in crate::native_mount) enum NativeSessionControl {
 }
 
 impl NativeMountSession {
-    /// Recognizes only entries still owned by this mount's held parent resources.
+    /// Recognizes projection staging still owned by this mount's held resources.
     pub fn owns_parent_entry(
         &self,
         entry: &crate::native_host::HostListedEntry,
         work: &NativeMaterializationWork,
     ) -> Result<bool, crate::NativeTreeMaterializationError> {
-        let Some(stat) = &entry.stat else {
-            return Ok(false);
-        };
-        let guard = self.destination_guard.as_ref();
-        #[cfg(windows)]
-        let guard = guard.or_else(|| {
-            self.driver
-                .as_ref()?
-                .retirement
-                .as_ref()?
-                .destination_guard
-                .as_ref()
-        });
-        if let Some(guard) = guard {
-            for (name, file) in [(
-                guard
-                    .fence_name
-                    .as_ref()
-                    .and_then(|name| std::str::from_utf8(name).ok()),
-                guard.file.as_ref(),
-            )] {
-                if let (Some(name), Some(file)) = (name, file) {
-                    work.charge(
-                        crate::materializer::NativeResourceCredit::Items.delta(name.len() as u64),
-                    )?;
-                    if entry.is_named(name)
-                        && stat.identity()
-                            == crate::native_host::stat_file(file, &mut &*work)?.identity()
-                    {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
+        // Ownership fences live in the registry, never in the destination's
+        // parent. No authored sibling can therefore be an ownership fence.
         #[cfg(windows)]
         if let Some(driver) = &self.driver {
             return driver.owns_parent_entry(entry, work);
         }
+        #[cfg(not(windows))]
+        let _ = (entry, work);
         Ok(false)
     }
 
@@ -86,6 +58,8 @@ impl NativeMountSession {
             driver: None,
             destination_guard: None,
             retained_source,
+            terminal_source_failure: None,
+            terminal_failures: retirement::TerminalFailures::default(),
             startup_source_watch: None,
             measured_cleanup_failed: false,
             namespace_detach_confirmed: false,
@@ -176,6 +150,12 @@ impl NativeMountSession {
             return None;
         }
         self.namespace_outcome.take()
+    }
+
+    pub(super) fn take_retired_failures(&mut self) -> Option<retirement::TerminalFailures> {
+        self.cleanup_state()
+            .cleanup_complete()
+            .then(|| std::mem::take(&mut self.terminal_failures))
     }
 
     /// Moves the first retained fatal SDK callback failure and its actual completed request work.
@@ -325,7 +305,7 @@ impl NativeMountSession {
 
     /// Detaches the kernel namespace and ends the driver session; returns whether a live session was actually stopped.
     pub fn stop(&mut self) -> Result<bool, NativeMountError> {
-        if self.cleanup_state().cleanup_complete() {
+        if self.cleanup_state().cleanup_complete() && self.terminal_failures.is_empty() {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -365,11 +345,22 @@ impl NativeMountSession {
         work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
         let result = (|| {
-            let changed = self.stop_namespace_with_context(work)?;
-            Ok(self.release_destination_with_context(work)? || changed)
+            let changed = self.retire_with_context(work)?;
+            match self.terminal_failures.take() {
+                Some(error) => Err(error),
+                None => Ok(changed),
+            }
         })();
         self.measured_cleanup_failed = result.is_err();
         result
+    }
+
+    pub(super) fn retire_with_context(
+        &mut self,
+        work: &NativeSessionStopWork<'_>,
+    ) -> Result<bool, NativeMountError> {
+        let changed = self.stop_namespace_with_context(work)?;
+        Ok(self.release_destination_with_context(work)? || changed)
     }
 
     // The destination fence remains owned after physical namespace retirement.
@@ -381,14 +372,11 @@ impl NativeMountSession {
         let result = (|| {
             let mut changed = false;
             if let Some(driver) = self.driver.as_mut() {
-                with_driver!(
+                self.terminal_failures = with_driver!(
                     &mut *driver,
                     session,
                     session.stop(work),
-                    session.stop(match work {
-                        NativeSessionStopWork::Meter(meter) => meter.cancellation(),
-                        NativeSessionStopWork::AcceptedWait(wait) => wait,
-                    }),
+                    session.stop(work),
                     Err(NativeMountError::UnsupportedTarget)
                 )?;
                 self.namespace_detach_confirmed = with_driver!(
@@ -412,44 +400,20 @@ impl NativeMountSession {
                 #[cfg(windows)]
                 {
                     self.namespace_outcome = driver.take_namespace_outcome();
+                    if let Some(outcome) = self.namespace_outcome.as_mut() {
+                        self.terminal_failures = std::mem::take(&mut outcome.failures);
+                    }
                 }
                 drop(self.driver.take());
                 changed = true;
             }
-            if let Some(source) = self.retained_source.as_ref() {
-                match work {
-                    NativeSessionStopWork::Meter(meter) => source.shutdown_with_meter(meter),
-                    NativeSessionStopWork::AcceptedWait(wait) => {
-                        source.shutdown_with_cleanup_wait(wait)
-                    }
-                }
-                .map_err(NativeMountError::from)?;
-                // The source confirmed actual watcher quiescence before this
-                // owner releases its Arc; failed/cancelled joins keep it intact.
-                drop(self.retained_source.take());
-                changed = true;
-            }
-            if let Some(owner) = self.startup_source_watch.as_mut() {
-                let stopped = if owner.is_stopped() {
-                    Ok(false)
-                } else {
-                    match work {
-                        NativeSessionStopWork::Meter(meter) => owner
-                            .stop(&mut adapter::NativeDemandCarrier::Native(meter))
-                            .map_err(NativeMountError::from),
-                        NativeSessionStopWork::AcceptedWait(wait) => owner
-                            .stop_with_cleanup_wait(wait)
-                            .map_err(NativeMountError::from),
-                    }
-                };
-                if owner.is_stopped() {
-                    // Terminal transfer of already owned data is not a new
-                    // native permission, and survives a late admission error.
-                    drop(self.startup_source_watch.take());
-                    changed = true;
-                }
-                stopped?;
-            }
+            changed |= retirement::retire_sources(
+                &mut self.retained_source,
+                &mut self.startup_source_watch,
+                &mut self.terminal_source_failure,
+                work,
+                retirement::SourceRetirementWait::Caller,
+            )?;
             Ok(changed)
         })();
         self.measured_cleanup_failed = result.is_err();
@@ -491,29 +455,47 @@ impl NativeMountSession {
         &mut self,
         work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
-        let Some(guard) = self.destination_guard.as_mut() else {
-            return Ok(false);
-        };
-        let result = guard.remove_destination().and_then(|()| {
-            if guard.birth_cleanup.is_some() {
-                // Namespace producers have retired. Complete the accepted fence
-                // release on its original credit, even after caller cancellation.
-                guard.release_cleanup(None)
-            } else {
-                match work {
-                    NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter),
-                    NativeSessionStopWork::AcceptedWait(wait) => guard.release_cleanup(Some(wait)),
-                }
-            }
-        });
+        if self.destination_guard.is_none() {
+            return retirement::finish_retirement(&mut self.terminal_source_failure, false);
+        }
+        let result =
+            retirement::retire_destination(&mut self.destination_guard, work).and_then(|changed| {
+                retirement::finish_retirement(&mut self.terminal_source_failure, changed)
+            });
         self.measured_cleanup_failed = result.is_err();
-        result?;
-        drop(self.destination_guard.take());
-        Ok(true)
+        result
+    }
+}
+
+impl Drop for NativeMountSession {
+    fn drop(&mut self) {
+        // Last-owner release has the same physical retirement boundary as an
+        // explicit stop. It consumes birth-paid cleanup, never a fresh meter
+        // or cancellation token. If a native operation refuses, its existing
+        // driver owner retains the original resources for retirement.
+        let _ = self.stop_with_context(&NativeSessionStopWork::AcceptedDrop);
     }
 }
 
 pub(super) enum NativeSessionStopWork<'a> {
     Meter(&'a NativeMaterializationWork),
     AcceptedWait(&'a crate::CancellationToken),
+    AcceptedDrop,
+}
+
+impl NativeSessionStopWork<'_> {
+    pub(super) fn wait(&self) -> Option<&crate::CancellationToken> {
+        match self {
+            Self::Meter(work) => Some(work.cancellation()),
+            Self::AcceptedWait(wait) => Some(wait),
+            Self::AcceptedDrop => None,
+        }
+    }
+
+    pub(super) fn check_wait(&self) -> Result<(), NativeMountError> {
+        if let Some(wait) = self.wait() {
+            wait.check().map_err(|_| crate::DemandError::Cancelled)?;
+        }
+        Ok(())
+    }
 }

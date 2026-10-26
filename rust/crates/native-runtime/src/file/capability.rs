@@ -25,6 +25,29 @@ impl NativeFile {
         file: File,
         accounting: Option<NativeFileMeter<'_>>,
     ) -> Result<Self, (io::Error, File)> {
+        Self::import_file(file, accounting, None)
+    }
+
+    /// Funds the owned handle before running an admitted host creation.
+    /// The caller supplies the operation's original I/O reservation.
+    pub fn create_with(
+        create: impl FnOnce() -> io::Result<File>,
+        meter: Option<Arc<dyn NativeReadMeter>>,
+    ) -> io::Result<Self> {
+        let allocation = meter
+            .as_ref()
+            .map(|meter| ReadAllocation::new(meter, arc_allocation_bytes::<NativeFilePayload>()))
+            .transpose()?;
+        let file = create()?;
+        Self::import_file(file, meter.map(NativeFileMeter::Owned), allocation)
+            .map_err(|(error, _)| error)
+    }
+
+    fn import_file(
+        file: File,
+        accounting: Option<NativeFileMeter<'_>>,
+        prepared_allocation: Option<ReadAllocation>,
+    ) -> Result<Self, (io::Error, File)> {
         let (borrowed, owner) = match accounting {
             Some(NativeFileMeter::Borrowed(meter)) => (Some(meter), None),
             Some(NativeFileMeter::Owned(meter)) => (None, Some(meter)),
@@ -45,7 +68,9 @@ impl NativeFile {
             return Err((io::ErrorKind::Unsupported.into(), file));
         }
         let bytes = arc_allocation_bytes::<NativeFilePayload>();
-        let allocation = if let Some(owner) = &owner {
+        let allocation = if let Some(allocation) = prepared_allocation {
+            Some(allocation)
+        } else if let Some(owner) = &owner {
             match ReadAllocation::new(owner, bytes) {
                 Ok(allocation) => Some(allocation),
                 Err(error) => return Err((error, file)),

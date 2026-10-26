@@ -1,7 +1,18 @@
 use super::*;
 
 pub(super) static MOUNT_TABLE: Mutex<()> = Mutex::new(());
-pub(super) struct MountProbe(pub(super) Arc<DarwinOwned<CString>>);
+pub(super) struct MountProbe(pub(super) Arc<DarwinOwned<CString>>, Option<libc::statfs>);
+
+pub(super) fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
+    // SAFETY: Darwin's fsid_t consists of two initialized int32_t values.
+    let identity = |mount: &libc::statfs| unsafe {
+        std::mem::transmute::<libc::fsid_t, [i32; 2]>(mount.f_fsid)
+    };
+    identity(left) == identity(right)
+        && left.f_owner == right.f_owner
+        && left.f_mntonname == right.f_mntonname
+        && left.f_mntfromname == right.f_mntfromname
+}
 
 pub(super) enum ProbeWork<'a> {
     Live(&'a Work),
@@ -35,6 +46,25 @@ impl ProbeWork<'_> {
 }
 
 impl MountProbe {
+    pub(super) fn verify_mount(&self, current: &libc::statfs) -> Result<(), NativeMountError> {
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|expected| !same_mount(expected, current))
+        {
+            return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+        }
+        Ok(())
+    }
+
+    pub(super) fn for_mount(mount: &libc::statfs, work: &Work) -> Result<Self, NativeMountError> {
+        let destination = super::reclaim::field(&mount.f_mntonname)?;
+        Ok(Self(
+            shared(work, native_name(destination.to_bytes(), work)?)?,
+            Some(*mount),
+        ))
+    }
+
     pub(super) fn new(destination: &Path, work: &Work) -> Result<Self, NativeMountError> {
         let parent = native_name(
             destination
@@ -91,7 +121,7 @@ impl MountProbe {
                 suffix
             };
             suffix.copy_from_slice(name);
-            shared(work, native_name(path, work)?).map(Self)
+            shared(work, native_name(path, work)?).map(|path| Self(path, None))
         })();
         close.started_drop_io(WRITE_WORK);
         // SAFETY: closes the descriptor opened here on every result path.
@@ -123,6 +153,7 @@ impl MountProbe {
             // SAFETY: Darwin terminates f_mntonname.
             let name = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) }.to_bytes();
             if name == destination.as_os_str().as_bytes() || name == self.0.as_bytes() {
+                self.verify_mount(mount)?;
                 return Ok(true);
             }
         }

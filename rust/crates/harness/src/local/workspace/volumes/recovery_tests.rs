@@ -1,5 +1,5 @@
 use super::*;
-use std::io::{BufRead, Read, Write};
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::process::{Child, Command, Stdio};
 
@@ -104,8 +104,7 @@ fn scratch_mount_owner() -> TestResult {
             },
             source,
         )?;
-        println!("SCRATCH_READY");
-        std::io::stdout().flush()?;
+        acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "SCRATCH_READY")?;
         // The parent kills the provider after observing the mounted namespace.
         std::io::stdin().read_exact(&mut [0])?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -133,17 +132,7 @@ fn start_owner(root: &Path) -> TestResult<Owner> {
         root.to_path_buf(),
     );
     let mut output = std::io::BufReader::new(owner.0.stdout.take().unwrap());
-    loop {
-        let mut line = String::new();
-        assert_ne!(
-            output.read_line(&mut line)?,
-            0,
-            "provider exited before mounting"
-        );
-        if line.trim() == "SCRATCH_READY" {
-            break;
-        }
-    }
+    acyclic_test_support::readiness::wait(&mut output, "SCRATCH_READY")?;
     Ok(owner)
 }
 

@@ -86,7 +86,7 @@ impl FileMetadata {
         }
     }
 
-    /// Whether this record differs from `prior` only by derived stamps that moved forward.
+    /// Whether this record differs from `prior` only by equal or advanced derived stamps.
     ///
     /// Reads and unrepresented inode changes only ever advance the access and status-change
     /// times; an explicit set can move a stamp backwards, and that is a recorded fact.

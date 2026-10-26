@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_mount::fence::{MountDestinationGuard, acquire_existing_mount_lock};
+use crate::native_mount::NativeMountRecoveryOwner;
 use std::os::unix::fs::MetadataExt;
 
 // Read the kernel's cached mount table, never stat or enumerate a potentially
@@ -148,8 +148,92 @@ fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
 pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountError> {
-    reclaim_stale_mounts_with_retirement(detach_stale_mount)
+    acyclic_native_runtime::initialize_native_io_services()?;
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let work = Work::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| NativeMountError::from(error))?;
+    let mounts = mount_table()?;
+    let observed = mounts
+        .iter()
+        .map(|mount| {
+            let destination = field(&mount.f_mntonname)?;
+            Ok(super::super::recovery_order::ObservedMount {
+                destination: Path::new(std::ffi::OsStr::from_bytes(destination.to_bytes())),
+                native: mount,
+            })
+        })
+        .collect::<Result<Vec<_>, NativeMountError>>()?;
+    super::super::recovery_order::recover_mounts(&observed, |mount| {
+        reclaim_mount(mount, uid, &work)
+    })
+    .map_err(NativeMountError::RecoveryBatchFailed)
 }
+
+fn reclaim_mount(mount: &libc::statfs, uid: u32, work: &Work) -> Result<bool, NativeMountError> {
+    if !is_loopback_mount(mount, uid)? {
+        return Ok(false);
+    }
+    let destination = field(&mount.f_mntonname)?;
+    let path = Path::new(std::ffi::OsStr::from_bytes(destination.to_bytes()));
+    let mut owner = match NativeMountRecoveryOwner::acquire_existing_canonical(path, work) {
+        Ok(owner) => owner,
+        Err(NativeMountError::DestinationBusy) => return Ok(false),
+        Err(NativeMountError::Demand(crate::DemandError::Io(error)))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Ok(false);
+        }
+        Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Io(
+            error,
+        ))) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let authentication = owner.configure_control(|control, fence| {
+        work.charge(READ_WORK)?;
+        let metadata = fence.metadata()?;
+        if !metadata.is_file() || metadata.uid() != uid || metadata.nlink() != 1 {
+            return Ok(false);
+        }
+        control.bind_mount(mount, work)?;
+        Ok(true)
+    });
+    let authenticated = match authentication {
+        Ok(authenticated) => authenticated,
+        Err(error) => {
+            owner.mark_failed();
+            return Err(NativeMountError::RecoveryFailed {
+                error: Box::new(error),
+                owner,
+            });
+        }
+    };
+    if !authenticated {
+        return Ok(false);
+    }
+    // The original fence and kernel identity now belong to the same core
+    // owner used by explicit recovery. Its driver adapter performs every
+    // direct attempt, Disk Arbitration fallback, and physical retirement.
+    if let Err(error) = owner.detach(work) {
+        owner.mark_failed();
+        return Err(NativeMountError::RecoveryFailed {
+            error: Box::new(error),
+            owner,
+        });
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+use crate::native_mount::fence::{MountDestinationGuard, acquire_existing_mount_lock};
 
 #[cfg(test)]
 pub(super) fn reclaim_stale_mounts_direct_only() -> Result<(), NativeMountError> {
@@ -158,6 +242,7 @@ pub(super) fn reclaim_stale_mounts_direct_only() -> Result<(), NativeMountError>
     })
 }
 
+#[cfg(test)]
 fn reclaim_stale_mounts_with_retirement(
     retire: impl Fn(&libc::statfs) -> Result<(), NativeMountError>,
 ) -> Result<(), NativeMountError> {

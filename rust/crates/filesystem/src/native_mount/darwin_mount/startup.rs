@@ -26,7 +26,7 @@ pub(super) struct LoopState {
     pub(super) control: DarwinRecoveryControl,
     pub(super) probe: MountProbe,
     pub(super) retirement: Option<crate::native_mount::NativeMountRetirement>,
-    pub(super) failure: Option<NativeMountError>,
+    pub(super) failure: crate::native_mount::retirement::TerminalFailures,
 }
 
 impl DriverSessionResources {
@@ -93,7 +93,7 @@ impl DriverSessionResources {
                 control,
                 probe,
                 retirement: None,
-                failure: None,
+                failure: crate::native_mount::retirement::TerminalFailures::default(),
             }),
             changed: Condvar::new(),
             retirement_wake: acyclic_native_runtime::NativeWake::default(),

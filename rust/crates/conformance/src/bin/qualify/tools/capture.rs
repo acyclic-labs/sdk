@@ -154,7 +154,7 @@ pub(super) async fn bench_inner(
         },
     )
     .map_err(engine_err("watch open"))?;
-    watch.begin_rescan().map_err(engine_err("begin_rescan"))?;
+    let rescan = watch.begin_rescan().map_err(engine_err("begin_rescan"))?;
 
     let options = CaptureOptions {
         source_root: source.to_path_buf(),
@@ -198,7 +198,9 @@ pub(super) async fn bench_inner(
         .await
         .map_err(engine_err("baseline commit"))?;
     let baseline_commit = started.elapsed();
-    watch.finish_rescan().map_err(engine_err("finish_rescan"))?;
+    watch
+        .finish_rescan(rescan)
+        .map_err(engine_err("finish_rescan"))?;
 
     let mut event_latency = Vec::with_capacity(rounds);
     let mut capture_only = Vec::with_capacity(rounds);

@@ -1,3 +1,4 @@
+use crate::native_mount::retirement::SourceRetirementWait;
 impl<A, O> MountFilesystem for CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -226,6 +227,12 @@ where
     fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
         let changed = !self.capture_retired();
         self.cancel_cleanup(None).map(|()| changed)
+    }
+
+    fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
+        let changed = !self.capture_retired();
+        self.cancel_cleanup_with_join(None, SourceRetirementWait::Physical)
+            .map(|()| changed)
     }
 
     fn supports_posix_named_attributes(&self) -> bool {

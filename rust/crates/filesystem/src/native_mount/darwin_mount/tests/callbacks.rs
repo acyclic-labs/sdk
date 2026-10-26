@@ -3,6 +3,64 @@ use super::*;
 const CALLBACK_POLICY: crate::WorkBudget = crate::performance::work_budget(1_000_000, 16_000_000);
 
 #[test]
+fn namespace_failure_keeps_its_darwin_failure_and_work_prefix() -> TestResult {
+    let (source, _, _setup) = checkout_context(MountPublication::Manual)?;
+    let context = callback_context(&source, CALLBACK_POLICY, &crate::CancellationToken::new())?;
+    assert_eq!(
+        context.run::<()>(false, |work| {
+            work.charge(scan_work(1))?;
+            Err(NativeMountError::Source(MountSourceError::NamespacePath(
+                crate::kernel::NamespacePathError::Cancelled,
+            )))
+        }),
+        Err(libc::ECANCELED)
+    );
+    assert_eq!(
+        context.run::<()>(false, |_| panic!("terminal callback ran again")),
+        Err(libc::ECANCELED)
+    );
+    let (cause, prefix) = callback_failure(&context);
+    assert!(matches!(
+        cause,
+        NativeMountError::Source(MountSourceError::NamespacePath(
+            crate::kernel::NamespacePathError::Cancelled
+        ))
+    ));
+    assert!(prefix.items_examined > 0);
+    Ok(())
+}
+
+#[test]
+fn failed_completion_keeps_its_darwin_failure_and_work_prefix() -> TestResult {
+    let (source, _, _setup) = checkout_context(MountPublication::Manual)?;
+    let context = callback_context(&source, CALLBACK_POLICY, &crate::CancellationToken::new())?;
+    assert_eq!(
+        context.run::<()>(false, |work| {
+            work.charge(scan_work(1))?;
+            Err(NativeMountError::Source(
+                MountSourceError::MutationFinalization {
+                    primary: Box::new(Some(MountSourceError::NotFound)),
+                    cleanup: Box::new(Some(crate::DemandError::Cancelled)),
+                    custody: None,
+                },
+            ))
+        }),
+        Err(libc::ENOENT)
+    );
+    assert_eq!(
+        context.run::<()>(false, |_| panic!("terminal callback ran again")),
+        Err(libc::ENOENT)
+    );
+    let (cause, prefix) = callback_failure(&context);
+    assert!(matches!(
+        cause,
+        NativeMountError::Source(MountSourceError::MutationFinalization { .. })
+    ));
+    assert!(prefix.items_examined > 0);
+    Ok(())
+}
+
+#[test]
 fn interrupted_barrier_can_be_retried() -> TestResult {
     let gate = CallbackGate::new();
     let before = gate.enter();

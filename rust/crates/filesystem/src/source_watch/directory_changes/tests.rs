@@ -132,7 +132,7 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     let (_root, held) = held()?;
     let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     let watch = driver(&held, &mut startup)?;
-    assert!(!watch.shared.recursive);
+    assert!(!watch.has_subtree_registration());
     let directory = watch.shared.directory.load(Ordering::Acquire);
     let owned = watch.platform_owned_bytes();
     assert!(matches!(

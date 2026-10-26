@@ -201,6 +201,7 @@ typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
 acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["local"] }

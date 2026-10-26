@@ -115,6 +115,7 @@ mod state;
 use state::*;
 mod core;
 pub use core::NativeMountWorkScope;
+pub(super) use core::callback_errno;
 use core::*;
 mod lookup;
 use lookup::*;
@@ -170,4 +171,4 @@ fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span)
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::native_mount) mod tests;

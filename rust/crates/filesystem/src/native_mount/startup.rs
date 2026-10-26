@@ -133,6 +133,7 @@ pub(super) struct NativeMountRetirement {
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
     pub(super) destination_guard: Option<MountDestinationGuard>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
+    pub(super) terminal_source_failure: Option<NativeMountError>,
     #[cfg(windows)]
     pub(super) warm_namespace: Option<projfs::ProjFsNamespaceQualification>,
 }
@@ -142,47 +143,34 @@ impl NativeMountRetirement {
     pub(super) fn retire(
         &mut self,
         wait: Option<&crate::CancellationToken>,
+        join: retirement::SourceRetirementWait,
     ) -> Result<bool, NativeMountError> {
-        let mut changed = self.retire_source_and_watch_with_cleanup(wait)?;
-        if let Some(guard) = self.destination_guard.as_mut() {
-            guard.remove_destination()?;
-            guard.release_cleanup(wait)?;
-            drop(self.destination_guard.take());
-            changed = true;
-        }
-        Ok(changed)
+        let mut changed = self.retire_source_and_watch_with_join(wait, join)?;
+        let work = match wait {
+            Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
+            None => NativeSessionStopWork::AcceptedDrop,
+        };
+        changed |= retirement::retire_destination(&mut self.destination_guard, &work)?;
+        retirement::finish_retirement(&mut self.terminal_source_failure, changed)
     }
 
-    /// Drains source producers after callback admission closes, before the driver's own namespace teardown.
-    pub(super) fn retire_source_and_watch_with_cleanup(
+    /// Drains producers after callback admission closes, before driver teardown.
+    pub(super) fn retire_source_and_watch_with_join(
         &mut self,
         wait: Option<&crate::CancellationToken>,
+        join: retirement::SourceRetirementWait,
     ) -> Result<bool, NativeMountError> {
-        let mut changed = false;
-        if let Some(source) = self.retained_source.as_ref() {
-            match wait {
-                Some(wait) => source.shutdown_with_cleanup_wait(wait),
-                None => source.shutdown_accepted_cleanup(),
-            }?;
-            drop(self.retained_source.take());
-            changed = true;
-        }
-        if let Some(watch) = self.startup_source_watch.as_mut() {
-            let result = if watch.is_stopped() {
-                Ok(false)
-            } else {
-                match wait {
-                    Some(wait) => watch.stop_with_cleanup_wait(wait),
-                    None => watch.stop_accepted_cleanup(),
-                }
-            };
-            if watch.is_stopped() {
-                drop(self.startup_source_watch.take());
-                changed = true;
-            }
-            result?;
-        }
-        Ok(changed)
+        let work = match wait {
+            Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
+            None => NativeSessionStopWork::AcceptedDrop,
+        };
+        retirement::retire_sources(
+            &mut self.retained_source,
+            &mut self.startup_source_watch,
+            &mut self.terminal_source_failure,
+            &work,
+            join,
+        )
     }
 
     pub(super) fn is_retired(&self) -> bool {

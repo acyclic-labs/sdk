@@ -120,8 +120,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::OriginalSnapshotUnavailable => {
             MountSourceError::OriginalSnapshotUnavailable
         }
-        LazyWorkspaceError::Demand(DemandError::Mount(error)) => *error,
-        LazyWorkspaceError::Demand(DemandError::Io(error)) => MountSourceError::Io(error, None),
+        LazyWorkspaceError::Demand(error) => error.into(),
         LazyWorkspaceError::NativeRecordIo(error, allocation) => {
             MountSourceError::Io(error, allocation)
         }
@@ -162,10 +161,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::Store(message) => MountSourceError::Engine(message.into()),
         error => match error.semantic_error() {
             LazyWorkspaceError::NotFound => MountSourceError::NotFound,
-            LazyWorkspaceError::Cancelled | LazyWorkspaceError::Demand(DemandError::Cancelled) => {
-                MountSourceError::Cancelled
-            }
-            LazyWorkspaceError::Demand(DemandError::Work(error)) => MountSourceError::Work(*error),
+            LazyWorkspaceError::Cancelled => MountSourceError::Cancelled,
             LazyWorkspaceError::NotRegularFile | LazyWorkspaceError::InvalidPageBound => {
                 MountSourceError::Invalid(error.to_string().into())
             }
@@ -175,10 +171,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
             LazyWorkspaceError::StaleSource
             | LazyWorkspaceError::StaleCursor
             | LazyWorkspaceError::StaleIdentity
-            | LazyWorkspaceError::Concurrent
-            | LazyWorkspaceError::Demand(DemandError::StaleSource | DemandError::StaleVersion) => {
-                MountSourceError::Stale
-            }
+            | LazyWorkspaceError::Concurrent => MountSourceError::Stale,
             _ => MountSourceError::Engine(error.to_string().into()),
         },
     }

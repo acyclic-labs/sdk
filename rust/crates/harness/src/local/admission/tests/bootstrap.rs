@@ -1,5 +1,5 @@
-use super::super::snapshot::Snapshot;
 use super::*;
+use acyclic_native_runtime::testing::snapshot::Snapshot;
 
 pub(super) struct Bootstrap {
     source: Root,
@@ -37,8 +37,9 @@ impl Bootstrap {
         assert!(harness.current_turn()?.await?.0.is_none());
         drop(harness);
         Ok(Self {
-            provider: Snapshot::capture(&source.directory.path().join("filesystem"))?,
-            state: Snapshot::capture(&source.state)?,
+            provider: Snapshot::capture(&source.directory.path().join("filesystem"))
+                .map_err(storage)?,
+            state: Snapshot::capture(&source.state).map_err(storage)?,
             source,
             volume,
             agent,
@@ -49,7 +50,9 @@ impl Bootstrap {
         let parent = tempfile::tempdir().map_err(storage)?;
         let directory = parent.path().join("root");
         std::fs::create_dir(&directory).map_err(storage)?;
-        self.provider.restore(&directory.join("filesystem"))?;
+        self.provider
+            .restore(&directory.join("filesystem"))
+            .map_err(storage)?;
         let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
             "done".into(),
         )]));
@@ -61,7 +64,7 @@ impl Bootstrap {
         assert_ne!(state, self.source.state);
         assert!(state.starts_with(&directory));
         std::fs::create_dir_all(state.parent().expect("state parent")).map_err(storage)?;
-        self.state.restore(&state)?;
+        self.state.restore(&state).map_err(storage)?;
         Ok((
             Root {
                 directory: parent,

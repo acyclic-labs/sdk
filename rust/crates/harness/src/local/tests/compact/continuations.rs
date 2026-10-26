@@ -2,13 +2,32 @@ use super::*;
 use crate::task_volume::{FileKey, Query};
 use proptest::prelude::*;
 
-#[tokio::test]
-async fn completed_continuation_requests_retain_every_intervening_prompt_and_answer() -> Result<()>
-{
+acyclic_test_support::partitioned_tests! {
+    #[tokio::test] async fn -> Result<()>;
+    CONTINUATION_PARTITIONS, 16, continuation_partition;
+    0 => completed_continuation_requests_retain_every_intervening_prompt_and_answer,
+    1 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_1,
+    2 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_2,
+    3 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_3,
+    4 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_4,
+    5 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_5,
+    6 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_6,
+    7 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_7,
+    8 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_8,
+    9 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_9,
+    10 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_10,
+    11 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_11,
+    12 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_12,
+    13 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_13,
+    14 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_14,
+    15 => completed_continuation_requests_retain_every_intervening_prompt_and_answer_partition_15,
+}
+
+async fn continuation_partition(assigned: Vec<usize>) -> Result<()> {
     let bootstrap = Arc::new(super::super::bootstrap::Bootstrap::new().await?);
-    // Independent native fixtures share the crash-cut worker pool. Each runner
-    // retains the full default shrinking budget and one generated sequence.
-    for result in futures::future::try_join_all((0..16).map(|case| {
+    // Preserve all sixteen generated sequences and their shrinking budgets;
+    // each independent fixture has its own declared execution boundary.
+    for result in futures::future::try_join_all(assigned.into_iter().map(|case| {
         let bootstrap = Arc::clone(&bootstrap);
         WORKERS.spawn_blocking(move || sequence_case(case % 2 == 0, &bootstrap))
     }))

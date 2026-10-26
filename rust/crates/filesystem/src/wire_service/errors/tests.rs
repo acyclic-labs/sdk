@@ -316,7 +316,6 @@ cases! {
     fs_local_objects: fs(FsError::LocalObjects(acyclic_objects::v1::local::LocalOpenError::AlreadyOwned)) => FailedPrecondition;
     fs_local_bucket: fs(FsError::LocalObjectsBucket(acyclic_objects::v1::wire::ErrorCode::QuotaExceeded.into())) => ResourceExhausted;
     fs_local_root: fs(FsError::LocalRoot(io(std::io::ErrorKind::PermissionDenied))) => PermissionDenied;
-    fs_local_staging: fs(FsError::LocalStaging(io(std::io::ErrorKind::StorageFull))) => ResourceExhausted;
     fs_local_options: fs(FsError::LocalOptionsConflict) => FailedPrecondition;
     fs_local_worker: fs(FsError::LocalInitializationWorker) => Unavailable;
     fs_object_cache: fs(FsError::ObjectCacheConfig(crate::cache::ObjectCacheConfigError::ZeroBound)) => InvalidArgument;

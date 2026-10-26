@@ -5,6 +5,58 @@ use crate::model::VolumeLimits;
 use crate::{CancellationToken, WorkBudget};
 use std::future::{Ready, ready};
 
+async fn dropping_the_last_customer_owner_retires_the_native_namespace()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    std::fs::write(physical.path().join("source.txt"), b"source")?;
+    let destination = tempfile::tempdir()?;
+    let before = crate::capture_root_identity(destination.path())?;
+    let lazy = native_lazy_source(physical.path(), "last-mount-owner", &cancellation).await?;
+    let options = super::tests::fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
+    let work = test_work(WorkBudget::UNBOUNDED, &cancellation)?;
+    let mount = lazy
+        .mount(
+            destination.path(),
+            options.native_context(&work, None, None),
+        )
+        .await?;
+    let mounted = mount
+        .native_root_identity()
+        .ok_or("live mount lost its native root identity")?;
+    assert_ne!(mounted, before);
+    assert_eq!(crate::capture_root_identity(destination.path())?, mounted);
+    assert_eq!(
+        std::fs::read(destination.path().join("source.txt"))?,
+        b"source"
+    );
+    let source = Arc::downgrade(&mount.source);
+    // No explicit unmount and no new cleanup meter. Returning from the last
+    // owner must witness physical retirement, rather than just request it.
+    drop(mount);
+    let retired = match crate::capture_root_identity(destination.path()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            panic!("last mount owner returned before native namespace retirement: {error:?}")
+        }
+    };
+    assert_eq!(
+        retired, before,
+        "last mount owner returned while its native namespace remained mounted"
+    );
+    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    assert!(
+        source.upgrade().is_none(),
+        "driver still owns the mount source"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
@@ -16,6 +68,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         std::fs::write(path, b"native edit")?;
         return Ok(());
     }
+    dropping_the_last_customer_owner_retires_the_native_namespace().await?;
     crate::initialize_native_mount_services()?;
     let cancellation = CancellationToken::new();
     let new_work = |budget| test_work(budget, &cancellation);
