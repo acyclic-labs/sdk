@@ -140,6 +140,11 @@ pub enum NativeMountError {
     #[cfg(target_os = "linux")]
     #[error("FUSE shutdown previously failed")]
     FuseShutdownFailed,
+    /// A consumed guest queue entry lacks a known physical completion. Keep
+    /// the original session and its actual failure; never acknowledge a drain.
+    #[cfg(target_os = "linux")]
+    #[error("virtio-fs queue completion is unknown; retain and retire the original guest session")]
+    VirtioFsCompletionUnknown,
     /// The actual FUSE invalidator previously failed.
     #[cfg(target_os = "linux")]
     #[error("FUSE invalidator previously failed")]
