@@ -446,7 +446,9 @@ impl WasmAgents {
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmReducer,
         manifest: &[u8],
-        #[wasm_bindgen(unchecked_param_type = "(delivery: Uint8Array) => Promise<Uint8Array>")]
+        #[wasm_bindgen(
+            unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>"
+        )]
         on_record: Function,
         #[wasm_bindgen(
             unchecked_param_type = "((actor: string, error: string) => void) | undefined"

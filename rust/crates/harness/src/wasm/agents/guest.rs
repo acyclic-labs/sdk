@@ -5,6 +5,7 @@
 //! record through `onRecord`, and alone owns sealing, exact retry and
 //! settlement of the transition it returns.
 
+use super::host::Cancel;
 use super::{
     BrowserHandler, Providers, WasmAgentRegistry, WasmBrowserAgentOptions, WasmReducer, from_js,
     js_error,
@@ -58,16 +59,66 @@ impl AgentGuest {
 
     /// Runs one canonical delivery (with the actor's committed checkpoint)
     /// and returns its canonical transition. Nothing is published here; a
-    /// repeated delivery may run again.
+    /// repeated delivery may run again. Aborting `signal` (the host gave up,
+    /// as at its handler timeout) drops the turn, cancelling its model call
+    /// as a dropped in-process turn does.
     #[wasm_bindgen(js_name = onRecord)]
-    pub async fn on_record(&self, delivery: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+    pub async fn on_record(
+        &self,
+        delivery: Vec<u8>,
+        #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] signal: JsValue,
+    ) -> Result<Vec<u8>, JsValue> {
         let (delivery, checkpoint) = wire::decode_delivery(&delivery).map_err(guest_error)?;
-        let transition = self
-            .handler
-            .on_record(delivery, checkpoint.as_ref())
+        let (turn, handle) =
+            futures::future::abortable(self.handler.on_record(delivery, checkpoint.as_ref()));
+        let _listening = Listening::abort(&signal, move || handle.abort())?;
+        let transition = turn
             .await
+            .map_err(|_| guest_error(GuestError::Handler("delivery was aborted".into())))?
             .map_err(guest_error)?;
         wire::encode_transition(&transition).map_err(guest_error)
+    }
+}
+
+/// An `abort` listener on a host's signal, removed when dropped.
+struct Listening {
+    signal: JsValue,
+    listener: Closure<dyn FnMut()>,
+}
+
+impl Listening {
+    fn abort(signal: &JsValue, abort: impl FnMut() + 'static) -> Result<Option<Self>, JsValue> {
+        if signal.is_undefined() {
+            return Ok(None);
+        }
+        if js_sys::Reflect::get(signal, &JsValue::from_str("aborted"))?.is_truthy() {
+            return Err(guest_error(GuestError::Handler(
+                "delivery was aborted".into(),
+            )));
+        }
+        let listening = Self {
+            signal: signal.clone(),
+            listener: Closure::new(abort),
+        };
+        listening.method("addEventListener")?;
+        Ok(Some(listening))
+    }
+
+    fn method(&self, name: &str) -> Result<(), JsValue> {
+        js_sys::Reflect::get(&self.signal, &JsValue::from_str(name))?
+            .dyn_into::<Function>()?
+            .call2(
+                &self.signal,
+                &JsValue::from_str("abort"),
+                self.listener.as_ref(),
+            )
+            .map(drop)
+    }
+}
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        let _ = self.method("removeEventListener");
     }
 }
 
@@ -75,12 +126,25 @@ fn rejected(error: JsValue) -> GuestError {
     GuestError::Handler(format!("agent guest failed: {error:?}"))
 }
 
-/// The host's call of a guest's `onRecord`, for [`wire::Remote`].
+/// The host's call of a guest's `onRecord`, for [`wire::Remote`]. Dropping
+/// the call (the runtime's handler timeout) aborts the guest's turn.
 pub(super) fn call(on_record: Function) -> impl Fn(Vec<u8>) -> GuestFuture<'static, Vec<u8>> {
     move |delivery| {
-        let promise = on_record.call1(&JsValue::UNDEFINED, &Uint8Array::from(delivery.as_slice()));
+        let started = Cancel::new()
+            .map_err(|error| GuestError::Handler(error.into()))
+            .and_then(|cancel| {
+                let promise = on_record
+                    .call2(
+                        &JsValue::UNDEFINED,
+                        &Uint8Array::from(delivery.as_slice()),
+                        &cancel.signal,
+                    )
+                    .map_err(rejected)?;
+                Ok((cancel, promise))
+            });
         Box::pin(async move {
-            let value = JsFuture::from(Promise::resolve(&promise.map_err(rejected)?))
+            let (_cancel, promise) = started?;
+            let value = JsFuture::from(Promise::resolve(&promise))
                 .await
                 .map_err(rejected)?;
             let view: Uint8Array = value.dyn_into().map_err(rejected)?;

@@ -29,7 +29,7 @@ export async function agentsFixture(id, reply) {
     open: () => WasmAgents.open(options, owner, registry, (actor, error) => failures.push({ actor, error })),
     // The guest artifact's entry, and a host whose turns run only through it.
     guest: () => AgentGuest.open(options, owner, registry),
-    hosting: guest => WasmAgents.openHosting(options, owner, guest.manifest(), delivery => guest.onRecord(delivery),
+    hosting: guest => WasmAgents.openHosting(options, owner, guest.manifest(), (delivery, signal) => guest.onRecord(delivery, signal),
       (actor, error) => failures.push({ actor, error })),
     free: () => { registry.free(); owner.free(); } };
 }
