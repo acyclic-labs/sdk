@@ -8,6 +8,10 @@ import sys
 import tempfile
 import time
 import unittest
+# Every payload in this suite is inline code or a fixture it writes itself;
+# declare that empty closure explicitly instead of inheriting the enclosing job's.
+import input_closure
+input_closure.declare(os.environ)
 
 HERE=Path(__file__).resolve().parent
 from admission_policy import cargo_query, resolve_wrapper

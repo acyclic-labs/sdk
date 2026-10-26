@@ -10,6 +10,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+# Every payload in this suite is inline code or a fixture it writes itself;
+# declare that empty closure explicitly instead of inheriting the enclosing job's.
+import input_closure
+input_closure.declare(os.environ)
 
 from admission_policy import capture_limits, parse_limits, LIMIT_ENV
 

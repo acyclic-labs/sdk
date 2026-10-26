@@ -107,6 +107,7 @@ def qualify(source, user):
                 ['python3', 'reaping.test.py'],
                 ['python3', '-B', 'cache_policy.test.py'],
                 ['python3', '-B', 'cpu_leases.test.py'],
+                ['python3', '-B', 'job_caps.test.py'],
                 ['python3', 'cargo_cache.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.

@@ -130,6 +130,21 @@ def automatic(argv):
     return name in ('cargo','rustc','rustfmt','git','true','false','echo','cat','ls','pwd','id','uname','stat','sha256sum')
 
 
+def declare(env, root=None, base=None, inputs=()):
+    """Producer-side explicit closure for a job whose references are `inputs`.
+
+    Hermetic fixtures and inline payloads call this instead of inheriting an
+    enclosing receipt's source/base/reference declaration.
+    """
+    value={'version':1,'complete':True,'base_sha':base,'inputs':list(inputs)}
+    parse(value)
+    env.pop(FILE_ENV,None);env.pop(ROOT_ENV,None)
+    env[ENV]=json.dumps(value,sort_keys=True,separators=(',',':'))
+    env[BASE_ENV]=base or 'none'
+    if root is not None:env[ROOT_ENV]=str(root)
+    return env
+
+
 def admit(argv, env=None, root=None, base=None, stage='bb2'):
     env=os.environ if env is None else env
     root=Path(root or (os.getcwd() if env.get(FILE_ENV) else env.get(ROOT_ENV)) or os.getcwd()).resolve()

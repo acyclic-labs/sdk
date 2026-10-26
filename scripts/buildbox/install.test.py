@@ -93,7 +93,7 @@ class InstallTests(unittest.TestCase):
                 namespace['migration_scope'](Path('/unused'),['sccache-rustc'])
 
     def test_cache_and_retirement_controls_are_mandatory_before_publication(self):
-        for suite in ['prune.test.py','cargo_cache.test.py','receipt-outcome.test.mjs','prune-admission.test.mjs','reaping.test.py','cache_policy.test.py','cpu_leases.test.py','input_closure.test.py','command_custody.test.py']:
+        for suite in ['prune.test.py','cargo_cache.test.py','receipt-outcome.test.mjs','prune-admission.test.mjs','reaping.test.py','cache_policy.test.py','cpu_leases.test.py','job_caps.test.py','input_closure.test.py','command_custody.test.py']:
             with self.subTest(suite=suite):
                 calls=[]
                 def run(command,**kwargs):
@@ -192,7 +192,7 @@ try:
  old.qualify=qualify_old;stage=old.prepare(candidate);stages.append(stage)
  assert set(json.loads((stage/'.qualified.json').read_text()))==set(old.TOOLS)
  new=load('candidate',stage/'bb-install.py');new.BIN=live;new.secure_bin=lambda:live
- assert len(old.TOOLS)==12 and len(new.TOOLS)==16
+ assert len(old.TOOLS)==12 and len(new.TOOLS)==17
  own_file=new.__file__;new.__file__=str(fixture/'predecessor.py')
  try:new.prepare(stage)
  except ValueError as error:assert 'run the reviewed source installer' in str(error)

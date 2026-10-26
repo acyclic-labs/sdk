@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import input_closure
 import uuid
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
@@ -96,7 +97,10 @@ class KernelLeases(unittest.TestCase):
         from cpu_test_fixture import KernelFixture
         cls.fixture=KernelFixture()
         cls.control=cls.fixture.control;cls.group=cls.fixture.group;cls.module=cls.fixture.module
-        cls.env=cls.fixture.environment({LIMIT_ENV:json.dumps(capture_limits()),'BB_ADMIT_TIER':'2','BB_CACHE_DISABLED':'1'})
+        # Every payload here is inline interpreter code with no reference inputs.
+        # The producer (this suite) declares that closure explicitly, as every
+        # opaque job must; admission still validates and canonicalizes it.
+        cls.env=input_closure.declare(cls.fixture.environment({LIMIT_ENV:json.dumps(capture_limits()),'BB_ADMIT_TIER':'2','BB_CACHE_DISABLED':'1'}))
 
     @classmethod
     def tearDownClass(cls):
@@ -143,6 +147,13 @@ class KernelLeases(unittest.TestCase):
         self.assertEqual(process.returncode,0,error.decode())
         self.assertIn(b'empty-constructor-reclaimed',output)
         self.assertFalse((self.group/'slot-4'/('run-'+old)).exists())
+
+    def ticket(self,stream):
+        # Input-closure admission happens before dispatch, so the client's
+        # protocol is the admission proof first and the queue ticket second.
+        self.assertTrue(stream.readline().startswith(b'BB_INPUTS_ADMITTED '))
+        line=stream.readline();self.assertIn(b'BB_ADMIT_TICKET',line)
+        return line
 
     def ready(self,process):
         self.assertTrue(select.select([process.stdout],[],[],3)[0],'bounded fixture child did not become ready')
@@ -379,7 +390,7 @@ c.execute(5,token,'cloud',[sys.executable,'-c','pass'])
                 ninth=subprocess.Popen([*command,'cloud','--',sys.executable,'-c','print("ninth-admitted")'],
                          env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 self.assertTrue(select.select([ninth.stderr],[],[],3)[0])
-                self.assertIn(b'BB_ADMIT_TICKET',ninth.stderr.readline())
+                self.ticket(ninth.stderr)
                 self.assertFalse(select.select([ninth.stdout],[],[],.05)[0], 'ninth bypassed the full shared pool')
                 active[0].kill();active[0].wait(timeout=3)
                 output,error=ninth.communicate(timeout=3)
@@ -432,7 +443,7 @@ print(json.dumps(c.current()['id']))
             second=None
             try:
                 original=set(self.ready(first))
-                ticket=json.loads(first.stderr.readline().decode().split(' ',1)[1])
+                ticket=json.loads(self.ticket(first.stderr).decode().split(' ',1)[1])
                 record=json.loads((self.control/(ticket['id']+'.json')).read_text())
                 daemon=json.loads((queue/'daemon.json').read_text())
                 os.kill(daemon['pid'],signal.SIGKILL)
@@ -440,7 +451,7 @@ print(json.dumps(c.current()['id']))
                 second=subprocess.Popen([*entry,'print("recovered-successor")'],env=env,
                                         stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 self.assertTrue(select.select([second.stderr],[],[],3)[0])
-                self.assertIn(b'BB_ADMIT_TICKET',second.stderr.readline())
+                self.ticket(second.stderr)
                 self.assertFalse(select.select([second.stdout],[],[],.05)[0], 'restart released a live predecessor')
                 replacement=json.loads((queue/'daemon.json').read_text())
                 self.assertNotEqual(daemon['pid'],replacement['pid'])

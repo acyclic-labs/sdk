@@ -19,6 +19,7 @@ import threading
 import time
 import fcntl
 import unittest
+import input_closure
 from unittest.mock import patch
 import admission_policy as policy
 
@@ -182,9 +183,7 @@ class HostAuthority(unittest.TestCase):
         # does not forward the enclosing producer's declaration; each client
         # declares its own complete closure instead of inheriting unrelated
         # source/base/reference inputs from another receipt.
-        env.pop('BUILD_SLOT_INPUTS_FILE',None)
-        env.update(BUILD_SLOT_INPUTS_JSON=json.dumps({'version':1,'complete':True,'base_sha':None,'inputs':[]}),
-                   BUILD_SLOT_INPUT_BASE='none',BUILD_SLOT_INPUT_ROOT=str(self.data))
+        input_closure.declare(env,root=self.data)
         env.update(extra or {});return env
 
     def test_concurrent_starts_leave_one_birth_verified_owner(self):
