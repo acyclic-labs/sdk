@@ -9,7 +9,8 @@ publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
 [features]
-grpc = ["acyclic-stream/grpc"]
+grpc = ["session", "acyclic-stream/grpc"]
+session = ["acyclic-stream/session"]
 wasm = ["acyclic-stream/wasm"]
 
 [dependencies]
