@@ -284,6 +284,7 @@ async fn forked_histories_cannot_reuse_parent_cursors_or_publication_generations
     let initial = parent.snapshot(&Query::Root, 0).await?;
     provider
         .fork(acyclic_stream::ForkRequest {
+            exclude: Vec::new(),
             source: StreamPath::new("task-volume")?,
             destination: StreamPath::new("fork")?,
             at_tail: Some(initial.generation.position),

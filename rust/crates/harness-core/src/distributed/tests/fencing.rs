@@ -356,7 +356,8 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
                     .fork(
                         execution_path(execution, &mut None)?.as_str(),
                         Some(0),
-                        None,
+                        Vec::new(),
+                        crate::test_support::fresh_key()?,
                     )
                     .await?;
                 if tail != 0 {
@@ -374,7 +375,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
                             ))?
                         ],
                         Some(0),
-                        None,
+                        crate::test_support::fresh_key()?,
                     )
                     .await?;
                 }

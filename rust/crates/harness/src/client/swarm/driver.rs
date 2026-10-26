@@ -49,8 +49,8 @@ impl SwarmClient {
     }
 
     /// Follows file-derived demand through the caller's shared Streams session.
-    /// Children already provides snapshot plus live follow across every hierarchy
-    /// page, so discovery needs no second enumeration or harness channel map.
+    /// The parent's settled membership files are the only discovery source: the
+    /// snapshot admits one agent per turn, then live membership records follow.
     /// One status follow covers every agent. Selected content starts from the
     /// complete checked cursor returned by `heads`, and promotion retains it.
     /// A fatal source or renderer error ends this cache; reset from fresh queries.
@@ -74,8 +74,6 @@ impl SwarmClient {
             let change = views.apply(update)?;
             changed(change).await
         };
-        // Registration precedes reading the layout. The platform owns the
-        // hierarchy snapshot, live creation cursor, credit and reconnect fence.
         let Sources {
             mut membership,
             mut follows,
@@ -134,9 +132,6 @@ impl SwarmClient {
                             publish(SwarmUpdate::StatusWatermark(watermark)).await?;
                             None
                         }
-                        (None, Some(wire::session_frame::Body::Data(data))) => {
-                            discovered(data, &demand, &mut follows, &mut membership)?
-                        }
                         (Some(agent), Some(wire::session_frame::Body::Data(data))) => {
                             publish(SwarmUpdate::Data { agent, overview: routed.overview, data }).await?;
                             None
@@ -152,8 +147,7 @@ impl SwarmClient {
                     }
                 },
             };
-            // Snapshot children and live membership records share admission.
-            // Both arrive through the credit-paced platform session above.
+            // Snapshot members and live membership records share admission.
             if let Some(agent) = admission {
                 admit_agent(
                     agent,
@@ -168,26 +162,6 @@ impl SwarmClient {
             }
         }
     }
-}
-
-fn discovered(
-    data: wire::SessionData,
-    demand: &ClientInterests,
-    follows: &mut follows::Follows,
-    membership: &mut membership::Membership,
-) -> Result<Option<StreamPath>> {
-    let Some(wire::session_data::Item::Child(child)) = data.item else {
-        return Err(Error::Invalid("discovery received non-child data".into()));
-    };
-    let agent = StreamPath::new(child.path).map_err(|error| Error::Invalid(error.to_string()))?;
-    if agent.as_str() == format!("{}/status", demand.root()) {
-        // Discovery fences shared-stream creation, even for an empty swarm.
-        follows.status();
-    }
-    if demand.tier(&agent).is_none() {
-        return Err(Error::Invalid("discovered agent lies outside swarm".into()));
-    }
-    Ok(membership.discovered(&agent).then_some(agent))
 }
 
 // Status and membership channels may arrive in either order. The parent
@@ -226,10 +200,9 @@ impl Sources {
         parent: &TaskVolume<M>,
         session: &acyclic_stream::session::Client,
     ) -> Result<Self> {
-        let discovery = discover(session, &root).await?;
         let membership =
             membership::Membership::observe(parent, session, root.clone(), limits.agents).await?;
-        let follows = follows::Follows::new(session.clone(), &root, discovery)?;
+        let follows = follows::Follows::new(session.clone(), &root)?;
         let demand = ClientInterests::from_layout(root.clone(), [], [], 0)?;
         let files = InterestFiles::observe(
             files,
@@ -248,27 +221,6 @@ impl Sources {
     }
 }
 
-async fn discover(
-    session: &acyclic_stream::session::Client,
-    root: &StreamPath,
-) -> Result<follows::Frames> {
-    session
-        .subscribe(wire::SessionSubscription {
-            credential: 0,
-            filter: None,
-            channel: None,
-            resume: Some(wire::SessionCursor::default()),
-            kind: Some(wire::session_subscription::Kind::Children(
-                wire::ChildrenRequest {
-                    parent: Some(root.as_str().into()),
-                    limit: acyclic_stream::MAX_ITEMS as u32,
-                },
-            )),
-        })
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))
-}
-
 async fn admit_agent<'a, Q, QFut, F>(
     agent: StreamPath,
     demand: &ClientInterests,
@@ -284,6 +236,7 @@ where
     F: AsyncFnMut(SwarmUpdate) -> Result<()>,
 {
     if follows.discover(demand, agent.clone(), limits.agents)? {
+        follows.status();
         publish(SwarmUpdate::Agent {
             agent: agent.clone(),
         })

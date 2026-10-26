@@ -12,6 +12,8 @@ pub(crate) enum Fault {
     OmitAppendWake,
     RetainReplacedState,
     IgnoreHead,
+    IgnoreAbsent,
+    RetainConflictKey,
     RootOnlyFork,
     IgnoreForkExclusions,
     IgnorePageRecordBytes,
@@ -641,6 +643,143 @@ pub fn page_tail_cut(split_reads: bool) {
         });
         writer.join().unwrap();
         projection.join().unwrap();
+        Ok(())
+    });
+}
+
+/// Runs one public agent-shaped history against the real memory provider with
+/// an optional old or broken behaviour, which the history must reject.
+fn agent_history(case: crate::conformance::wave1::Case, fault: Fault) {
+    check_with_bound(Some(0), move || {
+        set_fault(fault);
+        let provider = MemoryStream::default();
+        let namespace = StreamPath::new("agents")?;
+        if let Err(failure) = block_on(crate::conformance::wave1::verify_case(
+            &provider, &namespace, case,
+        )) {
+            panic!("agent history rejected the provider: {failure}");
+        }
+        Ok(())
+    });
+}
+
+/// Spawn must leave the child's excluded status and children behind.
+pub fn agent_spawn(ignore_exclusions: bool) {
+    let fault = if ignore_exclusions {
+        Fault::IgnoreForkExclusions
+    } else {
+        Fault::None
+    };
+    agent_history(crate::conformance::wave1::Case::Spawn, fault);
+}
+
+/// A closed inbox refuses sends only because `Absent` is enforced.
+pub fn agent_closed_inbox(ignore_absent: bool) {
+    let fault = if ignore_absent {
+        Fault::IgnoreAbsent
+    } else {
+        Fault::None
+    };
+    agent_history(crate::conformance::wave1::Case::ClosedInbox, fault);
+}
+
+/// A root-only fork publication has no inherited descendants to follow.
+pub fn agent_inherited_follow(root_only: bool) {
+    let fault = if root_only {
+        Fault::RootOnlyFork
+    } else {
+        Fault::None
+    };
+    agent_history(crate::conformance::wave1::Case::InheritedFollow, fault);
+}
+
+/// A root-only fork loses the conversation a grandchild must inherit.
+pub fn agent_fork_lineage(root_only: bool) {
+    let fault = if root_only {
+        Fault::RootOnlyFork
+    } else {
+        Fault::None
+    };
+    agent_history(crate::conformance::wave1::Case::ForkLineage, fault);
+}
+
+/// A conditional commit racing an unconditional writer either commits under
+/// its key or conflicts without spending it; one stable key then succeeds at
+/// the observed tail and replays exactly.
+pub fn stable_intent_key(retain_conflicts: bool) {
+    check_with_bound(Some(2), move || {
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("intent")?;
+        let key = IdempotencyKey::new(b"intent".to_vec())?;
+        let request = |expected| CommitRequest {
+            conditions: vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"intent").into()],
+            }],
+            idempotency_key: key.clone(),
+        };
+        let writer = thread::spawn({
+            let provider = provider.clone();
+            let path = path.clone();
+            move || {
+                block_on(provider.append(AppendRequest {
+                    path,
+                    records: vec![Bytes::from_static(b"other").into()],
+                    if_tail: None,
+                    idempotency_key: Some(IdempotencyKey::new(b"other".to_vec()).unwrap()),
+                }))
+                .unwrap();
+            }
+        });
+        if retain_conflicts {
+            set_fault(Fault::RetainConflictKey);
+        }
+        let first = block_on(provider.commit(request(0)))?;
+        writer.join().unwrap();
+        let observed = block_on(provider.inspect_idempotency(key.clone()))?;
+        let settled = match first {
+            CommitOutcome::Committed(_) => {
+                assert_eq!(
+                    observed.map(|observation| observation.outcome),
+                    Some(IdempotencyOutcome::Commit(first.clone())),
+                    "a committed intent must be recoverable"
+                );
+                first
+            }
+            CommitOutcome::Conflict(_) => {
+                assert!(
+                    observed.is_none(),
+                    "a conflict must not spend the intent key"
+                );
+                let retried = block_on(provider.commit(request(1)))?;
+                assert!(
+                    matches!(retried, CommitOutcome::Committed(_)),
+                    "the stable key must commit at the observed tail"
+                );
+                retried
+            }
+        };
+        let CommitOutcome::Committed(envelope) = &settled else {
+            unreachable!("settled above");
+        };
+        let expected = match &envelope.mutations[..] {
+            [CommittedMutation::Append(append)] => append.start,
+            _ => unreachable!("one append"),
+        };
+        assert_eq!(
+            block_on(provider.commit(request(expected)))?,
+            settled,
+            "exact retry replays the receipt"
+        );
+        assert_eq!(
+            block_on(provider.tail(path.clone()))?,
+            2,
+            "the intent committed exactly once"
+        );
         Ok(())
     });
 }

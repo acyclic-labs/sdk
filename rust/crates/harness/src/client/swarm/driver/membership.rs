@@ -82,13 +82,15 @@ impl Membership {
             changes,
         })
     }
-    // Initial status follows are admitted by discovery deliveries, whose wire
-    // credit provides backpressure. A ready in-memory snapshot must not bypass
-    // that boundary and flood the platform's bounded control queue.
+    /// Admits a snapshot member early when its status arrives first.
     pub fn discovered(&mut self, agent: &StreamPath) -> bool {
         self.initial.remove(agent)
     }
+    /// Admits one snapshot member per call before any live change.
     pub async fn next(&mut self) -> Result<Option<(StreamPath, bool)>> {
+        if let Some(agent) = self.initial.pop_first() {
+            return Ok(Some((agent, true)));
+        }
         let value = |file: crate::task_volume::FileValue| -> Result<_> {
             let status =
                 ChildStatus::parse(&file.bytes).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -119,7 +121,6 @@ impl Membership {
         };
         let agent = StreamPath::new(format!("{}/{}", self.root, reference.as_str()))
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        self.initial.remove(&agent);
         Ok(Some((agent, active)))
     }
 }

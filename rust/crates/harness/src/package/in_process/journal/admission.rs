@@ -134,6 +134,20 @@ impl<P: StreamProvider> Journal<P> {
                     .into(),
                 ],
             });
+        } else if tail == 0 {
+            // Creating the inbox also advances the journal by one state-only
+            // entry, so an idle subscriber's journal follow observes creation.
+            let mut created = current.last;
+            created.bootstrap = None;
+            created.workflow = None;
+            created.event = None;
+            mutations.push(CommitMutation::Append {
+                path: self.path.clone(),
+                records: vec![
+                    Bytes::from(serde_json::to_vec(&created).map_err(|error| codec_error(&error))?)
+                        .into(),
+                ],
+            });
         }
         self.commit_transaction(conditions, mutations).await?;
         Ok(admitted)

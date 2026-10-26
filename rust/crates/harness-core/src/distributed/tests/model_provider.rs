@@ -1,8 +1,8 @@
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyObservation,
-    ReadRequest, RecordStream, StreamBounds, StreamPath,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyObservation, ReadRequest, RecordStream, StreamBounds,
+    StreamPath,
 };
 use loom::sync::atomic::{AtomicU8, Ordering};
 use std::{
@@ -112,7 +112,6 @@ delegate! {
     bounds(path: StreamPath) -> StreamBounds;
     fork(request: ForkRequest) -> ForkReceipt;
     read(request: ReadRequest) -> RecordStream;
-    children(request: ChildrenRequest) -> ChildStream;
     read_commit(id: CommitId) -> CommittedEnvelope;
 }
 

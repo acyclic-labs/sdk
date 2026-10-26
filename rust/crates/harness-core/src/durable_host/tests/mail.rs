@@ -107,6 +107,7 @@ async fn b09_inbox_rejects_hostile_envelopes() -> Result<()> {
             .append_at(
                 OwnedBytes::from(crate::contract::canonical_json_bytes(&changed)?),
                 1 + index as u64,
+                crate::test_support::fresh_key()?,
             )
             .await?;
         assert!(f.host.inbox(recipient, 1 + index as u64, 1).await.is_err());

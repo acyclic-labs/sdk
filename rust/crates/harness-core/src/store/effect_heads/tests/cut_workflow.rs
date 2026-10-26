@@ -120,13 +120,6 @@ impl StreamProvider for Observed {
         record(("follow", normalized_path(&path), from));
         self.0.follow(path, from, filter).await
     }
-    async fn children(
-        &self,
-        request: ChildrenRequest,
-    ) -> std::result::Result<ChildStream, StreamError> {
-        record(("children", &request));
-        self.0.children(request).await
-    }
     async fn commit(
         &self,
         request: CommitRequest,

@@ -75,3 +75,39 @@ async fn local_subtree_fork() -> TestResult {
 async fn local_composed_fork() -> TestResult {
     local(Case::ComposedFork).await
 }
+#[tokio::test]
+async fn memory_spawn() -> TestResult {
+    memory(Case::Spawn).await
+}
+#[tokio::test]
+async fn memory_closed_inbox() -> TestResult {
+    memory(Case::ClosedInbox).await
+}
+#[tokio::test]
+async fn memory_inherited_follow() -> TestResult {
+    memory(Case::InheritedFollow).await
+}
+#[tokio::test]
+async fn memory_fork_lineage() -> TestResult {
+    memory(Case::ForkLineage).await
+}
+#[cfg(feature = "local")]
+#[tokio::test]
+async fn local_spawn() -> TestResult {
+    local(Case::Spawn).await
+}
+#[cfg(feature = "local")]
+#[tokio::test]
+async fn local_closed_inbox() -> TestResult {
+    local(Case::ClosedInbox).await
+}
+#[cfg(feature = "local")]
+#[tokio::test]
+async fn local_inherited_follow() -> TestResult {
+    local(Case::InheritedFollow).await
+}
+#[cfg(feature = "local")]
+#[tokio::test]
+async fn local_fork_lineage() -> TestResult {
+    local(Case::ForkLineage).await
+}

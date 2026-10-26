@@ -31,7 +31,11 @@ async fn competing_immutable_identity_recovers_or_rejects_without_retained_sourc
         let client = Arc::new(MemoryStream::default());
         let path = StreamPath::new("harness/v3/native-stage-custody/competing")?;
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())?
-            .append_at(OwnedBytes::from_static(b"immutable"), 0)
+            .append_at(
+                OwnedBytes::from_static(b"immutable"),
+                0,
+                crate::test_support::fresh_key()?,
+            )
             .await?;
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(budget(), &cancellation)

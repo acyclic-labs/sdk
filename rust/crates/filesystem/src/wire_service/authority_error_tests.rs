@@ -2,7 +2,7 @@
 //! and generation resolution. These exercise the complete hosted RPC boundary.
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
     CommitRequest, CommittedEnvelope, FollowFilter, ForkReceipt, ForkRequest,
     IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
     StreamPath, StreamProvider,
@@ -88,8 +88,11 @@ impl StreamProvider for FaultStream {
         self.inner.follow(path, from, filter).await
     }
 
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.inner.children(request).await
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        self.inner.children_page(request).await
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {

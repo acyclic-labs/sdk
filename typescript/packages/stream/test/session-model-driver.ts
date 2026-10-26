@@ -7,13 +7,13 @@ import { SessionNode, checkpoint } from "./session-node.js";
 // negative control must fail its stated invariant, not merely start a process.
 const fault = process.env.STREAM_SESSION_FAULT;
 const scenario = process.env.STREAM_SESSION_SCENARIO ?? "move";
-if (fault === "childSelect") {
+if (fault === "followSelect") {
   const { plugin } = await import("bun");
   plugin({ name: "selection-negative-control", setup(build) {
     build.onLoad({ filter: /[\\/]src[\\/]default\.ts$/ }, async args => {
       const source = await Bun.file(args.path).text();
-      const old = "this.acquireProvider(request.signal)";
-      if (!source.includes(old)) throw new Error("child selection negative control no longer matches");
+      const old = "this.acquireProvider(options.signal)";
+      if (!source.includes(old)) throw new Error("follow selection negative control no longer matches");
       return { contents: source.replace(old, "this.acquireProvider(undefined)"), loader: "ts" };
     });
   } });
@@ -39,18 +39,18 @@ const { DefaultStreamProvider } = await import("../src/default.js");
 const facade = new DefaultStreamProvider({ endpoint: "https://home", token: "model" });
 let releaseSelection: (() => void) | undefined;
 Reflect.set(facade, "select", async () => {
-  if (scenario === "childSelect") await new Promise<void>(resolve => { releaseSelection = resolve; });
-  return { children: (request: Parameters<StreamSessions["children"]>[0]) => sessions.children(request) };
+  if (scenario === "followSelect") await new Promise<void>(resolve => { releaseSelection = resolve; });
+  return { follow: (path: string, options: Parameters<StreamSessions["follow"]>[1]) => sessions.follow(path, options) };
 });
 const records = scenario === "rejection" ? sessions.follow("events", { from: 0n, signal: controller.signal })
-  : facade.children({ parent: "agents", limit: 1, signal: controller.signal });
+  : facade.follow("agents", { from: 0n, signal: controller.signal });
 if (scenario === "rejection") {
   peer.append("events", 2);
   await records.next();
 }
 let settled = false;
 let rejected: unknown;
-if (scenario === "childSelect") void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
+if (scenario === "followSelect") void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
 async function command(action: string, hex?: string, path?: string,
   work?: { warm: number; samples: number; reverse: boolean; shared: boolean }, count?: number): Promise<unknown> {
   switch (action) {
@@ -77,12 +77,6 @@ async function command(action: string, hex?: string, path?: string,
       const tails = [];
       for (const path of accepted.keys()) tails.push(Number(await memory.tail(path)));
       return { isolated: rejection === null, rejection, accepted: [...accepted.values()].reduce((sum, count) => sum + count, 0), tails };
-    }
-    case "child": {
-      const value = create(wire.SessionFrameSchema, { channelId: 1n, generation: 1n, body: { case: "data", value: {
-        after: { next: 1n, opaque: new TextEncoder().encode(path) }, accepted: 1n, item: { case: "child", value: { path: path ?? "" } },
-      } } });
-      return command("decode", Buffer.from(toBinary(wire.SessionFrameSchema, value)).toString("hex"));
     }
     case "ready":
       if (scenario === "rejection") {
@@ -118,13 +112,11 @@ async function command(action: string, hex?: string, path?: string,
       const validatorPeer = new SessionNode(spend);
       const validator = new StreamSessions(validatorPeer.connect);
       const cancel = new AbortController();
-      const childFrame = decoded.body.case === "data" && decoded.body.value.item.case === "child";
-      const iterator = childFrame ? validator.children({ limit: 1, signal: cancel.signal })
-        : validator.follow("probe", { from: 0n, signal: cancel.signal });
+      const iterator = validator.follow("probe", { from: 0n, signal: cancel.signal });
       let outcome = "pending";
       let sequence: number | undefined;
       const pending = iterator.next().then(result => {
-        if (!result.done) { outcome = "sequence" in result.value ? "record" : "child"; sequence = "sequence" in result.value ? Number(result.value.sequence) : undefined; }
+        if (!result.done) { outcome = "record"; sequence = Number(result.value.sequence); }
       }, error => { outcome = error?.code ?? "unavailable"; });
       await validatorPeer.until(() => validatorPeer.active === 1);
       validatorPeer.connections[0]!.output.push(decoded);

@@ -117,10 +117,10 @@ async fn copy_cut(
             .await?;
     } else {
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), canonical_path.as_str())?
-            .append(canonical.clone())
+            .append(canonical.clone(), crate::test_support::fresh_key()?)
             .await?;
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), proof_path.as_str())?
-            .append(certificate)
+            .append(certificate, crate::test_support::fresh_key()?)
             .await?;
     }
     Ok(client)

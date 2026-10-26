@@ -389,12 +389,6 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
     ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
         Err(acyclic_stream::StreamError::Unsupported)
     }
-    async fn children(
-        &self,
-        _: acyclic_stream::ChildrenRequest,
-    ) -> std::result::Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
-        Err(acyclic_stream::StreamError::Unsupported)
-    }
 }
 
 async fn append_later_summary_parent_messages(

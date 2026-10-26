@@ -12,8 +12,8 @@ use crate::guest::{
 };
 use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::{
-    AppendRecord, ChildrenRequest, CommitCondition, CommitMutation, CommitRequest, FollowFilter,
-    IdempotencyKey, StreamError, StreamPath, StreamProvider,
+    AppendRecord, CommitCondition, CommitMutation, FollowFilter, IdempotencyKey, StreamError,
+    StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt, future::BoxFuture};
@@ -106,7 +106,9 @@ impl Handler for Package {
                 (Trigger::Record { sequence, .. }, Some(record)) => {
                     let command = std::str::from_utf8(&record.value).map_err(guest)?;
                     match command.split_once(' ') {
-                        None if command == "emit" => (AlarmChange::Keep, Some(format!("r{sequence}"))),
+                        None if command == "emit" => {
+                            (AlarmChange::Keep, Some(format!("r{sequence}")))
+                        }
                         None if command == "clear" => (AlarmChange::Clear, None),
                         Some(("set", delay)) => (
                             AlarmChange::Set {
@@ -119,7 +121,9 @@ impl Handler for Package {
                         _ => return Err(guest("unknown command")),
                     }
                 }
-                (Trigger::Record { .. }, None) => return Err(guest("record trigger without record")),
+                (Trigger::Record { .. }, None) => {
+                    return Err(guest("record trigger without record"));
+                }
             };
             let mut effects = Vec::new();
             if let Some(output) = output {
@@ -177,23 +181,31 @@ struct Fixture<'a, T: Target + ?Sized> {
     actor: ActorReference,
     inbox: StreamPath,
     outbox: StreamPath,
+    /// Creation effects that ride in the first send's commit.
+    creation: Option<[Effect; 2]>,
     sent: u64,
 }
 
 impl<'a, T: Target + ?Sized> Fixture<'a, T> {
-    /// Create a fresh actor through the companion mutation in a standalone
-    /// commit; the host discovers it without placement.
+    /// Prepare a fresh actor. Its companion creation rides in the commit that
+    /// creates its inbox with the first command, as a spawn does; the host
+    /// discovers it from the activation log without placement.
     async fn create(target: &'a T, run: &str, case: &'static str) -> Result<Self, Failure> {
-        let actor = ActorReference::new(b"conformance", b"actors", format!("{run}-{case}").as_bytes())
-            .map_err(|_| Error::Invalid("conformance actor id"))?;
-        let inbox = StreamPath::new(format!("conformance/{run}/{case}/inbox")).map_err(Error::from)?;
-        let outbox = StreamPath::new(format!("conformance/{run}/{case}/outbox")).map_err(Error::from)?;
+        let actor = ActorReference::new(
+            b"conformance",
+            b"actors",
+            format!("{run}-{case}").as_bytes(),
+        )
+        .map_err(|_| Error::Invalid("conformance actor id"))?;
+        let inbox =
+            StreamPath::new(format!("conformance/{run}/{case}/inbox")).map_err(Error::from)?;
+        let outbox =
+            StreamPath::new(format!("conformance/{run}/{case}/outbox")).map_err(Error::from)?;
         let ledger = Ledger {
             outbox: outbox.clone(),
             published: 0,
         };
-        let store = target.store();
-        let (condition, mutation) = store.create(
+        let creation = target.store().create(
             &actor,
             BTreeMap::from([(
                 "inbox".into(),
@@ -207,22 +219,13 @@ impl<'a, T: Target + ?Sized> Fixture<'a, T> {
                 bytes: serde_json::to_vec(&ledger).map_err(Error::from)?.into(),
             }),
         )?;
-        let outcome = store
-            .provider()
-            .commit(CommitRequest {
-                conditions: vec![condition],
-                mutations: vec![mutation],
-                idempotency_key: idempotency(&format!("{run}/{case}/create"))?,
-            })
-            .await
-            .map_err(Error::from)?;
-        PreparedPublish::settle(&outcome)?;
         Ok(Self {
             target,
             case,
             actor,
             inbox,
             outbox,
+            creation: Some(creation),
             sent: 0,
         })
     }
@@ -239,16 +242,21 @@ impl<'a, T: Target + ?Sized> Fixture<'a, T> {
                 expected: self.sent,
             }
         };
+        let mut prepared =
+            PreparedPublish::foreign(idempotency(&format!("{}/send/{}", self.inbox, self.sent))?);
+        for effect in self.creation.take().into_iter().flatten() {
+            prepared.join(effect)?;
+        }
+        prepared.join(Effect {
+            conditions: vec![condition],
+            mutation: CommitMutation::Append {
+                path: self.inbox.clone(),
+                records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
+            },
+        })?;
         let outcome = store
             .provider()
-            .commit(CommitRequest {
-                conditions: vec![condition],
-                mutations: vec![CommitMutation::Append {
-                    path: self.inbox.clone(),
-                    records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
-                }],
-                idempotency_key: idempotency(&format!("{}/send/{}", self.inbox, self.sent))?,
-            })
+            .commit(prepared.into_request())
             .await
             .map_err(Error::from)?;
         PreparedPublish::settle(&outcome)?;
@@ -275,39 +283,33 @@ impl<'a, T: Target + ?Sized> Fixture<'a, T> {
         let clock = self.target.clock();
         let mut records = Vec::new();
         let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(budget_ms));
-        let mut follow = match provider
-            .follow(self.outbox.clone(), 0, FollowFilter::default())
+        // The outbox is created by a publication, which always appends the
+        // actor's state in the same commit: wake on state records until it exists.
+        let mut state = provider
+            .follow(
+                self.target.store().path(&self.actor)?,
+                0,
+                FollowFilter::default(),
+            )
             .await
-        {
-            Ok(follow) => follow,
-            // Nothing published yet: wait for the outbox to be created.
-            Err(StreamError::NotFound) => {
-                let mut watch = provider
-                    .children(ChildrenRequest {
-                        parent: self.outbox.parent(),
-                        limit: 1024,
-                    })
-                    .await
-                    .map_err(Error::from)?;
-                loop {
-                    let created = futures::select_biased! {
-                        child = watch.next().fuse() => match child {
-                            Some(Ok(child)) => child.path == self.outbox,
-                            Some(Err(error)) => return Err(Error::from(error).into()),
-                            None => return Err(Error::from(StreamError::Unavailable).into()),
-                        },
-                        () = (&mut deadline).fuse() => return Ok(records),
-                    };
-                    if created {
-                        break;
-                    }
-                }
-                provider
-                    .follow(self.outbox.clone(), 0, FollowFilter::default())
-                    .await
-                    .map_err(Error::from)?
+            .map_err(Error::from)?;
+        let mut follow = loop {
+            match provider
+                .follow(self.outbox.clone(), 0, FollowFilter::default())
+                .await
+            {
+                Ok(follow) => break follow,
+                Err(StreamError::NotFound) => {}
+                Err(error) => return Err(Error::from(error).into()),
             }
-            Err(error) => return Err(Error::from(error).into()),
+            futures::select_biased! {
+                record = state.next().fuse() => match record {
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => return Err(Error::from(error).into()),
+                    None => return Err(Error::from(StreamError::Unavailable).into()),
+                },
+                () = (&mut deadline).fuse() => return Ok(records),
+            }
         };
         while records.len() < count {
             futures::select_biased! {

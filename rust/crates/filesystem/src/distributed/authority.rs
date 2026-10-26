@@ -15,6 +15,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 let listed = match self
                     .provider
                     .children_page(acyclic_stream::ChildrenPageRequest {
+                        tail_stream: None,
                         parent: Some(parent.clone()),
                         after: after.take(),
                         hierarchy_version,

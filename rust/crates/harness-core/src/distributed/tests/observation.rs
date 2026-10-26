@@ -519,7 +519,11 @@ async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
         &mut None,
     )?;
     Stream::new(client.clone(), COORDINATOR_PATH)?
-        .append_batch(vec![OwnedBytes::from(bytes).into()], Some(3), None)
+        .append_batch(
+            vec![OwnedBytes::from(bytes).into()],
+            Some(3),
+            crate::test_support::fresh_key()?,
+        )
         .await?;
     assert!(matches!(
         reopened.refresh(&mut None).await,

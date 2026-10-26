@@ -260,19 +260,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         );
         self.inner.follow(path, from, filter).await
     }
-    async fn children(
-        &self,
-        request: acyclic_stream::ChildrenRequest,
-    ) -> std::result::Result<acyclic_stream::ChildStream, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary children on native-only fixture"
-        );
-        self.io
-            .other_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.children(request).await
-    }
     async fn children_page(
         &self,
         request: acyclic_stream::ChildrenPageRequest,

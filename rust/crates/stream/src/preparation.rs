@@ -44,6 +44,10 @@ pub(crate) fn condition_conflict(
             })
         }
         CommitCondition::Absent { .. } if actual.is_some() => {
+            #[cfg(all(acyclic_loom, feature = "local"))]
+            if crate::verification::fault_is(crate::verification::Fault::IgnoreAbsent) {
+                return Ok(None);
+            }
             Some(CommitConflict::Exists { path: path.clone() })
         }
         CommitCondition::Head { commit_id, .. } => {

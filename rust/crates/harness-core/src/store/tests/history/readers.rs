@@ -151,7 +151,10 @@ async fn history_reader_rejects_unattested_events_and_wrong_authority() -> Resul
             event.intent_digest = [0; 32];
         }
         acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?
-            .append(encode_event(&wire_authority, &event, &mut None)?)
+            .append(
+                encode_event(&wire_authority, &event, &mut None)?,
+                crate::test_support::fresh_key()?,
+            )
             .await?;
         let reader = HistoryReader::new(
             &client,

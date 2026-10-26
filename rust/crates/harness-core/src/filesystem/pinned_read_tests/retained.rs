@@ -611,6 +611,7 @@ fn published_content_retries_and_recovery_do_not_append_retention_records() -> R
                 runtime.block_on(initialize_with_stream(0, b"original"))?;
             let page =
                 runtime.block_on(stream.children_page(acyclic_stream::ChildrenPageRequest {
+                    tail_stream: None,
                     parent: Some(acyclic_stream::StreamPath::new(".acyclic/fs")?),
                     after: None,
                     hierarchy_version: None,

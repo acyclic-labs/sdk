@@ -161,7 +161,10 @@ async fn follow_verifies_authority_and_attestation() -> Result<()> {
             event.intent_digest = [0; 32];
         }
         acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?
-            .append(encode_event_envelope(&encoded_owner, &event, &mut None)?.encode_to_vec())
+            .append(
+                encode_event_envelope(&encoded_owner, &event, &mut None)?.encode_to_vec(),
+                acyclic_stream::IdempotencyKey::new(uuid::Uuid::new_v4().as_bytes().to_vec())?,
+            )
             .await?;
         let reader = HistoryReader::new(
             &client,

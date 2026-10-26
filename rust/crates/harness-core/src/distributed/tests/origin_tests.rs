@@ -45,7 +45,11 @@ async fn a_separately_written_origin_locator_cannot_authenticate_a_source() -> R
     let path = origins::event_path(&event, &mut None)?.unwrap();
     let locator = origin_locator::encode(0, retry.as_bytes().try_into().unwrap()).to_vec();
     Stream::new(Arc::clone(&client), path.as_str())?
-        .append_batch(vec![locator.into()], Some(0), None)
+        .append_batch(
+            vec![locator.into()],
+            Some(0),
+            crate::test_support::fresh_key()?,
+        )
         .await?;
     let error = origins::read(&client, operation, path, None, &mut None)
         .await

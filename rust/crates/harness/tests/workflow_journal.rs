@@ -161,7 +161,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     .append_batch(
         vec![Bytes::from_static(b"unadmitted-transition").into()],
         Some(0),
-        None,
+        acyclic_stream::IdempotencyKey::new(uuid::Uuid::new_v4().as_bytes().to_vec())?,
     )
     .await
     .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;

@@ -61,11 +61,7 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         if let Some(io) = quota.work().as_deref_mut() {
             io.begin_write()?;
         }
-        Ok::<_, Error>(
-            stream
-                .append_batch(records, if_tail, Some(key.clone()))
-                .await,
-        )
+        Ok::<_, Error>(stream.append_batch(records, if_tail, key.clone()).await)
     }
     .await?;
     quota.relinquish(quota.retained())?;

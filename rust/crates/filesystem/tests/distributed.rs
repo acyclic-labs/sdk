@@ -12,8 +12,7 @@ use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
 use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::{
-    AppendRequest, ChildrenRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
-    StreamProvider,
+    AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -77,13 +76,6 @@ impl StreamProvider for PausingStream {
         filter: acyclic_stream::FollowFilter,
     ) -> Result<acyclic_stream::RecordStream, StreamError> {
         self.inner.follow(path, from, filter).await
-    }
-
-    async fn children(
-        &self,
-        request: ChildrenRequest,
-    ) -> Result<acyclic_stream::ChildStream, StreamError> {
-        self.inner.children(request).await
     }
 
     async fn children_page(
@@ -338,6 +330,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
     ))?;
     let children = provider
         .children_page(acyclic_stream::ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(authority_path),
             limit: 16,
             after: None,

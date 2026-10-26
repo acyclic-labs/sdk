@@ -419,7 +419,7 @@ impl StreamProvider for HttpStream {
         let source = request.source.clone();
         let destination = request.destination.clone();
         let wire = wire::ForkRequest {
-            exclude: Vec::new(),
+            exclude: request.exclude.iter().map(ToString::to_string).collect(),
             source: source.to_string(),
             destination: destination.to_string(),
             at_tail: request.at_tail,

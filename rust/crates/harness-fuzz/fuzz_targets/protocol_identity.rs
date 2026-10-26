@@ -88,8 +88,18 @@ fn read_event(data: &[u8]) -> acyclic_harness::Result<acyclic_harness::store::Hi
         let client = Arc::new(MemoryStream::default());
         let stream = Stream::new(client.clone(), authority.stream_path(&mut None)?)?;
         // The canonical fixture is revision two. Its predecessor is outside the pinned page.
-        stream.append(Vec::new()).await?;
-        stream.append(data.to_vec()).await?;
+        stream
+            .append(
+                Vec::new(),
+                acyclic_stream::IdempotencyKey::new(b"fixture-predecessor".to_vec())?,
+            )
+            .await?;
+        stream
+            .append(
+                data.to_vec(),
+                acyclic_stream::IdempotencyKey::new(b"fixture-canonical".to_vec())?,
+            )
+            .await?;
         let reader =
             HistoryReader::new(&client, &authority, &issuer.verifier(&mut None)?, &mut None)?;
         let cursor = reader.pin(1, None).await?;

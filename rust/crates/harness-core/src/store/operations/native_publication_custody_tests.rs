@@ -22,7 +22,7 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
     .0;
     let client = Arc::new(MemoryStream::default());
     acyclic_stream::Stream::new(client.clone(), path.as_str())?
-        .append(b"{{".as_slice())
+        .append(b"{{".as_slice(), crate::test_support::fresh_key()?)
         .await?;
     let cancellation = CancellationToken::new();
     let native =
@@ -60,7 +60,11 @@ async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> 
     let client = Arc::new(MemoryStream::default());
     let path = StreamPath::new("harness/v3/foreign-record-metadata")?;
     acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())?
-        .append_at(OwnedBytes::from_static(b"record"), 0)
+        .append_at(
+            OwnedBytes::from_static(b"record"),
+            0,
+            crate::test_support::fresh_key()?,
+        )
         .await?;
     let cancellation = CancellationToken::new();
     let producer = NativeMaterializationWork::new(budget(), &cancellation)

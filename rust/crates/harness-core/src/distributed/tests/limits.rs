@@ -81,7 +81,7 @@ async fn append_source(
             .append_batch(
                 vec![OwnedBytes::from(bytes).into()],
                 Some(revision - 1),
-                None,
+                crate::test_support::fresh_key()?,
             )
             .await?;
     }

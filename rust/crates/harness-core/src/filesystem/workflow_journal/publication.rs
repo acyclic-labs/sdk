@@ -198,7 +198,7 @@ where
                     .await
                 }
                 None => stream
-                    .append_batch(vec![bytes.into()], Some(revision), Some(key))
+                    .append_batch(vec![bytes.into()], Some(revision), key)
                     .await
                     .map_err(|error| match error {
                         StreamError::Unavailable => Error::Indeterminate(operation),

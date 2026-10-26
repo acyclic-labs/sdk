@@ -15,11 +15,10 @@ async fn stale_writer_does_not_advance_its_projection() -> Result<()> {
         Err(Error::Conflict(_))
     ));
     assert_eq!(stale.reducer().revision(), 0);
+    // A refused publication binds no retry identity: reconciliation reports
+    // it as never committed, so the same key may be retried.
     let mut reopened = with_content(&client).await?;
-    assert!(matches!(
-        reopened.reconcile(&rejected).await,
-        Err(Error::Conflict(_))
-    ));
+    assert!(matches!(reopened.reconcile(&rejected).await, Ok(None)));
     Ok(())
 }
 
@@ -207,7 +206,7 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
             path = format!("harness/v3/projection-chunks/conversations/conversation-1/{digest}");
         }
         acyclic_stream::Stream::new(client.clone(), path)?
-            .append(payload)
+            .append(payload, crate::test_support::fresh_key()?)
             .await?;
         let stream =
             acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?;
@@ -221,7 +220,7 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
                     })
                     .collect(),
                 Some(0),
-                None,
+                crate::test_support::fresh_key()?,
             )
             .await?;
         let head_bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&location)?);
@@ -251,9 +250,14 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
                 })
                 .await?;
         } else {
-            stream.append(canonical[63].value.clone()).await?;
+            stream
+                .append(
+                    canonical[63].value.clone(),
+                    crate::test_support::fresh_key()?,
+                )
+                .await?;
             acyclic_stream::Stream::new(client.clone(), head_path.as_str())?
-                .append(head_bytes)
+                .append(head_bytes, crate::test_support::fresh_key()?)
                 .await?;
         }
         assert!(

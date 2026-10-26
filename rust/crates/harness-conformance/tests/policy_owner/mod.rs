@@ -48,9 +48,6 @@ impl StreamProvider for Session {
     ) -> Result<RecordStream, StreamError> {
         self.0.follow(path, from, filter).await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.0.children(request).await
-    }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.0.commit(request).await
     }

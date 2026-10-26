@@ -1,8 +1,8 @@
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, RecordStream, StreamBounds, StreamError,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, RecordStream, StreamBounds,
+    StreamError,
 };
 
 type StreamResult<T> = std::result::Result<T, StreamError>;
@@ -96,9 +96,6 @@ impl StreamProvider for Restartable {
             .follow_checked(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
-        self.current()?.children(request).await
-    }
     async fn read_commit(&self, id: CommitId) -> StreamResult<CommittedEnvelope> {
         self.current()?.read_commit(id).await
     }
@@ -121,6 +118,7 @@ async fn existing_empty_forks_initialize_and_racing_openers_share_the_header() -
     let path = StreamPath::new("empty")?;
     provider
         .fork(ForkRequest {
+            exclude: Vec::new(),
             source: StreamPath::new("task-volume")?,
             destination: path.clone(),
             at_tail: Some(0),

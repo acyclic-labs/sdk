@@ -27,7 +27,7 @@ fn check(commands: &[u8], broken: bool) -> TestCaseResult {
         Arc::new(Unpolled),
     );
     let root = StreamPath::new("swarm").map_err(|error| TestCaseError::fail(error.to_string()))?;
-    let mut follows = Follows::new(session, &root, Box::pin(futures::stream::pending())).unwrap();
+    let mut follows = Follows::new(session, &root).unwrap();
     let mut views = ClientViews::new(
         root.clone(),
         ClientViewLimits {
@@ -179,7 +179,7 @@ fn shared_sources(agents: usize, per_agent: bool) -> usize {
     );
     let root = StreamPath::new("swarm").unwrap();
     let demand = ClientInterests::from_layout(root.clone(), [], [], 0).unwrap();
-    let mut follows = Follows::new(session, &root, Box::pin(futures::stream::pending())).unwrap();
+    let mut follows = Follows::new(session, &root).unwrap();
     follows.status();
     follows.status(); // Discovery replay must not register twice.
     for id in 0..agents {
@@ -213,8 +213,7 @@ fn shared_status_measurement() {
         );
         let root = StreamPath::new("swarm").unwrap();
         let demand = ClientInterests::from_layout(root.clone(), [], [], 0).unwrap();
-        let mut follows =
-            Follows::new(session, &root, Box::pin(futures::stream::pending())).unwrap();
+        let mut follows = Follows::new(session, &root).unwrap();
         let agents: Vec<_> = (0..n).map(path).collect();
         let start = std::time::Instant::now();
         let cost = acyclic_test_support::measure(|| {

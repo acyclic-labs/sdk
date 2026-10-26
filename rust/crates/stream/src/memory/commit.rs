@@ -326,7 +326,23 @@ impl MemoryStream {
         }
         if !conflicts.is_empty() {
             check_deadline()?;
-            return Ok((CommitOutcome::Conflict(conflicts), output_claim));
+            let result = CommitOutcome::Conflict(conflicts);
+            // Old behaviour, for negative controls only: the conflict spends the key.
+            #[cfg(all(acyclic_loom, feature = "local"))]
+            if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
+                admit_replay(state, Some(&request.idempotency_key), self.limits)?;
+                let (cached, resident) = self.copy_commit(&result)?;
+                retain(
+                    state,
+                    &mut || self.record_replay_probe(&mut probes),
+                    None,
+                    Some(request.idempotency_key),
+                    digest,
+                    IdempotencyOutcome::Commit(cached),
+                    resident,
+                );
+            }
+            return Ok((result, output_claim));
         }
         drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {

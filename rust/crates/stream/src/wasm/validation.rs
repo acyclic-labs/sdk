@@ -269,6 +269,18 @@ mod http {
             "committedAtMicros",
             &bigint_js(field(item, "committedAtMicros")?)?,
         )?;
+        set(&result, "keys", &array_js(field(item, "keys")?, bytes_js)?)?;
+        set(
+            &result,
+            "attributes",
+            &array_js(field(item, "attributes")?, |value| {
+                let attribute = object(value)?;
+                let result = Object::new();
+                set(&result, "name", &string_js(field(attribute, "name")?)?)?;
+                set(&result, "value", &bytes_js(field(attribute, "value")?)?)?;
+                Ok(result.into())
+            })?,
+        )?;
         Ok(result.into())
     }
 

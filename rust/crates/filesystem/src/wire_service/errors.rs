@@ -239,6 +239,7 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::Unavailable => Code::Unavailable,
         E::DeadlineElapsed => Code::DeadlineExceeded,
         E::Unsupported => Code::Unimplemented,
+        E::InvalidResponse => Code::DataLoss,
     }
 }
 

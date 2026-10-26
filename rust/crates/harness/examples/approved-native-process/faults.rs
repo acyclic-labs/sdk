@@ -136,12 +136,6 @@ impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
     ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
         self.inner.follow(path, from, filter).await
     }
-    async fn children(
-        &self,
-        request: acyclic_stream::ChildrenRequest,
-    ) -> std::result::Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
-        self.inner.children(request).await
-    }
     async fn children_page(
         &self,
         request: acyclic_stream::ChildrenPageRequest,

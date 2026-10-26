@@ -14,10 +14,10 @@ use super::{
     subagents::{self, Refusal, SubagentCase},
 };
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitCondition, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
-    StreamBounds, StreamError, StreamPath, StreamProvider, StreamWatermarks, grpc::Client,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitCondition, CommitId,
+    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
+    StreamPath, StreamProvider, StreamWatermarks, grpc::Client,
 };
 use serde_json::Value;
 use std::{
@@ -255,9 +255,6 @@ impl StreamProvider for Refusing {
             return Err(self.1.clone());
         }
         self.0.follow_updates(path, from, preceding, filter).await
-    }
-    async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        Err(self.1.clone())
     }
     async fn children_page(
         &self,

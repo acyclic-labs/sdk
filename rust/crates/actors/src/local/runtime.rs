@@ -1,7 +1,7 @@
 //! `local::Runtime`: the single-node Actors host over any Stream provider.
 //!
-//! One dispatcher owns one directory watch on the state root, one ready index
-//! and one timer. A dormant actor owns no task, timer or socket: only its
+//! One dispatcher owns one follow of the state root's activation log, one
+//! ready index and one timer. A dormant actor owns no task, timer or socket: only its
 //! registration and a passive follow cursor per subscription that the
 //! dispatcher polls with that registration's waker.
 use super::ready::{ReadySet, Registration, Work};
@@ -10,8 +10,8 @@ use crate::addressing::ActorReference;
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::{
-    ChildStream, ChildrenRequest, FollowFilter, IdempotencyKey, Record, RecordStream, StreamError,
-    StreamPath, StreamProvider,
+    AppendRequest, FollowFilter, IdempotencyKey, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider,
 };
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use sha2::{Digest, Sha256};
@@ -38,16 +38,15 @@ impl Clock for SystemClock {
     fn now_unix_ms(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
     }
     fn sleep_until(&self, deadline_unix_ms: u64) -> BoxFuture<'static, ()> {
         let wait = deadline_unix_ms.saturating_sub(self.now_unix_ms());
         Box::pin(tokio::time::sleep(std::time::Duration::from_millis(wait)))
     }
 }
-
-/// Directory watch page size; the watch itself stays live.
-const DISCOVERY_PAGE: u32 = 1024;
 
 struct Slot {
     registration: Registration<ActorReference>,
@@ -60,15 +59,12 @@ struct Inner {
     /// Placement this runtime owns; zero until the first claim.
     epoch: u64,
     follows: BTreeMap<String, RecordStream>,
-    /// Directory watches for subscribed streams that do not exist yet. Streams
-    /// has no empty create, so an inbox appears with its first record.
-    awaiting: BTreeMap<String, ChildStream>,
     /// A record read from a follow but not yet consumed by a commit.
     held: BTreeMap<String, Record>,
 }
 
 enum Event {
-    Created(StreamPath),
+    Created(Record),
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
@@ -191,27 +187,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         failures
     }
 
-    /// Host forever: discover actors created under the root by any commit,
-    /// deliver concurrently across actors, and fire alarms from one timer.
-    /// Per-actor failures go to `report`; the input stays queued.
-    pub async fn run(
-        &self,
-        report: impl Fn(&ActorReference, &Error),
-    ) -> Result<Infallible, Error> {
-        let mut created = self
-            .store
-            .provider()
-            .children(ChildrenRequest {
-                parent: Some(self.store.root().clone()),
-                limit: DISCOVERY_PAGE,
+    /// Host forever: follow the root's activation log to discover actors
+    /// created by any commit, deliver concurrently across actors, and fire
+    /// alarms from one timer. Per-actor failures go to `report`; the input
+    /// stays queued.
+    pub async fn run(&self, report: impl Fn(&ActorReference, &Error)) -> Result<Infallible, Error> {
+        let root = self.store.root().clone();
+        let provider = self.store.provider();
+        // Streams has no empty create: open the log with one non-address record
+        // at sequence 0. Any existing log (an earlier opening or a creation)
+        // refuses it, which is equally fine.
+        provider
+            .append(AppendRequest {
+                path: root.clone(),
+                records: vec![b"open".to_vec().into()],
+                if_tail: Some(0),
+                idempotency_key: None,
             })
             .await?;
+        let mut created = provider.follow(root, 0, FollowFilter::default()).await?;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxFuture<'static, ()>)> = None;
         loop {
             let event = poll_fn(|context: &mut Context<'_>| {
                 match created.poll_next_unpin(context) {
-                    Poll::Ready(Some(Ok(child))) => return Poll::Ready(Event::Created(child.path)),
+                    Poll::Ready(Some(Ok(record))) => return Poll::Ready(Event::Created(record)),
                     Poll::Ready(Some(Err(error))) => return Poll::Ready(Event::Failed(error)),
                     Poll::Ready(None) => {
                         return Poll::Ready(Event::Failed(StreamError::Unavailable));
@@ -239,9 +239,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             })
             .await;
             match event {
-                Event::Created(path) => {
-                    // Other children of the root are not actor state; skip them.
-                    if let Ok(actor) = self.store.actor(&path) {
+                Event::Created(record) => {
+                    // The opening record is not an address; skip it.
+                    if let Ok(actor) = ActorReference::decode(record.value.as_ref()) {
                         self.track(actor)?;
                     }
                 }
@@ -268,10 +268,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .cloned()
     }
 
-    async fn execute(
-        &self,
-        work: Work<ActorReference>,
-    ) -> Result<(), (ActorReference, Error)> {
+    async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
@@ -370,7 +367,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             match self
                 .store
-                .publish(&snapshot, epoch, &trigger, transition, key(&snapshot, "publish")?)
+                .publish(
+                    &snapshot,
+                    epoch,
+                    &trigger,
+                    transition,
+                    key(&snapshot, "publish")?,
+                )
                 .await
             {
                 Ok(()) => {}
@@ -387,62 +390,28 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Open the follow for one subscription. A stream that does not exist yet
-    /// is no input: a directory watch on its parent, polled with this actor's
-    /// waker, wakes the actor when the stream is created.
+    /// is no input: its creator makes it in the actor's creating commit, or the
+    /// actor's next wake (alarm, other input, state change) reopens it.
     async fn open(
         &self,
-        slot: &Slot,
         inner: &mut Inner,
         id: &str,
         path: &StreamPath,
         cursor: u64,
     ) -> Result<bool, Error> {
-        let provider = self.store.provider();
-        if !inner.awaiting.contains_key(id) {
-            match provider.follow(path.clone(), cursor, FollowFilter::default()).await {
-                Ok(follow) => {
-                    inner.follows.insert(id.to_owned(), follow);
-                    return Ok(true);
-                }
-                Err(StreamError::NotFound) => {}
-                Err(error) => return Err(error.into()),
-            }
-            let watch = provider
-                .children(ChildrenRequest {
-                    parent: path.parent(),
-                    limit: DISCOVERY_PAGE,
-                })
-                .await?;
-            inner.awaiting.insert(id.to_owned(), watch);
-        }
-        let Some(watch) = inner.awaiting.get_mut(id) else {
-            return Ok(false);
-        };
-        // The context must not live across the await below (it is not Send).
-        {
-            let mut context = Context::from_waker(&slot.waker);
-            loop {
-                match watch.poll_next_unpin(&mut context) {
-                    Poll::Ready(Some(Ok(child))) if &child.path == path => break,
-                    Poll::Ready(Some(Ok(_))) => {}
-                    Poll::Ready(Some(Err(error))) => {
-                        inner.awaiting.remove(id);
-                        return Err(error.into());
-                    }
-                    Poll::Ready(None) => {
-                        inner.awaiting.remove(id);
-                        return Err(StreamError::Unavailable.into());
-                    }
-                    Poll::Pending => return Ok(false),
-                }
-            }
-        }
-        inner.awaiting.remove(id);
-        let follow = provider
+        match self
+            .store
+            .provider()
             .follow(path.clone(), cursor, FollowFilter::default())
-            .await?;
-        inner.follows.insert(id.to_owned(), follow);
-        Ok(true)
+            .await
+        {
+            Ok(follow) => {
+                inner.follows.insert(id.to_owned(), follow);
+                Ok(true)
+            }
+            Err(StreamError::NotFound) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// The next unconsumed record of any subscription, without blocking.
@@ -462,7 +431,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             if !inner.follows.contains_key(id)
                 && !self
-                    .open(slot, inner, id, &subscription.path, subscription.cursor)
+                    .open(inner, id, &subscription.path, subscription.cursor)
                     .await?
             {
                 continue;

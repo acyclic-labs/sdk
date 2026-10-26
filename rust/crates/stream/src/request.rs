@@ -315,15 +315,19 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
         {
             return Err(StreamError::InvalidArgument);
         }
-        let condition = request
-            .conditions
-            .binary_search_by(|condition| condition_path(condition).cmp(mutation_path(mutation)))
-            .ok()
-            .and_then(|index| request.conditions.get(index));
-        match (mutation, condition) {
-            (CommitMutation::Append { .. }, Some(_))
-            | (CommitMutation::Fork { .. }, Some(CommitCondition::Absent { .. })) => {}
-            _ => return Err(StreamError::InvalidArgument),
+        // An append may ride on conditions over other paths (a send guarded only
+        // by the recipient's closed marker). A fork must prove its destination absent.
+        if matches!(mutation, CommitMutation::Fork { .. }) {
+            let condition = request
+                .conditions
+                .binary_search_by(|condition| {
+                    condition_path(condition).cmp(mutation_path(mutation))
+                })
+                .ok()
+                .and_then(|index| request.conditions.get(index));
+            if !matches!(condition, Some(CommitCondition::Absent { .. })) {
+                return Err(StreamError::InvalidArgument);
+            }
         }
     }
     Ok(())

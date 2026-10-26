@@ -14,7 +14,8 @@ mod driver;
 pub use driver::SwarmClient;
 
 /// Build one status publication on the swarm's shared `status` stream.
-/// Membership must be published in the parent volume before publishing status.
+/// Publish an agent's first status before (or with) its parent-volume
+/// membership: admitting the first member opens the shared status follow.
 /// The transport key is the agent path, a zero byte, and the producer's opaque
 /// key. This keeps conflation local to one agent/key and preserves attention.
 pub fn status_publication(

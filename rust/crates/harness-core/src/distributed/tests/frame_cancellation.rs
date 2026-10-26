@@ -78,7 +78,6 @@ provider! {
     bounds(path: StreamPath) -> StreamBounds;
     append(request: AppendRequest) -> AppendOutcome;
     fork(request: ForkRequest) -> ForkReceipt;
-    children(request: ChildrenRequest) -> ChildStream;
     commit(request: CommitRequest) -> CommitOutcome;
     read_commit(id: CommitId) -> CommittedEnvelope;
 }

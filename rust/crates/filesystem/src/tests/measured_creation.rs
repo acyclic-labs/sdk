@@ -384,8 +384,8 @@ mod source_bound_lost_ack {
         MemoryLazyWorkspaceStore, StreamAuthorityStore,
     };
     use acyclic_stream::{
-        AppendRequest, ChildrenRequest, CommitRequest, MemoryStream, ReadRequest, StreamError,
-        StreamPath, StreamProvider,
+        AppendRequest, CommitRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
+        StreamProvider,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -450,13 +450,6 @@ mod source_bound_lost_ack {
             filter: acyclic_stream::FollowFilter,
         ) -> Result<acyclic_stream::RecordStream, StreamError> {
             self.inner.follow(path, from, filter).await
-        }
-
-        async fn children(
-            &self,
-            request: ChildrenRequest,
-        ) -> Result<acyclic_stream::ChildStream, StreamError> {
-            self.inner.children(request).await
         }
 
         async fn children_page(

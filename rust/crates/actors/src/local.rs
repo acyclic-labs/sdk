@@ -9,8 +9,8 @@ pub use runtime::{Clock, Runtime, SystemClock};
 use crate::addressing::ActorReference;
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestError, Transition, Trigger};
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    IdempotencyKey, ReadRequest, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,9 @@ impl State {
     }
     /// Next unconsumed sequence of a declared subscription.
     pub fn cursor(&self, subscription: &str) -> Option<u64> {
-        self.subscriptions.get(subscription).map(|value| value.cursor)
+        self.subscriptions
+            .get(subscription)
+            .map(|value| value.cursor)
     }
     /// Current alarm, including its invalidation generation.
     pub const fn alarm(&self) -> &Alarm {
@@ -228,9 +230,22 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self.provider
     }
 
-    /// The state root watched for new actors.
+    /// The state root. Its own stream is the activation log: every commit that
+    /// creates actor state appends that actor's address to it.
     pub const fn root(&self) -> &StreamPath {
         &self.root
+    }
+
+    /// The activation-log append that rides in every state-creating commit.
+    /// It is unconditioned, so concurrent creations never contend on it.
+    pub fn activation(&self, actor: &ActorReference) -> Effect {
+        Effect {
+            conditions: Vec::new(),
+            mutation: CommitMutation::Append {
+                path: self.root.clone(),
+                records: vec![actor.encode().into()],
+            },
+        }
     }
 
     /// The actor's state stream.
@@ -249,21 +264,25 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .strip_prefix(self.root.as_str())
             .and_then(|rest| rest.strip_prefix('/'))
             .filter(|name| !name.contains('/'))
-            .ok_or(Error::Invalid("path is not a direct child of the state root"))?;
+            .ok_or(Error::Invalid(
+                "path is not a direct child of the state root",
+            ))?;
         let bytes = acyclic_auth::decode_component(name)
             .map_err(|_| Error::Invalid("undecodable actor state name"))?;
         ActorReference::decode(&bytes).map_err(|_| Error::Invalid("undecodable actor reference"))
     }
 
-    /// The companion mutation that creates an unplaced (epoch 0) actor inside
-    /// a caller-built commit, such as a spawn. Its cursors are the first
-    /// records the actor will consume; a later `claim` preserves them.
+    /// The companion effects that create an unplaced (epoch 0) actor inside a
+    /// caller-built commit, such as a spawn: its state stream and its
+    /// activation-log entry. Its cursors are the first records the actor will
+    /// consume; a later `claim` preserves them. Create each subscribed stream
+    /// in the same commit (or earlier): an absent stream is no input.
     pub fn create(
         &self,
         actor: &ActorReference,
         subscriptions: BTreeMap<String, Subscription>,
         checkpoint: Option<Checkpoint>,
-    ) -> Result<(CommitCondition, CommitMutation), Error> {
+    ) -> Result<[Effect; 2], Error> {
         let path = self.path(actor)?;
         if subscriptions.values().any(|value| value.path == path) {
             return Err(Error::Invalid("actor subscribes to its own state"));
@@ -275,13 +294,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             alarm: Alarm::default(),
             paused: false,
         };
-        Ok((
-            CommitCondition::Absent { path: path.clone() },
-            CommitMutation::Append {
-                path,
-                records: vec![serde_json::to_vec(&state)?.into()],
+        Ok([
+            Effect {
+                conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                mutation: CommitMutation::Append {
+                    path,
+                    records: vec![serde_json::to_vec(&state)?.into()],
+                },
             },
-        ))
+            self.activation(actor),
+        ])
     }
 
     /// Read only the final state record; recovery work is independent of history length.
@@ -404,15 +426,21 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         effects: Vec<Effect>,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
-        let own = match previous.anchor {
-            Some(commit_id) => CommitCondition::Head {
-                path: previous.path.clone(),
-                expected: previous.tail,
-                commit_id,
-            },
-            None => CommitCondition::Absent {
-                path: previous.path.clone(),
-            },
+        let (own, created) = match previous.anchor {
+            Some(commit_id) => (
+                CommitCondition::Head {
+                    path: previous.path.clone(),
+                    expected: previous.tail,
+                    commit_id,
+                },
+                None,
+            ),
+            None => (
+                CommitCondition::Absent {
+                    path: previous.path.clone(),
+                },
+                Some(self.activation(&self.actor(&previous.path)?)),
+            ),
         };
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
@@ -425,7 +453,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 idempotency_key: key,
             },
         };
-        for effect in effects {
+        for effect in created.into_iter().chain(effects) {
             prepared.join(effect)?;
         }
         Ok(prepared)
@@ -512,6 +540,6 @@ fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<Sta
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
 mod model;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

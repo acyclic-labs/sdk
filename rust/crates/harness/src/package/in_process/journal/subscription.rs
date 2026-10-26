@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{ChildrenRequest, ReadRequest};
+use acyclic_stream::{ReadRequest, StreamError};
 use futures::{TryStreamExt, future::Either};
 use std::{
     future::Future,
@@ -76,29 +76,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
 
 impl<P: StreamProvider> Journal<P> {
     async fn inbox_change(&self, consumed: u64) -> Result<()> {
-        // The first admission creates the inbox. Children replay plus follow
-        // closes the creation race without manufacturing an empty input record.
-        if consumed == 0 {
-            let mut children = self
-                .stream
-                .children(ChildrenRequest {
-                    parent: self.inbox.parent(),
-                    limit: 2,
-                })
-                .await
-                .map_err(|error| journal::stream_error(&error))?;
-            loop {
-                let child = children
-                    .try_next()
-                    .await
-                    .map_err(|error| journal::stream_error(&error))?
-                    .ok_or_else(|| Error::Storage("actor discovery follow ended".into()))?;
-                if child.path == self.inbox {
-                    break;
-                }
-            }
-        }
-        let mut follow = if consumed == 0 {
+        let follow = if consumed == 0 {
             self.stream
                 .follow(
                     self.inbox.clone(),
@@ -129,8 +107,15 @@ impl<P: StreamProvider> Journal<P> {
                     acyclic_stream::FollowFilter::default(),
                 )
                 .await
-        }
-        .map_err(|error| journal::stream_error(&error))?;
+        };
+        // The first admission creates the inbox and appends to the journal in
+        // the same commit; the journal follow in `changed` observes it.
+        let mut follow = match follow {
+            Err(StreamError::NotFound) if consumed == 0 => {
+                return futures::future::pending().await;
+            }
+            follow => follow.map_err(|error| journal::stream_error(&error))?,
+        };
         follow
             .try_next()
             .await

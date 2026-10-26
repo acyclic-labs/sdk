@@ -29,8 +29,6 @@ pub(super) struct Counts {
     pub server_follows: usize,
     pub server_records: usize,
     pub delivered_records: usize,
-    pub discovered_children: usize,
-    pub children: usize,
     pub actor_channels: usize,
     pub status_follows: usize,
     pub membership_follows: usize,
@@ -109,10 +107,6 @@ impl Counts {
                         .ok_or(acyclic_stream::StreamError::InvalidArgument)?
                         .channel_id;
                     match &subscription.kind {
-                        Some(Kind::Children(_)) => {
-                            self.children += 1;
-                            self.always_followed.insert(id);
-                        }
                         Some(Kind::Follow(follow)) if follow.resource == "streams:/swarm/files" => {
                             if follow.delivery != wire::SessionDelivery::All as i32
                                 || follow.preceding_commit_id.len() != 32
@@ -201,9 +195,6 @@ impl Wire {
                         Some(Body::Welcome(_)) => counts.sessions += 1,
                         Some(Body::Data(data)) => {
                             match &data.item {
-                                Some(wire::session_data::Item::Child(_)) => {
-                                    counts.discovered_children += 1
-                                }
                                 Some(
                                     wire::session_data::Item::Record(_)
                                     | wire::session_data::Item::LatestValue(_),

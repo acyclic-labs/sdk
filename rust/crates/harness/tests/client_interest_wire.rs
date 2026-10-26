@@ -13,7 +13,6 @@ use wire::{session_frame::Body, session_subscription::Kind};
 #[derive(Clone, Copy)]
 enum Fault {
     None,
-    MissingDiscoveryCursor,
     OpaqueContentAnchor,
     EvenChannel,
     RequireOpaqueDataAnchor,
@@ -75,9 +74,6 @@ fn requests(fault: Fault) -> runtime::RequestMap {
             if let Some(Body::Interest(update)) = &mut frame.body {
                 for sub in &mut update.upsert {
                     match (&mut sub.kind, fault) {
-                        (Some(Kind::Children(_)), Fault::MissingDiscoveryCursor) => {
-                            sub.resume = None
-                        }
                         (Some(Kind::Follow(follow)), Fault::OpaqueContentAnchor)
                             if follow.resource == "streams:/swarm/a/files"
                                 && follow.delivery == wire::SessionDelivery::All as i32 =>
@@ -307,12 +303,7 @@ fn negative_control_treating_delivery_resume_as_a_record_anchor_is_detected() {
 #[test]
 fn actual_session_rejects_malformed_subscriptions() {
     futures::executor::block_on(async {
-        for fault in [
-            Fault::None,
-            Fault::MissingDiscoveryCursor,
-            Fault::OpaqueContentAnchor,
-            Fault::EvenChannel,
-        ] {
+        for fault in [Fault::None, Fault::OpaqueContentAnchor, Fault::EvenChannel] {
             exercise(b"before", b"after", fault).await;
         }
     });

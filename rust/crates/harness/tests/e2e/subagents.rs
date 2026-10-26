@@ -1,6 +1,6 @@
 //! Subagent fan-out followed over a Streams provider's Session. One root holds
-//! an agent volume per subagent. A live children subscription, opened before
-//! any agent exists, discovers each one. A live checked follow of each agent,
+//! an agent volume per subagent. A paged children listing at one hierarchy
+//! cut discovers each one. A live checked follow of each agent,
 //! opened at its first cut, receives that agent's streamed reply and final
 //! status. A reopened volume resumes after the first chunk, and a forged
 //! cursor resets.
@@ -10,7 +10,7 @@ use acyclic_harness::task_volume::{
     Write,
 };
 use acyclic_stream::{
-    AppendRequest, ChildrenRequest, ForkRequest, MemoryStream, StreamError, StreamPath,
+    AppendRequest, ChildrenPageRequest, ForkRequest, MemoryStream, StreamError, StreamPath,
     StreamProvider, grpc::Client, wire,
 };
 use futures::{Stream, StreamExt as _};
@@ -23,7 +23,7 @@ const CHUNKS: &str = ".tasks/t/turns/1/chunks";
 const STATUS: &str = ".tasks/t/status.json";
 
 /// What a provider must serve for harness subagents, as `refused` names it.
-pub(super) const KINDS: [&str; 3] = ["head-fenced publication", "checked follow", "children"];
+pub(super) const KINDS: [&str; 2] = ["head-fenced publication", "checked follow"];
 /// What a Session must serve for swarm status follows, as `latest` probes it.
 pub(super) const LATEST: &str = "latest delivery";
 
@@ -167,6 +167,7 @@ async fn create_volumes<P: StreamProvider>(
                     source: first.clone(),
                     destination: path.clone(),
                     at_tail: Some(1),
+                    exclude: Vec::new(),
                     idempotency_key: None,
                 })
                 .await
@@ -306,13 +307,6 @@ async fn run_publishing<P: StreamProvider>(
         }
     };
     let root = StreamPath::new(root)?;
-    let mut children = stream
-        .children(ChildrenRequest {
-            parent: Some(root.clone()),
-            limit: 1,
-        })
-        .await
-        .map_err(at("open the children subscription"))?;
     let volumes = create_volumes(case.agents, stream.clone(), &root, fork_empty).await?;
     phase("initialized");
     let (heads, mut follows) = prepare_follows(&volumes).await?;
@@ -320,10 +314,23 @@ async fn run_publishing<P: StreamProvider>(
     publish_rounds(case, &volumes, heads, author).await?;
     phase("published");
     let mut discovered = Vec::with_capacity(case.agents);
-    for _ in 0..case.agents {
-        let what = "children of the subagent root";
-        let child = next(&mut children, what).await?.map_err(at(what))?;
-        discovered.push(name(&root, &child.path)?);
+    let mut after = None;
+    loop {
+        let page = stream
+            .children_page(ChildrenPageRequest {
+                tail_stream: None,
+                parent: Some(root.clone()),
+                after: after.take(),
+                hierarchy_version: None,
+                limit: 256,
+            })
+            .await
+            .map_err(at("page the children of the subagent root"))?;
+        for child in &page.children {
+            discovered.push(name(&root, &child.path)?);
+        }
+        let Some(next) = page.next_after else { break };
+        after = Some(next);
     }
     if discovered != case.expect.children {
         return Err(format!("children discovered: {discovered:?}").into());
@@ -384,7 +391,7 @@ pub(super) async fn refused<P: StreamProvider>(
     stream: Arc<P>,
     root: &str,
 ) -> TestResult<Vec<Refusal>> {
-    let [publication, checked, live_children] = KINDS;
+    let [publication, checked] = KINDS;
     let cause = |kind: &'static str| {
         move |error: VolumeError| match error {
             VolumeError::Storage(cause) => Ok((kind, cause)),
@@ -393,12 +400,6 @@ pub(super) async fn refused<P: StreamProvider>(
     };
     let root = StreamPath::new(root)?;
     let mut refused = Vec::new();
-    let mut children = stream
-        .children(ChildrenRequest {
-            parent: Some(root.clone()),
-            limit: 1,
-        })
-        .await;
     let path = StreamPath::new(format!("{}/probe", root.as_str()))?;
     let volume = TaskVolume::open(stream.clone(), path)
         .await
@@ -414,14 +415,19 @@ pub(super) async fn refused<P: StreamProvider>(
     if let Err(error) = volume.follow(Query::Root, cut).await {
         refused.push(cause(checked)(error)?);
     }
-    let discovered = match &mut children {
-        Ok(children) => next(children, "children of the probe root").await?,
-        Err(error) => Err(error.clone()),
-    };
-    match discovered {
-        Ok(child) if name(&root, &child.path)? == "probe" => {}
-        Ok(child) => return Err(format!("the probe discovered {}", child.path.as_str()).into()),
-        Err(error) => refused.push((live_children, error)),
+    let listed = stream
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(root.clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        })
+        .await;
+    // Paged listing is part of every provider's contract, never a refusal.
+    match listed?.children.into_iter().next() {
+        Some(child) if name(&root, &child.path)? == "probe" => {}
+        child => return Err(format!("the probe listed {child:?}").into()),
     }
     Ok(refused)
 }

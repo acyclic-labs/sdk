@@ -39,3 +39,50 @@ fn projected_status_records_obey_the_page_byte_bound() {
 fn negative_control_uncharged_status_records() {
     acyclic_stream::verification::page_tail_bytes(true);
 }
+
+#[test]
+fn agent_spawn_is_one_cut_with_exclusions() {
+    acyclic_stream::verification::agent_spawn(false);
+}
+#[test]
+#[should_panic(expected = "invariant=SubtreeMembership")]
+fn negative_control_spawn_without_exclusions() {
+    acyclic_stream::verification::agent_spawn(true);
+}
+#[test]
+fn agent_closed_inbox_refuses_sends() {
+    acyclic_stream::verification::agent_closed_inbox(false);
+}
+#[test]
+#[should_panic(expected = "invariant=ExactConflict")]
+fn negative_control_closed_inbox_without_absent() {
+    acyclic_stream::verification::agent_closed_inbox(true);
+}
+#[test]
+fn agent_inherited_paths_follow_privately() {
+    acyclic_stream::verification::agent_inherited_follow(false);
+}
+#[test]
+#[should_panic(expected = "step=follow_inherited")]
+fn negative_control_root_only_fork_follow() {
+    acyclic_stream::verification::agent_inherited_follow(true);
+}
+#[test]
+fn agent_fork_of_fork_keeps_lineage() {
+    acyclic_stream::verification::agent_fork_lineage(false);
+}
+#[test]
+#[should_panic(expected = "agent history rejected the provider")]
+fn negative_control_root_only_fork_lineage() {
+    acyclic_stream::verification::agent_fork_lineage(true);
+}
+
+#[test]
+fn one_stable_key_per_intent_survives_a_racing_conflict() {
+    acyclic_stream::verification::stable_intent_key(false);
+}
+#[test]
+#[should_panic(expected = "a conflict must not spend the intent key")]
+fn negative_control_conflict_spends_the_key() {
+    acyclic_stream::verification::stable_intent_key(true);
+}

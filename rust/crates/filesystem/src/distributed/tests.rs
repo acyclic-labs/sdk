@@ -1,9 +1,8 @@
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommittedEnvelope,
-    CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    IdempotencyOutcome, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
-    StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, CommittedMutation, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MemoryStream,
+    ReadRequest, RecordStream, StreamBounds, StreamError, StreamProvider,
 };
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 #[cfg(not(target_arch = "wasm32"))]
@@ -731,9 +730,6 @@ impl StreamProvider for ReleaseSpy {
         filter: acyclic_stream::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         self.inner.follow(path, from, filter).await
-    }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.inner.children(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await

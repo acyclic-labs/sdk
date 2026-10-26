@@ -10,9 +10,8 @@
 use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommittedEnvelope,
-    FollowFilter, ForkReceipt, ForkRequest, IdempotencyObservation, MemoryStream, RecordStream,
-    StreamBounds,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, FollowFilter, ForkReceipt,
+    ForkRequest, IdempotencyObservation, MemoryStream, RecordStream, StreamBounds,
 };
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -72,7 +71,6 @@ delegate! {
     append(request: AppendRequest) -> AppendOutcome;
     fork(request: ForkRequest) -> ForkReceipt;
     read(request: ReadRequest) -> RecordStream;
-    children(request: ChildrenRequest) -> ChildStream;
     read_commit(id: CommitId) -> CommittedEnvelope;
 }
 
@@ -166,6 +164,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                             destination: path("model/child")?,
                             at_tail: 2,
                             records: Vec::new(),
+                            exclude: Vec::new(),
                         },
                     },
                     Effect {
@@ -203,7 +202,10 @@ async fn values(provider: &MemoryStream, stream: &str) -> Result<Vec<Bytes>, Fai
         .await?
         .try_collect()
         .await?;
-    Ok(records.into_iter().map(|record| Bytes::copy_from_slice(&record.value)).collect())
+    Ok(records
+        .into_iter()
+        .map(|record| Bytes::copy_from_slice(&record.value))
+        .collect())
 }
 
 /// The durable tuple must equal exactly the script prefix its checkpoint names.
@@ -256,7 +258,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
     // Setup is fault-free: the inbox, the companion create, the placement.
     let setup = Store::new(Arc::new(provider.inner.clone()), path("model/actors")?);
     let mut create = PreparedPublish::foreign(IdempotencyKey::new(b"setup".to_vec())?);
-    let (condition, mutation) = setup.create(
+    for effect in setup.create(
         &actor,
         BTreeMap::from([(
             "inbox".to_owned(),
@@ -266,11 +268,9 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
             },
         )]),
         None,
-    )?;
-    create.join(Effect {
-        conditions: vec![condition],
-        mutation,
-    })?;
+    )? {
+        create.join(effect)?;
+    }
     create.join(Effect {
         conditions: vec![CommitCondition::Absent {
             path: path("model/inbox")?,
@@ -285,7 +285,11 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
     })?;
     PreparedPublish::settle(&provider.inner.commit(create.into_request()).await?)?;
     setup
-        .claim(&setup.load(&actor).await?, 1, IdempotencyKey::new(b"claim".to_vec())?)
+        .claim(
+            &setup.load(&actor).await?,
+            1,
+            IdempotencyKey::new(b"claim".to_vec())?,
+        )
         .await?;
     for _ in 0..32 {
         let snapshot = store.load(&actor).await?;
@@ -295,7 +299,9 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
             return Ok(());
         };
         let key = |suffix: &str| {
-            IdempotencyKey::new(format!("{}/{}/{suffix}", snapshot.path, snapshot.tail).into_bytes())
+            IdempotencyKey::new(
+                format!("{}/{}/{suffix}", snapshot.path, snapshot.tail).into_bytes(),
+            )
         };
         // Any failure is a crash: re-read the cut and continue from it.
         match shape {
@@ -324,7 +330,8 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                         idempotency_key: key("state")?,
                     })
                     .await;
-                if matches!(first, Ok(CommitOutcome::Committed(_))) && !effect_mutations.is_empty() {
+                if matches!(first, Ok(CommitOutcome::Committed(_))) && !effect_mutations.is_empty()
+                {
                     let _crash = provider
                         .commit(CommitRequest {
                             conditions: effect_conditions,

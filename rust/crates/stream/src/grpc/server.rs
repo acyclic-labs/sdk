@@ -106,7 +106,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let request = ForkRequest {
-                exclude: Vec::new(),
+                exclude: request
+                    .exclude
+                    .into_iter()
+                    .map(path)
+                    .collect::<Result<_, _>>()
+                    .map_err(|error| error_status(&error))?,
                 source: path(request.source).map_err(|error| error_status(&error))?,
                 destination: path(request.destination).map_err(|error| error_status(&error))?,
                 at_tail: request.at_tail,

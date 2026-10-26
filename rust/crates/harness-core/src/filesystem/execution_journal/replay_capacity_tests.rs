@@ -74,7 +74,7 @@ proptest! {
                         event: event.clone(),
                     }).unwrap().into()
                 }).collect();
-                journal.path(operation).unwrap().append_batch(records, Some(0), None).await.unwrap();
+                journal.path(operation).unwrap().append_batch(records, Some(0), crate::test_support::fresh_key().unwrap()).await.unwrap();
             }
             let bound = (maximum as usize).min(EXECUTION_REPLAY_PAGE_RECORDS as usize);
             for after in [0, count, offset.min(count)] {

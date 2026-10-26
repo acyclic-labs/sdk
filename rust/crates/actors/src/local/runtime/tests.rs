@@ -3,8 +3,8 @@ use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
 use crate::local::{PreparedPublish, Subscription};
 use acyclic_stream::{
-    AppendRecord, ChildrenRequest, CommitCondition, CommitMutation, CommitRequest, LocalStream,
-    MemoryStream, StreamPath,
+    AppendRecord, CommitCondition, CommitMutation, CommitRequest, LocalStream, MemoryStream,
+    StreamPath,
 };
 use bytes::Bytes;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -107,7 +107,10 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
 
 #[tokio::test]
 async fn conformance_suite_passes_on_memory_runtime() -> TestResult {
-    let target = LocalTarget::start(&Arc::new(MemoryStream::default()), Arc::new(Package::new()?))?;
+    let target = LocalTarget::start(
+        &Arc::new(MemoryStream::default()),
+        Arc::new(Package::new()?),
+    )?;
     conformance::verify(&target, "memory").await?;
     Ok(())
 }
@@ -151,8 +154,12 @@ async fn negative_control_conformance_rejects_a_host_that_loses_alarm_changes() 
         Arc::new(DropsAlarmClears(Package::new()?)),
     )?;
     match conformance::verify(&target, "broken").await {
-        Err(Failure::Violation { case: "cleared", .. }) => Ok(()),
-        other => Err(format!("the suite accepted a host that loses alarm clears: {other:?}").into()),
+        Err(Failure::Violation {
+            case: "cleared", ..
+        }) => Ok(()),
+        other => {
+            Err(format!("the suite accepted a host that loses alarm clears: {other:?}").into())
+        }
     }
 }
 
@@ -169,8 +176,7 @@ impl Clock for Manual {
 fn ledger(outbox: &str) -> Result<Checkpoint, Box<dyn std::error::Error>> {
     Ok(Checkpoint {
         codec: conformance::codec(),
-        bytes: serde_json::to_vec(&serde_json::json!({ "outbox": outbox, "published": 0 }))?
-            .into(),
+        bytes: serde_json::to_vec(&serde_json::json!({ "outbox": outbox, "published": 0 }))?.into(),
     })
 }
 
@@ -236,12 +242,9 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
         (&first, "agents/first", 5, "out/first"),
         (&second, "agents/second", 0, "out/second"),
     ] {
-        let (condition, mutation) =
-            store.create(address, bind(inbox, cursor)?, Some(ledger(outbox)?))?;
-        prepared.join(Effect {
-            conditions: vec![condition],
-            mutation,
-        })?;
+        for effect in store.create(address, bind(inbox, cursor)?, Some(ledger(outbox)?))? {
+            prepared.join(effect)?;
+        }
     }
     prepared.join(Effect {
         conditions: vec![CommitCondition::Absent {
@@ -278,19 +281,50 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
     let failures = runtime.drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     // A claim that reset the bound cursor would replay r0..r4 here.
-    assert_eq!(records(&*provider, "out/first").await?, vec![Bytes::from_static(b"r5")]);
+    assert_eq!(
+        records(&*provider, "out/first").await?,
+        vec![Bytes::from_static(b"r5")]
+    );
     assert!(records(&*provider, "out/second").await?.is_empty());
     let state = store.load(&first).await?;
-    assert_eq!(state.state().and_then(|state| state.cursor("inbox")), Some(6));
+    assert_eq!(
+        state.state().and_then(|state| state.cursor("inbox")),
+        Some(6)
+    );
     assert_eq!(state.state().map(State::epoch), Some(1));
     let state = store.load(&second).await?;
-    assert_eq!(state.state().and_then(|state| state.cursor("inbox")), Some(0));
-    assert_eq!(runtime.counts(), (2, 0), "dormant actors hold no ready work");
+    assert_eq!(
+        state.state().and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+    assert_eq!(
+        runtime.counts(),
+        (2, 0),
+        "dormant actors hold no ready work"
+    );
     Ok(())
 }
 
-/// Activation by directory watch: actors created by other parties' commits
-/// get their first delivery with no placement call and no scan.
+/// Waits, without polling, until `path` exists. Each wake is a record on
+/// `wake`, a stream appended in every commit that can create `path`.
+async fn created<P: StreamProvider + ?Sized>(
+    provider: &P,
+    wake: StreamPath,
+    path: StreamPath,
+) -> TestResult {
+    let mut wakes = provider.follow(wake, 0, FollowFilter::default()).await?;
+    loop {
+        match provider.tail(path.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(StreamError::NotFound) => {}
+            Err(error) => return Err(error.into()),
+        }
+        wakes.next().await.ok_or("wake stream ended")??;
+    }
+}
+
+/// Activation by the root's activation log: actors created by other parties'
+/// commits get their first delivery with no placement call and no scan.
 async fn foreign_creates_activate(count: usize) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
@@ -303,17 +337,11 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
     let task = tokio::spawn(async move {
         let _outcome = host.run(|_, _| {}).await;
     });
-    let mut done = provider
-        .children(ChildrenRequest {
-            parent: Some(StreamPath::new("out")?),
-            limit: 1024,
-        })
-        .await?;
     for index in 0..count {
         let address = actor(&format!("a{index}"))?;
         let inbox = StreamPath::new(format!("agents/a{index}"))?;
         let mut prepared = PreparedPublish::foreign(key(&format!("create-{index}"))?);
-        let (condition, mutation) = store.create(
+        for effect in store.create(
             &address,
             BTreeMap::from([(
                 "inbox".to_owned(),
@@ -323,14 +351,14 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
                 },
             )]),
             Some(ledger(&format!("out/a{index}"))?),
-        )?;
-        prepared.join(Effect {
-            conditions: vec![condition],
-            mutation,
-        })?;
+        )? {
+            prepared.join(effect)?;
+        }
         // The first input rides in the same commit as the creation.
         prepared.join(Effect {
-            conditions: vec![CommitCondition::Absent { path: inbox.clone() }],
+            conditions: vec![CommitCondition::Absent {
+                path: inbox.clone(),
+            }],
             mutation: CommitMutation::Append {
                 path: inbox,
                 records: vec![Bytes::from_static(b"emit").into()],
@@ -338,10 +366,14 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
         })?;
         PreparedPublish::settle(&provider.commit(prepared.into_request()).await?)?;
     }
-    let mut seen = 0;
-    while seen < count {
-        done.next().await.ok_or("directory watch ended")??;
-        seen += 1;
+    for index in 0..count {
+        let address = actor(&format!("a{index}"))?;
+        created(
+            &*provider,
+            store.path(&address)?,
+            StreamPath::new(format!("out/a{index}"))?,
+        )
+        .await?;
     }
     task.abort();
     let _aborted = task.await;
@@ -369,7 +401,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     let address = actor("paused")?;
     let inbox = StreamPath::new("agents/paused")?;
     let mut prepared = PreparedPublish::foreign(key("create")?);
-    let (condition, mutation) = store.create(
+    for effect in store.create(
         &address,
         BTreeMap::from([(
             "inbox".to_owned(),
@@ -379,13 +411,13 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             },
         )]),
         Some(ledger("out/paused")?),
-    )?;
+    )? {
+        prepared.join(effect)?;
+    }
     prepared.join(Effect {
-        conditions: vec![condition],
-        mutation,
-    })?;
-    prepared.join(Effect {
-        conditions: vec![CommitCondition::Absent { path: inbox.clone() }],
+        conditions: vec![CommitCondition::Absent {
+            path: inbox.clone(),
+        }],
         mutation: CommitMutation::Append {
             path: inbox,
             records: vec![Bytes::from_static(b"emit").into()],
@@ -397,15 +429,24 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    tokio::time::timeout(std::time::Duration::from_secs(5), runtime.pause(&address, true))
-        .await??;
-    assert_eq!(store.load(&address).await?.state().map(State::epoch), Some(0));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.pause(&address, true),
+    )
+    .await??;
+    assert_eq!(
+        store.load(&address).await?.state().map(State::epoch),
+        Some(0)
+    );
     runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert!(records(&*provider, "out/paused").await?.is_empty());
     runtime.pause(&address, false).await?;
     assert!(runtime.drain().await.is_empty());
-    assert_eq!(records(&*provider, "out/paused").await?, vec![Bytes::from_static(b"r0")]);
+    assert_eq!(
+        records(&*provider, "out/paused").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
     Ok(())
 }
 
@@ -419,7 +460,7 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
     let address = actor(name)?;
     let inbox = StreamPath::new(format!("agents/{name}"))?;
     let mut prepared = PreparedPublish::foreign(key(&format!("spawn-{name}"))?);
-    let (condition, mutation) = store.create(
+    for effect in store.create(
         &address,
         BTreeMap::from([(
             "inbox".to_owned(),
@@ -429,11 +470,9 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
             },
         )]),
         Some(ledger(&format!("out/{name}"))?),
-    )?;
-    prepared.join(Effect {
-        conditions: vec![condition],
-        mutation,
-    })?;
+    )? {
+        prepared.join(effect)?;
+    }
     prepared.join(Effect {
         conditions: vec![CommitCondition::Absent {
             path: inbox.clone(),

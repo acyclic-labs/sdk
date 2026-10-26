@@ -133,16 +133,6 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.follow(path, from, filter).await
     }
 
-    async fn children(
-        &self,
-        request: acyclic_stream::ChildrenRequest,
-    ) -> Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.children(request).await
-    }
-
     async fn commit(
         &self,
         request: acyclic_stream::CommitRequest,

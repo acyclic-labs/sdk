@@ -84,6 +84,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     path: locator.clone(),
                 });
                 request.mutations.push(CommitMutation::Fork {
+                    exclude: Vec::new(),
                     source,
                     destination: lineage,
                     at_tail,

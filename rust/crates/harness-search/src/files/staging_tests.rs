@@ -1,10 +1,10 @@
 use super::*;
 use crate::sync::Mutex;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitMutation,
-    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MemoryStream, ReadRequest, Record, RecordStream, StreamBounds,
-    StreamError, StreamPath, StreamWatermarks,
+    AppendOutcome, AppendRequest, CommitId, CommitMutation, CommitOutcome, CommitRequest,
+    CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    MemoryStream, ReadRequest, Record, RecordStream, StreamBounds, StreamError, StreamPath,
+    StreamWatermarks,
 };
 
 type Storage<T> = std::result::Result<T, StreamError>;
@@ -72,9 +72,6 @@ impl StreamProvider for Interleaved {
         self.inner
             .follow_checked(path, from, preceding, filter)
             .await
-    }
-    async fn children(&self, request: ChildrenRequest) -> Storage<ChildStream> {
-        self.inner.children(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Storage<CommittedEnvelope> {
         self.inner.read_commit(id).await

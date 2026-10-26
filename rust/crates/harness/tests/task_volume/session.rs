@@ -55,8 +55,8 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         let mut unread = client.follow(volume_path, unread_from, acyclic_stream::FollowFilter::default()).await?;
         let unread_id = counts.guards.lock().map_err(|_| "guards poisoned")?.iter()
             .find(|(_, _, guard)| guard.is_empty()).ok_or("unread channel omitted")?.0;
-        let mut children = client.children(acyclic_stream::ChildrenRequest { parent: Some(StreamPath::new("volumes")?), limit: 1 }).await?;
-        assert_eq!(children.next().await.ok_or("discovery ended")??.path.as_str(), "volumes/task");
+        let page = client.children_page(acyclic_stream::ChildrenPageRequest { tail_stream: None, parent: Some(StreamPath::new("volumes")?), after: None, hierarchy_version: None, limit: 1 }).await?;
+        assert_eq!(page.children.first().ok_or("discovery is empty")?.path.as_str(), "volumes/task");
         let mut measured = Vec::new();
         let mut last = seed.cursor;
         for index in 0..40 {
@@ -113,11 +113,8 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         let snapshot = reset.snapshot.ok_or("reset omitted replacement")?;
         assert_eq!(snapshot.files, folded.values().cloned().collect::<Vec<_>>());
         assert_eq!(writer.snapshot(&query, 1).await?.files, snapshot.files);
-        let _later = TaskVolume::open(Arc::clone(&client), StreamPath::new("volumes/later")?).await?;
-        assert_eq!(children.next().await.ok_or("discovery ended")??.path.as_str(), "volumes/later");
         assert_eq!(verify_sharing(counts, 2), Ok(()));
-        assert_eq!(counts.follows.load(Ordering::Relaxed) - counts.children.load(Ordering::Relaxed), 68);
-        assert_eq!(counts.children.load(Ordering::Relaxed), 2);
+        assert_eq!(counts.follows.load(Ordering::Relaxed), 68);
         assert_eq!(counts.actors.load(Ordering::Relaxed), 0);
         // Drain the formerly blocked channel through every publication, including
         // the reset. Old buffered generations must not duplicate or lose a cut.
@@ -133,9 +130,8 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         assert_eq!(drained.positions, (unread_from + 1..=generation.position).collect::<Vec<_>>());
         assert!(drained.granted_frames >= drained.positions.len() as u64);
         measured.sort_unstable();
-        println!("publication_session follows=68 children=2 sessions=2 connections=1 actor_channels=0 samples=32 p50_ns={} p99_ns={}", measured[15], measured[31]);
+        println!("publication_session follows=68 sessions=2 connections=1 actor_channels=0 samples=32 p50_ns={} p99_ns={}", measured[15], measured[31]);
         drop(unread);
-        drop(children);
         drop(observations);
         drop(resumed);
         drop(reset.changes);

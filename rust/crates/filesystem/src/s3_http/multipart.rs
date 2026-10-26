@@ -255,6 +255,7 @@ async fn bounded_children<P: acyclic_stream::StreamProvider>(
         .ok_or_else(|| s3s::s3_error!(InvalidArgument))?;
     let page = provider
         .children_page(acyclic_stream::ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(parent),
             limit,
             after: None,

@@ -33,7 +33,7 @@ pub(super) struct Follows {
 }
 
 impl Follows {
-    pub fn new(session: Client, root: &StreamPath, discovery: Frames) -> Result<Self> {
+    pub fn new(session: Client, root: &StreamPath) -> Result<Self> {
         let mut follows = Self {
             session,
             agents: BTreeSet::new(),
@@ -41,10 +41,13 @@ impl Follows {
             sources: SelectAll::new(),
             status: Some(follow(root, "status", wire::SessionDelivery::Latest, None)?),
         };
-        follows.source(None, false, discovery);
+        // The routed set never ends while the driver owns it.
+        follows.source(None, false, Box::pin(stream::pending()));
         Ok(follows)
     }
 
+    /// Opens the shared status follow once. The first admitted member proves
+    /// the stream exists: an agent's first status precedes its membership.
     pub fn status(&mut self) {
         if let Some(subscription) = self.status.take() {
             let session = self.session.clone();

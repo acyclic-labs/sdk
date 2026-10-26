@@ -113,9 +113,6 @@ impl StreamProvider for Provider {
             .follow_checked(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.inner.children(request).await
-    }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let number = self.commits.fetch_add(1, Ordering::SeqCst) + 1;
         if self.offline.load(Ordering::SeqCst) || self.fail_commit.load(Ordering::SeqCst) == number

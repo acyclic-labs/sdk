@@ -24,7 +24,7 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
 use acyclic_objects::LocalObjectsLimits;
 use acyclic_objects::v1::{ObjectsProvider, local::LocalObjects, wire};
-use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits};
+use acyclic_stream::{AppendOutcome, IdempotencyKey, LocalStream, LocalStreamLimits};
 use bytes::Bytes;
 use futures::StreamExt as _;
 use serde::Serialize;

@@ -95,8 +95,11 @@ async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof()
     let records = head.read(1, 1).await?.try_collect::<Vec<_>>().await?;
     let mut forged: Value = crate::executor::decode_json(&records[0].value, None)?.0;
     forged["sequence"] = json!(2);
-    head.append(crate::contract::canonical_json_bytes(&forged)?)
-        .await?;
+    head.append(
+        crate::contract::canonical_json_bytes(&forged)?,
+        crate::test_support::fresh_key()?,
+    )
+    .await?;
     assert!(matches!(
         reader.latest_conversation_message(65_536).await,
         Err(Error::Storage(_))

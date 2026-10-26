@@ -113,9 +113,6 @@ impl StreamProvider for Provider {
     ) -> std::result::Result<RecordStream, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn children(&self, _: ChildrenRequest) -> std::result::Result<ChildStream, StreamError> {
-        Err(StreamError::Unsupported)
-    }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
         Err(StreamError::Unsupported)
     }

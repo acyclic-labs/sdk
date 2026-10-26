@@ -89,7 +89,10 @@ async fn operation_location_must_share_the_canonical_events_atomic_commit() -> R
         panic!("fresh event");
     };
     acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?
-        .append(encode_event(&authority(), &event, &mut None)?)
+        .append(
+            encode_event(&authority(), &event, &mut None)?,
+            crate::test_support::fresh_key()?,
+        )
         .await?;
     let location = json!({"authority":authority(), "operation_id":event.operation_id,
         "revision":event.revision, "intent_digest":event.intent_digest});
@@ -101,7 +104,10 @@ async fn operation_location_must_share_the_canonical_events_atomic_commit() -> R
     )?
     .0;
     acyclic_stream::Stream::new(client.clone(), path.as_str())?
-        .append(crate::contract::canonical_json_bytes(&location)?)
+        .append(
+            crate::contract::canonical_json_bytes(&location)?,
+            crate::test_support::fresh_key()?,
+        )
         .await?;
     let reader = HistoryReader::new(
         &client,

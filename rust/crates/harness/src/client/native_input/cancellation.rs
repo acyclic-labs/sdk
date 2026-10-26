@@ -78,9 +78,6 @@ impl StreamProvider for Provider {
     ) -> StreamResult<RecordStream> {
         self.inner.follow_checked(path, from, commit, filter).await
     }
-    async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
-        self.inner.children(request).await
-    }
     async fn commit(&self, request: CommitRequest) -> StreamResult<CommitOutcome> {
         self.inner.commit(request).await
     }

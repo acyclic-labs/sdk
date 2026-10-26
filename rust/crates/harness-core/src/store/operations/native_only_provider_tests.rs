@@ -3,9 +3,9 @@ use crate::store::checkpoints::native_staging_custody_tests::budget;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
-    ForkReceipt, ForkRequest, IdempotencyObservation, NativeProviderFuture, NativeRecordStream,
-    ReadRequest, RecordStream, StreamBounds, StreamError,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, ForkReceipt, ForkRequest,
+    IdempotencyObservation, NativeProviderFuture, NativeRecordStream, ReadRequest, RecordStream,
+    StreamBounds, StreamError,
 };
 use std::sync::{
     Arc,
@@ -54,9 +54,6 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
         _: u64,
         _filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<RecordStream, StreamError> {
-        Err(self.ordinary_error())
-    }
-    async fn children(&self, _: ChildrenRequest) -> std::result::Result<ChildStream, StreamError> {
         Err(self.ordinary_error())
     }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {

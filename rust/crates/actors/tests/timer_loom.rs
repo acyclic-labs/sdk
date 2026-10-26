@@ -134,7 +134,6 @@ delegate! {
     bounds(path: StreamPath) -> acyclic_stream::StreamBounds;
     fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
     read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
-    children(request: acyclic_stream::ChildrenRequest) -> acyclic_stream::ChildStream;
     commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;
     read_commit(id: acyclic_stream::CommitId) -> acyclic_stream::CommittedEnvelope;
 }

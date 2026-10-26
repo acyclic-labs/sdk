@@ -65,3 +65,10 @@ pub fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
     }));
     release
 }
+
+/// A unique Streams idempotency key for a fixture write that has no retry
+/// identity of its own. Stream helpers require a key; fixtures never replay.
+#[cfg(test)]
+pub(crate) fn fresh_key() -> Result<acyclic_stream::IdempotencyKey, acyclic_stream::StreamError> {
+    acyclic_stream::IdempotencyKey::new(uuid::Uuid::new_v4().as_bytes().to_vec())
+}

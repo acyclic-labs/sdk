@@ -17,7 +17,7 @@ pub(super) async fn stream_history(root: &Path, seed: u64) -> Result<(), String>
         let tail = u64::try_from(expected.len()).map_err(|error| error.to_string())?;
         if step % 4 == 1 {
             let outcome = stream
-                .append_at(payload, tail + 1)
+                .append_at(payload, tail + 1, key(seed, step)?)
                 .await
                 .map_err(|error| error.to_string())?;
             if outcome != (AppendOutcome::TailConflict { actual_tail: tail }) {
@@ -25,7 +25,7 @@ pub(super) async fn stream_history(root: &Path, seed: u64) -> Result<(), String>
             }
         } else if step % 4 != 2 {
             let outcome = stream
-                .append_at(payload.clone(), tail)
+                .append_at(payload.clone(), tail, key(seed, step)?)
                 .await
                 .map_err(|error| error.to_string())?;
             let AppendOutcome::Committed(receipt) = outcome else {
@@ -93,4 +93,9 @@ pub(super) async fn stream_history(root: &Path, seed: u64) -> Result<(), String>
         return Err("reopened stream differs from model".into());
     }
     Ok(())
+}
+
+fn key(seed: u64, step: usize) -> Result<IdempotencyKey, String> {
+    IdempotencyKey::new(format!("history/{seed}/{step}").into_bytes())
+        .map_err(|error| error.to_string())
 }

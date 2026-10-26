@@ -88,9 +88,6 @@ impl StreamProvider for Provider {
             .follow_checked(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.inner.children(request).await
-    }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         if let Some(monitor) = self.monitor.get() {
             monitor.record();

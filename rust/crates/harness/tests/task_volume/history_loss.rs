@@ -1,8 +1,8 @@
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, RecordStream, StreamBounds, StreamError, StreamWatermarks,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, RecordStream, StreamBounds,
+    StreamError, StreamWatermarks,
 };
 use std::sync::{Mutex, RwLock};
 
@@ -222,9 +222,6 @@ impl StreamProvider for FaultStream {
             .await;
         self.trip(Op::Follow, n, When::After, 0)?;
         result.map(|records| self.items(records, Op::Follow, n))
-    }
-    async fn children(&self, request: ChildrenRequest) -> Storage<ChildStream> {
-        self.source()?.children(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Storage<CommittedEnvelope> {
         self.source()?.read_commit(id).await

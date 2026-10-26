@@ -1,8 +1,8 @@
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, RecordStream, StreamBounds, StreamError,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, RecordStream, StreamBounds,
+    StreamError,
 };
 
 type StreamResult<T> = std::result::Result<T, StreamError>;
@@ -67,9 +67,6 @@ impl StreamProvider for AckGate {
         self.inner
             .follow_checked(path, from, preceding, filter)
             .await
-    }
-    async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
-        self.inner.children(request).await
     }
     async fn read_commit(&self, id: CommitId) -> StreamResult<CommittedEnvelope> {
         self.inner.read_commit(id).await

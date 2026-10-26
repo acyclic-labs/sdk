@@ -146,7 +146,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
                     .into(),
                 ],
                 Some(0),
-                None,
+                crate::test_support::fresh_key()?,
             )
             .await?;
         assert!(

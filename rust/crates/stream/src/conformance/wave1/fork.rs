@@ -8,7 +8,7 @@ use crate::{
 use futures::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 
-fn path<P: StreamProvider + ?Sized>(
+pub(super) fn path<P: StreamProvider + ?Sized>(
     history: &History<'_, P>,
     suffix: &str,
 ) -> Result<StreamPath, Failure> {
@@ -18,7 +18,7 @@ fn path<P: StreamProvider + ?Sized>(
     )
 }
 
-fn key<P: StreamProvider + ?Sized>(
+pub(super) fn key<P: StreamProvider + ?Sized>(
     history: &History<'_, P>,
     label: &str,
 ) -> Result<IdempotencyKey, Failure> {
@@ -29,7 +29,7 @@ fn key<P: StreamProvider + ?Sized>(
     )
 }
 
-async fn append<P: StreamProvider + ?Sized>(
+pub(super) async fn append<P: StreamProvider + ?Sized>(
     history: &History<'_, P>,
     target: &StreamPath,
     label: &str,
@@ -52,7 +52,7 @@ async fn append<P: StreamProvider + ?Sized>(
         matches!(outcome, AppendOutcome::Committed(ref receipt) if receipt.start == tail && receipt.end == tail + 1 && receipt.tail == tail + 1))
 }
 
-async fn absent<P: StreamProvider + ?Sized>(
+pub(super) async fn absent<P: StreamProvider + ?Sized>(
     history: &History<'_, P>,
     target: &StreamPath,
     invariant: Invariant,
@@ -68,7 +68,7 @@ async fn absent<P: StreamProvider + ?Sized>(
     }
 }
 
-async fn values<P: StreamProvider + ?Sized>(
+pub(super) async fn values<P: StreamProvider + ?Sized>(
     history: &History<'_, P>,
     target: &StreamPath,
     expected: &[&[u8]],

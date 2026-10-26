@@ -32,6 +32,11 @@ fn projected_tail(
     let Some(relative) = relative else {
         return Ok(None);
     };
+    // A combined path over the bound cannot exist, so that child has no tail;
+    // one long child never fails the page.
+    if path.as_str().len() + 1 + relative.as_str().len() > crate::MAX_PATH_BYTES {
+        return Ok(None);
+    }
     let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
     let Some(stream) = paths.get(&target) else {
         return Ok(None);

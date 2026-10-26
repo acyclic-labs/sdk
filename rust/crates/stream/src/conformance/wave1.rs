@@ -14,6 +14,7 @@ use crate::{
 use futures::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
 
+mod agent;
 mod fork;
 
 /// Exact command for rerunning the endpoint suite with the same environment.
@@ -33,16 +34,28 @@ pub enum Case {
     SubtreeFork,
     /// A composed fork sees pre-commit heads of root and descendants.
     ComposedFork,
+    /// Agent spawn: subtree fork, adoption record and companion writes in one commit.
+    Spawn,
+    /// A closed inbox refuses every later send without spending its key.
+    ClosedInbox,
+    /// Inherited paths follow privately; a missing path follow is `NotFound`.
+    InheritedFollow,
+    /// Fork-of-fork keeps every ancestor's adoption record and conversation cut.
+    ForkLineage,
 }
 
 impl Case {
     /// Every gate history in stable order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 9] = [
         Self::AppendRetry,
         Self::CommitRetry,
         Self::AbsentZeroTail,
         Self::SubtreeFork,
         Self::ComposedFork,
+        Self::Spawn,
+        Self::ClosedInbox,
+        Self::InheritedFollow,
+        Self::ForkLineage,
     ];
 
     /// Stable name used in receipts and case selection.
@@ -54,6 +67,10 @@ impl Case {
             Self::AbsentZeroTail => "absent_zero_tail",
             Self::SubtreeFork => "subtree_fork",
             Self::ComposedFork => "composed_fork",
+            Self::Spawn => "spawn",
+            Self::ClosedInbox => "closed_inbox",
+            Self::InheritedFollow => "inherited_follow",
+            Self::ForkLineage => "fork_lineage",
         }
     }
 }
@@ -87,6 +104,12 @@ pub enum Invariant {
     PreCommitCut,
     /// The retained composed envelope and replay are exactly the returned fact.
     CompositionReceipt,
+    /// A refused spawn published none of its mutations; a committed one all.
+    SpawnAtomicity,
+    /// A missing-path follow is `NotFound` and creates nothing.
+    MissingFollow,
+    /// Descendants carry ancestor records with their original identities.
+    Lineage,
 }
 
 /// A semantic violation is distinct from provider/setup/transport failure.
@@ -284,7 +307,7 @@ fn provider_failure(case: Case, step: &'static str, source: StreamError) -> Fail
 pub async fn verify<P: StreamProvider + ?Sized>(
     provider: &P,
     namespace: &StreamPath,
-) -> Result<[Case; 5], Failure> {
+) -> Result<[Case; 9], Failure> {
     for case in Case::ALL {
         verify_case(provider, namespace, case).await?;
     }
@@ -305,6 +328,10 @@ pub async fn verify_case<P: StreamProvider + ?Sized>(
         Case::AbsentZeroTail => absent_zero_tail(&history).await,
         Case::SubtreeFork => fork::subtree(&history).await,
         Case::ComposedFork => fork::composed(&history).await,
+        Case::Spawn => agent::spawn(&history).await,
+        Case::ClosedInbox => agent::closed_inbox(&history).await,
+        Case::InheritedFollow => agent::inherited_follow(&history).await,
+        Case::ForkLineage => agent::fork_lineage(&history).await,
     }
 }
 

@@ -409,12 +409,13 @@ async fn committed_outbox_survives_uncertain_effect_and_reopen_without_reexecuti
     assert_eq!(effects.calls.load(Ordering::SeqCst), 2);
     assert_eq!(reopened.recover(owner.clone()).await.unwrap(), recovered);
     assert_eq!(effects.calls.load(Ordering::SeqCst), 2);
-    // The inbox and both retry indexes share an admission envelope. Consumed
-    // cursor, checkpoint and complete outbox share the later workflow record.
+    // The inbox and both retry indexes share an admission envelope; creating
+    // the inbox also wrote journal entry 1. Consumed cursor, checkpoint and
+    // complete outbox share the later workflow record.
     let log = stream
         .read(acyclic_stream::ReadRequest {
             path: StreamPath::new(format!("runtime/{}", Manifest::workflow(owner.actor))).unwrap(),
-            from: 1,
+            from: 2,
             limit: 1,
         })
         .await

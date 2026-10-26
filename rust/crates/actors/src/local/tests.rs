@@ -54,22 +54,21 @@ async fn place<P: StreamProvider + ?Sized>(
     store: &Store<P>,
     address: &ActorReference,
 ) -> Result<(), Error> {
-    let (condition, mutation) = store.create(address, inbox(address)?, None)?;
-    let created = store
-        .provider()
-        .commit(CommitRequest {
-            conditions: vec![condition],
-            mutations: vec![mutation],
-            idempotency_key: key("create")?,
-        })
-        .await?;
+    let mut prepared = PreparedPublish::foreign(key("create")?);
+    for effect in store.create(address, inbox(address)?, None)? {
+        prepared.join(effect)?;
+    }
+    let created = store.provider().commit(prepared.into_request()).await?;
     PreparedPublish::settle(&created)?;
     store
         .claim(&store.load(address).await?, 1, key("place")?)
         .await
 }
 
-async fn atomic_history<P: StreamProvider + ?Sized>(provider: Arc<P>, root: StreamPath) -> TestResult {
+async fn atomic_history<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    root: StreamPath,
+) -> TestResult {
     let store = Store::new(Arc::clone(&provider), root);
     let address = actor("atomic")?;
     place(&store, &address).await?;
@@ -163,9 +162,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
         )
         .await?;
     let old = store.load(&address).await?;
-    store
-        .claim(&old, 2, key("takeover")?)
-        .await?;
+    store.claim(&old, 2, key("takeover")?).await?;
     let current = store.load(&address).await?;
     // A freshly loaded token still cannot be used by an old placement.
     assert!(
@@ -318,7 +315,11 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
 #[tokio::test]
 async fn memory_atomic_history() -> TestResult {
     atomic_history(Arc::new(MemoryStream::default()), state_root()?).await?;
-    atomic_history(Arc::new(MemoryStream::default()), StreamPath::new("actors")?).await
+    atomic_history(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("actors")?,
+    )
+    .await
 }
 
 #[tokio::test]

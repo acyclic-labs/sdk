@@ -148,3 +148,55 @@ async fn page_projection_charges_record_bytes_and_headers() -> Result<(), Stream
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result<(), StreamError> {
+    let provider = MemoryStream::default();
+    let append = |path: String, value: &'static [u8]| {
+        let provider = &provider;
+        async move {
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new(path)?,
+                    records: vec![Bytes::from_static(value).into()],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await
+        }
+    };
+    append("agents/a/status".to_owned(), b"running").await?;
+    // A valid child whose `<child>/status` would exceed the path bound.
+    let long = format!(
+        "agents/{}",
+        "x".repeat(crate::MAX_PATH_BYTES - "agents/".len())
+    );
+    append(long.clone(), b"long").await?;
+    let page = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(StreamPath::new("agents")?),
+            tail_stream: Some(StreamPath::new("status")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 8,
+        })
+        .await?;
+    let tails: Vec<_> = page
+        .children
+        .iter()
+        .map(|child| {
+            (
+                child.path.as_str().len(),
+                child.tail_record.as_ref().map(|r| r.value.clone()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        tails,
+        vec![
+            ("agents/a".len(), Some(Bytes::from_static(b"running"))),
+            (long.len(), None),
+        ]
+    );
+    Ok(())
+}

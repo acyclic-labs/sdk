@@ -70,8 +70,8 @@ async fn discover_with_creation(
         .await
         .unwrap();
     for id in 0..count {
-        status::member(&parent, &format!("a{id:05}")).await;
         status::status(&provider, &format!("swarm/a{id:05}"), false).await;
+        status::member(&parent, &format!("a{id:05}")).await;
         // Each agent has a real child subtree, so this still crosses hierarchy
         // pages even though status publications now share one root channel.
         assert!(
@@ -100,8 +100,8 @@ async fn discover_with_creation(
                         id => format!("swarm/a{id:05}"),
                     };
                     // Creation while the initial children snapshot is being consumed.
-                    if let Some(reference) = name.strip_prefix("swarm/") { status::member(&parent, reference).await; }
                     status::status(&provider, &name, false).await;
+                    if let Some(reference) = name.strip_prefix("swarm/") { status::member(&parent, reference).await; }
                     assert!(TaskVolume::open(provider, path(&format!("{name}/files"))).await.is_ok());
                 }
                 Some(frame)
@@ -196,7 +196,6 @@ fn negative_control_missing_shared_status_follow_is_rejected() {
 enum Closed {
     None,
     Control,
-    Discovery,
     Status,
     Content,
     Inactive,
@@ -230,7 +229,6 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
         for closed in [
             Closed::None,
             Closed::Control,
-            Closed::Discovery,
             Closed::Status,
             Closed::Content,
             Closed::Inactive,
@@ -244,7 +242,6 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
                             let target = matches!(
                                 (closed, &data.item),
                                 (Closed::Control | Closed::Inactive, _)
-                                    | (Closed::Discovery, Some(Item::Child(_)))
                                     | (Closed::Status, Some(Item::LatestValue(_)))
                                     | (Closed::Content, Some(Item::Record(_)))
                             );
@@ -329,70 +326,8 @@ proptest::proptest! {
 }
 
 #[test]
-fn ready_membership_cannot_register_before_discovery_is_delivered() {
-    futures::executor::block_on(async {
-        let provider = Arc::new(MemoryStream::default());
-        let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
-            .await
-            .unwrap();
-        let config = TaskVolume::open(provider.clone(), path("config/files"))
-            .await
-            .unwrap();
-        let count = acyclic_stream::MAX_ITEMS * 2 + 1;
-        for id in 0..count {
-            status::member(&parent, &format!("a{id:05}")).await;
-            status::status(&provider, &format!("swarm/a{id:05}"), false).await;
-        }
-        let (release, waiting) = futures::channel::oneshot::channel::<()>();
-        let waiting = std::sync::Mutex::new(Some(waiting));
-        let responses: runtime::ResponseMap = Arc::new(move |source| {
-            let mut waiting = waiting.lock().unwrap().take();
-            Box::pin(source.then(move |frame| {
-                let waiting = if matches!(&frame, Ok(frame) if matches!(&frame.body,
-                    Some(wire::session_frame::Body::Data(data)) if matches!(data.item, Some(wire::session_data::Item::Child(_))))) {
-                    waiting.take()
-                } else { None };
-                async move { if let Some(waiting) = waiting { waiting.await.unwrap(); } frame }
-            }))
-        });
-        let (session, mut runner, mut observed) =
-            runtime::open(provider, Arc::new(|s| s), responses);
-        let client = super::client(limits(count)).unwrap();
-        let mut consumer = Box::pin(client.follow(
-            &config,
-            &parent,
-            &session,
-            |_, _| futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath)),
-            async |_| Ok(()),
-        ));
-        assert!(runner.until_idle(consumer.as_mut()).await.is_none());
-        let interests = std::iter::from_fn(|| observed.try_recv().ok())
-            .filter_map(|frame| match frame.body {
-                Some(wire::session_frame::Body::Interest(change)) => Some(change),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            status_paths(&interests).unwrap().len(),
-            0,
-            "snapshot bypassed the discovery flow-control boundary"
-        );
-        release.send(()).unwrap();
-        let settled = runner.until_idle(consumer.as_mut()).await;
-        assert!(settled.is_none(), "paced discovery terminated: {settled:?}");
-        let interests = std::iter::from_fn(|| observed.try_recv().ok())
-            .filter_map(|frame| match frame.body {
-                Some(wire::session_frame::Body::Interest(change)) => Some(change),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert!(check_statuses(&interests, count));
-    });
-}
-
-#[test]
-fn live_and_republished_membership_wait_for_shared_session_delivery() {
-    for initial in [false, true] {
+fn live_membership_waits_for_shared_session_delivery() {
+    {
         futures::executor::block_on(async {
             use acyclic_harness::{
                 TaskId,
@@ -406,21 +341,13 @@ fn live_and_republished_membership_wait_for_shared_session_delivery() {
                 .await
                 .unwrap();
             let count = acyclic_stream::MAX_ITEMS * 2 + 1;
-            if initial {
-                for id in 0..count {
-                    status::member(&parent, &format!("a{id:05}")).await;
-                    status::status(&provider, &format!("swarm/a{id:05}"), false).await;
-                }
-            }
             let (release, waiting) = futures::channel::oneshot::channel::<()>();
             let waiting = std::sync::Mutex::new(Some(waiting));
             let responses: runtime::ResponseMap = Arc::new(move |source| {
                 let mut waiting = waiting.lock().unwrap().take();
                 Box::pin(source.then(move |frame| {
                     let held = matches!(&frame, Ok(frame) if matches!(&frame.body,
-                        Some(wire::session_frame::Body::Data(data)) if if initial {
-                            matches!(data.item, Some(wire::session_data::Item::Child(_)))
-                        } else { matches!(data.item, Some(wire::session_data::Item::Record(_))) }));
+                        Some(wire::session_frame::Body::Data(data)) if matches!(data.item, Some(wire::session_data::Item::Record(_)))));
                     let waiting = if held { waiting.take() } else { None };
                     async move {
                         if let Some(waiting) = waiting {
@@ -446,6 +373,8 @@ fn live_and_republished_membership_wait_for_shared_session_delivery() {
             assert!(runner.until_idle(consumer.as_mut()).await.is_none());
             while observed.try_recv().is_ok() {}
             for id in 0..count {
+                // An agent's first status precedes its membership.
+                status::status(&provider, &format!("swarm/a{id:05}"), false).await;
                 let value = ChildStatus {
                     task: TaskId::from_bytes([1; 16]),
                     state: ChildState::Running,
@@ -458,14 +387,11 @@ fn live_and_republished_membership_wait_for_shared_session_delivery() {
                     &serde_json::to_vec(&value).unwrap(),
                 )
                 .await;
-                if !initial {
-                    status::status(&provider, &format!("swarm/a{id:05}"), false).await;
-                }
             }
             let settled = runner.until_idle(consumer.as_mut()).await;
             assert!(
                 settled.is_none(),
-                "membership burst initial={initial} terminated: {settled:?}"
+                "membership burst terminated: {settled:?}"
             );
             assert_eq!(
                 views.read(|v| v.agents().count()).unwrap(),

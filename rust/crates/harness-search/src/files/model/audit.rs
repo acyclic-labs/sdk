@@ -2,10 +2,10 @@
 //! commits actually landed. The model's authorizer names its owner with an
 //! always-true `Absent` witness on every settlement grant.
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitCondition, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
-    StreamBounds, StreamError, StreamPath, StreamProvider, StreamWatermarks,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitCondition, CommitId,
+    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
+    StreamPath, StreamProvider, StreamWatermarks,
 };
 use loom::sync::atomic::{AtomicUsize, Ordering};
 
@@ -94,9 +94,6 @@ impl StreamProvider for Audited {
         self.inner
             .follow_checked(path, from, preceding, filter)
             .await
-    }
-    async fn children(&self, request: ChildrenRequest) -> Storage<ChildStream> {
-        self.inner.children(request).await
     }
     async fn children_page(&self, request: ChildrenPageRequest) -> Storage<ChildrenPage> {
         self.inner.children_page(request).await
