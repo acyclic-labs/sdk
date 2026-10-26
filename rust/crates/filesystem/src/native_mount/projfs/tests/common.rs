@@ -141,6 +141,9 @@ pub(super) fn callback_runtime(
         original_work: Mutex::new(None),
         callback_guard: None,
         root: root.to_path_buf(),
+        // A standalone root: no shared-view prefix, staging beside itself.
+        prefix: Vec::new(),
+        staging_anchor: root.to_path_buf(),
         metadata_root: HostRoot::open(root, &mut &*work)?,
         staging: Mutex::new(None),
         creating_name: RwLock::new((MountPath::root(), None)),

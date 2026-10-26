@@ -140,11 +140,15 @@ mod sparse_gap;
 /// Unix files already represent unwritten extents as holes.
 async fn advance_spill_past_bound<S>(store: &StagedObjects<S>) -> std::io::Result<()> {
     #[cfg(windows)]
-    store
-        .spill
-        .control_async(|file, _| sparse_gap::prepare(file), None)
-        .expect("unmetered fixture control construction cannot fail")
-        .await?;
+    {
+        let spill = store.spill_io.read().await;
+        spill
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("the fixture spills before advancing"))?
+            .control_async(|file, _| sparse_gap::prepare(file), None)
+            .expect("unmetered fixture control construction cannot fail")
+            .await?;
+    }
     store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
     Ok(())
 }

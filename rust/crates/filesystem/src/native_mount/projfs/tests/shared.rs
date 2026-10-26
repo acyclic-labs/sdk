@@ -138,7 +138,7 @@ fn dead_shared_root_cleanup_never_reopens_a_replaced_admission()
     let moved = fixture.path().join("held");
     std::fs::create_dir(&path)?;
     let admitted = crate::hold_root(&path)?;
-    let name = Path::new("dead");
+    let name = std::path::Path::new("dead");
     let staging = super::super::staging_path(name);
     for leaf in [name, staging.as_path()] {
         std::fs::create_dir(path.join(leaf))?;

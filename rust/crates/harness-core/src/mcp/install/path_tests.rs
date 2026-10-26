@@ -43,6 +43,7 @@ fn both_mcp_dialects_pin_batch_launchers_from_the_configured_search_environment(
                     |_| Ok(acyclic_native_runtime::ProcessInput::default()),
                     None,
                     None,
+                    None,
                 )
                 .map_err(|error| Error::process_io(error.error))?;
             assert!(output.status.success());
