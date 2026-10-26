@@ -54,7 +54,7 @@ pub use process_tree::{
 };
 
 mod file;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-support"))))]
 mod kernel_keyring;
 pub mod owner_record;
 pub mod private_file;

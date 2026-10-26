@@ -413,7 +413,7 @@ impl Owner {
         let mut owner: Self = serde_json::from_slice(&plain.0)
             .map_err(|_| Error::Invalid("invalid local owner record".into()))?;
         let migrated = owner.retain_signing_custody()?;
-        if legacy || migrated {
+        if legacy || migrated.is_some() {
             let directory = path
                 .parent()
                 .ok_or_else(|| Error::Invalid("owner has no parent".into()))?;
@@ -421,7 +421,7 @@ impl Owner {
                 directory,
                 path,
                 acyclic_native_runtime::RenameMode::Replace,
-                None,
+                migrated.as_ref(),
             )?;
         }
         Ok(owner)
@@ -429,20 +429,21 @@ impl Owner {
 
     /// One migration for both former JSON files and framed private records.
     /// This is reachable only after `private_file` authenticated the source descriptor.
-    fn retain_signing_custody(&mut self) -> Result<bool> {
+    fn retain_signing_custody(
+        &mut self,
+    ) -> Result<Option<acyclic_native_runtime::signing_key::ProvisionalSigningKey>> {
         match (self.key_ref, self.key.as_mut()) {
             (Some(reference), None) => {
                 reference.with_seed(|_| ()).map_err(storage)?;
-                Ok(false)
+                Ok(None)
             }
             (None, Some(seed)) => {
-                self.key_ref = Some(
-                    acyclic_native_runtime::signing_key::SigningKeyReference::retain(seed)
-                        .map_err(storage)?,
-                );
+                let key = acyclic_native_runtime::signing_key::SigningKeyReference::retain(seed)
+                    .map_err(storage)?;
+                self.key_ref = Some(key.reference());
                 acyclic_native_runtime::owner_record::clear_secret(seed);
                 self.key = None;
-                Ok(true)
+                Ok(Some(key))
             }
             _ => Err(Error::Unauthorized(
                 "local owner signing custody is ambiguous or absent".into(),

@@ -113,6 +113,26 @@ struct Script {
     progress: Mutex<VecDeque<ExecutionProgress<TurnOutput>>>,
     failure: Mutex<Option<CoreError>>,
     operations: Mutex<Vec<OperationId>>,
+    effects: Mutex<Vec<TurnEffect>>,
+}
+
+impl TurnEffects for Script {
+    fn record<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a TurnEffect,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
+        Box::pin(async { unused() })
+    }
+
+    fn recorded(&self) -> BoxFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
+        Box::pin(async {
+            self.effects
+                .lock()
+                .map(|effects| effects.clone())
+                .map_err(|error| CoreError::Storage(error.to_string()))
+        })
+    }
 }
 
 impl Executor for Script {
@@ -162,7 +182,7 @@ impl TurnHost for Host {
             custody: None,
             selected: None,
             approvals: None,
-            effects: None,
+            effects: Some(self.0.clone()),
             goal: self
                 .1
                 .clone()
@@ -277,6 +297,45 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
                 matches!(result, Err(Error::Turn(_))),
                 "uncertain failure was settled: {diagnostic}"
             );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -> Result {
+    for failed in [false, true] {
+        let (script, driver) = driver(if failed { Vec::new() } else { vec![ready()] });
+        if failed {
+            *script.failure.lock().map_err(|error| error.to_string())? =
+                Some(CoreError::ModelUnavailable {
+                    failure: acyclic_harness_core::ModelTransportFailure::Status(500),
+                    excerpt: "exhausted after a successful send".into(),
+                });
+        }
+        let path = AgentPath::root(&id(1));
+        let to = path.child(&id(2))?;
+        let body = Box::new(file("sent-before-failure.md")?);
+        script
+            .effects
+            .lock()
+            .map_err(|error| error.to_string())?
+            .push(TurnEffect::Send {
+                to: to.clone(),
+                id: intent("sent"),
+                body: body.clone(),
+            });
+        let state = AgentState::adopted(path, &adopted(id(1)));
+        let step = driver.step(&state, 1, Some(request("input")?.1)).await?;
+        assert!(
+            matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message) })
+            if recipient == &to && message.id == intent("sent") && message.body == body)
+        );
+        assert_eq!(step.outs.len(), if failed { 1 } else { 2 });
+        if failed {
+            assert!(matches!(step.wait, Wait::Done(AgentOutcome::Failed { .. })));
+        } else {
+            assert!(matches!(step.outs.get(1), Some(Out::Conversation(_))));
         }
     }
     Ok(())
