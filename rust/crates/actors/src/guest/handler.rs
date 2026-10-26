@@ -92,7 +92,7 @@ pub struct Transition {
 
 /// One participant in the actor's sole publication, independent of its host.
 /// The runtime retains it with the sealed request while acknowledgement is unknown.
-pub trait Composition: Send + 'static {
+pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
     /// Extend and fence the joined request once, before its first submission.
     /// The actor's original conditions and mutations must remain intact.
     fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest>;
