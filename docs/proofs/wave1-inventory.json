@@ -2,10 +2,10 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T09:35:44.969159+00:00",
+  "generated_at": "2026-10-26T10:16:10.168772+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
-  "worktree": "Q:\\worktrees\\verify-wave1-supersede",
-  "branch": "fix/verify-wave1-main-b6bb",
+  "worktree": "Q:\\worktrees\\verify-hst-history",
+  "branch": "fix/verify-hst-history",
   "historical_inventory": "Q:/lanes/verify/inventory.json",
   "specification": "Q:/lanes/redesign/api/verify.md",
   "cloud_review": {
@@ -99,7 +99,9 @@
       "actual provider/local/hosted/browser histories",
       "strict crate cleanliness: four unchanged baseline Clippy warnings remain; new HST source has zero diagnostics",
       "optional CA support remains in owner provider-conformance runner, not this older five-case endpoint runner"
-    ]
+    ],
+    "current_source_status": "current_references_only_not_new_execution",
+    "historical_receipt_status": "captured_execution_and_mutation_hashes_preserved"
   },
   "actor_store_observations": {
     "actor-store-v1": {
@@ -305,7 +307,7 @@
         {
           "file": "scripts/test-wave1-inventory.py",
           "line": 30,
-          "sha256": "327db4dabd7f17d0f06febe1dceaca115905e1555e3868aaee92a3f4907da179"
+          "sha256": "f7a6a116de2d82c2bb7ff29628a2f434d8d16b1ce6861ba3f2561b9c63399bd2"
         }
       ],
       "tests_run": 0,
@@ -360,6 +362,13 @@
       "typed_refusal_order_controls": 2,
       "qualified_modes": [],
       "runtime_positive_proofs": 0
+    },
+    "review_p1_historical_identity": {
+      "status": "source_correction_authored_regressions_unexecuted",
+      "thread": "PRRT_kwDOUMoiI86wNjFn",
+      "tests_run": 0,
+      "new_compile": false,
+      "reason": "Only scripts/docs changed; reuse exact prior Rust compile receipt. Frozen remote1552 remains unchanged until canonical dequeue or superseding PR."
     }
   },
   "evidence": {
@@ -2189,5 +2198,5 @@
   },
   "supersedes_pr": 1526,
   "current_integration_base": "b6bb4c435b4311c703a4c5eac3d113831fb71480",
-  "integration_scope": "Preserves merged canonical nine-case suite and adds missing typed HST availability adapter; historical receipts are not current qualification."
+  "integration_scope": "Canonical nine-case suite retained. Historical HST execution validated independently of current source references; no new execution or proof credit."
 }

@@ -145,6 +145,35 @@ class EvidencePolicy(unittest.TestCase):
     def test_real_compiled_hst_guard_and_endpoint_refuse_complete_qualification(self):
         POLICY.check_hst_reporting(MANIFEST["hst_reporting"])
 
+    def test_historical_hst_receipt_does_not_read_current_execution_inputs(self):
+        original_sha256 = POLICY.sha256
+        current_inputs = {
+            ROOT / name for name in (
+                "rust/crates/stream/src/conformance/wave1/coverage.rs",
+                "rust/crates/stream/src/conformance/wave1.rs",
+                "rust/crates/stream/tests/wave1_coverage.rs",
+                "rust/crates/stream/examples/wave1-conformance.rs",
+                "scripts/qualify-wave1-coverage.py",
+            )
+        }
+
+        def captured_sha256(path):
+            self.assertNotIn(path, current_inputs, "historical validation read current execution input")
+            return original_sha256(path)
+
+        with patch.object(POLICY, "sha256", captured_sha256):
+            POLICY.check_hst_reporting(MANIFEST["hst_reporting"])
+
+    def test_current_reference_cannot_borrow_historical_dependency_hash(self):
+        receipt = repository_path(ROOT, MANIFEST["hst_reporting"]["repo_receipt"])
+        executed = json.loads(receipt.with_name("source.json").read_bytes())
+        reference = copy.deepcopy(MANIFEST["entrypoints"][0])
+        historical_hash = executed[reference["file"]]
+        self.assertNotEqual(historical_hash, reference["sha256"])
+        reference["sha256"] = historical_hash
+        with self.assertRaisesRegex(ValueError, "source hash changed"):
+            POLICY.check_reference(reference)
+
     def test_rehashed_hst_rows_cannot_promote_or_omit_a_history(self):
         original = MANIFEST["hst_reporting"]
         variants = (("promote", "cannot promote a missing history"), ("omit", "missing or reordered stable history"))

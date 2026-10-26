@@ -1,5 +1,13 @@
 # Standing proof-entry guard: current scope
 
+Historical HST execution receipts validate their captured source, oracle,
+mutants and outputs. They do not require current suite dependencies to retain
+the historical hashes. Current inventory references are checked separately, and
+the entrypoint guard admits only the exact reporting-module hash exercised by
+the captured oracle. Evolving the canonical suite adds no execution or proof
+credit. The historical captures remain byte-identical. The two separation
+regressions added for this correction are unexecuted under the user policy.
+
 `python scripts/check-proof-coverage.py --base <actual-PR-base-SHA>` checks the committed Rust source delta. The CI caller supplies the real PR base; there is no inferred-base or missing-base success fallback. Dirty tracked trees and uncommitted registries refuse. Git adds and rename destinations require new entries; removed files need no stale proof entry.
 
 The machine registry is `docs/proofs/entrypoint-inventory.json`. It currently registers eleven entries for the HST reporting module, backed by the already admitted real Linux reporting proof and its unchanged-test production guard mutation. Its pass means exact source/invariant/receipt registration. It does not qualify provider behavior or any of the thirty complete cross-mode obligations.
