@@ -73,8 +73,7 @@ fn derived_options_preserve_repeated_resources_and_streaming()
     Ok(())
 }
 
-#[test]
-fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::Error>> {
+fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("products.bin");
@@ -116,17 +115,24 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
         .args(sources)
         .status()?;
     assert!(status.success());
-    let pool = DescriptorPool::decode(std::fs::read(output)?.as_slice())?;
-    let auth = pool
-        .get_extension_by_name("acyclic.validation.v1.auth")
-        .ok_or("missing auth option")?;
+    Ok(DescriptorPool::decode(std::fs::read(output)?.as_slice())?)
+}
+
+type Extractors = std::collections::BTreeMap<String, (bool, Vec<String>)>;
+
+struct Catalog {
+    registry: Extractors,
+    actions: std::collections::BTreeSet<String>,
+}
+
+fn authorization_catalog(pool: &DescriptorPool) -> Result<Catalog, Box<dyn std::error::Error>> {
     let extractor_extension = pool
         .get_extension_by_name("acyclic.validation.v1.extractors")
         .ok_or("registry")?;
     let product_extension = pool
         .get_extension_by_name("acyclic.validation.v1.products")
         .ok_or("products")?;
-    let mut registry = std::collections::BTreeMap::new();
+    let mut registry = Extractors::new();
     let mut catalog = std::collections::BTreeSet::new();
     for file in pool.files() {
         let options = file.options();
@@ -176,6 +182,22 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
     for action in acyclic_auth::FS_ACTIONS {
         assert!(catalog.contains(&format!("fs/{action}")));
     }
+    Ok(Catalog {
+        registry,
+        actions: catalog,
+    })
+}
+
+#[test]
+fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = product_descriptors()?;
+    let auth = pool
+        .get_extension_by_name("acyclic.validation.v1.auth")
+        .ok_or("missing auth option")?;
+    let Catalog {
+        registry,
+        actions: catalog,
+    } = authorization_catalog(&pool)?;
     let mut count = 0;
     for service in pool.services() {
         for method in service.methods() {

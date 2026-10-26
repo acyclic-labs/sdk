@@ -74,7 +74,7 @@ proptest! {
         if let Ok(child)=attenuate(&parent,after,vec![6;32]) {
             prop_assert!(!permits(&child,&r,PolicyDecision::Allow).is_ok() || permits(&parent,&r,PolicyDecision::Allow).is_ok());
             prop_assert!(!permits(&child,&r,PolicyDecision::Deny).is_ok());
-            prop_assert_eq!(&child[..parent.len()],parent.as_slice());
+            prop_assert_eq!(child.get(..parent.len()),Some(parent.as_slice()));
         }
     }
     #[test]
@@ -121,7 +121,7 @@ proptest! {
     #[test]
     fn max_depth_is_absolute_and_sealing_costs_no_block(max in 0..6u32, ceilings in prop::collection::vec(0..8u32,0..8)) {
         let len=ceilings.len();let effective=ceilings.iter().copied().fold(max,u32::min);
-        let mut blocks=vec![root()]; blocks[0].caveats.push(Caveat {kind:CaveatKind::MaxDepth(max)});
+        let mut blocks=vec![root()]; blocks.first_mut().unwrap().caveats.push(Caveat {kind:CaveatKind::MaxDepth(max)});
         for max in ceilings { blocks.push(Block {certificates:None,caveats:vec![Caveat {kind:CaveatKind::MaxDepth(max)}],next_public_key:vec![6;32]}); }
         prop_assert_eq!(valid_chain(&blocks),len<=effective as usize);
         let signed=blocks.into_iter().map(|b| SignedBlock {payload:BlockProto::from(b).encode_to_vec(),signature:vec![1;64]}).collect::<Vec<_>>();
@@ -142,9 +142,9 @@ proptest! {
     fn attenuation_exposes_only_public_certificates(suffix in "[A-Za-z0-9_-]{1,64}", caveats in prop::collection::vec(caveat(),0..8)) {
         let parent=vec![root()];
         if let Ok(child)=attenuate(&parent,caveats,vec![6;32]) {
-            prop_assert_eq!(&child[0].certificates,&parent[0].certificates);
-            prop_assert!(child[1..].iter().all(|b| b.certificates.is_none()));
-            let root_bytes=BlockProto::from(child[0].clone()).encode_to_vec();
+            prop_assert_eq!(&child.first().unwrap().certificates,&parent.first().unwrap().certificates);
+            prop_assert!(child.iter().skip(1).all(|b| b.certificates.is_none()));
+            let root_bytes=BlockProto::from(child.first().unwrap().clone()).encode_to_vec();
             prop_assert!(!root_bytes.windows(b"acyclic-account+jwt".len()).any(|w| w==b"acyclic-account+jwt"));
         }
         let bearer=format!("eyJ0eXAiOiJhY3ljbGljLWFjY291bnQrand0In0.{suffix}.{suffix}");
@@ -195,17 +195,17 @@ proptest! {
     #[test]
     fn certificate_ancestry_is_complete(parent_id in "[a-z]{1,12}", wrong_id in "[a-z]{1,12}", revoked in prop::collection::vec(any::<u8>(),32), expiry in 2..1001u64) {
         let mut chain=root().certificates.unwrap();
-        chain.keys[0].key.key_id=parent_id.clone();
-        chain.keys[0].key.parent_revocation_ids=vec![revoked];
-        let mut child=chain.keys[0].clone();child.key.key_id="child-key".into();
+        chain.keys.first_mut().unwrap().key.key_id=parent_id.clone();
+        chain.keys.first_mut().unwrap().key.parent_revocation_ids=vec![revoked];
+        let mut child=chain.keys.first_mut().unwrap().clone();child.key.key_id="child-key".into();
         child.key.parent_key_id=Some(parent_id.clone());child.key.validity.expires_at_unix_seconds=expiry;
         chain.keys.push(child);
         let wire:CertificateChainProto=chain.clone().into();
         prop_assert_eq!(CertificateChain::try_from(wire),Ok(chain.clone()));
-        chain.keys[1].key.parent_key_id=Some(wrong_id.clone());
+        chain.keys.get_mut(1).unwrap().key.parent_key_id=Some(wrong_id.clone());
         prop_assert_eq!(CertificateChain::try_from(CertificateChainProto::from(chain.clone())).is_ok(),wrong_id==parent_id);
-        chain.keys[1].key.parent_key_id=Some(parent_id);
-        chain.keys[1].key.parent_revocation_ids.clear();
+        chain.keys.get_mut(1).unwrap().key.parent_key_id=Some(parent_id);
+        chain.keys.get_mut(1).unwrap().key.parent_revocation_ids.clear();
         prop_assert!(CertificateChain::try_from(CertificateChainProto::from(chain)).is_err());
     }
     #[test]

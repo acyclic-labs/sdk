@@ -1,10 +1,9 @@
 //! The child process inspects live allocator storage before glibc releases it.
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
-#[path = "common/signed.rs"]
-mod signed;
+
+use super::signed::*;
 use acyclic_auth::{contract::*, verify::verify};
 use prost::Message;
-use signed::*;
 use std::process::Command;
 use zeroize::Zeroizing;
 
@@ -38,7 +37,7 @@ fn proof_buffers_are_scrubbed_before_deallocation() {
     ] {
         let active = directory.path().join(case);
         let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "scrub_child", "--nocapture"])
+            .args(["--exact", "proof_storage::scrub_child", "--nocapture"])
             .env("LD_PRELOAD", &library)
             .env("AUTH_SCRUB_ACTIVE", &active)
             .env("AUTH_SCRUB_CASE", case)
@@ -77,7 +76,7 @@ fn scrub_child() {
         }
         "bad-key" => {
             let end = bytes.len() - 3;
-            bytes[end] = 5;
+            *bytes.get_mut(end).unwrap() = 5;
         }
         _ => {}
     }
