@@ -157,6 +157,7 @@ pub(in crate::core::authority) fn verify_record(
     Ok(record)
 }
 
+#[cfg(test)]
 pub(in crate::core::authority) fn live_record(
     verifier: &AuthorityVerifier,
     event: &Event,

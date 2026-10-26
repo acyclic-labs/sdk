@@ -12,17 +12,6 @@ where
     fn invalidate_execution_caches(&mut self) {
         self.cache_identity = Default::default();
         *self.verified.get_mut() = SummaryCache::default();
-        *self.conversation_projection.get_mut() = None;
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn original_native_execution_work_matches(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> bool {
-        self._native_metadata
-            .as_ref()
-            .is_some_and(|custody| work.shares_ledger(custody.work()))
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
@@ -178,7 +167,6 @@ where
             volume,
             verifier,
             scope,
-            schemas,
             maximum_payload_bytes,
             input_verifier: None,
             bound_selection: None,
@@ -187,7 +175,6 @@ where
             interactions,
             execution: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
-            conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,

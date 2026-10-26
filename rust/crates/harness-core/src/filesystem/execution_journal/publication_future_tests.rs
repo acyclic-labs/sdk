@@ -78,7 +78,7 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
     let second = FilesystemExecutionJournal::new(
         first.stream.clone(),
         FilesystemHost::new(second_fs, first.volume.provider(), None)?,
-        &first.schemas,
+        &SchemaRegistry::new(),
         crate::filesystem::FilesystemJournalBinding {
             volume: &first.volume,
             verifier: &first.verifier,

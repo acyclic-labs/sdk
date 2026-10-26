@@ -12,21 +12,11 @@ impl PreDispatchFailure {
         &self.message
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn into_message(self) -> String {
-        self.message
-    }
-
     pub(super) fn into_error(self) -> Error {
         match self.original {
             Some(error) => *error,
             None => Error::Invalid(self.message),
         }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn owned_bytes(&self) -> u64 {
-        self.message.capacity() as u64
     }
 }
 

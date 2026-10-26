@@ -36,19 +36,6 @@ impl TaskRunLimits {
         Ok(())
     }
 
-    pub(super) fn check_deadline(&self) -> Result<()> {
-        let Some(deadline) = self.deadline_epoch_ms else {
-            return Ok(());
-        };
-        let now = acyclic_stream::UnixMillisClock::now_unix_millis(
-            &acyclic_stream::SystemUnixMillisClock,
-        );
-        if deadline <= now {
-            return Err(Error::Invalid("task deadline has expired".into()));
-        }
-        Ok(())
-    }
-
     pub(super) fn allows(&self, child: &Self) -> bool {
         [
             (
@@ -358,26 +345,6 @@ impl RuntimeScope {
     #[must_use]
     pub const fn is_sealed(&self) -> bool {
         self.extensions_sealed
-    }
-
-    pub(crate) fn with_replayed_extensions(
-        mut self,
-        extensions: Option<ExtensionAdmission>,
-    ) -> Result<Self> {
-        if let Some(extensions) = &extensions {
-            extensions.validate(&mut None)?;
-        }
-        if self.extensions_sealed && self.extensions != extensions {
-            return Err(Error::Conflict(
-                "replay cannot retarget original extension admission".into(),
-            ));
-        }
-        self.extensions = extensions;
-        if let Some(runtime) = &self.extension_runtime {
-            self.validate_extension_runtime(runtime)?;
-        }
-        self.extensions_sealed = true;
-        Ok(self)
     }
 
     /// Returns the exact effective grants.

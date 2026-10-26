@@ -363,6 +363,7 @@ impl AuthorityRoot {
         &self.id
     }
 
+    #[cfg(test)]
     pub(crate) const fn audience(&self) -> &Authority {
         &self.audience
     }
@@ -574,6 +575,7 @@ impl AuthorityRoot {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn authorize_effect(
         &self,
         effect_id: EffectId,
@@ -585,6 +587,7 @@ impl AuthorityRoot {
     }
 
     /// Signs the original provider observation with admitted encoding and hashing.
+    #[cfg(test)]
     pub(crate) fn attest_effect(
         &self,
         effect_id: EffectId,
@@ -671,6 +674,7 @@ impl std::fmt::Debug for AuthorityVerifier {
 
 impl AuthorityVerifier {
     /// Reject expired or revoked planning authority before any provider callback.
+    #[cfg(test)]
     pub(crate) fn verify_effect_plan(
         &self,
         effect_id: EffectId,
@@ -1164,14 +1168,6 @@ impl AuthorityVerifier {
         )
     }
 
-    pub(crate) fn fork_history_proof(
-        &self,
-        seed: &ForkSeed,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<[u8; 64]> {
-        self.admission.sign(&self.fork_history_digest(seed, work)?)
-    }
-
     pub(crate) fn verify_fork_history_proof(
         &self,
         seed: &ForkSeed,
@@ -1179,30 +1175,6 @@ impl AuthorityVerifier {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         self.verify_metadata(&self.fork_history_digest(seed, work)?, proof)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn fork_history_selection_proof_with_work(
-        &self,
-        revision: u64,
-        through_sequence: u64,
-        agent: Option<AgentId>,
-        history_digest: [u8; 32],
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<[u8; 32]> {
-        self.canonical_digest(
-            b"harness/v1/fork-history-selection\0",
-            &(
-                &self.id,
-                self.public.metadata_key,
-                &self.audience,
-                revision,
-                through_sequence,
-                agent,
-                history_digest,
-            ),
-            work,
-        )
     }
 
     /// Verifies the configured aggregate audience.

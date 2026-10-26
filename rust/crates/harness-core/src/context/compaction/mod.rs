@@ -129,21 +129,6 @@ impl Default for CompactionPolicy {
     }
 }
 
-#[cfg(feature = "filesystem")]
-impl CompactionPolicy {
-    /// Copies the policy on the optional original preparation ledger.
-    pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
-        Ok(match self {
-            Self::Disabled => Self::Disabled,
-            Self::Threshold(policy) => Self::Threshold(ThresholdCompaction {
-                response_reserve_tokens: policy.response_reserve_tokens,
-                recent_tokens: policy.recent_tokens,
-                retention: policy.retention.copy(io)?,
-            }),
-        })
-    }
-}
-
 mod exchanges;
 mod selection;
 pub(crate) use selection::{compact_context, mandatory_messages};

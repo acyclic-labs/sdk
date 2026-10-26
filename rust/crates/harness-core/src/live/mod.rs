@@ -18,6 +18,7 @@ mod handle;
 pub use handle::TaskHandle;
 mod completion;
 pub use completion::*;
+#[cfg(all(test, target_arch = "wasm32"))]
 mod timer;
 #[cfg(all(test, target_arch = "wasm32"))]
 use timer::{sleep_millis, timeout_until};

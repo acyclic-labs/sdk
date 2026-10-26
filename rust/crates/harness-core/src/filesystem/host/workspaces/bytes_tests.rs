@@ -224,7 +224,6 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
                 transaction,
                 &[],
                 false,
-                FilePublication::Replace(None),
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 cancellation,
             )

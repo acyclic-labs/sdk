@@ -135,18 +135,6 @@ typed_reference!(
 );
 typed_reference!(RunRef, Run, "Reference to a recoverable model run.");
 
-#[cfg(feature = "filesystem")]
-impl WorkspaceRef {
-    pub(crate) fn into_resource(self) -> ResourceRef {
-        self.0
-    }
-}
-impl CheckpointRef {
-    pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        self.0.copy(work).map(Self)
-    }
-}
-
 macro_rules! resource_conversion {
     ($name:ident, $kind:ident) => {
         impl $name {
@@ -182,12 +170,6 @@ impl WorkspaceRef {
 
 #[cfg(feature = "filesystem")]
 impl GenerationRef {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.0.logical_owned_bytes()
-    }
-}
-
-impl CheckpointRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.0.logical_owned_bytes()
     }

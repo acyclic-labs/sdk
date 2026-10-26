@@ -368,6 +368,7 @@ impl ExecutionSummary {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
         crate::model::charge_items(io, 1)?;
         Ok(self.pending_dispatches == 0)

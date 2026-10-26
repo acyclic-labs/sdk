@@ -68,18 +68,6 @@ where
         Ok(())
     }
 
-    pub(super) async fn resolve_response(
-        &self,
-        binding: (OperationId, InteractionId, u64),
-        scope: &Scope,
-        response: InteractionResponse,
-    ) -> Result<ResolutionReceipt> {
-        self.verify_responder_scope(binding.1, scope, None)?;
-        let mut transaction = self.transaction(None).await?;
-        self.resolve_response_at(binding, scope, response, &mut transaction)
-            .await
-    }
-
     async fn resolve_response_at(
         &self,
         binding: (OperationId, InteractionId, u64),

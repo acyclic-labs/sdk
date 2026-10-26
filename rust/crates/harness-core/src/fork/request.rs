@@ -176,16 +176,6 @@ impl ForkRequest {
         Ok(())
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        CodecQuota::produce(work, |quota| {
-            crate::core::copy(self, quota, |source, work| {
-                source.validate(work)?;
-                source.owned_heap_bytes()
-            })
-        })
-    }
-
     fn validate_authorized_source(&self, work: &mut CodecQuota<'_, '_>) -> Result<()> {
         if let Some(source) = &self.authorized_source {
             source.validate(work.work())?;

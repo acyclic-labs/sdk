@@ -18,7 +18,6 @@ use crate::{
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{ModelContent, ModelEvent},
     projection::{SelectedModelContext, select_model_context},
-    store::StreamAggregate,
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -43,7 +42,6 @@ mod indexed_publication;
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod inline_tests;
 mod interactions;
-mod latest_response;
 mod observations;
 mod persistent_index;
 #[cfg(test)]
@@ -78,7 +76,6 @@ pub struct FilesystemExecutionJournal<P, A: 'static, O: 'static> {
     volume: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
-    schemas: SchemaRegistry,
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     /// The one model context an agent turn may dispatch, built by its turn host
@@ -91,7 +88,6 @@ pub struct FilesystemExecutionJournal<P, A: 'static, O: 'static> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     execution: Option<(OperationId, OperationId)>,
     verified: tokio::sync::Mutex<SummaryCache>,
-    conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,

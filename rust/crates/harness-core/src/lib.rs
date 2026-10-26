@@ -70,8 +70,7 @@ pub mod contract;
 pub mod conversation;
 pub mod core;
 pub mod distributed;
-pub mod effect_host;
-pub mod effects;
+mod effects;
 pub mod executor;
 pub mod extension;
 #[cfg(feature = "filesystem")]

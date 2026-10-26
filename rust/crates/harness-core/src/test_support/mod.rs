@@ -6,9 +6,6 @@ pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub mod admission_work;
 #[cfg(all(
     any(test, all(feature = "test-support", feature = "filesystem-local")),
     not(target_arch = "wasm32")

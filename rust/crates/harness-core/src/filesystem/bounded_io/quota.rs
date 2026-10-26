@@ -60,10 +60,6 @@ impl<'a> DecodeReservation<'a> {
         Ok(())
     }
 
-    pub(in crate::filesystem) fn io(&self) -> &'a PreparationIo {
-        self.io
-    }
-
     pub(in crate::filesystem) fn adopt(&mut self, bytes: u64) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = &mut self.custody {

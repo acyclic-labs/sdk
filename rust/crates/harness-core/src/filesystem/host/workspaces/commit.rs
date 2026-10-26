@@ -35,16 +35,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 
-    pub(in crate::filesystem) fn create_records<'a>(
-        &'a self,
-        reference: &'a WorkspaceRef,
-        mutations: &'a [WorkspaceMutation],
-        key: IdempotencyKey,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        self.publish_generation(reference, mutations, key, io, FilePublication::CreateOnly)
-    }
-
     fn publish_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,
@@ -55,7 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let expected = match publication {
             FilePublication::Replace(expected) => expected,
-            FilePublication::CreateOnly | FilePublication::Authorized(..) => None,
+            FilePublication::Authorized(..) => None,
         };
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -101,14 +91,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if let Some(pause) = &self.publication_pause {
                 pause().await;
             }
-            Self::publish_mutations(&mut transaction, mutations, publication, io).await?;
+            Self::publish_mutations(&mut transaction, mutations, io).await?;
             Self::commit_publication(transaction, io, publication).await
         })
     }
     async fn publish_mutations(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
-        publication: FilePublication<'_>,
         io: &PreparationIo,
     ) -> Result<()> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async {
@@ -117,7 +106,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if Self::stage_publication_batch(
                     transaction,
                     mutations,
-                    publication,
                     Some(io),
                     io.cancellation(),
                 )
@@ -133,29 +121,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .create_dir_all(path, io, io.cancellation())
                             .await,
                     )?,
-                    WorkspaceMutation::PutFile { path, bytes } => match publication {
-                        FilePublication::Replace(_) | FilePublication::Authorized(..) => io.sdk(
-                            transaction
-                                .write(path, bytes.clone(), io, io.cancellation())
-                                .await,
-                        )?,
-                        FilePublication::CreateOnly => {
-                            let (created, recorded) = transaction
-                                .create_file(
-                                    path,
-                                    bytes.clone(),
-                                    acyclic_fs::kernel::FileMetadata::default(),
-                                    io,
-                                    io.cancellation(),
-                                )
-                                .await;
-                            recorded?;
-                            io.sdk((
-                                created.map_err(|error| creation_error(error, Some(io))),
-                                Ok(()),
-                            ))?;
-                        }
-                    },
+                    WorkspaceMutation::PutFile { path, bytes } => io.sdk(
+                        transaction
+                            .write(path, bytes.clone(), io, io.cancellation())
+                            .await,
+                    )?,
                     WorkspaceMutation::Remove { .. } => {
                         return Err(stock_boundary(
                             Some(io),

@@ -73,7 +73,7 @@ pub(crate) fn native_sdk_result<T>(
     }
 }
 
-#[cfg(any(feature = "native-execution", test))]
+#[cfg(test)]
 mod completion;
 #[cfg(test)]
 mod tests;

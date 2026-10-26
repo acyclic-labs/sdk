@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::filesystem::*;
+use crate::store::StreamAggregate;
 use crate::{AgentId, conversation::VolumeOwner, executor::ModelPurpose, resources::ProviderRef};
 
 mod staged_ref;

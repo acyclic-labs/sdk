@@ -7,7 +7,6 @@ mod resource;
 pub use resource::{ResourceKind, ResourceRef};
 mod typed;
 pub use typed::*;
-mod generation;
 #[cfg(test)]
 mod tests;
 fn validate_text<'a>(

@@ -51,10 +51,7 @@ pub enum WorkspaceMutation {
 #[derive(Clone, Copy)]
 pub(crate) enum InternalContentClass {
     Interaction,
-    Workflow,
     Execution,
-    ModelPrefix,
-    Conversation,
 }
 
 impl InternalContentClass {
@@ -89,10 +86,7 @@ impl InternalContentClass {
     pub(in crate::filesystem) fn prefix(self) -> &'static str {
         match self {
             Self::Interaction => ".system/interactions/",
-            Self::Workflow => ".system/workflows/",
             Self::Execution => ".system/execution/",
-            Self::ModelPrefix => ".system/inherited-conversation/model-prefix/",
-            Self::Conversation => "turns/.canonical/",
         }
     }
 }

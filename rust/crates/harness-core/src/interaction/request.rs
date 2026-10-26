@@ -206,7 +206,7 @@ impl Interaction {
     }
 
     /// Logical heap bytes this request retains, for native custody checks.
-    #[cfg(any(test, all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(test)]
     pub(crate) fn owned_bytes(&self) -> Result<u64> {
         interaction_request_owned_bytes(self, &None)
     }

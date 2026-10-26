@@ -28,14 +28,13 @@ where
 enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
     Authorized(acyclic_fs::access::PolicyFence, &'a ContentGrant),
-    CreateOnly,
 }
 
 impl FilePublication<'_> {
     fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
         match self {
             Self::Authorized(fence, _) => Some(fence),
-            Self::Replace(_) | Self::CreateOnly => None,
+            Self::Replace(_) => None,
         }
     }
 }
@@ -58,19 +57,6 @@ fn require_publication_fence(fence: Option<acyclic_fs::access::PolicyFence>) -> 
         ));
     }
     Ok(())
-}
-
-fn creation_error(error: WorkspaceError, io: Option<&PreparationIo>) -> Error {
-    match error {
-        WorkspaceError::Filesystem(acyclic_fs::FsError::Mutation(
-            acyclic_fs::kernel::GenerationMutationError::AlreadyExists,
-        )) => stock_boundary(
-            io,
-            crate::wire::ErrorCode::Conflict,
-            "immutable workspace record already exists",
-        ),
-        error => error.into(),
-    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -194,31 +180,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
-    pub(in crate::filesystem) async fn retain_generation(
-        &self,
-        workspace: &WorkspaceRef,
-        reference: &GenerationRef,
-    ) -> Result<()> {
-        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-        acyclic_differential::record(("retain", 0u64));
-        let workspace = self.open(workspace, None).await?;
-        let generation = self.generation(&workspace, reference, None).await?;
-        let identity = format!(
-            "harness-generation-{}",
-            hex::encode(reference.as_resource().key())
-        );
-        generation
-            .retain_if_unpublished(
-                identity,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| map_error(failure.error))?;
-        Ok(())
-    }
-
     pub(in crate::filesystem) fn generation_ref_id(
         &self,
         id: GenerationId,
@@ -303,7 +264,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &mut transaction,
                 mutations,
                 invalidate_metadata,
-                publication,
                 budget,
                 &cancellation,
             )?
@@ -372,7 +332,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutation: &WorkspaceMutation,
         invalidate_metadata: bool,
-        publication: FilePublication<'_>,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
@@ -387,26 +346,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(map_error)?;
             }
             WorkspaceMutation::PutFile { path, bytes } => {
-                match publication {
-                    FilePublication::Replace(_) | FilePublication::Authorized(..) => {
-                        unmeasured_workspace_operation(|| {
-                            transaction.write(path, bytes.clone(), budget, cancellation)
-                        })?
-                        .await?
-                        .map_err(|failure| map_error(failure.error))?
-                    }
-                    FilePublication::CreateOnly => unmeasured_workspace_operation(|| {
-                        transaction.create_file(
-                            path,
-                            bytes.clone(),
-                            acyclic_fs::kernel::FileMetadata::default(),
-                            budget,
-                            cancellation,
-                        )
-                    })?
-                    .await?
-                    .map_err(|failure| creation_error(failure.error, None))?,
-                };
+                unmeasured_workspace_operation(|| {
+                    transaction.write(path, bytes.clone(), budget, cancellation)
+                })?
+                .await?
+                .map_err(|failure| map_error(failure.error))?;
             }
             WorkspaceMutation::Remove { path } => {
                 unmeasured_workspace_operation(|| transaction.remove(path, budget, cancellation))?
@@ -441,7 +385,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         transaction: &'a mut acyclic_fs::Transaction<A, O>,
         mutations: &'a [WorkspaceMutation],
         invalidate_metadata: bool,
-        publication: FilePublication<'a>,
         budget: acyclic_fs::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
@@ -450,13 +393,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             let batched = !invalidate_metadata
                 && crate::conversation::BoundedContentFuture::new(None, || {
-                    Self::stage_publication_batch(
-                        transaction,
-                        mutations,
-                        publication,
-                        None,
-                        cancellation,
-                    )
+                    Self::stage_publication_batch(transaction, mutations, None, cancellation)
                 })?
                 .await?;
             #[cfg(target_arch = "wasm32")]
@@ -467,7 +404,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         transaction,
                         mutation,
                         invalidate_metadata,
-                        publication,
                         budget,
                         cancellation,
                     )

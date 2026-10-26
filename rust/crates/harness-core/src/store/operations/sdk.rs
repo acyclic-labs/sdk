@@ -24,34 +24,6 @@ pub(crate) fn stream_error_with_work(
     source.into()
 }
 
-pub(crate) fn stream<P: StreamProvider>(
-    client: &Arc<P>,
-    path: &str,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(acyclic_stream::Stream<P>, crate::NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let path_custody = if let Some(observer) = work
-        .as_deref_mut()
-        .filter(|observer| observer.original_native_work().is_some())
-    {
-        let bytes = path.len() as u64;
-        observer.admit_owned(bytes)?;
-        observer.admit_allocation(bytes)?;
-        observer.admit_copy(bytes)?;
-        observer.retain_owned(bytes)?;
-        let custody = observer.take_native_custody(bytes)?;
-        observer.copy_bytes(bytes)?;
-        Some(custody)
-    } else {
-        None
-    };
-    let stream = acyclic_stream::Stream::new(Arc::clone(client), path)
-        .map_err(|error| stream_error_with_work(error, work))?;
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let path_custody = None;
-    Ok((stream, path_custody))
-}
-
 /// Native payload custody is intrinsic to the SDK's `OwnedBytes`.
 pub(crate) fn sdk_record_retained_bytes(record: &Record, work: &Option<&mut dyn HistoryIo>) -> u64 {
     if work.is_none() || work.as_deref().is_some_and(original_native_decode_mode) {

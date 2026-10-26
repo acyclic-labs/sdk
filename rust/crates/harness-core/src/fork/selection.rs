@@ -149,16 +149,6 @@ impl ResourceRevision {
             )),
         }
     }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        CodecQuota::produce(work, |quota| {
-            crate::core::copy(self, quota, |source, work| {
-                source.validate(work)?;
-                source.owned_heap_bytes()
-            })
-        })
-    }
 }
 
 /// Required or optional exact resource selection.

@@ -53,21 +53,11 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "fork archive differs from the authenticated parent prefix",
             ));
         }
-        #[cfg(feature = "filesystem")]
-        let proof = self.verifier.fork_history_selection_proof_with_work(
-            parent.revision(),
-            through_sequence,
-            conversation.agent,
-            conversation.history_prefix_digest(through_sequence, quota.work())?,
-            quota.work(),
-        )?;
         quota.transfer();
         Ok(crate::fork::PreparedForkHistory::from_archive(
             cursor.authority,
             parent.revision(),
             conversation,
-            #[cfg(feature = "filesystem")]
-            proof,
         ))
     }
 

@@ -194,20 +194,6 @@ impl PreparationIo {
             custody: Mutex::new(custody),
         }
     }
-    /// Retains allocation ownership while charging this invocation's context.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_custody_with_work(
-        custody: acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> std::result::Result<Self, acyclic_fs::NativeAllocation> {
-        if !work.shares_invocation_context(custody.work()) {
-            return Err(custody);
-        }
-        Ok(Self::Native {
-            work: work.clone(),
-            custody: Mutex::new(custody),
-        })
-    }
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
@@ -625,6 +611,7 @@ impl PreparationIo {
 
 pub(in crate::filesystem) use codec::{clone_bytes, hex_key};
 impl PreparationIo {
+    #[cfg(test)]
     pub(crate) fn reserve<T>(
         values: &mut Vec<T>,
         capacity: usize,
