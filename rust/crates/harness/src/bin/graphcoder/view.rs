@@ -34,6 +34,8 @@ struct View {
     /// Sent prompts not yet settled, by inbox sequence.
     pending: Vec<(u64, String)>,
     phase: Option<Phase>,
+    /// The latest failed delivery, until the next status.
+    failure: Option<String>,
     /// Rows scrolled back from the live tail.
     back: usize,
     lines: Vec<Line<'static>>,
@@ -72,7 +74,9 @@ impl View {
                     text: answer,
                 });
             }
+            Event::Failed(error) => self.failure = Some(error),
             Event::Status(status) => {
+                self.failure = None;
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     self.pending.retain(|(inbox, _)| *inbox >= status.cursor);
                 }
@@ -130,6 +134,10 @@ impl View {
                 id.as_str()
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
+            _ if self.failure.is_some() => format!(
+                "agent turn failed: {}",
+                self.failure.as_deref().unwrap_or_default()
+            ),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
             _ => "Enter sends · Ctrl+D quits".into(),
         }

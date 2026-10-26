@@ -8,7 +8,7 @@ use acyclic_harness::{
         AgentPath, AgentRecord as _, Control, ConversationEntry, Delivered, InboxRecord, IntentId,
         Phase, Sender, StatusRecord, TurnInput,
     },
-    approvals::ApprovalResponder,
+    approvals::{ApprovalPolicy, ApprovalResponder, Approver},
     conversation::{ContentResidencyVerifier, FileRef},
     executor::TurnOutput,
 };
@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 /// Bytes read back from one staged prompt or turn output.
 const MAXIMUM_TEXT: u64 = 16 * 1024 * 1024;
+/// The local user's principal when the agent's policy names no human.
 const USER: &str = "local";
 
 fn failed(error: impl std::fmt::Display) -> Error {
@@ -37,23 +38,45 @@ pub enum Event {
         inbox: Option<u64>,
         entry: ConversationEntry,
     },
+    /// The runtime failed the agent's delivery; it stays queued for a retry
+    /// that may fail the same way.
+    Failed(String),
 }
 
 pub struct Conversation {
     local: Arc<LocalHarness>,
     agent: AgentPath,
     reader: Arc<dyn ContentResidencyVerifier>,
+    /// The human principals of the agent's policy: the terminal user is each.
+    humans: Vec<String>,
 }
 
 impl Conversation {
     /// The root agent of `local`, created on first use and reopened after.
     pub async fn open(local: Arc<LocalHarness>) -> Result<Arc<Self>> {
-        let agent = local.agents().await?.1.clone();
+        let (agents, agent) = local.agents().await?;
+        let agent = agent.clone();
         let reader = local.client_reader()?;
+        let mut humans = Vec::new();
+        if let Some(policy) = agents.state(&agent).await.map_err(failed)?.policy {
+            let bytes = reader.read(&policy, MAXIMUM_TEXT, None, None)?.await?;
+            let policy: ApprovalPolicy = serde_json::from_slice(&bytes).map_err(failed)?;
+            for approver in policy.approvers {
+                if let Approver::Human { principal } = approver
+                    && !humans.contains(&principal)
+                {
+                    humans.push(principal);
+                }
+            }
+        }
+        if humans.is_empty() {
+            humans.push(USER.into());
+        }
         Ok(Arc::new(Self {
             local,
             agent,
             reader,
+            humans,
         }))
     }
 
@@ -92,19 +115,32 @@ impl Conversation {
         Ok(())
     }
 
-    /// Answer the agent's pending approval request as the local user.
+    /// Answer the agent's pending approval request as the local user, who
+    /// holds every human stage of the policy: the active stage accepts one.
     pub async fn decide(&self, request: &IntentId, approved: bool) -> Result<()> {
-        self.local
-            .decide(
-                &self.agent,
-                request,
-                ApprovalResponder::Human(USER),
-                approved,
-                None,
-            )
-            .await
-            .map_err(failed)?;
-        Ok(())
+        let mut refused = None;
+        for human in &self.humans {
+            match self
+                .local
+                .decide(
+                    &self.agent,
+                    request,
+                    ApprovalResponder::Human(human),
+                    approved,
+                    None,
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(acyclic_harness::agent::Error::Turn(error))
+                    if matches!(*error, Error::Unauthorized(_)) =>
+                {
+                    refused = Some(error);
+                }
+                Err(error) => return Err(failed(error)),
+            }
+        }
+        Err(refused.map_or_else(|| Error::Conflict("no human approver".into()), |error| *error))
     }
 
     /// The text of a staged prompt or turn output.
@@ -142,7 +178,28 @@ impl Conversation {
         self: &Arc<Self>,
         from: u64,
     ) -> Result<LocalBoxStream<'static, Result<Event>>> {
-        let provider = Arc::clone(self.local.agents().await?.0.provider());
+        let (agents, _) = self.local.agents().await?;
+        let provider = Arc::clone(agents.provider());
+        let actor = agents.actor(&self.agent).map_err(failed)?;
+        let receiver = self
+            .local
+            .agent_failures()
+            .ok_or_else(|| Error::Conflict("agents are not hosted".into()))?;
+        // Failures of this agent's deliveries, from now on.
+        let failures = futures::stream::unfold(receiver, move |mut receiver| {
+            let actor = actor.clone();
+            async move {
+                loop {
+                    match receiver.recv().await {
+                        Ok(failure) if failure.actor == actor => {
+                            return Some((Ok(Event::Failed(failure.error)), receiver));
+                        }
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+            }
+        });
         let status = self.agent.status().map_err(failed)?;
         let latest = provider.tail(status.clone()).await.map_err(failed)?;
         let statuses = provider
@@ -189,7 +246,12 @@ impl Conversation {
                 }
             },
         );
-        Ok(futures::stream::select(statuses.boxed_local(), turns.boxed_local()).boxed_local())
+        Ok(futures::stream::select_all([
+            statuses.boxed_local(),
+            turns.boxed_local(),
+            failures.boxed_local(),
+        ])
+        .boxed_local())
     }
 }
 

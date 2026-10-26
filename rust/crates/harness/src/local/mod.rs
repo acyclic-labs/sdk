@@ -67,7 +67,7 @@ mod turn;
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
 mod workspace;
-pub use agents::{LocalAgents, LocalTurns};
+pub use agents::{AgentFailure, LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
 #[cfg(any(test, feature = "native-execution"))]

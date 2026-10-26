@@ -21,9 +21,13 @@ pub async fn prompt(
     prompt: &str,
     output: &mut impl Write,
 ) -> Result<u8, Failure> {
-    let inbox = conversation.send(operation, prompt).await?;
     let mut events = conversation.events(0).await?;
+    let inbox = conversation.send(operation, prompt).await?;
     let mut answers = stdin_lines();
+    // Entries observed, and the conversation tail once the agent consumed the
+    // message: no entry for it by then means it was cancelled.
+    let mut seen = 0_u64;
+    let mut consumed = None;
     while let Some(event) = events.next().await {
         match event? {
             Event::Turn {
@@ -34,11 +38,18 @@ pub async fn prompt(
                 writeln!(output, "{text}")?;
                 return Ok(0);
             }
-            Event::Turn { .. } => {}
+            Event::Turn { .. } => seen += 1,
+            Event::Failed(error) => {
+                eprintln!("graphcoder: agent turn failed: {error}");
+                return Ok(1);
+            }
             Event::Status(status) => {
                 if let Some(reason) = ended(&status) {
                     eprintln!("graphcoder: {reason}");
                     return Ok(1);
+                }
+                if status.phase == Phase::Idle && status.cursor > inbox {
+                    consumed = Some(conversation.settled().await?);
                 }
                 if let Phase::WaitingApproval { id } = status.phase {
                     eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
@@ -47,6 +58,10 @@ pub async fn prompt(
                     conversation.decide(&id, approved).await?;
                 }
             }
+        }
+        if consumed.is_some_and(|tail| seen >= tail) {
+            eprintln!("graphcoder: the prompt was cancelled");
+            return Ok(1);
         }
     }
     Err("agent status follow ended".into())
@@ -67,20 +82,31 @@ pub async fn jsonl(
     let mut lines = stdin_lines();
     let mut open = true;
     let mut sent = 0_u64;
-    // Unsettled prompts by inbox sequence; settled turns no prompt awaits yet,
-    // so a replayed prompt finds its earlier turn.
+    // Unsettled prompts by inbox sequence, and every settled turn by its
+    // message, so a repeated or replayed prompt finds its earlier turn.
     let mut pending = BTreeMap::new();
     let mut settled = BTreeMap::new();
+    // Conversation entries observed; a message the agent consumed (its
+    // cursor passed it) with no entry by the conversation tail as of that
+    // status was cancelled.
+    let mut seen = 0_u64;
+    let mut consumed = None;
+    let mut failure = None;
     let mut status = None;
     let mut announced = None;
     loop {
         // Settle every pending prompt the observed turns and status answer.
         for (inbox, id) in std::mem::take(&mut pending) {
-            let line = if let Some(entry) = settled.remove(&inbox) {
-                let (_, text) = conversation.turn(&entry).await?;
+            let cancelled = consumed.is_some_and(|(cursor, tail)| inbox < cursor && seen >= tail);
+            let line = if let Some(entry) = settled.get(&inbox) {
+                let (_, text) = conversation.turn(entry).await?;
                 json!({"id": id, "inbox": inbox, "text": text})
             } else if let Some(reason) = status.as_ref().and_then(ended) {
                 json!({"id": id, "inbox": inbox, "error": reason})
+            } else if cancelled {
+                json!({"id": id, "inbox": inbox, "error": "cancelled"})
+            } else if let Some(error) = &failure {
+                json!({"id": id, "inbox": inbox, "error": format!("agent turn failed: {error}")})
             } else {
                 pending.insert(inbox, id);
                 continue;
@@ -88,6 +114,7 @@ pub async fn jsonl(
             writeln!(output, "{line}")?;
             output.flush()?;
         }
+        failure = None;
         let done = status.as_ref().and_then(ended).is_some();
         if done {
             return Ok(1);
@@ -126,11 +153,17 @@ pub async fn jsonl(
                 }
             }
             event = events.next() => match event.ok_or("agent status follow ended")?? {
-                Event::Turn { inbox: Some(inbox), entry } => {
-                    settled.insert(inbox, entry);
+                Event::Turn { inbox, entry } => {
+                    seen += 1;
+                    if let Some(inbox) = inbox {
+                        settled.insert(inbox, entry);
+                    }
                 }
-                Event::Turn { .. } => {}
+                Event::Failed(error) => failure = Some(error),
                 Event::Status(observed) => {
+                    if matches!(observed.phase, Phase::Idle | Phase::Done { .. }) {
+                        consumed = Some((observed.cursor, conversation.settled().await?));
+                    }
                     if let Phase::WaitingApproval { id } = &observed.phase
                         && announced.as_ref() != Some(id)
                     {
