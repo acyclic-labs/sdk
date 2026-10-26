@@ -80,7 +80,13 @@ fn condition_len(condition: &CommitCondition) -> usize {
         CommitCondition::Absent { path } => block_len(path.as_str().len()),
     })
 }
-#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(
+    feature = "local",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 fn mutation_len(mutation: &CommitMutation) -> usize {
     mutation_len_with(mutation, &append_record_len)
 }
@@ -140,7 +146,10 @@ pub(crate) fn prepared_commit_command_len(request: &CommitRequest, maximum: usiz
 #[cfg(any(
     feature = "local",
     all(test, feature = "http"),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
@@ -149,7 +158,10 @@ pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
 #[cfg(any(
     feature = "local",
     all(test, feature = "http"),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
     header(out, tag, value.len());
@@ -158,7 +170,10 @@ fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
 #[cfg(any(
     feature = "local",
     all(test, feature = "http"),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
     if let Some(value) = value {
@@ -169,7 +184,10 @@ fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
 #[cfg(any(
     feature = "local",
     all(test, feature = "http"),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
     for record in records {
@@ -193,7 +211,10 @@ fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
 #[cfg(any(
     feature = "local",
     all(test, feature = "http"),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
     bytes(out, 1, request.path.as_str().as_bytes());
@@ -203,7 +224,13 @@ pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
         bytes(out, 4, key.as_bytes());
     }
 }
-#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(
+    feature = "local",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     for path in &request.exclude {
         bytes(out, 5, path.as_str().as_bytes());
@@ -215,7 +242,13 @@ pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
         bytes(out, 4, key.as_bytes());
     }
 }
-#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(
+    feature = "local",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     for condition in &request.conditions {
         header(out, 1, condition_len(condition));

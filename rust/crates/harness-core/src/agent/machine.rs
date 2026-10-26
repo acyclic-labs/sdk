@@ -356,11 +356,10 @@ pub async fn step<T: TurnDriver + ?Sized>(
         .iter()
         .filter(|out| matches!(out, Out::Conversation(_)))
         .count() as u64;
-    // A status records each phase change, and also the step that creates the
-    // conversation stream: before it exists, a follower can only wait on the
-    // status stream, and a settled Idle -> Idle turn changes no phase.
-    let creates_conversation = state.conversation_tail == 0 && appended > 0;
-    let status = (state.phase != previous || creates_conversation).then(|| StatusRecord {
+    // A settled Idle -> Idle turn still advances observation: publish its
+    // consumed inbox cursor atomically with every conversation append, so a
+    // client can associate that output with its delivered input.
+    let status = (state.phase != previous || appended > 0).then(|| StatusRecord {
         phase: state.phase.clone(),
         cursor,
     });

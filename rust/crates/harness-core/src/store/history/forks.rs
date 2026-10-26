@@ -4,7 +4,7 @@ use crate::{
     wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized},
 };
 
-impl<P: StreamProvider> HistoryReader<P> {
+impl<P: StreamProvider + ?Sized> HistoryReader<P> {
     /// Hydrates a bounded logical prefix for fork grant capture.
     pub async fn fork_history(
         &self,

@@ -97,7 +97,7 @@ impl<V: Entry> PreparationRecord for Cell<V> {
     }
 }
 
-async fn load<K: SummaryKey, V: Entry, P: StreamProvider>(
+async fn load<K: SummaryKey, V: Entry, P: StreamProvider + ?Sized>(
     map: &mut SummaryMap<K, V>,
     reader: &Reader<'_, P>,
     root: Option<NodeRef>,
@@ -116,7 +116,7 @@ async fn load<K: SummaryKey, V: Entry, P: StreamProvider>(
     map.insert_digest(digest, cell, reader.io)
 }
 
-async fn store<V: Entry, P: StreamProvider>(
+async fn store<V: Entry, P: StreamProvider + ?Sized>(
     writer: &mut Writer<'_, P>,
     root: Option<NodeRef>,
     key: [u8; 32],
@@ -131,7 +131,7 @@ async fn store<V: Entry, P: StreamProvider>(
     result
 }
 
-async fn snapshot<K: SummaryKey, V: Entry, P: StreamProvider>(
+async fn snapshot<K: SummaryKey, V: Entry, P: StreamProvider + ?Sized>(
     writer: &mut Writer<'_, P>,
     map: &SummaryMap<K, V>,
     io: Option<&PreparationIo>,
@@ -139,7 +139,7 @@ async fn snapshot<K: SummaryKey, V: Entry, P: StreamProvider>(
     overlay(writer, None, map, io).await
 }
 
-async fn overlay<K: SummaryKey, V: Entry, P: StreamProvider>(
+async fn overlay<K: SummaryKey, V: Entry, P: StreamProvider + ?Sized>(
     writer: &mut Writer<'_, P>,
     mut root: Option<NodeRef>,
     map: &SummaryMap<K, V>,
@@ -155,7 +155,7 @@ async fn overlay<K: SummaryKey, V: Entry, P: StreamProvider>(
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

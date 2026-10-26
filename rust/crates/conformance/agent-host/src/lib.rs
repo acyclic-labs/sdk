@@ -5,6 +5,7 @@
 //! fault injection and assertions belong here, never in a backend adapter.
 
 mod admission;
+pub mod fixtures;
 mod identity;
 mod observe;
 mod publication;

@@ -44,7 +44,7 @@ impl PublishedDecision {
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

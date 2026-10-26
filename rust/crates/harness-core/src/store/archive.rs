@@ -1,7 +1,7 @@
 use super::*;
 use futures::TryStreamExt as _;
 
-impl<P: StreamProvider> StreamAggregate<P> {
+impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
     /// Reads an effect at the current cut and returns its retained bytes.
     pub async fn effect(
         &self,

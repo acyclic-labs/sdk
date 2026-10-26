@@ -163,7 +163,7 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
 }
 
 /// Preserves the provider's `NotFound` result for the canonical CAS selector.
-pub(crate) async fn bounds_with_work<P: StreamProvider>(
+pub(crate) async fn bounds_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -185,7 +185,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
     Ok(client.bounds(path.clone()).await)
 }
 
-pub(crate) async fn tail_with_work<P: StreamProvider>(
+pub(crate) async fn tail_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -195,7 +195,7 @@ pub(crate) async fn tail_with_work<P: StreamProvider>(
         .ok_or_else(|| stream_error_with_work(StreamError::NotFound, work))
 }
 
-pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
+pub(crate) async fn tail_optional_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -228,7 +228,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
 }
 
 /// Reads one exact record and rejects a producer exceeding the bound.
-pub(crate) async fn one_record<P: StreamProvider>(
+pub(crate) async fn one_record<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     from: u64,
@@ -272,7 +272,7 @@ pub(crate) async fn one_record<P: StreamProvider>(
     Ok(first)
 }
 
-pub(in crate::store) async fn publication_record<P: StreamProvider>(
+pub(in crate::store) async fn publication_record<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     stream: (StreamPath, u64),
     from: u64,

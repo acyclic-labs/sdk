@@ -24,7 +24,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
-pub struct FilesystemInteractionHost<P, A: 'static, O: 'static> {
+pub struct FilesystemInteractionHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     verifier: AuthorityVerifier,
@@ -41,7 +41,7 @@ pub(in crate::filesystem) type InteractionProjection<P> =
     (StreamAggregate<P>, Option<PreparationIo>);
 
 /// A verified projection and its sole live writer have the same lifetime.
-pub(in crate::filesystem) struct InteractionTransaction<'a, P> {
+pub(in crate::filesystem) struct InteractionTransaction<'a, P: ?Sized> {
     pub aggregate: InteractionProjection<P>,
     _writer: acyclic_stream::OperationClaim<'a, Option<DecodeReservation<'a>>>,
 }
@@ -53,7 +53,7 @@ mod resolution;
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

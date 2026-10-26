@@ -17,7 +17,7 @@ pub(super) struct NodeRef {
     pub(super) digest: [u8; 32],
 }
 
-pub(super) struct Reader<'a, P> {
+pub(super) struct Reader<'a, P: ?Sized> {
     pub(super) provider: &'a Arc<P>,
     pub(super) path: &'a StreamPath,
     pub(super) base: u64,
@@ -26,7 +26,7 @@ pub(super) struct Reader<'a, P> {
     pub(super) cache: Option<&'a NodeCache>,
 }
 
-pub(super) struct Writer<'a, P> {
+pub(super) struct Writer<'a, P: ?Sized> {
     provider: &'a Arc<P>,
     path: &'a StreamPath,
     base: u64,

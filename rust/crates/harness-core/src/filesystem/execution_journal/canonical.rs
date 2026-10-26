@@ -4,7 +4,7 @@ mod output;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -551,7 +551,7 @@ pub(super) async fn project_canonical_delta_with_io<P, A, O>(
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::Context>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
