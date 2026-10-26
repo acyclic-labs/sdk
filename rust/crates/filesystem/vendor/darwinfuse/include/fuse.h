@@ -24,7 +24,14 @@
 #include <sys/mount.h>   /* struct statfs (BSD) for statfs_x */
 #endif
 
-#include "fuse_opt.h"
+/* Argument vector supplied by the mount caller. */
+struct fuse_args {
+    int     argc;
+    char  **argv;
+    int     allocated;
+};
+
+#define FUSE_ARGS_INIT(argc, argv) { argc, argv, 0 }
 
 #ifdef __cplusplus
 extern "C" {

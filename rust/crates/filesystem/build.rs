@@ -33,7 +33,6 @@ fn build_darwin_mount() {
         "vendor/darwinfuse/src/nfs4_server.c",
         "vendor/darwinfuse/src/nfs4_ops.c",
         "vendor/darwinfuse/src/inode_table.c",
-        "vendor/darwinfuse/src/fuse_opt.c",
         "vendor/darwinfuse/src/darwinfuse.c",
         "src/native_mount/darwin_mount_bridge.c",
         "src/native_mount/darwin_mount_retirement.c",
