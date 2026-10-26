@@ -8,7 +8,8 @@ fuzz_target!(|input: &[u8]| {
         let accepted =
             acyclic_harness::filesystem::verify_native_preparation_journal(input, |decode| {
                 acyclic_test_support::measure(decode).bytes_max as u64
-            });
+            })
+            .expect("shared journal verification must succeed");
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
             &acyclic_fs::CancellationToken::new(),
