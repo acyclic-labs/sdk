@@ -163,18 +163,19 @@ where
         approved: bool,
         reason: Option<String>,
     ) -> Result<()> {
-        let (_, authority, files) = self.journal(agent, None)?;
+        let (_, authority, files) = self.journal(agent, &[])?;
         let (policy, _) = self.approvals(agent, &authority.content).await?;
         crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
 
-    /// The journal and authority of `agent`'s turns. A turn's `input` file on
-    /// a volume the agent does not bind (a message from another agent) is
-    /// granted to it alone, by its exact version.
+    /// The journal and authority of `agent`'s turns. Each `external` input
+    /// file on a volume the agent does not bind (a message or result from
+    /// another agent, current or in history) is granted alone, by its exact
+    /// version.
     fn journal(
         &self,
         agent: &AgentState,
-        input: Option<&FileRef>,
+        external: &[FileRef],
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         TurnAuthority,
@@ -203,10 +204,10 @@ where
             grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
             grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
         }
-        if let Some(file) = input
-            && !agent.volumes.iter().any(|binding| binding.volume == *file.volume())
-        {
-            grants.push(file.read_capability(&mut None)?);
+        for file in external {
+            if !agent.volumes.iter().any(|binding| binding.volume == *file.volume()) {
+                grants.push(file.read_capability(&mut None)?);
+            }
         }
         let capabilities = Capabilities::new(grants);
         let scope = issuer.bootstrap_scope("agent", &capabilities, Some(owner), &mut None)?;
@@ -296,6 +297,19 @@ where
     }
 }
 
+/// The files a turn input's model content names.
+fn input_files(content: &ModelContent) -> Vec<FileRef> {
+    let file = |part: &ModelContentPart| match part {
+        ModelContentPart::File { file, .. } => Some(file.clone()),
+        _ => None,
+    };
+    match content {
+        ModelContent::Part(part) => file(part).into_iter().collect(),
+        ModelContent::Parts(parts) => parts.iter().filter_map(file).collect(),
+        ModelContent::Text(_) => Vec::new(),
+    }
+}
+
 fn agent_error(error: crate::agent::Error) -> Error {
     Error::Invalid(error.to_string())
 }
@@ -369,11 +383,28 @@ where
         stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
-            let file = match input {
-                ModelContent::Part(ModelContentPart::File { file, .. }) => Some(file),
-                _ => None,
-            };
-            let (journal, mut authority, files) = self.journal(agent, file)?;
+            // An inherited turn staged its output on an ancestor's private
+            // volume, which this agent's grants do not reach; the model
+            // context holds this agent's own settled turns.
+            let own = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.name == PRIVATE_VOLUME)
+                .map(|binding| &binding.volume);
+            let history: Vec<ConversationEntry> = self
+                .history(agent)
+                .await?
+                .into_iter()
+                .filter(|entry| Some(entry.output.volume()) == own)
+                .collect();
+            // Every input the model context names, retained history included,
+            // stays readable by its exact version.
+            let mut external = input_files(input);
+            for entry in &history {
+                let content = crate::agent::model_input(&entry.input).map_err(agent_error)?;
+                external.extend(input_files(&content));
+            }
+            let (journal, mut authority, files) = self.journal(agent, &external)?;
             authority.effects = Some(Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),
@@ -390,16 +421,6 @@ where
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
-            // An inherited turn staged its output on an ancestor's private
-            // volume, which this agent's grants do not reach; the model
-            // context holds this agent's own settled turns.
-            let own = authority.content.writer.as_ref().map(|writer| writer.volume().clone());
-            let history = self
-                .history(agent)
-                .await?
-                .into_iter()
-                .filter(|entry| Some(entry.output.volume()) == own.as_ref())
-                .collect();
             let selected = select(agent, &journal, history, turn, input).await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),

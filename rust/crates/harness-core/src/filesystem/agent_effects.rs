@@ -62,10 +62,20 @@ where
             {
                 return Err(Error::Invalid("agent effect call key is not a file name".into()));
             }
-            let path = format!("{}/{call}.json", self.directory);
-            if let Some(existing) = self.files.read(&path, self.maximum_bytes).await? {
+            // Calls run one at a time, so the number of effects already
+            // recorded is this call's position in the turn; a retried call
+            // finds its own file by its key.
+            let names = self.files.list(&self.directory).await?;
+            let suffix = format!("-{call}.json");
+            if let Some(name) = names.iter().find(|name| name.ends_with(&suffix)) {
+                let existing = self
+                    .files
+                    .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
+                    .await?
+                    .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
                 return decode(&existing);
             }
+            let path = format!("{}/{:010}{suffix}", self.directory, names.len());
             // A spawn names a new child: a name already taken would make the
             // step's fork conflict on every retry.
             if let TurnEffect::Spawn { intent, .. } = effect {
