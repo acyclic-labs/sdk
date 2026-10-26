@@ -376,6 +376,7 @@ case "$lane" in
       --target "$target" --lib native_capture::
     ;;
   policy)
+    source scripts/ensure-bun.sh
     node --test scripts/check-feature-matrix.test.mjs scripts/gate-windows-features.test.mjs
     node --test scripts/check-test-support.test.mjs
     node scripts/check-test-support.mjs
@@ -410,7 +411,6 @@ case "$lane" in
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs
     node scripts/test-verify-release-binary.mjs
-    source scripts/ensure-bun.sh
     bun test scripts/qualify-rustfmt.test.mjs
     bash scripts/qualify-rustfmt.sh
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

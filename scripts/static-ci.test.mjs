@@ -72,12 +72,12 @@ describe('release static policy', {concurrency: true}, () => {
   const old = readFileSync('scripts/fixtures/static-ci-b7333953cb.mjs.txt', 'utf8');
   const current = readFileSync(join(root, 'scripts/static-ci.mjs'), 'utf8');
   const fence = `const depth = Number(process.env.STATIC_CI_TEST_DEPTH ?? 0);
-if (depth === 2) { console.error('BOUNDED_OLD_RECURSION'); process.exit(86); }
+if (!Number.isSafeInteger(depth) || depth < 0 || depth >= 2) { console.error('BOUNDED_OLD_RECURSION'); process.exit(86); }
 process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
 `;
   writeFileSync(join(root, 'scripts/static-ci.mjs'), fence + old);
   commit('captured original checker with test-only depth fence');
-  const negative = await check({runtime: 'bun', args: []});
+  const negative = await check({runtime: 'bun', args: [], extraEnv: {STATIC_CI_TEST_DEPTH: '0'}});
   assert.notEqual(negative.status, 0);
   assert.match(negative.stderr, /BOUNDED_OLD_RECURSION/);
   writeFileSync(join(root, 'scripts/static-ci.mjs'), current);
