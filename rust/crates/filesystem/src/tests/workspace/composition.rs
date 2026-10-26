@@ -353,3 +353,19 @@ async fn distinct_placements_on_one_provider_never_share_keys_or_actors()
     assert_eq!(unbounded!(b, read("/owner", 8))?.as_ref(), b"b");
     Ok(())
 }
+
+/// Negative control for key size: retry keys once copied the whole root, so
+/// a long root that forms valid stream paths overflowed the 256-byte key
+/// limit on its first write. Keys now carry a fixed-size placement id.
+#[tokio::test]
+async fn long_placement_roots_keep_retry_keys_within_the_limit() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let root = vec!["tenant-volumes"; 16].join("/");
+    assert!(root.len() > 200);
+    let fs = placed_at(&stream, &root)?;
+    let workspace = unbounded!(fs, create_workspace("long-root"))?;
+    workspace.write_text("/owner", "long").await?;
+    let workspace = unbounded!(fs, open_workspace("long-root"))?;
+    assert_eq!(unbounded!(workspace, read("/owner", 8))?.as_ref(), b"long");
+    Ok(())
+}

@@ -28,17 +28,21 @@ impl AuthorityPlacement {
             ));
         }
         StreamPath::new(format!("{root}/operations")).map_err(map_stream_error)?;
-        // Store-generated retry keys and actor registries are scoped by the
-        // root, so separate placements on one provider never share a key or
-        // a cached head. The default placement keeps unscoped keys.
+        // Store-generated retry keys and actor registries are scoped by a
+        // fixed-size placement id, a digest of the root, so separate placements
+        // on one provider never share a key or a cached head, and every root
+        // that forms valid stream paths adds the same 26 key bytes. The
+        // default placement keeps unscoped keys.
         let (key_scope, actor_scope) = if root == Self::DEFAULT_ROOT {
             (Box::default(), [0; 16])
         } else {
-            let mut scope = b"placement\0".to_vec();
-            scope.extend_from_slice(&(root.len() as u64).to_le_bytes());
-            scope.extend_from_slice(root.as_bytes());
+            let mut identity = blake3::Hasher::new();
+            identity.update(b"acyclic-fs authority placement v1\0");
+            identity.update(root.as_bytes());
             let mut actor = [0; 16];
-            actor.copy_from_slice(&blake3::hash(&scope).as_bytes()[..16]);
+            actor.copy_from_slice(&identity.finalize().as_bytes()[..16]);
+            let mut scope = b"placement\0".to_vec();
+            scope.extend_from_slice(&actor);
             (scope.into_boxed_slice(), actor)
         };
         Ok(Self {
