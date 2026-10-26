@@ -220,16 +220,35 @@ pub(super) async fn fetch(
                 {
                     return Err(refused("OIDC RSA key must have 2048..=8192 bits"));
                 }
+                let exponent = URL_SAFE_NO_PAD
+                    .decode(component(&raw.e)?)
+                    .map_err(|_| refused("invalid OIDC RSA exponent"))?;
+                if exponent.len() > 4
+                    || exponent
+                        .first()
+                        .is_none_or(|byte| *byte == 0 || (exponent.len() == 1 && *byte < 3))
+                    || exponent.last().is_none_or(|byte| byte & 1 == 0)
+                {
+                    return Err(refused("OIDC RSA exponent is outside policy"));
+                }
                 DecodingKey::from_rsa_components(component(&raw.n)?, component(&raw.e)?)
             }
             (SigningAlgorithm::Es256, "EC", Some("P-256")) => {
+                fixed_component(&raw.x)?;
+                fixed_component(&raw.y)?;
                 DecodingKey::from_ec_components(component(&raw.x)?, component(&raw.y)?)
             }
             (SigningAlgorithm::EdDsa, "OKP", Some("Ed25519")) => {
+                fixed_component(&raw.x)?;
                 DecodingKey::from_ed_components(component(&raw.x)?)
             }
             _ => return Err(refused("OIDC key type or algorithm is not allowed")),
         }
+        .map_err(|_| refused("invalid OIDC public key"))?;
+        (jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.verifier_factory)(
+            &config.algorithm.algorithm(),
+            &key,
+        )
         .map_err(|_| refused("invalid OIDC public key"))?;
         keys.insert(
             raw.kid,
@@ -245,4 +264,15 @@ pub(super) async fn fetch(
 fn component(part: &Option<String>) -> Result<&str> {
     part.as_deref()
         .ok_or_else(|| refused("OIDC key component is missing"))
+}
+
+fn fixed_component(part: &Option<String>) -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let bytes = URL_SAFE_NO_PAD
+        .decode(component(part)?)
+        .map_err(|_| refused("invalid OIDC curve coordinate"))?;
+    if bytes.len() != 32 {
+        return Err(refused("OIDC curve coordinate must contain 32 bytes"));
+    }
+    Ok(())
 }

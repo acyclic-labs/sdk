@@ -1,9 +1,8 @@
 //! Local real-issuer qualification; no production account or credential discovery.
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
-use acyclic_harness_core::oidc::{self, JwksSource};
+use acyclic_harness_core::oidc;
 use acyclic_stream::{
-    BoxProviderFuture, BoxProviderStream, LocalStream, LocalStreamLimits, StreamProvider,
-    UnixMillisClock as _,
+    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, UnixMillisClock as _,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -31,42 +30,6 @@ impl Backend for Local {
     }
 }
 
-/// One GET and a lazy body. Refresh bounds and policy stay in the shared core.
-struct Http(reqwest::Client);
-impl JwksSource for Http {
-    fn fetch<'a>(
-        &'a self,
-        uri: &'a str,
-    ) -> BoxProviderFuture<
-        'a,
-        acyclic_harness_core::Result<
-            BoxProviderStream<'static, acyclic_harness_core::Result<bytes::Bytes>>,
-        >,
-    > {
-        use futures::StreamExt as _;
-        Box::pin(async move {
-            let response = self.0.get(uri).send().await.map_err(|_| {
-                acyclic_harness_core::Error::Unauthorized("local OIDC GET failed".into())
-            })?;
-            if response.status() != reqwest::StatusCode::OK {
-                return Err(acyclic_harness_core::Error::Unauthorized(
-                    "local OIDC GET did not return 200".into(),
-                ));
-            }
-            let body = response.bytes_stream().map(|chunk| {
-                chunk.map_err(|_| {
-                    acyclic_harness_core::Error::Unauthorized("local OIDC body failed".into())
-                })
-            });
-            Ok(Box::pin(body)
-                as BoxProviderStream<
-                    'static,
-                    acyclic_harness_core::Result<bytes::Bytes>,
-                >)
-        })
-    }
-}
-
 async fn run(directory: PathBuf) -> Result {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
@@ -85,7 +48,7 @@ async fn run(directory: PathBuf) -> Result {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| format!("missing OIDC body digest: {name}"))?;
         let bytes = std::fs::read(directory.join(format!("{name}.body")))?;
-        if format!("{:x}", sha2::Sha256::digest(&bytes)) != expected {
+        if hex::encode(sha2::Sha256::digest(&bytes)) != expected {
             return Err(format!("captured OIDC body digest differs: {name}").into());
         }
     }
@@ -95,12 +58,7 @@ async fn run(directory: PathBuf) -> Result {
         .get("id_token")
         .and_then(serde_json::Value::as_str)
         .ok_or("Dex response has no ID token")?;
-    let source = Http(
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .build()?,
-    );
+    let source = oidc::HttpSource::new()?;
     let mut verifier = oidc::Verifier::new(oidc::Config::loopback(
         field("issuer")?.into(),
         field("audience")?.into(),
