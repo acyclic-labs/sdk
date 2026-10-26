@@ -8,8 +8,8 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentHandler, AgentPath, Error, ForkAdopted, InboxRecord, IntentId, Sender, SpawnVolumes,
-    Submitted, TurnDriver, archive, handler::Agents, inbox_tail, send, submit,
+    AgentHandler, AgentPath, Error, ForkAdopted, InboxRecord, IntentId, Sender, Spawn,
+    SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, inbox_tail, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -150,6 +150,14 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         self.agents.state(&self.actor(agent)?, agent).await
     }
 
+    /// Prepares, without IO, the one commit creating root agent
+    /// `adopted.agent` in this host's account and namespace (see
+    /// [`AgentHandler::prepare_root`](super::AgentHandler::prepare_root)).
+    /// [`Self::create`] is exactly this request submitted once.
+    pub fn prepare_root(&self, intent: &IntentId, adopted: ForkAdopted) -> Result<Spawn, Error> {
+        self.agents.prepare_root(&self.within, intent, adopted)
+    }
+
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
     /// Retrying the same `intent` replays exactly and names the same agent.
     pub async fn create(
@@ -157,7 +165,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         intent: &IntentId,
         adopted: ForkAdopted,
     ) -> Result<AgentPath, Error> {
-        let created = self.agents.create_root(&self.within, intent, adopted)?;
+        let created = self.prepare_root(intent, adopted)?;
         match submit(&*self.provider, created.request).await? {
             Submitted::Committed(_) => {}
             Submitted::Conflict(_) | Submitted::InboxMoved(_) | Submitted::RecipientClosed(_) => {

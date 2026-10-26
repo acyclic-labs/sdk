@@ -96,6 +96,26 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         self.volumes = Some(volumes);
         self
     }
+
+    /// Prepares, without IO, the one commit creating root agent
+    /// `adopted.agent` as an actor in `within`'s account and namespace: its
+    /// inbox with `ForkAdopted`, its actor state and its activation entry.
+    /// A host may join its own contributions (the root's volumes) before it
+    /// submits the request once with [`super::submit`]; on
+    /// [`Error::Unknown`] it resubmits the exact returned request.
+    pub fn prepare_root(
+        &self,
+        within: &ActorReference,
+        intent: &IntentId,
+        adopted: ForkAdopted,
+    ) -> Result<Spawn, Error> {
+        self.agents.prepare_root(within, intent, adopted)
+    }
+
+    /// The actor of `agent` in `within`'s account and namespace.
+    pub fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
+        Agents::<P>::actor(within, agent)
+    }
 }
 
 impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
@@ -127,7 +147,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
     /// One commit creating root agent `adopted.agent` as an actor in `within`'s
     /// account and namespace: its inbox with `ForkAdopted`, its actor state and
     /// its activation entry. The caller adds volume contributions, then submits.
-    pub(super) fn create_root(
+    pub(super) fn prepare_root(
         &self,
         within: &ActorReference,
         intent: &IntentId,
