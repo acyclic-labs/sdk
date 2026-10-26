@@ -167,7 +167,7 @@ impl CapturedSource {
                         }
                     }
                 }
-                Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
+                Ok(sha256_hex(&serde_json::to_vec(self)?))
             }
         }
     }

@@ -155,14 +155,7 @@ pub(super) fn is_portable_version_byte(byte: u8) -> bool {
 }
 
 pub(super) fn hex_version(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(1 + bytes.len() * 2);
-    encoded.push('~');
-    for byte in bytes {
-        encoded.push(HEX[(*byte >> 4) as usize] as char);
-        encoded.push(HEX[(*byte & 0x0f) as usize] as char);
-    }
-    encoded
+    hex_digest("~", bytes)
 }
 
 pub(super) fn is_windows_reserved_segment(segment: &str) -> bool {
