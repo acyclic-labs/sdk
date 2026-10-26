@@ -1,11 +1,52 @@
 use super::*;
 
+pub(super) enum HostDirectoryReply {
+    Basic(ReplyDirectory),
+    Plus(ReplyDirectoryPlus),
+}
+
+impl DirectoryOutput for HostDirectoryReply {
+    fn counts_lookups(&self) -> bool {
+        match self {
+            Self::Basic(_) => false,
+            Self::Plus(_) => true,
+        }
+    }
+    fn push(
+        &mut self,
+        offset: u64,
+        name: &OsStr,
+        attr: &FileAttr,
+        ttl: &Duration,
+    ) -> Result<bool, NativeMountError> {
+        Ok(match self {
+            Self::Basic(reply) => reply.add(attr.ino, offset, attr.kind, name),
+            Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
+        })
+    }
+    fn ok(self) {
+        match self {
+            Self::Basic(reply) => reply.ok(),
+            Self::Plus(reply) => reply.ok(),
+        }
+    }
+}
+
+impl HostDirectoryReply {
+    fn error(self, error: Errno) {
+        match self {
+            Self::Basic(reply) => reply.error(error),
+            Self::Plus(reply) => reply.error(error),
+        }
+    }
+}
+
 impl FuseProjection {
     fn reply_directory(
         &self,
         inode: u64,
         offset: u64,
-        reply: DirectoryReply,
+        reply: HostDirectoryReply,
         span: &tracing::Span,
     ) {
         let mut reply = Some(reply);
@@ -474,7 +515,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectory,
     ) {
         let span = callback_span!(TRACE, readdir, ino = inode.0, fh = fh.0, offset = offset);
-        self.reply_directory(inode.0, offset, DirectoryReply::Basic(reply), &span);
+        self.reply_directory(inode.0, offset, HostDirectoryReply::Basic(reply), &span);
     }
 
     fn readdirplus(
@@ -492,7 +533,7 @@ impl Filesystem for FuseProjection {
             fh = fh.0,
             offset = offset
         );
-        self.reply_directory(inode.0, offset, DirectoryReply::Plus(reply), &span);
+        self.reply_directory(inode.0, offset, HostDirectoryReply::Plus(reply), &span);
     }
 
     fn releasedir(
@@ -692,7 +733,14 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.create_file(request, parent.0, name, mode & !umask, flags, work),
+            self.create_file(
+                (request.uid(), request.gid()),
+                parent.0,
+                name,
+                mode & !umask,
+                flags,
+                work
+            ),
             |(entry, handle, flags)| reply.created(
                 &entry.ttl,
                 &entry.attr,
