@@ -9,9 +9,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod chain;
-pub use chain::{NextStage, fingerprint, next_stage, request_id, review_key};
+pub use chain::{
+    ApprovalResponder, NextStage, fingerprint as request_fingerprint, next_stage as next_agent_stage,
+    validate_agent_decision,
+};
+mod files;
+pub use files::{ApprovalCreate, ApprovalFiles, ApprovalRequest};
+mod legacy;
+pub use legacy::{automatic_review, fingerprint, next_stage, request_id, review_key};
 mod automatic;
-pub use automatic::automatic_review;
+pub use automatic::automatic_review as automatic_agent_review;
 
 mod selectors;
 pub use selectors::ApprovalSelector;

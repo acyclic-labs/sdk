@@ -1,11 +1,8 @@
 //! Shared policy-chain traversal for execution, clients and host adapters.
-use super::{ApprovalPolicy, ApprovalReviewFile, Approver, RuleVerdict};
-use crate::{
-    Error, Result, TaskId,
-    interaction::ApprovalDecisionFile,
-    task_volume::{Component, FileKey, FileValue, TaskFile},
+use super::{
+    ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalReviewFile, Approver, RuleVerdict,
 };
-use std::collections::BTreeMap;
+use crate::{Error, Result, agent::AgentId, interaction::ApprovalDecisionFile};
 
 /// Active stage selected from the immutable request and retained review files.
 pub enum NextStage<'a> {
@@ -23,18 +20,37 @@ pub enum NextStage<'a> {
 }
 
 /// One traversal decides the active policy stage for execution and every client.
-pub fn next_stage<'a>(
+pub async fn next_stage<'a>(
     policy: &'a ApprovalPolicy,
     digest: [u8; 32],
-    parent: Option<TaskId>,
-    request: &FileValue,
-    files: &BTreeMap<FileKey, FileValue>,
+    parent: Option<AgentId>,
+    request: &ApprovalRequest<'_>,
+    files: &dyn ApprovalFiles,
     start: usize,
 ) -> Result<NextStage<'a>> {
+    let parent = parent.map(|parent| format!("parent:{parent}"));
+    next_stage_with_parent(policy, digest, parent.as_deref(), request, files, start).await
+}
+
+// The temporary task adapter retains its original parent principal spelling.
+// Only this function traverses the chain; agent callers derive the principal
+// from the admitted native agent identity above.
+pub(super) async fn next_stage_with_parent<'a>(
+    policy: &'a ApprovalPolicy,
+    digest: [u8; 32],
+    parent: Option<&str>,
+    request: &ApprovalRequest<'_>,
+    files: &dyn ApprovalFiles,
+    start: usize,
+) -> Result<NextStage<'a>> {
+    use crate::runtime::ToolPolicy as _;
+    if policy.bind()?.identity().digest != digest {
+        return Err(Error::Conflict("approval policy digest changed".into()));
+    }
     static HUMAN_POLICY: std::sync::LazyLock<ApprovalPolicy> =
         std::sync::LazyLock::new(ApprovalPolicy::default);
     let interaction: crate::interaction::Interaction =
-        crate::contract::json_from_slice(&request.bytes)
+        crate::contract::json_from_slice(request.bytes())
             .map_err(|error| Error::Invalid(error.to_string()))?;
     let policy = match interaction {
         crate::interaction::Interaction::Approval {
@@ -51,15 +67,24 @@ pub fn next_stage<'a>(
         crate::interaction::Interaction::Approval { .. } => policy,
         _ => return Err(Error::Invalid("not an approval request".into())),
     };
-    let hash = fingerprint(request)?;
+    let hash = fingerprint(request.bytes())?;
     for (stage, approver) in policy.approvers.iter().enumerate().skip(start) {
         let principal = match approver {
             Approver::Rules { principal, .. }
             | Approver::Llm { principal, .. }
             | Approver::Human { principal } => principal.clone(),
             Approver::Parent => match parent {
-                Some(parent) => format!("parent:{parent}"),
-                None => continue,
+                Some(parent) => parent.to_owned(),
+                None => {
+                    return Ok(NextStage::Decided(ApprovalReviewFile {
+                        principal: "policy:exhausted".into(),
+                        request_sha256: hash,
+                        policy_digest: digest,
+                        stage,
+                        verdict: RuleVerdict::Deny,
+                        reason: Some("approval parent is unavailable".into()),
+                    }));
+                }
             },
         };
         let expected = ApprovalReviewFile {
@@ -70,10 +95,10 @@ pub fn next_stage<'a>(
             verdict: RuleVerdict::Ask,
             reason: None,
         };
-        let retained = retained_review(
-            files.get(&review_key(request, &expected.principal)?),
-            &expected,
-        )?;
+        let retained_bytes = files
+            .read(&request.review_path(&expected.principal), request.maximum_bytes())
+            .await?;
+        let retained = retained_review(retained_bytes.as_deref(), &expected, request.maximum_bytes())?;
         if !matches!(approver, Approver::Human { .. } | Approver::Parent)
             && let Some(review) = &retained
         {
@@ -98,44 +123,96 @@ pub fn next_stage<'a>(
     }))
 }
 
-/// Request component of an approval request file.
-pub fn request_id(file: &FileValue) -> Result<&Component> {
-    match &file.key {
-        FileKey::Task {
-            file: TaskFile::ApprovalRequest(request),
-            ..
-        } => Ok(request),
-        _ => Err(Error::Invalid("not an approval request".into())),
-    }
+/// Authenticated role supplied by the host, never decoded from decision bytes.
+/// Keeping the role prevents a model principal named "human" from satisfying
+/// an explicit human guard. Parent identity comes from the authenticated actor.
+#[derive(Clone, Copy)]
+pub enum ApprovalResponder<'a> {
+    /// Authenticated human connection.
+    Human(&'a str),
+    /// Parent actor identity.
+    Parent(&'a AgentId),
+    /// Configured policy evaluator identity.
+    Rules(&'a str),
+    /// Independent model owner identity.
+    Llm(&'a str),
+    /// Internal exhaustion or parent-unavailable refusal.
+    Policy,
 }
-/// Canonical review-file key for a request and authenticated principal.
-pub fn review_key(request: &FileValue, principal: &str) -> Result<FileKey> {
-    let FileKey::Task { task, .. } = &request.key else {
-        return Err(Error::Invalid("not a task file".into()));
+
+/// Checks a proposed decision against the current stage before the agent owner
+/// commits it. `responder` comes from the connection or actor, never the
+/// decision body. The owner still verifies the action binding,
+/// fences this stage against races and publishes the decision plus inbox wake.
+pub async fn validate_agent_decision(
+    policy: &ApprovalPolicy,
+    digest: [u8; 32],
+    parent: Option<AgentId>,
+    request: &ApprovalRequest<'_>,
+    files: &dyn ApprovalFiles,
+    responder: ApprovalResponder<'_>,
+    expected_version: u64,
+    decision: &ApprovalDecisionFile,
+) -> Result<()> {
+    decision.validate()?;
+    let principal = match responder {
+        ApprovalResponder::Human(principal)
+        | ApprovalResponder::Rules(principal)
+        | ApprovalResponder::Llm(principal) => principal.to_owned(),
+        ApprovalResponder::Parent(parent) => format!("parent:{parent}"),
+        ApprovalResponder::Policy => "policy:exhausted".into(),
     };
-    Ok(FileKey::Task {
-        task: task.clone(),
-        file: TaskFile::ApprovalReview {
-            request: request_id(request)?.clone(),
-            principal: Component::new(ApprovalDecisionFile::principal_file(principal))?,
-        },
-    })
+    if principal != decision.principal
+        || decision.expected_version != expected_version
+        || decision.request_sha256 != fingerprint(request.bytes())?
+    {
+        return Err(Error::Unauthorized("approval decision binding differs".into()));
+    }
+    let allowed = match next_stage(policy, digest, parent, request, files, 0).await? {
+        NextStage::Review { approver: Approver::Human { .. }, expected, .. } => {
+            matches!(responder, ApprovalResponder::Human(_)) && expected.principal == principal
+        }
+        NextStage::Review { approver: Approver::Parent, expected, .. } => {
+            matches!(responder, ApprovalResponder::Parent(_)) && expected.principal == principal
+        }
+        NextStage::Decided(review) => {
+            let role_matches = match (policy.approvers.get(review.stage), responder) {
+                (Some(Approver::Rules { .. }), ApprovalResponder::Rules(_))
+                | (Some(Approver::Llm { .. }), ApprovalResponder::Llm(_)) => true,
+                (_, ApprovalResponder::Policy) => review.principal == "policy:exhausted"
+                    && review.verdict == RuleVerdict::Deny,
+                _ => false,
+            };
+            role_matches && review.principal == principal
+                && review.verdict != RuleVerdict::Ask
+                && (review.verdict == RuleVerdict::Allow) == decision.approved()
+                && review.reason == decision.reason
+        }
+        _ => false,
+    };
+    if !allowed {
+        return Err(Error::Unauthorized("principal is not the active approval stage".into()));
+    }
+    Ok(())
 }
+
 /// Digest binding to the exact immutable request bytes.
-pub fn fingerprint(request: &FileValue) -> Result<String> {
+pub fn fingerprint(bytes: &[u8]) -> Result<String> {
     let descriptor = crate::conversation::FileDescriptor::from_bytes(
-        &request.bytes,
+        bytes,
         "application/json",
         &mut None,
     )?;
     Ok(ApprovalDecisionFile::new("binding", descriptor.sha256(), 1, false, None)?.request_sha256)
 }
 fn retained_review(
-    file: Option<&FileValue>,
+    bytes: Option<&[u8]>,
     expected: &ApprovalReviewFile,
+    maximum_bytes: u64,
 ) -> Result<Option<ApprovalReviewFile>> {
-    file.map(|file| {
-        let review: ApprovalReviewFile = serde_json::from_slice(&file.bytes)
+    bytes.map(|bytes| {
+        super::files::check_bound(bytes.len(), maximum_bytes)?;
+        let review: ApprovalReviewFile = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if review.principal != expected.principal
             || review.request_sha256 != expected.request_sha256

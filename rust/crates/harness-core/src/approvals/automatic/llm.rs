@@ -17,9 +17,9 @@ struct Review {
     reason: Option<String>,
 }
 
-pub(super) async fn review_model<P: StreamProvider + ?Sized>(
-    task_files: &crate::task_volume::TaskFiles<P>,
-    request: &FileValue,
+pub(super) async fn review_model(
+    files: &dyn ApprovalFiles,
+    request: &ApprovalRequest<'_>,
     principal: &str,
     binding: (&Model, &dyn ModelProvider),
     prompt: &str,
@@ -42,7 +42,7 @@ pub(super) async fn review_model<P: StreamProvider + ?Sized>(
                 ModelMessage {
                     role: ModelRole::User,
                     content: ModelContent::Text(
-                        std::str::from_utf8(&request.bytes).map_err(storage)?.into(),
+                        std::str::from_utf8(request.bytes()).map_err(storage)?.into(),
                     ),
                 },
             ],
@@ -61,7 +61,7 @@ pub(super) async fn review_model<P: StreamProvider + ?Sized>(
             "approval request exceeds the independent model context".into(),
         ));
     }
-    let binding = format!("{}:{principal}", request_id(request)?.as_str());
+    let binding = format!("{}:{principal}", request.id());
     let identity = blake3::derive_key("acyclic.approver-model/v1", binding.as_bytes());
     let operation = OperationId::from_bytes(
         *identity
@@ -73,23 +73,25 @@ pub(super) async fn review_model<P: StreamProvider + ?Sized>(
         step: 0,
         request_digest: prepared.request_digest(),
     };
-    let key = review_key(request, &format!("model-start:{principal}"))?;
-    let started = FileValue::new(key.clone(), serde_json::to_vec(&dispatch).map_err(storage)?);
-    let snapshot = task_files.snapshot(&Query::File(key), 1).await?;
-    let events = if let Some(previous) = snapshot.files.first() {
-        if previous.bytes != started.bytes {
-            return Err(Error::Conflict("approver model binding changed".into()));
-        }
+    let path = request.review_path(&format!("model-start:{principal}"));
+    let started = serde_json::to_vec(&dispatch).map_err(storage)?;
+    // Atomic creation decides the sole generator. Losing creators reconcile
+    // the retained dispatch, including when both initially observed absence.
+    let created = super::super::files::create_exact(
+        files,
+        &path,
+        started,
+        request.maximum_bytes(),
+    )
+    .await?;
+    let events = if created {
+        provider.generate(&prepared, dispatch)
+    } else {
         let reconciled = provider
             .reconcile(dispatch, &[])
             .await?
             .ok_or(Error::Indeterminate(operation))?;
         futures::stream::iter(reconciled.into_iter().map(Ok)).boxed()
-    } else {
-        // Persist the dispatch identity before starting the independent
-        // model. Recovery reconciles this run; it never silently repeats it.
-        crate::task_volume::publish_durable(&task_files.inner, &started, None).await?;
-        provider.generate(&prepared, dispatch)
     };
     collect_review(events, limits).await
 }
