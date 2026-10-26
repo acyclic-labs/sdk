@@ -1,4 +1,0 @@
-{
-  "prompt": "/approval always",
-  "expect": {"error":"Unknown command"}
-}

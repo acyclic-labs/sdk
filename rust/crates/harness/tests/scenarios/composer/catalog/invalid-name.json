@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "seed": {".claude/commands/bad name.md":"body"},
-  "expect": {"error":"invalid command name"}
-}

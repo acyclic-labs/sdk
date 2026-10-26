@@ -1,4 +1,0 @@
-{
-  "prompt": "@\"a.txt\"suffix",
-  "expect": {"error":"file mention must end at whitespace"}
-}

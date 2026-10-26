@@ -1,4 +1,0 @@
-{
-  "prompt": "/diff extra",
-  "expect": {"error":"accepts no arguments"}
-}

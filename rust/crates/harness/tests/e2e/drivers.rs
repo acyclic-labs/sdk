@@ -1,4 +1,4 @@
-use super::{TestResult, composer::Composer, execution, scenario};
+use super::{TestResult, execution, scenario};
 use serde_json::Value;
 
 // Raw local execution is visible only inside this guarded dispatcher.
@@ -20,13 +20,6 @@ impl Driver for JournalDriver {
     type Case = scenario::Scenario;
     async fn execute(case: Self::Case) -> TestResult {
         execution::run(case).await
-    }
-}
-
-impl Driver for Composer {
-    type Case = Self;
-    async fn execute(case: Self) -> TestResult {
-        case.run().await
     }
 }
 
@@ -85,7 +78,6 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
             Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
         }
         Some("executor") => Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await,
-        Some("composer") => Box::pin(Composer::execute(Composer::parse(value)?)).await,
         Some("local") => {
             Box::pin(super::local_case::LocalCase::execute(
                 serde_json::from_value(value)?,

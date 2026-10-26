@@ -155,14 +155,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "client_interests"
-path = "fuzz_targets/client_interests.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "client_diff"
 path = "fuzz_targets/client_diff.rs"
 required-features = ["runtime"]
@@ -190,14 +182,6 @@ bench = false
 name = "filesystem_access"
 path = "fuzz_targets/filesystem_access.rs"
 required-features = ["filesystem-access"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_commands"
-path = "fuzz_targets/client_commands.rs"
-required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -301,25 +285,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "goal_scenario"
-path = "fuzz_targets/goal_scenario.rs"
-required-features = ["runtime"]
-
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "model_request"
 path = "fuzz_targets/model_request.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_swarm_views"
-path = "fuzz_targets/client_swarm_views.rs"
 required-features = ["runtime"]
 test = false
 doc = false

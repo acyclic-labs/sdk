@@ -1,5 +1,5 @@
 #![no_main]
-use acyclic_harness::client::CommandResolution;
+use acyclic_harness::command_request::CommandResolution;
 use libfuzzer_sys::fuzz_target;
 
 #[path = "../support/mentions.rs"]

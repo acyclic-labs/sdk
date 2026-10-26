@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "seed": {".claude/commands/a.md":"---\ndescription: ''\n---\nbody"},
-  "expect": {"error":"invalid command description"}
-}

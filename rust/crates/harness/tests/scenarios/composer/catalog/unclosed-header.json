@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "seed": {".claude/commands/a.md":"---\ndescription: missing close\n"},
-  "expect": {"error":"frontmatter"}
-}

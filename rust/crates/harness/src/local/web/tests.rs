@@ -1,8 +1,6 @@
 use crate::{
     Error, Result,
-    client::{CommandSession, consume_local_command},
     context::ModelContextCapacity,
-    conversation::ContentResidencyVerifier,
     local::{
         LocalHarness,
         tests::{volume, volume_config},
@@ -12,13 +10,9 @@ use crate::{
         ScriptedEvent, ScriptedModelProvider, ScriptedSearch, ScriptedSearchProvider, ScriptedTurn,
     },
 };
-use acyclic_stream::StreamProvider;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-struct NoReads;
-impl ContentResidencyVerifier for NoReads {}
 
 fn model(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(
@@ -37,21 +31,6 @@ async fn run(local: &Arc<LocalHarness>, prompt: &str) -> Result<String> {
         crate::test_support::PromptOutcome::Settled(_, output) => Ok(output.text),
         crate::test_support::PromptOutcome::Failed(message) => Err(Error::Conflict(message)),
     }
-}
-
-async fn send(
-    local: &LocalHarness,
-    client: &mut CommandSession<dyn StreamProvider>,
-    text: &str,
-) -> Result<Value> {
-    client.submit(text, &NoReads).await?;
-    let request = client.next_request().await?;
-    consume_local_command(client, local, &request)
-        .await?
-        .ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason: "fixture command was not consumed",
-        })
 }
 
 fn assert_published_web_contract(name: &str, value: &Value) -> Result<()> {
@@ -85,95 +64,6 @@ fn assert_published_web_contract(name: &str, value: &Value) -> Result<()> {
         );
         assert!(!projection.is_valid(&json!({"kind":"json","value":bad})));
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn stock_direct_commands_search_and_fetch_distinct_sources_without_a_checkout_or_model()
--> Result<()> {
-    let directory =
-        tempfile::tempdir().map_err(|_| Error::Storage("fixture directory failed".into()))?;
-    let provider = model([]);
-    let marker = format!("remote-source-{}", crate::OperationId::new());
-    let search = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
-        request: crate::search::SearchRequest {
-            query: "independent query".into(),
-            max_results: 5,
-        },
-        response: Some(crate::search::SearchResponse {
-            results: vec![crate::search::SearchResult {
-                url: "https://example.test/citation".into(),
-                title: "Independent source".into(),
-                snippet: marker.clone(),
-            }],
-        }),
-        error: None,
-    }])?);
-    let config = volume_config(
-        directory.path(),
-        volume(directory.path()).await?,
-        provider.clone(),
-    )?
-    .without_default_tools()
-    .search_provider(search.clone());
-    let local = LocalHarness::open(config).await?;
-    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
-    let result = send(&local, &mut client, "/search independent query").await?;
-    assert_eq!(result["results"][0]["url"], "https://example.test/citation");
-    assert_eq!(result["results"][0]["snippet"], marker);
-    assert_published_web_contract("web_search", &result)?;
-    assert_eq!(search.remaining(), 0);
-    let fetch_content = format!("exact fetched body {marker} 東京 \u{10437}");
-    let (url, server) = serve(fetch_content.clone()).await?;
-    let result = send(&local, &mut client, &format!("/fetch {url}")).await?;
-    assert_eq!(result["source_url"], url);
-    assert_eq!(result["final_url"], url);
-    assert_eq!(result["content"], fetch_content);
-    assert!(result.get("results").is_none());
-    assert_published_web_contract("url_fetch", &result)?;
-    server
-        .await
-        .map_err(|_| Error::Storage("fixture server task failed".into()))??;
-    assert!(
-        provider.requests().is_empty(),
-        "direct web commands dispatched the model"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn missing_search_is_typed_unavailable_but_stock_fetch_still_retrieves_real_bytes()
--> Result<()> {
-    let directory =
-        tempfile::tempdir().map_err(|_| Error::Storage("fixture directory failed".into()))?;
-    let provider = model([]);
-    let config = volume_config(
-        directory.path(),
-        volume(directory.path()).await?,
-        provider.clone(),
-    )?
-    .web_tools();
-    let local = LocalHarness::open(config).await?;
-    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
-    let result = send(&local, &mut client, "/search no configured provider").await;
-    assert!(
-        matches!(
-            result,
-            Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::Unavailable,
-                ..
-            })
-        ),
-        "missing search was not typed unavailable"
-    );
-    let marker = format!("fetch-only-{}", crate::OperationId::new());
-    let (url, server) = serve(marker.clone()).await?;
-    let result = send(&local, &mut client, &format!("/fetch {url}")).await?;
-    assert_eq!(result["content"], marker);
-    server
-        .await
-        .map_err(|_| Error::Storage("fixture server task failed".into()))??;
-    assert!(provider.requests().is_empty());
     Ok(())
 }
 

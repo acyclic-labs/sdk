@@ -3,8 +3,6 @@
 pub use acyclic_harness_core::test_support::*;
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
-mod client_views;
-pub use client_views::empty_client_views;
 #[cfg(feature = "test-support")]
 pub(crate) mod model_view_work;
 #[cfg(feature = "test-support")]

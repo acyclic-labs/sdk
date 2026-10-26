@@ -12,8 +12,6 @@ mod progress_registry;
 mod stall;
 
 #[cfg(feature = "test-support")]
-mod client_public_consumer;
-#[cfg(feature = "test-support")]
 mod client_transitions;
 #[cfg(feature = "test-support")]
 mod history_selection;
@@ -45,14 +43,6 @@ mod default_tools;
 #[path = "cases/task_view.rs"]
 mod task_view;
 
-
-#[path = "cases/client_model_views.rs"]
-mod client_model_views;
-
-#[cfg(feature = "wasm")]
-#[path = "cases/client_views_parity.rs"]
-mod client_views_parity;
-
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "cases/goal_files.rs"]
 mod goal_files;
@@ -68,32 +58,12 @@ mod context_discovery;
 #[path = "cases/client_history.rs"]
 mod client_history;
 
-#[path = "cases/jsonl_wire.rs"]
-mod jsonl_wire;
-
 #[cfg(feature = "mcp-oauth")]
 #[path = "cases/mcp_oauth_provider.rs"]
 mod mcp_oauth_provider;
 
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
-#[path = "cases/client_commands.rs"]
-mod client_commands;
-
-#[path = "cases/client_notifications.rs"]
-mod client_notifications;
-
 #[path = "cases/plan_markdown.rs"]
 mod plan_markdown;
-
-#[path = "cases/client_interests.rs"]
-mod client_interests;
-
-#[cfg(feature = "test-support")]
-#[path = "cases/client_query.rs"]
-mod client_query;
-
-#[path = "cases/client_swarm_views.rs"]
-mod client_swarm_views;
 
 #[cfg(all(
     feature = "filesystem-local",
@@ -118,9 +88,6 @@ mod local_cloud_objects;
 #[cfg(feature = "filesystem")]
 #[path = "cases/client_diff.rs"]
 mod client_diff;
-
-#[path = "cases/client_file_submit.rs"]
-mod client_file_submit;
 
 #[cfg(all(feature = "test-support", feature = "grpc"))]
 #[path = "local_cloud_actors/mod.rs"]

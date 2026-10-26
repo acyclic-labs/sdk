@@ -1,4 +1,0 @@
-{
-  "prompt": "@/etc/passwd",
-  "expect": {"error":"path"}
-}

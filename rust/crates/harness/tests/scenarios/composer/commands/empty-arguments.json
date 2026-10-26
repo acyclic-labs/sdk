@@ -1,5 +1,0 @@
-{
-  "prompt": "/review",
-  "expect":{"result":{"kind":"prompt","text":"Project ","mentions":[],"source":{"path":
-    "project/.claude/commands/review.md"}}}
-}

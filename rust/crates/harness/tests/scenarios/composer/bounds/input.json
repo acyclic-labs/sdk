@@ -1,5 +1,0 @@
-{
-  "prompt": "hello",
-  "maximum_bytes": 4,
-  "expect": {"error":"command input exceeds byte bound"}
-}

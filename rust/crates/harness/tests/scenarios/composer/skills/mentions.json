@@ -1,5 +1,0 @@
-{
-  "prompt": "/audit @a.txt",
-  "expect":{"mention_files":["file"],"result":{"kind":"prompt","text":"Inspect @a.txt","mentions":[{"file":{"path":
-    "a.txt"}}]}}
-}

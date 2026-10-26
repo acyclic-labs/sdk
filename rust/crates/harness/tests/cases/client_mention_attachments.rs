@@ -1,6 +1,6 @@
 //! File mention projection and attachment policy against the shared parser oracle.
 use acyclic_harness::{
-    client::{CommandResolution, FileMention},
+    command_request::{CommandResolution, FileMention},
     conversation::{FileDescriptor, FileRef, VolumeRef},
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
