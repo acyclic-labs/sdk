@@ -334,11 +334,14 @@ impl Commands<'_> {
             state.active = Some(switched.into_checkout()?);
             workspace.selected_workspace(state, owner).await?;
         }
-        // Persist the selected view in memory even when closing the old
-        // workspace failed.
+        // Persist the selected view in memory even when a recovered transition
+        // has no command result or closing the old workspace failed.
         publication?;
         advanced?;
-        Ok(Outcome::Completed(Box::new(output.command)))
+        let command = output.command.ok_or_else(|| {
+            Error::Conflict("recovered a pending fs transition; retry the command".into())
+        })?;
+        Ok(Outcome::Completed(Box::new(command)))
     }
 
     async fn prepare_reconciliation(

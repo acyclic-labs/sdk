@@ -126,7 +126,7 @@ async fn run_reserving(
     )
     .await?;
     Ok((
-        output.command,
+        output.command.ok_or("pending git transition")?,
         output
             .switched
             .map(git::OwnedView::into_checkout)
@@ -1249,7 +1249,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                 &argv,
             )
             .await?;
-            if let GitCommandOutput::Commits(commits) = output.command {
+            if let Some(GitCommandOutput::Commits(commits)) = output.command {
                 log = Some(commits);
                 break;
             }
@@ -1556,7 +1556,7 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                 &["status".to_owned()],
             )
             .await?;
-            if !matches!(output.command, GitCommandOutput::Prepared { .. }) {
+            if output.command.is_some() {
                 answered = true;
                 break;
             }
@@ -1880,11 +1880,7 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
         &["status".into()],
     )
     .await?;
-    // Recovery settles the pending transition, then runs this command.
-    assert!(!matches!(
-        recovered.command,
-        GitCommandOutput::Prepared { .. }
-    ));
+    assert!(recovered.command.is_none());
 
     state = GitCompatStore::load(store, root)
         .await?

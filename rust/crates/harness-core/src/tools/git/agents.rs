@@ -89,7 +89,7 @@ where
             .await?;
         self.validate().await?;
         Ok(super::Output {
-            command: GitCommandOutput::Filesystem(result),
+            command: Some(GitCommandOutput::Filesystem(result)),
             switched: None,
         })
     }

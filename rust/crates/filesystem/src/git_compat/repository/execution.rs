@@ -170,7 +170,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 return Err(GitCompatError::StaleTransition);
             }
             state.pending = None;
-            state.record_request(pending.request, self.retention(), &output);
+            // An abort is its own command, not recovery of the merge.
+            state.record_request(self.request_operation(), self.retention(), &output);
             Ok(())
         })
         .await?;

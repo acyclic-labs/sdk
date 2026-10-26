@@ -34,7 +34,9 @@ pub(crate) fn git_transition_command(argv: &[String]) -> bool {
 }
 
 /// Returns the request's saved result, or settles any pending transition
-/// under the request that started it and then executes this command.
+/// under the request that started it, or executes this command. Recovering
+/// another request's transition returns `None`: the command's view and tree
+/// predate that recovery.
 pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     repository: &GitCompatRepository<LocalCoreStateStore>,
     argv: &[String],
@@ -43,7 +45,7 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     author: &str,
     authored_at_seconds: i64,
     executor: &E,
-) -> Result<GitCommandOutput, Error> {
+) -> Result<Option<GitCommandOutput>, Error> {
     let saved = async || {
         repository
             .request_result()
@@ -51,7 +53,7 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
             .map_err(super::errors::compat_error)
     };
     if let Some(output) = saved().await? {
-        return Ok(output);
+        return Ok(Some(output));
     }
     if !git_transition_command(argv)
         && repository
@@ -59,10 +61,9 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
             .await
             .map_err(super::errors::run_error)?
             .is_some()
-        && let Some(output) = saved().await?
     {
-        // The recovered transition was this request's own.
-        return Ok(output);
+        // The recovered transition may be this request's own.
+        return saved().await;
     }
     let output = if let Some(patch) = patch {
         repository
@@ -79,7 +80,7 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
             .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
             .await
     };
-    output.map_err(super::errors::run_error)
+    output.map(Some).map_err(super::errors::run_error)
 }
 
 /// Reads a patch file from the managed workspace.
