@@ -89,7 +89,7 @@ pub struct Transition {
 }
 
 /// The sole durable record-handler contract, independent of host and OS.
-pub trait Handler: Send + Sync {
+pub trait Handler: acyclic_stream::ProviderPlatform {
     /// The package's immutable code, codec, subscriptions and bindings.
     fn manifest(&self) -> &Manifest;
     /// Compute a transition without independently acknowledging input or effects.

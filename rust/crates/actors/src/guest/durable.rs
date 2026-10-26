@@ -3,7 +3,7 @@ use super::{GuestError, SocketPayload};
 use crate::addressing::ActorReference;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
@@ -273,7 +273,7 @@ impl<H: DurableHost> DurableObjectState<H> {
     }
 }
 
-type Initializer<S> = Pin<Box<dyn Future<Output = Result<S, GuestError>> + Send>>;
+type Initializer<S> = acyclic_stream::BoxProviderFuture<'static, Result<S, GuestError>>;
 enum ActivationState<S> {
     Pending(Initializer<S>),
     Ready(Arc<S>),
@@ -285,7 +285,9 @@ pub struct Activation<S> {
 }
 impl<S: Send + Sync + 'static> Activation<S> {
     /// The constructor future runs once before any event is delivered.
-    pub fn new(initialize: impl Future<Output = Result<S, GuestError>> + Send + 'static) -> Self {
+    pub fn new(
+        initialize: impl Future<Output = Result<S, GuestError>> + acyclic_stream::ProviderTask + 'static,
+    ) -> Self {
         Self {
             state: Mutex::new(ActivationState::Pending(Box::pin(initialize))),
         }

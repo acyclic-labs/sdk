@@ -9,11 +9,12 @@ use super::{Error, Snapshot, State, Store};
 use crate::addressing::ActorReference;
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
+use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
 use acyclic_stream::{
-    AppendRequest, FollowFilter, IdempotencyKey, Record, RecordStream, StreamError, StreamPath,
-    StreamProvider,
+    AppendRequest, BoxProviderFuture, FollowFilter, IdempotencyKey, ProviderPlatform, Record,
+    RecordStream, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
-use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -25,27 +26,34 @@ use std::{
 
 /// The host clock. The dispatcher owns the only timer, armed at the earliest
 /// committed, undelivered alarm.
-pub trait Clock: Send + Sync + 'static {
+pub trait Clock: ProviderPlatform + 'static {
     /// Current Unix milliseconds.
     fn now_unix_ms(&self) -> u64;
     /// Resolve no earlier than `deadline_unix_ms`.
-    fn sleep_until(&self, deadline_unix_ms: u64) -> BoxFuture<'static, ()>;
+    fn sleep_until(&self, deadline_unix_ms: u64) -> BoxProviderFuture<'static, ()>;
 }
 
-/// Wall clock backed by the host Tokio timer.
+/// Wall clock over the platform timer: Tokio natively, the event loop in a browser.
 pub struct SystemClock;
 impl Clock for SystemClock {
     fn now_unix_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            })
+        acyclic_stream::SystemUnixMillisClock.now_unix_millis()
     }
-    fn sleep_until(&self, deadline_unix_ms: u64) -> BoxFuture<'static, ()> {
-        let wait = deadline_unix_ms.saturating_sub(self.now_unix_ms());
-        Box::pin(tokio::time::sleep(std::time::Duration::from_millis(wait)))
+    fn sleep_until(&self, deadline_unix_ms: u64) -> BoxProviderFuture<'static, ()> {
+        sleep(deadline_unix_ms.saturating_sub(self.now_unix_ms()))
     }
+}
+
+/// A platform sleep of `milliseconds`, in steps the platform timer can express.
+fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, ()> {
+    Box::pin(async move {
+        let mut remaining = milliseconds;
+        while remaining > 0 {
+            let step = u32::try_from(remaining).unwrap_or(u32::MAX);
+            PlatformExecutor.sleep(step).await;
+            remaining -= u64::from(step);
+        }
+    })
 }
 
 struct Slot {
@@ -207,7 +215,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await?;
         let mut created = provider.follow(root, 0, FollowFilter::default()).await?;
         let mut running = FuturesUnordered::new();
-        let mut timer: Option<(u64, BoxFuture<'static, ()>)> = None;
+        let mut timer: Option<(u64, BoxProviderFuture<'static, ()>)> = None;
         loop {
             let event = poll_fn(|context: &mut Context<'_>| {
                 match created.poll_next_unpin(context) {
@@ -245,7 +253,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         self.track(actor)?;
                     }
                 }
-                Event::Work(work) => running.push(self.execute(work).boxed()),
+                Event::Work(work) => {
+                    let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
+                    running.push(execution);
+                }
                 Event::Done(Err((actor, error))) => report(&actor, &error),
                 Event::Done(Ok(())) => {}
                 Event::Rearm(next) => {
@@ -343,23 +354,28 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
-            // A handler past its manifest timeout is abandoned with its input
-            // unconsumed; the actor lock is released for the next attempt.
-            let transition = tokio::time::timeout(
-                std::time::Duration::from_millis(limits.handler_timeout_millis()),
-                self.handler.on_record(
-                    Delivery {
-                        actor: actor.clone(),
-                        epoch,
-                        trigger: trigger.clone(),
-                        now_unix_ms: now,
-                        record,
-                    },
-                    state.checkpoint(),
-                ),
-            )
-            .await
-            .map_err(|_| Error::Invalid("handler exceeded its manifest timeout"))??;
+            // A handler past its manifest timeout (wall time, not the actor
+            // clock) is abandoned with its input unconsumed; the actor lock is
+            // released for the next attempt.
+            let handled = self.handler.on_record(
+                Delivery {
+                    actor: actor.clone(),
+                    epoch,
+                    trigger: trigger.clone(),
+                    now_unix_ms: now,
+                    record,
+                },
+                state.checkpoint(),
+            );
+            let transition =
+                match futures::future::select(handled, sleep(limits.handler_timeout_millis()))
+                    .await
+                {
+                    futures::future::Either::Left((transition, _)) => transition?,
+                    futures::future::Either::Right(_) => {
+                        return Err(Error::Invalid("handler exceeded its manifest timeout"));
+                    }
+                };
             if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
                 > limits.checkpoint_bytes()
             {

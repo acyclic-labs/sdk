@@ -7,6 +7,7 @@ use acyclic_stream::{
     StreamPath,
 };
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

@@ -1,9 +1,7 @@
 //! Single-node Actors runtime primitives over the canonical Stream transaction.
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
-#[cfg(not(target_arch = "wasm32"))]
 mod runtime;
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime::{Clock, Runtime, SystemClock};
 
 use crate::addressing::ActorReference;

@@ -29,6 +29,7 @@ serde.workspace = true
 serde_bytes.workspace = true
 ts-rs = "=12.0.1"
 thiserror.workspace = true
+sha2.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
 tokio-util = { version = "=0.7.19", features = ["rt"] }
 tonic-prost.workspace = true
@@ -36,7 +37,6 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
-sha2.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
@@ -46,6 +46,7 @@ tonic = { version = "=0.14.6", default-features = false, features = ["codegen", 
 tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
 url = "=2.5.8"
 

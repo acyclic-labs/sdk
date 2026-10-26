@@ -4,7 +4,6 @@ use super::{
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin};
 use ts_rs::TS;
 
 type EventHandler<State, Bindings> = for<'a> fn(
@@ -158,7 +157,9 @@ impl<Bindings> GuestContextBuilder<Bindings> {
 }
 
 /// Async guest hook result; hosts decide execution, fencing and cancellation.
-pub type GuestFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, GuestError>> + Send + 'a>>;
+///
+/// `Send` on native hosts; a browser host keeps it on its event loop.
+pub type GuestFuture<'a, T> = acyclic_stream::BoxProviderFuture<'a, Result<T, GuestError>>;
 
 /// Typed actor authoring surface. Export as actor; adapt fetch as default.fetch.
 #[derive(TS)]
