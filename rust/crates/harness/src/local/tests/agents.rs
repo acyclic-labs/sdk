@@ -156,26 +156,41 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         .prompt(&id, "run one command")
         .await
         .map_err(agent)?;
-    settled(&agents, &root).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
+    // Each turn's calls share one directory, named by the turn.
+    let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
     let private = &state
         .volumes
         .iter()
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
         .volume;
-    let calls = names(&harness, private, "tools").await?;
+    let output = harness
+        .client_reader()?
+        .read(&entry.output, 1 << 20, None, None)?
+        .await?;
+    let root = names(&harness, private, "").await?;
+    assert!(
+        root.iter().any(|name| name == "tools"),
+        "no tools directory in {root:?}; turn output {}",
+        String::from_utf8_lossy(&output)
+    );
+    assert_eq!(names(&harness, private, "tools").await?, [turn.to_string()]);
+    let turn = format!("tools/{turn}");
+    let calls = names(&harness, private, &turn).await?;
     let [call] = calls.as_slice() else {
         return Err(Error::Conflict(format!(
             "one shell call staged, got {calls:?}"
         )));
     };
     assert_eq!(
-        names(&harness, private, &format!("tools/{call}")).await?,
+        names(&harness, private, &format!("{turn}/{call}")).await?,
         ["request.json", "result.json", "stdout"]
     );
     assert_eq!(
-        names(&harness, private, &format!("tools/{call}/stdout")).await?,
+        names(&harness, private, &format!("{turn}/{call}/stdout")).await?,
         ["0000000000000000"]
     );
     Ok(())

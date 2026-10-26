@@ -471,6 +471,13 @@ impl ToolContext {
         .await
     }
 
+    /// The operation of the model turn this call belongs to; outside a
+    /// model turn, the call's own operation.
+    #[must_use]
+    pub const fn turn_id(&self) -> OperationId {
+        self.model_turn.0
+    }
+
     /// Returns the exact call identity.
     #[must_use]
     pub fn call_id(&self) -> &str {

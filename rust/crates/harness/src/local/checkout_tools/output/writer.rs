@@ -1,5 +1,6 @@
 //! Tool output is files on the agent's private volume, each staged once under
-//! an operation derived from the command's own: `tools/{operation}/` holds
+//! an operation derived from the command's own: `tools/{turn}/{operation}/`,
+//! under the turn the call belongs to, holds
 //! `request.json`, `stdout/{sequence}`, `stderr/{sequence}` and `result.json`.
 use super::*;
 use acyclic_native_runtime::ProcessOutput;
@@ -8,6 +9,8 @@ const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
 
 pub(super) struct Writer {
     context: ToolContext,
+    /// `tools/{turn}/{operation}`.
+    directory: String,
     operation: OperationId,
     sequence: (u64, u64),
     pending: (Vec<u8>, Vec<u8>),
@@ -29,6 +32,7 @@ impl Writer {
         }
         let writer = Self {
             context: context.clone(),
+            directory: format!("tools/{}/{}", context.turn_id(), context.operation_id()),
             operation: context.operation_id(),
             sequence: (0, 0),
             pending: (Vec::new(), Vec::new()),
@@ -42,7 +46,7 @@ impl Writer {
     }
 
     async fn stage(&self, name: &str, bytes: &[u8], media_type: &str) -> Result<()> {
-        let path = format!("tools/{}/{name}", self.operation);
+        let path = format!("{}/{name}", self.directory);
         let mut hash = blake3::Hasher::new_derive_key("acyclic.local.tool-output/v1");
         hash.update(&self.operation.into_bytes());
         hash.update(path.as_bytes());
@@ -54,7 +58,8 @@ impl Writer {
                 &path,
                 bytes,
                 media_type,
-                name,
+                // A label is one path component: `stdout`, not `stdout/{seq}`.
+                name.split('/').next().unwrap_or(name),
                 None,
             )
             .await?;

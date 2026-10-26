@@ -9,12 +9,11 @@ impl CheckoutTools {
         &self,
         context: &ToolContext,
     ) -> Result<Option<child_views::ChildLease<Self>>> {
+        // An agent turn has no task owner: it runs in the selected checkout.
+        let Some(owner) = context.task().owned_mailbox.as_ref() else {
+            return Ok(None);
+        };
         let (task, _) = context.task().owned_task_binding(None)?;
-        let owner = context
-            .task()
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("tool task owner missing".into()))?;
         owner.verify_owner(None)?.await?;
         let admission = owner.admission().0;
         let task = if admission.task.name == "acyclic.direct_tool" {
