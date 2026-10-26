@@ -19,6 +19,49 @@ fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
 }
 
+type TestWorkspace = crate::Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+
+async fn parent_and_child(parent_name: &str, child_name: &str) -> (TestWorkspace, TestWorkspace) {
+    let fs = Fs::memory();
+    let parent = fs
+        .create_workspace(
+            parent_name,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .expect("parent")
+        .value;
+    let child = parent
+        .fork::<_, _, crate::WorkspaceError>(
+            child_name,
+            ForkOptions::from_generation(
+                parent
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
+                    .await
+                    .expect("base")
+                    .value,
+                IdempotencyKey::new(),
+            ),
+            crate::PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+            &mut |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await
+        .expect("child")
+        .value;
+    (parent, child)
+}
+
 #[tokio::test]
 async fn persisted_active_windows_require_a_nonempty_identity_keyed_lease_set() {
     let workspace = WorkspaceId::from_bytes([6; 16]);
@@ -47,43 +90,7 @@ async fn persisted_active_windows_require_a_nonempty_identity_keyed_lease_set() 
 #[tokio::test]
 async fn zero_reconcile_limits_do_not_close_or_claim_a_window() {
     for field in 0..3 {
-        let fs = Fs::memory();
-        let parent = fs
-            .create_workspace(
-                "invalid-limit-parent",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .expect("parent")
-            .value;
-        let child = parent
-            .fork::<_, _, crate::WorkspaceError>(
-                "invalid-limit-child",
-                ForkOptions::from_generation(
-                    parent
-                        .head(
-                            crate::WorkBudget::UNBOUNDED,
-                            &crate::CancellationToken::new(),
-                        )
-                        .await
-                        .expect("base")
-                        .value,
-                    IdempotencyKey::new(),
-                ),
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                &mut |_| {
-                    std::future::ready(Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    }))
-                },
-            )
-            .await
-            .expect("child")
-            .value;
+        let (parent, child) = parent_and_child("invalid-limit-parent", "invalid-limit-child").await;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(
@@ -195,43 +202,7 @@ async fn overlapping_leases_coalesce_parent_and_reconcile_once() {
 
 #[tokio::test]
 async fn parent_advance_after_child_close_rebases_without_another_tool() {
-    let fs = Fs::memory();
-    let parent = fs
-        .create_workspace(
-            "late-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .expect("parent")
-        .value;
-    let child = parent
-        .fork::<_, _, crate::WorkspaceError>(
-            "late-child",
-            ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .expect("base")
-                    .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await
-        .expect("child")
-        .value;
+    let (parent, child) = parent_and_child("late-parent", "late-child").await;
     child
         .write_text("/child", "local")
         .await
@@ -321,43 +292,7 @@ async fn parent_advance_after_child_close_rebases_without_another_tool() {
 
 #[tokio::test]
 async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
-    let fs = Fs::memory();
-    let parent = fs
-        .create_workspace(
-            "current-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .expect("parent")
-        .value;
-    let child = parent
-        .fork::<_, _, crate::WorkspaceError>(
-            "current-child",
-            ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .expect("base")
-                    .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await
-        .expect("child")
-        .value;
+    let (parent, child) = parent_and_child("current-parent", "current-child").await;
     let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
     let lease = coordinator
         .begin(
@@ -392,43 +327,7 @@ async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
 
 #[tokio::test]
 async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
-    let fs = Fs::memory();
-    let parent = fs
-        .create_workspace(
-            "unobserved-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .expect("parent")
-        .value;
-    let child = parent
-        .fork::<_, _, crate::WorkspaceError>(
-            "unobserved-child",
-            ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .expect("base")
-                    .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await
-        .expect("child")
-        .value;
+    let (parent, child) = parent_and_child("unobserved-parent", "unobserved-child").await;
     parent
         .write_text("/parent", "unobserved")
         .await
@@ -482,43 +381,7 @@ async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
 
 #[tokio::test]
 async fn parent_advance_during_child_tool_rebases_at_final_close() {
-    let fs = Fs::memory();
-    let parent = fs
-        .create_workspace(
-            "active-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .expect("parent")
-        .value;
-    let child = parent
-        .fork::<_, _, crate::WorkspaceError>(
-            "active-child",
-            ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .expect("base")
-                    .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await
-        .expect("child")
-        .value;
+    let (parent, child) = parent_and_child("active-parent", "active-child").await;
     let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
     let lease = coordinator
         .begin(
