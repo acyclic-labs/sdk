@@ -6,8 +6,71 @@ pub struct WasmStream {
     session: Option<crate::session::Client>,
 }
 
+/// Persisted capacities of an injected journal domain.
+#[cfg(feature = "wasm-journal")]
+#[derive(Deserialize, Tsify)]
+#[serde(deny_unknown_fields)]
+#[tsify(large_number_types_as_bigints)]
+struct WasmJournalStreamLimits {
+    commands: u32,
+    journal_bytes: u64,
+    paths: u32,
+    path_bytes: u32,
+    records: u32,
+    payload_bytes: u32,
+    commits: u32,
+    idempotency_results: u32,
+}
+
 #[wasm_bindgen]
 impl WasmStream {
+    /// Pull-based finite read or atomic checked follow for an injected host
+    /// port. Returns canonical SessionFrame record/progress bytes.
+    #[wasm_bindgen(js_name = openProviderCursor)]
+    pub async fn open_provider_cursor(
+        &self,
+        operation: &str,
+        input: &[u8],
+        preceding: &[u8],
+    ) -> Result<WasmFollow, JsValue> {
+        self.provider_cursor(operation, input, preceding).await
+    }
+
+    /// Opens a command journal supplied by an event host.
+    #[cfg(feature = "wasm-journal")]
+    #[wasm_bindgen(js_name = openJournal)]
+    pub async fn open_journal(
+        journal: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WasmJournalStreamLimits")] limits: JsValue,
+    ) -> Result<WasmStream, JsValue> {
+        let limits: WasmJournalStreamLimits = serde_wasm_bindgen::from_value(limits)
+            .map_err(|_| js_error(StreamError::InvalidArgument))?;
+        let limits = crate::JournalStreamLimits {
+            commands: limits.commands,
+            journal_bytes: limits.journal_bytes,
+            memory: crate::MemoryLimits {
+                paths: limits.paths as usize,
+                path_bytes: limits.path_bytes as usize,
+                records: limits.records as usize,
+                payload_bytes: limits.payload_bytes as usize,
+                commits: limits.commits as usize,
+                idempotency_results: limits.idempotency_results as usize,
+            },
+        };
+        let provider = crate::JournalStream::open(journal, limits)
+            .await
+            .map_err(js_error)?;
+        Ok(Self::from_provider(std::sync::Arc::new(provider)))
+    }
+
+    /// A canonical provider RPC port injected by a trusted host.
+    #[wasm_bindgen(js_name = connectProvider)]
+    pub fn connect_provider(port: JsValue) -> Result<WasmStream, JsValue> {
+        Ok(Self::from_provider(std::sync::Arc::new(
+            provider_rpc::InjectedStream::new(port).map_err(js_error)?,
+        )))
+    }
+
     #[wasm_bindgen(constructor)]
     #[must_use]
     /// Creates an in-process provider.
@@ -158,10 +221,21 @@ impl WasmStream {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
                 if request.accepted {
+                    let receipt = match request.durable_through {
+                        Some(through) => Some(
+                            self.provider
+                                .durable_receipt(path.clone(), through)
+                                .await
+                                .map_err(js_error)?,
+                        ),
+                        None => None,
+                    };
                     let marks = self.provider.watermarks(path).await.map_err(js_error)?;
                     wire::TailResponse {
                         tail: marks.accepted,
-                        durable: Some(marks.durable),
+                        durable: Some(receipt.map_or(marks.durable, |receipt| {
+                            receipt.map_or(0, |receipt| receipt.through())
+                        })),
                     }
                     .encode_to_vec()
                 } else {
@@ -257,6 +331,14 @@ impl WasmStream {
 }
 
 impl WasmStream {
+    /// Adapts an existing canonical provider without choosing another backend.
+    pub fn from_provider(provider: std::sync::Arc<dyn StreamProvider>) -> Self {
+        Self {
+            provider,
+            connections: None,
+            session: None,
+        }
+    }
     /// Physical connection generations used by Rust client recovery drivers.
     #[must_use]
     pub fn connections(&self) -> Option<crate::session::Connections> {

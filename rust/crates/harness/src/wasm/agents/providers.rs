@@ -3,7 +3,7 @@
 //! and one object store (the volumes' immutable objects). The handler and
 //! the guest artifact own no storage. The browser host injects `IndexedDB`,
 //! tests (and any host without a browser) inject memory, and further hosts add
-//! their store here as one more [`Streams`] and [`Objects`] variant.
+//! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
     Authorities, BrowserHandler, Error, Executors, HISTORY_TURNS, TURN_BACKSTOP_MS,
@@ -12,7 +12,9 @@ use super::{
 };
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
-    filesystem::{FilesystemHost, FilesystemTurnHost, TurnAdmission, TurnLimits},
+    filesystem::{
+        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, TurnAdmission, TurnLimits,
+    },
 };
 use acyclic_actors::domain::ActorLimits;
 use acyclic_fs::{
@@ -25,140 +27,20 @@ use acyclic_fs::{
 };
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider};
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, BrowserStream, BrowserStreamLimits, ChildrenPage,
-    ChildrenPageRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt,
-    FollowFilter, FollowStream, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    MemoryLimits, MemoryStream, OperationClaims, OwnedBytes, ReadRequest, RecordStream,
-    StreamBounds, StreamError, StreamPath, StreamProvider, StreamWatermarks,
+    BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
+    StreamProvider,
 };
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
-/// The stream provider of one host's agents: any [`StreamProvider`], so a
-/// host plugs in its own store (`IndexedDB`, memory, a remote Streams
-/// service, a Durable Object, Postgres) without an SDK edit. Rust hosts can
-/// stay generic over the provider instead; this sized handle exists because
-/// a JS-constructed provider is only known at run time.
-#[derive(Clone)]
-pub(super) struct Streams(pub(super) Arc<dyn StreamProvider>);
-
-#[async_trait::async_trait(?Send)]
-impl StreamProvider for Streams {
-    fn operation_claims(&self) -> &OperationClaims {
-        self.0.operation_claims()
-    }
-
-    fn has_exclusive_process_owner(&self) -> bool {
-        self.0.has_exclusive_process_owner()
-    }
-
-    fn supports_deferred_durability(&self) -> bool {
-        self.0.supports_deferred_durability()
-    }
-
-    async fn durability_barrier(&self) -> Result<(), StreamError> {
-        self.0.durability_barrier().await
-    }
-
-    async fn inspect_idempotency(
-        &self,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.0.inspect_idempotency(idempotency_key).await
-    }
-
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.0.tail(path).await
-    }
-
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.0.bounds(path).await
-    }
-
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.0.watermarks(path).await
-    }
-
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        self.0.durable_receipt(path, through).await
-    }
-
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.0.append(request).await
-    }
-
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.0.fork(request).await
-    }
-
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.0.read(request).await
-    }
-
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.0.follow(path, from, filter).await
-    }
-
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.0.follow_checked(path, from, preceding, filter).await
-    }
-
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
-        self.0.follow_updates(path, from, preceding, filter).await
-    }
-
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.0.children_page(request).await
-    }
-
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.0.commit(request).await
-    }
-
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.0.commit_before(request, deadline_unix_millis).await
-    }
-
-    async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.0.read_commit(commit_id).await
-    }
-}
-
-/// The object store of one host's volumes: the browser profile's own, or
-/// any [`ObjectsProvider`] a host plugs in (memory, S3, a Durable Object).
+/// The object store injected by one host.
 pub(super) enum Objects {
-    /// The browser profile's `IndexedDB` objects.
+    /// The browser profile's IndexedDB objects.
     IndexedDb(IndexedDbObjectStore),
-    /// A host's objects provider.
+    /// Any Rust objects provider.
     Provider(LogicalObjectStore<dyn ObjectsProvider>),
+    /// Any JavaScript immutable-object provider.
+    Injected(acyclic_fs::InjectedObjectStore),
 }
 
 macro_rules! each {
@@ -166,6 +48,7 @@ macro_rules! each {
         match $objects {
             Objects::IndexedDb($store) => $body,
             Objects::Provider($store) => $body,
+            Objects::Injected($store) => $body,
         }
     };
 }
@@ -288,13 +171,13 @@ impl AsyncObjectStore for Objects {
 /// reads and writes.
 #[derive(Clone)]
 pub(super) struct Providers {
-    pub(super) stream: Arc<Streams>,
+    pub(super) stream: Arc<dyn StreamProvider>,
     pub(super) filesystem: Arc<FilesystemHost<Authorities, Objects>>,
 }
 
 impl Providers {
     fn new(
-        stream: Arc<Streams>,
+        stream: Arc<dyn StreamProvider>,
         authority: Authorities,
         objects: Objects,
         durable: bool,
@@ -324,12 +207,6 @@ impl Providers {
     /// The browser profile's `IndexedDB` databases named by `options`.
     pub(super) async fn indexed_db(options: &WasmBrowserAgentOptions) -> Result<Self, JsValue> {
         let storage = |error: StreamError| stream_error(error);
-        let authority = acyclic_fs::browser::open_authority(
-            &options.filesystem_database,
-            BrowserStreamLimits::default(),
-        )
-        .await
-        .map_err(storage)?;
         let objects =
             IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
                 .await
@@ -344,9 +221,10 @@ impl Providers {
         )
         .await
         .map_err(storage)?;
+        let stream: Arc<dyn StreamProvider> = Arc::new(stream);
         Self::new(
-            Arc::new(Streams(Arc::new(stream))),
-            authority,
+            stream.clone(),
+            StreamAuthorityStore::new(stream),
             Objects::IndexedDb(objects),
             true,
             options,
@@ -383,7 +261,7 @@ impl Providers {
             .with_object_limit(options.maximum_object_bytes)
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
-            Arc::new(Streams(Arc::clone(&stream))),
+            Arc::clone(&stream),
             StreamAuthorityStore::new(stream),
             Objects::Provider(objects),
             durable,
@@ -429,10 +307,28 @@ impl Providers {
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
-            ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16)
-                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+            ActorLimits::new(
+                options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
+                1 << 20,
+                1 << 16,
+            )
+            .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
         )
+        .map(|handler| handler.with_spawn_volumes(self.spawn_volumes(options, owner)))
         .map_err(|error| js_error(Error::Invalid(error.to_string())))
+    }
+
+    pub(super) fn spawn_volumes(
+        &self,
+        options: &WasmBrowserAgentOptions,
+        owner: &WasmReducer,
+    ) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
+        Arc::new(FilesystemSpawnVolumes::new(
+            self.filesystem.clone(),
+            owner.issuer.clone(),
+            TurnAdmission::LocalRoot,
+            options.limits.file_bytes,
+        ))
     }
 }
 
@@ -471,6 +367,30 @@ impl WasmAgentProviders {
 
 #[wasm_bindgen]
 impl WasmAgentProviders {
+    /// Open storage injection: any Stream handle plus immutable length/read/put
+    /// promises. `durable` requires both providers to retain accepted writes.
+    pub fn injected(
+        stream: &acyclic_stream::WasmStream,
+        objects: JsValue,
+        durable: bool,
+        #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
+    ) -> Result<WasmAgentProviders, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        let stream = stream.provider();
+        let authority = StreamAuthorityStore::new(stream.clone());
+        let objects = acyclic_fs::InjectedObjectStore::new(objects, options.maximum_object_bytes)
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        Ok(Self {
+            providers: Providers::new(
+                stream,
+                authority,
+                Objects::Injected(objects),
+                durable,
+                &options,
+            )?,
+        })
+    }
+
     /// The browser profile's `IndexedDB` databases (the browser host's default).
     #[wasm_bindgen(js_name = indexedDb)]
     pub async fn indexed_db(

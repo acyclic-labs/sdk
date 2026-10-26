@@ -11,7 +11,7 @@ pub(in crate::filesystem) struct PublicationRead<'io> {
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

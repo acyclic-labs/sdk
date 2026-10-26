@@ -62,7 +62,7 @@ impl Cut<'_> {
         Ok(request)
     }
 
-    async fn stage<P: StreamProvider>(
+    async fn stage<P: StreamProvider + ?Sized>(
         &self,
         provider: &Arc<P>,
         offset: usize,
@@ -115,7 +115,7 @@ impl Cut<'_> {
         }
     }
 
-    pub(super) async fn publish<P: StreamProvider>(
+    pub(super) async fn publish<P: StreamProvider + ?Sized>(
         &self,
         provider: &Arc<P>,
         records: &[OwnedBytes],

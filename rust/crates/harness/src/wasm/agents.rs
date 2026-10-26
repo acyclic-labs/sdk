@@ -44,12 +44,12 @@ mod host;
 mod providers;
 use host::{HostModel, HostTool};
 pub use providers::WasmAgentProviders;
-use providers::{Objects, Providers, Streams};
+use providers::{Objects, Providers};
 
 type Authorities = StreamAuthorityStore<dyn StreamProvider>;
-type BrowserTurns = FilesystemTurnHost<Streams, Authorities, Objects>;
-type BrowserAgents = AgentHost<Streams>;
-type BrowserHandler = AgentHandler<Streams, ExecutorDriver<Arc<BrowserTurns>>>;
+type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>;
+type BrowserAgents = AgentHost<dyn StreamProvider>;
+type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;
 
 /// Settled turns of history in each turn's model context, as in the local host.
 const HISTORY_TURNS: u32 = 64;
@@ -114,6 +114,10 @@ struct WasmBrowserAgentOptions {
     limits: Limits,
     /// Principal recorded as the sender of every browser control.
     principal: String,
+    /// Optional delivery backstop for event-owned hosting.
+    #[serde(default)]
+    #[tsify(optional)]
+    handler_timeout_ms: Option<u64>,
 }
 
 /// Outcome of one control commit.
@@ -311,12 +315,14 @@ pub struct WasmAgents {
     issuer: AuthorityRoot,
     sender: Sender,
     maximum_bytes: u64,
-    run: AbortHandle,
+    run: Option<AbortHandle>,
 }
 
 impl Drop for WasmAgents {
     fn drop(&mut self) {
-        self.run.abort();
+        if let Some(run) = &self.run {
+            run.abort();
+        }
     }
 }
 
@@ -328,6 +334,26 @@ fn within() -> std::result::Result<ActorReference, JsValue> {
 
 #[wasm_bindgen]
 impl WasmAgents {
+    /// Checks permanent creation input errors before an event host retains its
+    /// recovery intent. This performs no provider reads or writes.
+    #[wasm_bindgen(js_name = validateCreate)]
+    pub fn validate_create(
+        &self,
+        intent: &str,
+        brief: Option<String>,
+    ) -> std::result::Result<(), JsValue> {
+        IntentId::try_from(intent).map_err(agent_error)?;
+        if brief
+            .as_ref()
+            .is_some_and(|text| text.len() as u64 > self.maximum_bytes)
+        {
+            return Err(js_error(Error::Invalid(
+                "agent brief exceeds file byte limit".into(),
+            )));
+        }
+        Ok(())
+    }
+
     /// Opens the providers and starts hosting every agent. `owner` holds the
     /// signing custody of every agent's authority. `report` receives each
     /// failed agent delivery, which stays queued.
@@ -343,7 +369,7 @@ impl WasmAgents {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let providers = Providers::indexed_db(&options).await?;
         let handler = providers.handler(&options, owner, registry)?;
-        Self::host(options, owner, providers, Arc::new(handler), report)
+        Self::host(options, owner, providers, Arc::new(handler), report, true)
     }
 
     /// Hosts every agent of `providers` (shared with the guest) whose turns run in an agent
@@ -375,7 +401,82 @@ impl WasmAgents {
             providers.providers.clone(),
             Arc::new(handler),
             report,
+            true,
         )
+    }
+
+    /// Event-owned host. No dispatcher escapes the caller's event; call
+    /// `drain` for the one actor owned by this host and persist its next alarm.
+    #[wasm_bindgen(js_name = openHostingEvent)]
+    pub fn open_hosting_event(
+        providers: &WasmAgentProviders,
+        #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
+        owner: &WasmReducer,
+        manifest: &[u8],
+        on_record: Function,
+    ) -> std::result::Result<WasmAgents, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        let manifest = acyclic_actors::guest::wire::decode_manifest(manifest)
+            .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
+        let handler = acyclic_actors::guest::wire::Remote::new(manifest, guest::call(on_record));
+        Self::host(
+            options,
+            owner,
+            providers.providers.clone(),
+            Arc::new(handler),
+            None,
+            false,
+        )
+    }
+
+    /// Runs the explicitly hosted agent to quiescence and returns its committed
+    /// undelivered alarm. A failed delivery retains its input and exact retry.
+    /// Releasing the idle registration closes event-owned follow cursors.
+    pub async fn drain(&self, agent: String) -> std::result::Result<Option<u64>, JsValue> {
+        if self.run.is_some() {
+            return Err(js_error(Error::Invalid(
+                "drain requires an event-owned host".into(),
+            )));
+        }
+        let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+        self.agents.drain(&agent).await.map_err(agent_error)?;
+        let actor = self.agents.actor(&agent).map_err(agent_error)?;
+        let snapshot = self
+            .agents
+            .runtime()
+            .store()
+            .load(&actor)
+            .await
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        let alarm = snapshot
+            .state()
+            .filter(|state| !state.paused())
+            .and_then(|state| state.alarm().pending());
+        if !self.agents.runtime().release(&actor) {
+            return Err(js_error(Error::Storage(
+                "actor still owns an unsettled publication".into(),
+            )));
+        }
+        Ok(alarm)
+    }
+
+    /// Durable wake subscriptions for one event-owned agent: its control state
+    /// and inbox. Hosts route only these paths, so placement claims cannot
+    /// produce unrelated actors' wakes.
+    #[wasm_bindgen(js_name = wakePaths, unchecked_return_type = "string[]")]
+    pub fn wake_paths(&self, agent: String) -> std::result::Result<JsValue, JsValue> {
+        let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+        let actor = self.agents.actor(&agent).map_err(agent_error)?;
+        let state = self
+            .agents
+            .runtime()
+            .store()
+            .path(&actor)
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        to_js(&vec![
+            state.to_string(),
+            agent.inbox().map_err(agent_error)?.to_string(),
+        ])
     }
 }
 
@@ -387,30 +488,43 @@ impl WasmAgents {
         providers: Providers,
         handler: Arc<dyn Handler>,
         report: Option<Function>,
+        background: bool,
     ) -> std::result::Result<WasmAgents, JsValue> {
         options.limits.validate(&mut None).map_err(js_error)?;
+        let composer = providers.spawn_volumes(&options, owner);
         let Providers { stream, filesystem } = providers;
         let agents = Arc::new(
-            AgentHost::hosting(stream, within()?, handler, Arc::new(SystemClock), None)
-                .map_err(agent_error)?,
+            AgentHost::hosting(
+                stream,
+                within()?,
+                handler,
+                Arc::new(SystemClock),
+                Some(composer),
+            )
+            .map_err(agent_error)?,
         );
-        let runner = Arc::clone(&agents);
-        let (run, handle) = futures::future::abortable(async move {
-            let report = |actor: &ActorReference, error: &acyclic_actors::local::Error| {
-                if let Some(report) = &report {
-                    let _ = report.call2(
-                        &JsValue::UNDEFINED,
-                        &JsValue::from_str(&format!("{actor:?}")),
-                        &JsValue::from_str(&error.to_string()),
-                    );
-                }
-            };
-            let Err(error) = runner.run(&report).await;
-            tracing::error!(%error, "browser agent runtime stopped");
-        });
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = run.await;
-        });
+        let run = if background {
+            let runner = Arc::clone(&agents);
+            let (run, handle) = futures::future::abortable(async move {
+                let report = |actor: &ActorReference, error: &acyclic_actors::local::Error| {
+                    if let Some(report) = &report {
+                        let _ = report.call2(
+                            &JsValue::UNDEFINED,
+                            &JsValue::from_str(&format!("{actor:?}")),
+                            &JsValue::from_str(&error.to_string()),
+                        );
+                    }
+                };
+                let Err(error) = runner.run(&report).await;
+                tracing::error!(%error, "browser agent runtime stopped");
+            });
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = run.await;
+            });
+            Some(handle)
+        } else {
+            None
+        };
         Ok(Self {
             agents,
             filesystem,
@@ -420,7 +534,7 @@ impl WasmAgents {
                 principal: options.principal,
             },
             maximum_bytes: options.limits.file_bytes,
-            run: handle,
+            run,
         })
     }
 }
@@ -435,6 +549,7 @@ impl WasmAgents {
         intent: String,
         brief: Option<String>,
     ) -> std::result::Result<String, JsValue> {
+        self.validate_create(&intent, brief.clone())?;
         let id = AgentId::from_bytes(digest16("acyclic.browser.agent.v1", &[intent.as_bytes()]));
         let volume = VolumeRef::new(
             self.provider.clone(),

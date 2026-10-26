@@ -31,7 +31,7 @@ use std::sync::Arc;
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
-pub struct FilesystemSpawnVolumes<P: 'static, O: 'static> {
+pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     issuer: AuthorityRoot,
     admission: super::TurnAdmission,
@@ -54,7 +54,7 @@ pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'a, crate::Result<Option<acyclic_fs::GenerationId>>>;
 }
 
-impl<P, O> FilesystemSpawnVolumes<P, O> {
+impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
     /// Volumes on `host`, whose authority must be the agents' stream
     /// provider; `issuer` is the agents' signing custody, which stages each
     /// child's brief of at most `maximum_bytes` under the child's own authority,
@@ -237,7 +237,7 @@ fn requested(participant: &Participant) -> Result<Vec<Requested>, GuestError> {
 
 impl<P, O> SpawnVolumes for FilesystemSpawnVolumes<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn bind(&self, parent: &AgentState, outs: &mut [Out]) -> Result<Option<Participant>, Error> {
@@ -369,7 +369,7 @@ where
 
 impl<P, O> Composer for FilesystemSpawnVolumes<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Opens a possibly untrusted spawn request: the parent is the actor's own
@@ -423,7 +423,7 @@ where
 }
 
 /// The participant forking and creating one step's child volumes.
-struct SpawnFork<P: 'static, O: 'static> {
+struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     cuts: Option<Arc<dyn ForkCuts>>,
     planned: Vec<Planned>,
@@ -436,7 +436,7 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
 
 impl<P, O> SpawnFork<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     async fn compose(&self, request: CommitRequest) -> Result<FilesystemCommit, GuestError> {
@@ -546,7 +546,7 @@ where
 
 impl<P, O> Composition for SpawnFork<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {

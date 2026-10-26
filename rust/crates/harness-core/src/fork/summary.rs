@@ -203,7 +203,7 @@ impl PreparedSummaryFork {
 }
 
 /// Explicit read-only preparation through the existing checkpoint/history path.
-pub async fn prepare_summary_fork_context<P: StreamProvider>(
+pub async fn prepare_summary_fork_context<P: StreamProvider + ?Sized>(
     parent: &Reducer,
     selection: SummaryForkSelection,
     journal: &dyn ExecutionJournal,
@@ -224,7 +224,7 @@ pub async fn prepare_summary_fork_context<P: StreamProvider>(
     .await
 }
 
-pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
+pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider + ?Sized>(
     parent: &Reducer,
     selection: SummaryForkSelection,
     journal: &dyn ExecutionJournal,

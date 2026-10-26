@@ -41,6 +41,10 @@ pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
+#[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+mod journal_provider;
+#[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+pub use journal_provider::{JournalStream, JournalStreamLimits};
 #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
 mod change;
 #[cfg(any(
@@ -54,7 +58,10 @@ mod interest;
 #[cfg(any(
     feature = "local",
     feature = "postgres",
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 mod journal;
 #[cfg(feature = "local")]

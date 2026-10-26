@@ -30,7 +30,7 @@ pub(super) fn stream_idempotency_key_with_work(
     Ok(key)
 }
 
-impl<P: StreamProvider> StreamAggregate<P> {
+impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
     /// Plans, CAS-appends, and only then applies one command.
     pub async fn execute(
         &mut self,

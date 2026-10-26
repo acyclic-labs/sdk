@@ -1,7 +1,7 @@
 use super::*;
 use crate::wire_codec::CodecQuota;
 
-impl<P: StreamProvider> StreamAggregate<P> {
+impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
     pub(super) async fn validate_task_admission_content_with_work(
         &self,
         action: &Action,

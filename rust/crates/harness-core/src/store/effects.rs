@@ -17,7 +17,7 @@ use operations::verify_operation_locator as verify_locator;
 use std::sync::Arc;
 
 /// Reads authenticated effect events at a bounded committed cut.
-pub async fn effect_events<P: StreamProvider>(
+pub async fn effect_events<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,
@@ -114,7 +114,7 @@ pub async fn effect_events<P: StreamProvider>(
     Ok((events, owned))
 }
 
-impl<P: StreamProvider> Tree<'_, P> {
+impl<P: StreamProvider + ?Sized> Tree<'_, P> {
     async fn verified(
         &self,
         verifier: &AuthorityVerifier,

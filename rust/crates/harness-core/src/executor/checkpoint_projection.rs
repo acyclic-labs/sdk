@@ -2,7 +2,7 @@ use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized, Unsupported};
 
 /// Imports a checkpoint and its complete canonical delta through a logical cut.
-pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider>(
+pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider + ?Sized>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     context: (Limits, &RuntimeScope),

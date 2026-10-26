@@ -150,6 +150,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-cloudflare-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-agent-host-conformance",
+ "acyclic-stream",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [

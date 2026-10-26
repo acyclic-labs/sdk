@@ -1,4 +1,4 @@
-use crate::{Backend, Result, observe::Observed, vectors};
+use crate::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::guest::{
     self, Checkpoint, Delivery, GuestFuture, Handler, Manifest, Transition, wire,
 };
@@ -64,7 +64,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     }))?;
     let host = vectors::hosting(provider.clone(), handler, None)?;
     let root = host
-        .create(&vectors::intent("timeout")?, vectors::adopted())
+        .create(&vectors::intent("timeout")?, fixtures::adopted())
         .await?;
     if host.runtime().drain().await.is_empty() {
         return Err("guest timeout did not surface a failure".into());

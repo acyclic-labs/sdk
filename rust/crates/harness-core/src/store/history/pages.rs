@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: StreamProvider> HistoryReader<P> {
+impl<P: StreamProvider + ?Sized> HistoryReader<P> {
     /// Binds the canonical path to its authenticated verifier.
     pub fn new(
         client: &std::sync::Arc<P>,
@@ -258,7 +258,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 }
 
-pub(in crate::store) async fn project_effect<P: StreamProvider>(
+pub(in crate::store) async fn project_effect<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,

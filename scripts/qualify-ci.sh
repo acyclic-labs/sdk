@@ -482,6 +482,7 @@ case "$lane" in
     bun run --filter '@acyclic-labs/objects' build
     bun run --filter '@acyclic-labs/stream' build
     bun run --filter '@acyclic-labs/harness' build
+    bash scripts/qualify-cloudflare.sh
     export CHROME="$(command -v google-chrome || command -v chromium)"
     browser_qualification() {
       local name="$1" start="$EPOCHREALTIME" status=0
