@@ -431,7 +431,7 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
     };
     assert!(verify_registry_corpus(
         &corpus,
-        fixture.path().join("frontier"),
+        &fixture.path().join("frontier"),
         Path::new("absent-cargo"),
         "0.1.1",
         fixture.path()

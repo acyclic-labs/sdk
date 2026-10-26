@@ -208,7 +208,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     let executed = execute_examples(
         fixture.path(),
         &cargo,
-        fixture.path().join("target"),
+        &fixture.path().join("target"),
         &discovered,
         Some(&owners),
         Some(&captured),
@@ -272,7 +272,7 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     assert!(accepted.0.yanked);
     assert_eq!(
         accepted.1.get("src/lib.rs"),
-        Some(&crate::sha256_file(fixture.path().join("src/lib.rs")).unwrap())
+        Some(&crate::sha256_file(&fixture.path().join("src/lib.rs")).unwrap())
     );
     fs::write(
         fixture.path().join("src/lib.rs"),
@@ -426,7 +426,7 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     let execution = execute_examples(
         fixture.path(),
         &cargo(),
-        fixture.path().join("target"),
+        &fixture.path().join("target"),
         &discovered,
         None,
         None,
@@ -441,7 +441,7 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     assert!(execute_examples(
         fixture.path(),
         &cargo(),
-        fixture.path().join("target"),
+        &fixture.path().join("target"),
         &discovered,
         None,
         None
@@ -452,7 +452,7 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     assert!(execute_examples(
         fixture.path(),
         &cargo(),
-        fixture.path().join("target"),
+        &fixture.path().join("target"),
         &failing,
         None,
         None
@@ -468,7 +468,7 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     assert!(execute_examples(
         fixture.path(),
         &cargo(),
-        fixture.path().join("target"),
+        &fixture.path().join("target"),
         &mutating,
         None,
         None
@@ -644,7 +644,7 @@ fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutati
         let error = execute_examples(
             fixture.path(),
             &cargo(),
-            fixture.path().join("target"),
+            &fixture.path().join("target"),
             &examples,
             None,
             None,
