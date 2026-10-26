@@ -147,11 +147,18 @@ pub fn agent_authority<'v>(
                 ));
             }
             let issuer = issuer.with_audience(audience.clone());
+            // The agent keeps each grant its admission names and the
+            // admission's filesystem ceiling, so the set is checked whole.
             let admitted = scope.capabilities();
+            let ceiling = admitted
+                .iter()
+                .filter(|label| label.starts_with(acyclic_fs::access::SCOPE_PREFIX))
+                .map(str::to_owned);
             let grants = Capabilities::new(
                 grants
                     .into_iter()
-                    .filter(|grant| Capabilities::new([grant.as_str()]).is_subset_of(admitted)),
+                    .filter(|grant| admitted.contains(grant))
+                    .chain(ceiling),
             );
             if !grants.is_subset_of(admitted) {
                 return Err(Error::Unauthorized(
