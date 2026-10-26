@@ -160,7 +160,7 @@ test("the workspace gate, docs and generation run as independent required matrix
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
  const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  assert.match(branch("gate"),/nextest --workspace --all-features --locked/);
- assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core --features filesystem --lib --tests/);
+ assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
  assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
  assert.match(branch("generation"),/cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo.toml --locked/);
@@ -186,7 +186,7 @@ test("Windows native audits are independent required lanes without moving public
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   assert.doesNotMatch(script, /Start-Background|Complete-Background/);
-  for (const command of ["cargo test --workspace --all-features --locked", "cargo test -p acyclic-plugin --all-features --locked --test fork_join",
+  for (const command of ["cargo test --workspace --all-features --locked", "cargo test -p acyclic-harness --all-features --locked --lib",
     "bun test --isolate --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs"])
     assert.ok(script.includes(command), command);
   const packages = script.slice(script.indexOf("& .\\scripts\\test-qualify-ci-windows.ps1")).replaceAll("\r\n", "\n");
@@ -282,7 +282,7 @@ test("four clippy workers retain every feature invocation and fail when any work
   assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
   assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
   assert.ok(parallel.calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "filesystem", "--all-targets", "--locked", "--", "-D", "warnings",
+    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "filesystem", "--all-targets", "--locked", "--", "-D", "warnings",
   ])));
   assert.equal(parallel.exitCode, 0);
   const failed = await execute(4, true);
@@ -329,24 +329,21 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const macosBody = script.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
-  const prepare = 'background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join';
   const join = '    finish_macos\n';
-  const execute = 'CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance';
-  assert.ok(macosBody.includes(prepare));
-  assert.ok(macosBody.includes('--no-run --target-dir "$target_dir-fork-join"'));
+  const execute = '    fork_join_conformance';
+  assert.doesNotMatch(macosBody, /fork-join-build|target_dir-fork-join|--test fork_join/);
   for (const marker of [join, execute, "nextest --workspace --all-features --locked", "cargo test --workspace --all-features --locked --doc", "native_mount_tests"])
     assert.ok(macosBody.includes(marker), marker);
-  assert.ok(macosBody.includes("finish napi x86_64 fork-join-build"));
-  for (const command of ["CARGO_BUILD_JOBS=2 background napi", "CARGO_BUILD_JOBS=1 background x86_64", "CARGO_BUILD_JOBS=1 background fork-join-build", "CARGO_BUILD_JOBS=8 nextest", "CARGO_BUILD_JOBS=8 cargo test --workspace"])
+  assert.ok(macosBody.includes("finish napi x86_64"));
+  for (const command of ["CARGO_BUILD_JOBS=2 background napi", "CARGO_BUILD_JOBS=1 background x86_64", "CARGO_BUILD_JOBS=8 nextest", "CARGO_BUILD_JOBS=8 cargo test --workspace"])
     assert.ok(macosBody.includes(command), command);
-  assert.ok(macosBody.indexOf(prepare) < macosBody.indexOf("nextest --workspace --all-features --locked"));
   assert.ok(macosBody.indexOf(join) > macosBody.indexOf("cargo test --workspace --all-features --locked --doc"));
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf(join));
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf("native_mount_tests"));
   const fork = script.match(/^fork_join_conformance\(\) \{\n([\s\S]*?)^\}/m)?.[1] ?? assert.fail("missing fork/join selection");
-  assert.ok(fork.includes("cargo test -p acyclic-plugin --locked --test fork_join --"));
-  assert.ok(fork.includes("--ignored --test-threads=1 --skip support::"));
-  assert.doesNotMatch(fork, /--all-features|--no-run/);
+  assert.ok(fork.includes("cargo test -p acyclic-harness --all-features --locked --lib"));
+  assert.ok(fork.includes("local::host_workspace::tests:: -- --test-threads=4"));
+  assert.doesNotMatch(fork, /--ignored|--skip|--no-run|--test fork_join/);
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
     assert.ok(workflow.includes(variable + ": ${{ matrix.workers }}"), variable);
@@ -366,8 +363,8 @@ test("macOS joins every background build on foreground and background failures",
   assert.match(root, /^\.tools\/macos-joins-[A-Za-z0-9]+$/);
   const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
   try {
-    for (const [workspace, docs, napi, fork] of [[0, 0, 0, 0], [7, 0, 0, 0], [0, 17, 0, 0], [0, 0, 11, 0], [0, 0, 0, 13], [7, 0, 11, 13], [0, 0, 11, 13]]) {
-      const fixture = `${root}/${workspace}-${docs}-${napi}-${fork}`;
+    for (const [workspace, docs, napi] of [[0, 0, 0], [7, 0, 0], [0, 17, 0], [0, 0, 11], [7, 0, 11], [0, 17, 11]]) {
+      const fixture = `${root}/${workspace}-${docs}-${napi}`;
       mkdirSync(fixture);
       /** @type {Promise<{status: number | null, stdout: string, stderr: string, events: number}>} */
       const run = new Promise((resolve, reject) => {
@@ -378,16 +375,16 @@ export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
 target_dir="$fixture/target"
 installed_graphcoder() { :; }
 pinned_pi() { :; }
-native_binding() { [[ "$CARGO_BUILD_JOBS" == 2 ]]; touch "$fixture/napi.done"; return ${napi}; }
+native_binding() {
+  [[ "$CARGO_BUILD_JOBS" == 2 ]]
+  IFS= read -r event <&3
+  [[ "$event" == workspace-started ]]
+  touch "$fixture/napi.done"; return ${napi}
+}
 nextest() { printf 'fixture-workspace-started\\n'; [[ "$CARGO_BUILD_JOBS" == 8 ]]; return ${workspace}; }
 cargo() {
   if [[ "$1" == check ]]; then
     [[ "$CARGO_BUILD_JOBS" == 1 ]]; touch "$fixture/x86_64.done"
-  elif [[ "$*" == *--no-run* ]]; then
-    [[ "$CARGO_BUILD_JOBS" == 1 && "$*" == *"--target-dir $target_dir-fork-join"* ]]
-    IFS= read -r event <&3
-    [[ "$event" == workspace-started ]]
-    touch "$fixture/fork.done"; return ${fork}
   else
     [[ "$CARGO_BUILD_JOBS" == 8 && "$*" == *--doc* ]]; return ${docs}
   fi
@@ -422,12 +419,12 @@ printf 'joined\\n'
       });
       const result = await run;
       assert.equal(result.events, 1, result.stderr);
-      assert.equal(result.status, workspace || docs || napi || fork, result.stderr);
-      for (const name of ["napi", "x86_64", "fork"])
+      assert.equal(result.status, workspace || docs || napi, result.stderr);
+      for (const name of ["napi", "x86_64"])
         assert.ok(readdirSync(fixture).includes(`${name}.done`), `${name} not joined`);
-      for (const name of ["napi", "x86_64", "fork-join-build"])
+      for (const name of ["napi", "x86_64"])
         assert.ok(result.stdout.includes(`::group::${name}`), `${name} result missing`);
-      assert.equal(result.stdout.includes("joined"), workspace + docs + napi + fork === 0);
+      assert.equal(result.stdout.includes("joined"), workspace + docs + napi === 0);
     }
   } finally {
     assert.ok(resolve(root).startsWith(resolve(".tools") + sep));

@@ -8,6 +8,13 @@ pub(super) struct Runtime {
     pub(super) original_work: Mutex<Option<crate::NativeMaterializationWork>>,
     pub(super) callback_guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(super) root: PathBuf,
+    /// This view's path from the virtualization root, with a trailing
+    /// separator: empty for a standalone root, `name\` for a shared view.
+    /// Every name passed to a ProjFS call goes through [`Self::projfs_name`].
+    pub(super) prefix: Vec<u16>,
+    /// The path whose staging directory this view writes through, always
+    /// outside the virtualization root: the root itself when standalone.
+    pub(super) staging_anchor: PathBuf,
     pub(super) metadata_root: HostRoot,
     pub(super) staging: Mutex<Option<(cap_std::fs::Dir, crate::NativeWorkReservation)>>,
     pub(super) creating_name: RwLock<(MountPath, Option<(FileId, ReadBasis)>)>,
@@ -22,22 +29,24 @@ pub(super) struct Runtime {
     pub(super) _allocation: crate::NativeAllocation,
 }
 
-pub(super) struct CallbackGate {
-    pub(super) shards: Box<[Mutex<()>]>,
-    pub(super) active: Mutex<(usize, bool)>,
-    pub(super) idle: Condvar,
+impl Runtime {
+    /// The name ProjFS knows `host` (relative to this view's root) by.
+    pub(super) fn projfs_name(&self, host: &std::path::Path) -> HSTRING {
+        if self.prefix.is_empty() {
+            return HSTRING::from(host.as_os_str());
+        }
+        use std::os::windows::ffi::OsStrExt as _;
+        let mut name = self.prefix.clone();
+        name.extend(host.as_os_str().encode_wide());
+        HSTRING::from_wide(&name)
+    }
 }
 
-pub(super) struct ActiveCallback<'a>(pub(super) &'a CallbackGate);
-
-impl Drop for ActiveCallback<'_> {
-    fn drop(&mut self) {
-        let mut active = lock_recover(&self.0.active);
-        active.0 = active.0.saturating_sub(1);
-        if active.0 == 0 {
-            self.0.idle.notify_all();
-        }
-    }
+/// A view's callbacks: admitted and drained through the shared gate, and
+/// serialized per file through `shards`.
+pub(super) struct CallbackGate {
+    pub(super) shards: Box<[Mutex<()>]>,
+    pub(super) admission: crate::native_mount::shared::callback_gate::CallbackGate,
 }
 
 #[derive(Default)]
@@ -140,13 +149,10 @@ pub(super) fn compare_projfs_name(left: &[u8], right: &[u8]) -> Option<i32> {
 }
 
 impl CallbackGate {
-    pub(super) fn enter(&self) -> Option<ActiveCallback<'_>> {
-        let mut active = lock_recover(&self.active);
-        if !active.1 {
-            return None;
-        }
-        active.0 = active.0.checked_add(1)?;
-        Some(ActiveCallback(self))
+    pub(super) fn enter(
+        &self,
+    ) -> Option<crate::native_mount::shared::callback_gate::CallbackPass<'_>> {
+        self.admission.enter()
     }
     pub(super) fn start() -> Result<Self, NativeMountError> {
         const SHARDS: usize = 64;
@@ -159,19 +165,16 @@ impl CallbackGate {
         }
         Ok(Self {
             shards: shards.into_boxed_slice(),
-            active: Mutex::new((0, true)),
-            idle: Condvar::new(),
+            admission: crate::native_mount::shared::callback_gate::CallbackGate::new(),
         })
     }
 
+    /// Waits for the callbacks admitted before this call, however many
+    /// arrive meanwhile.
     pub(super) fn drain(&self) {
-        let mut active = lock_recover(&self.active);
-        while active.0 != 0 {
-            active = self
-                .idle
-                .wait(active)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
+        let Ok(()) = self
+            .admission
+            .drain(|| Ok::<_, std::convert::Infallible>(()));
     }
 
     pub(super) fn call_observed(
@@ -197,7 +200,7 @@ impl CallbackGate {
     }
 
     pub(super) fn close_admission(&self) {
-        lock_recover(&self.active).1 = false;
+        self.admission.close();
     }
 }
 

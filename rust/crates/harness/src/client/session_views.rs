@@ -25,8 +25,8 @@ impl FileViews {
         cursor.durable = cursor.durable.max(data.durable);
         Ok(Change {
             cursor,
-            file: FileValue::from_record(&record)?,
-            files: Vec::new(),
+            file: None,
+            files: FileValue::from_record(&record)?,
             removed: Vec::new(),
         })
     }

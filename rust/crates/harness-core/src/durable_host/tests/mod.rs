@@ -23,6 +23,9 @@ use fixture::Fixture;
 mod admission;
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
+mod interleaved;
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod journal;
 #[cfg(test)]
 #[cfg(feature = "filesystem")]

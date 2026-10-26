@@ -330,6 +330,7 @@ fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error
             volume_id: source.volume_id()?,
             destination: destination.clone().into(),
             writable: true,
+            shared: false,
         },
         source as Arc<dyn MountFilesystem>,
     )?;

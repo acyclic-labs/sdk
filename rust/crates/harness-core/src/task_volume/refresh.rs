@@ -79,10 +79,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     peer_advanced = true;
                     break;
                 }
-                let file = segment::decode(&record.value)?;
-                validate_file(&index, &file)?;
+                let files = segment::decode_files(&record.value)?;
                 let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
-                apply(&mut index, file, next);
+                for file in files.iter() {
+                    validate_file(&index, file)?;
+                }
+                for file in files {
+                    apply(&mut index, file, next);
+                }
                 index.commit = record.commit_id;
                 index.next = next;
                 expected = self.generation(&index);

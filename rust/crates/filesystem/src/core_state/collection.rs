@@ -57,7 +57,7 @@ pub(super) fn load_content_addressed<T: DeserializeOwned + Serialize>(
     family: &str,
     address: [u8; 32],
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
-    let Some(value) = read_locked(&mut namespace.record(family, &address)?)? else {
+    let Some((value, _)) = read_published(&namespace.content_record(family, &address)?)? else {
         return Ok(None);
     };
     if content_address(&value)? != address {

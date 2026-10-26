@@ -26,6 +26,8 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 
 mod codec;
 use codec::BoundedCodec;
+mod input;
+pub use input::JsonLineReader;
 
 /// One initialized, bounded MCP connection and its owned native process tree.
 pub struct StdioMcpTransport {

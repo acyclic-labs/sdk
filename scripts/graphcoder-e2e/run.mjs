@@ -22,6 +22,7 @@ import { fenced } from "./orphan-check.mjs";
 import { qualification } from "./qualification.mjs";
 import { publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
+import { withOwnedCase } from "./suite.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
@@ -51,8 +52,6 @@ const contexts = new Map();
 const evidence = new Map();
 let server, events, port;
 const started = performance.now();
-// Reserve one second of the ten-second suite budget for process reaping and artifacts.
-const timeout = setTimeout(() => { processes.close(); }, 9000);
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
@@ -173,7 +172,7 @@ async function verify(result, allRecords) {
   }
 }
 let results;
-try {
+const execution = await withOwnedCase({ processes, run: async () => {
   const scripts = Object.fromEntries(cases.map(test => [test.id, expand(test.model,
     { id: test.id, workspace: join(test.root, test.id, "workspace") })]));
   await json(join(output, "script.json"), { cases: scripts });
@@ -190,10 +189,7 @@ try {
   // Unix cases share one mock. Windows runs every case and filesystem variant
   // serially; serial.mjs gives each case its own unchanged ten-second budget.
   results = await schedule(cases, process.platform, test => execute(test, origin));
-} finally {
-  clearTimeout(timeout);
-  await processes.close();
-}
+} });
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
 const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
@@ -201,8 +197,8 @@ results = await Promise.all(results.map(result => verify(result, allRecords)));
 results = results.map(result => ({ ...result, evidence: { ...evidence.get(result.case),
   requests: allRecords.filter(record => record.case === result.case) } }));
 const seconds = (performance.now() - started) / 1000;
-const report = { platform: process.platform, seconds, limit_seconds: 10, results, output, roots,
+const report = { platform: process.platform, seconds, limit_seconds: 10, expired: execution.expired, results, output, roots,
   selected, qualification: !selected.length, coverage };
 await publishReport(join(output, "matrix.json"), report);
-process.exitCode = results?.every(result => result.status === "pass") && seconds < 10
+process.exitCode = !execution.expired && results?.every(result => result.status === "pass") && seconds < 10
   && (selected.length > 0 || coverage.pass) ? 0 : 1;

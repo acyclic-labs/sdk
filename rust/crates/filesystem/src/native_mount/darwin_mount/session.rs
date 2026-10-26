@@ -119,13 +119,14 @@ impl DarwinMountSession {
         if self.unmount.pointer() == 0 {
             return Err(NativeMountError::Lifecycle("session is stopped"));
         }
-        NativeMountWorkScope::new(context, work)
+        NativeMountWorkScope::new(&context, work)
     }
 
     pub(in crate::native_mount) fn revalidate(&self, work: &Work) -> Result<(), NativeMountError> {
-        let active = self.begin_original_work(work)?;
-        active.context.source.fence_changes_with_meter(work)?;
-        active.context.revalidate(work).map(|_| ())
+        let _active = self.begin_original_work(work)?;
+        let context = self.unmount.context()?;
+        context.source.fence_changes_with_meter(work)?;
+        context.revalidate(work).map(|_| ())
     }
 
     pub(in crate::native_mount) fn native_root_identity(

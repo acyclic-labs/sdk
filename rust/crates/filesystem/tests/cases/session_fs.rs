@@ -341,7 +341,7 @@ fn closed(frame: wire::SessionFrame) -> bool {
     matches!(frame.body, Some(Body::Closed(close)) if close.code == StreamError::AccessDenied.code())
 }
 fn changes(record: &wire::Record) -> Result<wire::ChangeRecord> {
-    Ok(wire::ChangeRecord::decode(record.value.as_ref())?)
+    Ok(acyclic_stream::decode_changes(record.value.as_ref())?)
 }
 #[tokio::test]
 async fn resume_exactly_once_through_ordinary_session() -> Result {

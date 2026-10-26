@@ -50,10 +50,7 @@ pub fn native_file_io<T>(
     }
     let result = operation(&mut file, work);
     let after = crate::native_host::stat_file(&file, &mut &*work)?;
-    let parent = HostRoot {
-        directory,
-        identity: root.identity(),
-    };
+    let parent = HostRoot::from_parts(directory, root.identity());
     #[cfg(unix)]
     let named = parent.stat(leaf, &mut &*work)?;
     #[cfg(windows)]

@@ -212,7 +212,7 @@ impl ProjectionState {
         let path = fuse_clone_path(binding.native_path(), work)?;
         let parent_inode = fuse_parent(&binding.path, work)?
             .and_then(|parent| self.inode_by_path.get(&*parent).copied())
-            .unwrap_or(ROOT_INODE);
+            .unwrap_or(self.root_inode);
         Ok(DirectoryStream {
             path,
             parent_inode,

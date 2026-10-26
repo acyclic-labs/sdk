@@ -143,11 +143,10 @@ impl LocalCoreStateStore {
                     .as_ref()
                     .expect("bound native work")
                     .work();
-                let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
-                let read = |paths: &RecordPaths| {
-                    let Some(mut owned) =
-                        records::read_recoverable_mode::<T>(paths, !namespace.inspection)?
-                    else {
+                let paths = namespace.content_record(T::FAMILY, &T::address(id))?;
+                {
+                    let paths = &paths;
+                    let Some(mut owned) = read_published::<T>(paths)? else {
                         return Ok(None);
                     };
                     owned
@@ -159,11 +158,6 @@ impl LocalCoreStateStore {
                         return Err(LocalCoreStateStoreError::Integrity);
                     }
                     Ok(Some((owned.0, owned.1.expect("native record allocation"))))
-                };
-                if namespace.inspection {
-                    inspection::with_record(&mut paths, read)
-                } else {
-                    with_lock(&mut paths, read)
                 }
             })
             .await
@@ -210,9 +204,9 @@ impl LocalCoreStateStore {
                         .as_ref()
                         .expect("bound native work")
                         .work();
-                    let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
+                    let mut paths = namespace.content_record(T::FAMILY, &T::address(id))?;
                     with_lock(&mut paths, |paths| {
-                        if let Some(existing) = read_recoverable::<T>(paths)? {
+                        if let Some(existing) = read_published::<T>(paths)? {
                             work.charge(crate::WorkCounters {
                                 items_examined: 1,
                                 ..Default::default()

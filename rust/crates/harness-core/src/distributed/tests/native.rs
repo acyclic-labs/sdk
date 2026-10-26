@@ -201,6 +201,7 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
             &client,
             Some(OperationId::from_bytes([21; 16])),
             Some(&mut phase),
+            None,
         )
         .await;
         assert_eq!(phase, expected_phase);

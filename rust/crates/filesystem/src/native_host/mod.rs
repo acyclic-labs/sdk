@@ -53,12 +53,14 @@ use record::windows_name_packet;
 mod work;
 pub(crate) use work::*;
 mod cwd;
-#[cfg(windows)]
-pub(crate) use cwd::canonical_directory_wide;
 #[cfg(unix)]
 use cwd::cwd_metadata_flags;
+#[cfg(all(test, windows))]
+pub(crate) use cwd::short_path;
 #[cfg(all(unix, any(test, feature = "native-watch")))]
 pub(crate) use cwd::{canonical_directory_path_held, normalize_root_path};
+#[cfg(windows)]
+pub(crate) use cwd::{canonical_directory_wide, fold_case_wide, long_path_wide};
 #[cfg(unix)]
 mod unix_path;
 #[cfg(unix)]
@@ -148,7 +150,7 @@ pub use metadata::NativeMetadataError;
 #[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
-pub use root::HostRoot;
+pub use root::{CachedRoot, HostRoot};
 #[cfg(target_os = "macos")]
 pub use sparse::punch_hole;
 pub use stat::{HostDataRange, HostListedEntry, HostStat};

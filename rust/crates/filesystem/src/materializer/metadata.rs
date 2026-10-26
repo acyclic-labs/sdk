@@ -152,10 +152,7 @@ fn hash_native_entry(
         if identity != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
-        let root = HostRoot {
-            directory,
-            identity,
-        };
+        let root = HostRoot::from_parts(directory, identity);
         let (mut reader, _buffer) =
             crate::native_host::read_dir_held(&root.directory, &mut &*work)?;
         let mut names = Vec::new();

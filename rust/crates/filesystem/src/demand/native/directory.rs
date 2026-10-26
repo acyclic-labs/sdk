@@ -156,7 +156,11 @@ impl NativeDemandSource {
         work: &mut CallbackWork,
     ) -> Result<DirectoryState, DemandError> {
         let (relative, bytes) = self.relative(directory, work)?;
-        let result = self.inner.root.read_dir_stats(&relative, work);
+        let result = self
+            .inner
+            .root
+            .held(work)
+            .and_then(|root| root.read_dir_stats(&relative, work));
         drop(relative);
         work.release(bytes)?;
         let (entries, bytes) = result?;
@@ -188,12 +192,17 @@ impl NativeDemandSource {
             stat
         } else {
             #[cfg(unix)]
-            let result = self.inner.root.stat(&directory.join(&entry.name), work);
+            let result = self
+                .inner
+                .root
+                .held(work)
+                .and_then(|root| root.stat(&directory.join(&entry.name), work));
             #[cfg(windows)]
             let result = self
                 .inner
                 .root
-                .open_dir_held(directory, work)
+                .held(work)
+                .and_then(|root| root.open_dir_held(directory, work))
                 .and_then(|parent| {
                     crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
                 });

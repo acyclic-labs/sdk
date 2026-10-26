@@ -8,6 +8,8 @@
 # ACYCLIC_SCALE_CHILDREN=C makes every root spawn and wait for C children.
 # ACYCLIC_SCALE_IDLE_MS sets the idle CPU window (default 500).
 # ACYCLIC_SCALE_DIAG=1 prints descriptor, thread and file breakdowns.
+# ACYCLIC_CACHED_DESCRIPTORS=D bounds the descriptors idle journals and logs
+# keep open (default: a quarter of the descriptor limit).
 # A count that fails stops the ramp and reports which count it was.
 set -euo pipefail
 

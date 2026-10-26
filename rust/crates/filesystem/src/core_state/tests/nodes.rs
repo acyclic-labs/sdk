@@ -121,6 +121,71 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
 }
 
 #[tokio::test]
+async fn content_addressed_nodes_share_one_family_lock() {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = unbounded_accounting(&cancellation);
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let empty = LazyOverlayId::from_bytes([0; 32]);
+    let mut stored = Vec::new();
+    for path in ["/a", "/b", "/c"] {
+        let (overlay, node) = linked_overlay(path, empty, empty);
+        let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
+        store
+            .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
+            .await
+            .unwrap();
+        // A repeated publication of the same bytes is the same record.
+        let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
+        store
+            .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
+            .await
+            .unwrap();
+        stored.push((overlay, node));
+    }
+    let (absent, _) = linked_overlay("/absent", empty, empty);
+    assert!(
+        store
+            .load_lazy_overlay(absent, &mut accounting)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    for (overlay, node) in &stored {
+        assert_eq!(
+            store
+                .load_lazy_overlay(*overlay, &mut accounting)
+                .await
+                .unwrap()
+                .as_ref()
+                .map(|(value, _)| value),
+            Some(node)
+        );
+    }
+    let family = store
+        .namespace()
+        .unwrap()
+        .content_record("lazy-overlays", &empty.into_bytes())
+        .unwrap()
+        .directory()
+        .to_path_buf();
+    let mut names = std::fs::read_dir(&family)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    let mut expected = stored
+        .iter()
+        .map(|(overlay, _)| format!("{}.json", hex::encode(overlay.into_bytes())))
+        .chain([".lock".to_owned()])
+        .collect::<Vec<_>>();
+    expected.sort();
+    // One file per record and the family's one lock: no lock file per record
+    // or per lookup, which would double a store's files.
+    assert_eq!(names, expected);
+}
+
+#[tokio::test]
 async fn empty_nodes_are_implied_without_being_stored() {
     let cancellation = crate::CancellationToken::new();
     let mut accounting = unbounded_accounting(&cancellation);

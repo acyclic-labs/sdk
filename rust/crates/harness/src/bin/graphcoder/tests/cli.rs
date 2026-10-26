@@ -2,6 +2,8 @@
 mod catalog_compaction;
 mod final_message;
 mod goal_review;
+#[cfg(unix)]
+mod host_workspace_shutdown;
 mod input_review;
 mod instruction_review;
 #[cfg(test)]

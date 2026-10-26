@@ -6,11 +6,9 @@ pub(super) fn replace_written(
     written: &mut WrittenEntry,
 ) -> Result<Placed, String> {
     let source = projection.runtime.source.as_ref();
-    let relative = HSTRING::from(
-        host_relative_path(path)
-            .map_err(|error| error.to_string())?
-            .as_os_str(),
-    );
+    let relative = projection
+        .runtime
+        .projfs_name(&host_relative_path(path).map_err(|error| error.to_string())?);
     let basis = ReadBasis::sample(source);
     let current = match source.lookup_pinned(path) {
         Ok(found) => found,

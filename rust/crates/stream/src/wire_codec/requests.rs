@@ -22,9 +22,7 @@ fn append_record_len(record: &AppendRecord) -> usize {
     } else {
         block_len(record.value.len())
     };
-    record
-        .headers
-        .keys()
+    crate::changes::wire_keys(&record.headers)
         .iter()
         .map(|key| block_len(key.len()))
         .chain(
@@ -179,7 +177,7 @@ fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
         if !record.value.is_empty() {
             bytes(out, 1, &record.value);
         }
-        for key in record.headers.keys() {
+        for key in crate::changes::wire_keys(&record.headers) {
             bytes(out, 2, key);
         }
         for attribute in record.headers.attributes() {

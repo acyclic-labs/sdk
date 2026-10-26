@@ -136,7 +136,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 cancellation,
                 Some(&self.cancellation),
                 |carrier, stamp| {
-                    if self.checkout.ledger.stamp() != stamp {
+                    // The shared candidate installer validates the exact base
+                    // and rebases disjoint mutations. A global cache stamp also
+                    // changes for unrelated callbacks; it is not an adoption
+                    // proof and must not reject an otherwise valid capture.
+                    // Unenumerated source changes still require fresh capture.
+                    if !self.checkout.ledger.enumerated_since(stamp, carrier)? {
                         return Err(MountSourceError::Stale);
                     }
                     let (recorded, notify) = self

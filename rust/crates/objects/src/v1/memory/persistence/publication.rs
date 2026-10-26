@@ -5,6 +5,11 @@ pub(crate) struct Publication {
     pub(crate) native: Option<(Arc<dyn NativeReadMeter>, ReadAllocation)>,
 }
 impl Publication {
+    /// The meter this publication charges, when it is metered.
+    pub(crate) fn meter(&self) -> Option<&dyn NativeReadMeter> {
+        self.native.as_ref().map(|(meter, _)| meter.as_ref())
+    }
+
     pub(crate) fn new(meter: Option<Arc<dyn NativeReadMeter>>) -> Self {
         Self {
             native: meter.map(|meter| {

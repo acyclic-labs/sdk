@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::{EmbeddedCapabilities, Fs, MemoryObjectStore};
 use acyclic_stream::{FollowFilter, MemoryStream, ReadRequest, StreamProvider};
 use std::error::Error;
@@ -68,7 +69,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
             .as_ref(),
         b"public-visible"
     );
-    let decoded = acyclic_stream::wire::ChangeRecord::decode(record.value.as_ref())?;
+    let decoded = acyclic_stream::decode_changes(record.value.as_ref())?;
     assert_eq!(decoded.entries.len(), 1);
     assert!(
         !record
@@ -232,7 +233,7 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
         components.push(LogicalName::new(NameEncoding::Utf8, vec![b'x'; 240], 255)?);
     }
     let path = NamespacePath::new(components, config.limits)?;
-    let key = path_key(&path, config);
+    let key = crate::publication_changes::entry::key(&path, config);
     assert_eq!(key.slice().len(), acyclic_stream::MAX_RECORD_KEY_BYTES);
     let full = path
         .components()
@@ -289,7 +290,7 @@ fn change_chunks_preserve_every_entry_and_obey_both_wire_bounds() -> TestResult 
                     <= acyclic_stream::MAX_RECORD_BYTES
             );
             assert!(record.headers.keys().len() <= acyclic_stream::MAX_RECORD_KEYS);
-            let chunk = acyclic_stream::wire::ChangeRecord::decode(record.value.as_ref())?;
+            let chunk = acyclic_stream::decode_changes(record.value.as_ref())?;
             assert_eq!(chunk.context.as_ref(), context);
             decoded.extend(chunk.entries);
         }

@@ -9,7 +9,11 @@ mod bootstrap;
 #[cfg(not(acyclic_harness_loom))]
 mod performance_tests;
 
+mod children;
+pub(in crate::local) mod git;
 mod mounts;
+mod task_views;
+pub(in crate::local) use children::created_project;
 pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(test)]
@@ -21,6 +25,7 @@ pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
     pub(super) options: acyclic_fs::MountOptions,
+    pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
     pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
@@ -36,6 +41,13 @@ pub(super) type View = LazyWorkspace<
     LocalCoreStateStore,
 >;
 
+pub(super) type TaskMount = acyclic_fs::native_mount::LazyMount<
+    LocalAuthorityBackend,
+    LocalObjectBackend,
+    NativeDemandSource,
+    LocalCoreStateStore,
+>;
+
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
@@ -45,16 +57,9 @@ pub struct LocalWorkspace {
     pub(super) import_source: bool,
     pub(super) view: View,
     pub(super) mount_directory: PathBuf,
-    pub(super) mounted: Option<
-        Arc<
-            acyclic_fs::native_mount::LazyMount<
-                LocalAuthorityBackend,
-                LocalObjectBackend,
-                NativeDemandSource,
-                LocalCoreStateStore,
-            >,
-        >,
-    >,
+    /// Optional sandbox admission shared by the root and all descendants.
+    pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
+    pub(super) mounted: Option<Arc<TaskMount>>,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) mount_authority: Option<crate::filesystem::NativeMountAuthority>,
@@ -64,6 +69,11 @@ pub struct LocalWorkspace {
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
+    /// Child task views, indexed apart from `state` so a child never waits on
+    /// this owner's running command.
+    pub(super) children: StateArc<
+        super::checkout_tools::child_views::ChildViews<super::checkout_tools::CheckoutTools>,
+    >,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
@@ -106,8 +116,32 @@ impl LocalWorkspace {
             .await
             .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
     }
+    pub(in crate::local) fn held_task_mount_root(&self) -> Result<acyclic_fs::HeldRoot> {
+        let root = self
+            .mount_directory
+            .ancestors()
+            .nth(2)
+            .ok_or_else(|| Error::Invalid("task mount root has no checkout".into()))?;
+        if self.mount_directory != root.join(super::host_workspace::HOST_VIEW_ROOT) {
+            return Err(Error::Invalid(
+                "task mounts are outside the checkout namespace".into(),
+            ));
+        }
+        acyclic_fs::hold_root(root)
+            .map_err(storage)?
+            .create_directories(Path::new(super::host_workspace::HOST_VIEW_ROOT))
+            .map_err(storage)
+    }
 
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
+        self.mounts_at_from(path, None).await
+    }
+
+    pub(super) async fn mounts_at_from(
+        &self,
+        path: &Path,
+        inherited: Option<&Mounts>,
+    ) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
@@ -124,24 +158,7 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        #[cfg(any(target_os = "linux", windows))]
-        volumes::link(path, &mut mounts)?;
-        #[cfg(not(any(target_os = "linux", windows)))]
-        {
-            let authority = self
-                .mount_authority
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
-            volumes::attach(
-                &self.filesystem,
-                &self.store,
-                &acyclic_fs::hold_root(path).map_err(storage)?,
-                &mut mounts,
-                authority,
-            )
-            .await?;
-        }
-
+        volumes::link(path, &mut mounts, inherited)?;
         Ok(Arc::new(mounts))
     }
 
@@ -149,7 +166,7 @@ impl LocalWorkspace {
     /// child projection authors its volume aliases, so every reader of
     /// authored history must reserve them rather than rely on capture.
     pub(super) fn volume_owned_paths(&self) -> Result<Vec<String>> {
-        let mut owned = Vec::new();
+        let mut owned = vec![super::host_workspace::HOST_VIEW_ROOT.to_owned()];
         for (relative, mount) in self.mounts.mounts() {
             if !relative.is_empty() && mount.view.source.is_some() {
                 owned.extend(volumes::owned(&self.path, relative)?);
@@ -160,16 +177,12 @@ impl LocalWorkspace {
     pub(super) async fn created_mounts(
         &self,
         project: &VolumeRef,
-        context: &crate::runtime::ToolContext,
+        context: &crate::runtime::TaskContext,
+        scope: &RuntimeScope,
     ) -> Result<(Arc<Mounts>, Scope)> {
-        let access = context
-            .task()
-            .scope()
-            .created_access
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Unauthorized("child mounts require authenticated allocations".into())
-            })?;
+        let access = context.scope().created_access.as_ref().ok_or_else(|| {
+            Error::Unauthorized("child mounts require authenticated allocations".into())
+        })?;
         let mut private = None;
         for binding in &access.content {
             if binding.volume.class() != VolumeClass::AgentPrivate {
@@ -180,7 +193,7 @@ impl LocalWorkspace {
                 .map(|operation| binding.volume.capability(operation, &mut None))
                 .collect::<Result<Vec<_>>>()?
                 .iter()
-                .all(|grant| context.effective_scope().grants().contains(grant));
+                .all(|grant| scope.grants().contains(grant));
             if granted && private.replace(binding.volume.clone()).is_some() {
                 return Err(Error::Unauthorized(
                     "child private mount is ambiguous".into(),
@@ -199,37 +212,37 @@ impl LocalWorkspace {
         // The authenticated allocation and live task owner authorize these new
         // volumes. Retain exactly the caller's ceiling in their signed binding.
         let owner = context
-            .task()
             .owned_mailbox
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
-        owner.validate_scope(context.effective_scope(), None)?;
-        let signed = authority.created_scope(context).await?;
-        if signed.agent() != Some(agent)
-            || signed.capabilities() != context.effective_scope().grants()
-        {
+        owner.validate_scope(scope, None)?;
+        let signed = authority.created_scope(context, scope).await?;
+        if signed.agent() != Some(agent) || signed.capabilities() != scope.grants() {
             return Err(Error::Unauthorized("child mount workload differs".into()));
         }
         let authority = authority.for_scope(&signed)?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
+        let binding = blake3::hash(project.storage_name(&mut None)?.as_bytes())
+            .to_hex()
+            .to_string();
         let root = self
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir_all(&root).map_err(storage)?;
+            .held_task_mount_root()?
+            .create_directories(&Path::new(".bindings").join(binding))
+            .map_err(storage)?;
         let mut mounts = mounts::owner(
-            &root,
+            root.path(),
             project,
             None,
             Some(("scratch".into(), private, None)),
         )?;
-        let root = acyclic_fs::hold_root(&root).map_err(storage)?;
         volumes::attach(
             &self.filesystem,
             &self.store,
             &root,
             &mut mounts,
             &authority,
+            &self.task_view_admission,
         )
         .await?;
         Ok((Arc::new(mounts), signed))
@@ -343,12 +356,12 @@ pub(super) struct OwnerState {
 /// What a checkout or volume view attaches as: the volume it serves, its
 /// scratch volume, its control directory and the operation that attaches it.
 pub(super) struct Attach<'a> {
+    pub(super) authority: Option<(&'a AuthorityRoot, AgentId)>,
     pub(super) volume: &'a VolumeRef,
     pub(super) scratch: &'a VolumeRef,
     pub(super) directory: &'a Path,
     pub(super) operation: acyclic_fs::OperationId,
     pub(super) native_mounts: bool,
-    pub(super) authority: Option<(&'a AuthorityRoot, AgentId)>,
 }
 
 pub(super) async fn open(
@@ -362,7 +375,6 @@ pub(super) async fn open(
     let &Attach {
         volume,
         scratch,
-        directory,
         native_mounts,
         ..
     } = attach;
@@ -371,6 +383,9 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
+    if native_mounts {
+        volumes::exclude_state(&root)?;
+    }
     #[cfg(test)]
     setup_probe::before_setup(&path);
     let setup = if native_mounts {
@@ -388,16 +403,17 @@ pub(super) async fn open(
         .register_root(view.workspace())
         .await
         .map_err(storage)?;
-    let mount_authority = attach
-        .authority
-        .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
-        .transpose()?;
     let mut mounts = mounts::owner(
         &path,
         volume,
         None,
         native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
+    let task_view_admission = Arc::new(std::sync::OnceLock::new());
+    let mount_authority = attach
+        .authority
+        .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
+        .transpose()?;
     if let Some(setup) = &setup {
         volumes::attach(
             filesystem,
@@ -407,6 +423,7 @@ pub(super) async fn open(
             mount_authority
                 .as_ref()
                 .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
+            &task_view_admission,
         )
         .await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
@@ -417,6 +434,7 @@ pub(super) async fn open(
         view.workspace().id(),
         Arc::clone(&mounts),
     )));
+    let mount_directory = path.join(super::host_workspace::HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -426,13 +444,15 @@ pub(super) async fn open(
         fresh,
         import_source: fresh && !existing,
         view,
-        mount_directory: directory.join("task-views"),
+        mount_directory,
+        task_view_admission,
         mounted: None,
         filesystem: filesystem.clone(),
         store,
         mount_authority,
         identity,
         state,
+        children: StateArc::new(Default::default()),
         context_line,
         mounts,
         processes,
@@ -503,10 +523,10 @@ async fn lazy_view(
             &name,
             source,
             store.clone(),
-            acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
-            },
+            acyclic_fs::VolumeInitialization::new(
+                acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                Some(acyclic_fs::access::INITIAL_POLICY),
+            ),
             operation,
             &mut accounting,
         )
@@ -549,6 +569,9 @@ async fn held_source(
         config,
         &path.join(volumes::INCARNATION_PATH),
     )?);
+    for relative in [super::host_workspace::HOST_VIEW_ROOT, ".acyclic-sdk"] {
+        exclusions.push(volumes::namespace(&path, config, &path.join(relative))?);
+    }
     let source = source
         .exclude(exclusions, &work, cancellation)
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;

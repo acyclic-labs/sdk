@@ -138,6 +138,7 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     let (runtime, signed, _) = super::super::super::runtime::open(
         &crate::package::harness::HarnessCode::new()?,
         super::super::super::runtime::Configuration {
+            passive: false,
             files: files.clone(),
             workspace: None,
             stream: stream.clone(),

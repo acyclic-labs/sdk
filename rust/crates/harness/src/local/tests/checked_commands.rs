@@ -18,7 +18,14 @@ impl TaskCommandHost for Checked<'_> {
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
+            let operation = command.operation_id;
+            let started = std::time::Instant::now();
+            eprintln!("stock checkout command {operation}: start");
             let result = self.0.execute(context, fence, command, payload).await;
+            eprintln!(
+                "stock checkout command {operation}: {:?}",
+                started.elapsed()
+            );
             if let Err(error) = &result {
                 panic!("stock checkout command: {error:?}");
             }

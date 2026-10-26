@@ -30,8 +30,7 @@ async fn open_staged(
     let store = StagedObjects::open(
         LogicalObjectStore::new(Arc::clone(&provider), bucket),
         directory.to_path_buf(),
-    )
-    .await?;
+    );
     Ok((store, provider))
 }
 
@@ -107,10 +106,11 @@ async fn spill_fixture(
             .await;
         __object_work.receipt(__object_result)
     }?;
-    let _spill_file = store.spill_io.write().await;
+    let mut spill_file = store.spill_io.write().await;
     let spill_bytes = bytes.clone();
     store
-        .spill
+        .spill_file(&mut spill_file)
+        .await?
         .control_async(
             move |file, _| {
                 acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice(), None)

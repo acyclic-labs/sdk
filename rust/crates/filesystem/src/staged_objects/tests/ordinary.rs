@@ -9,8 +9,7 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
     let store = StagedObjects::open(
         crate::MemoryObjectStore::default(),
         directory.path().to_owned(),
-    )
-    .await?;
+    );
     let token = CancellationToken::new();
     let (id, bytes) = blob(OwnedBytes::from_static(b"already durable immutable bytes"));
     store
@@ -101,8 +100,7 @@ async fn durable_reads_admit_the_original_frame_before_polling_the_backend()
     let store = StagedObjects::open(
         crate::MemoryObjectStore::default(),
         directory.path().to_owned(),
-    )
-    .await?;
+    );
     let token = CancellationToken::new();
     let (id, bytes) = blob(OwnedBytes::from_static(b"durable bytes"));
     store

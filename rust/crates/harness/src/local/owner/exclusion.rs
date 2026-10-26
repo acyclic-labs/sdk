@@ -2,9 +2,9 @@
 use super::*;
 use acyclic_fs::{DemandError, HeldRoot, SearchRoot};
 
-pub(super) struct Exclusion {
+pub(in crate::local) struct Exclusion {
     common: HeldRoot,
-    pattern: Vec<u8>,
+    patterns: Vec<Vec<u8>>,
 }
 
 fn missing(error: &DemandError) -> bool {
@@ -226,15 +226,30 @@ fn common(git: HeldRoot) -> Result<HeldRoot> {
 
 impl Exclusion {
     pub(super) fn capture(root: &HeldRoot) -> Result<Option<Self>> {
+        Self::capture_paths(
+            root,
+            &[Path::new(
+                super::super::workspace::volumes::INCARNATION_PATH,
+            )],
+        )
+    }
+
+    /// Captures one Git metadata capability for every reserved SDK path.
+    pub(in crate::local) fn capture_paths(
+        root: &HeldRoot,
+        paths: &[&Path],
+    ) -> Result<Option<Self>> {
         let mut top = root.path();
         let mut held = root.search().map_err(storage)?;
         loop {
             if let Some(git) = metadata(&held)? {
                 let common = common(git)?;
                 let relative = root.path().strip_prefix(top).map_err(storage)?;
-                let pattern =
-                    pattern(&relative.join(super::super::workspace::volumes::INCARNATION_PATH))?;
-                return Ok(Some(Self { common, pattern }));
+                let patterns = paths
+                    .iter()
+                    .map(|path| pattern(&relative.join(path)))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(Some(Self { common, patterns }));
             }
             let Some(parent) = top.parent() else {
                 return Ok(None);
@@ -260,7 +275,7 @@ impl Exclusion {
         }
     }
 
-    pub(super) fn publish(&self) -> Result<()> {
+    pub(in crate::local) fn publish(&self) -> Result<()> {
         // Read first through the held Git directory: an effective rule needs
         // no write access, so read-only metadata that carries it reopens.
         if self.effective()? {
@@ -286,14 +301,19 @@ impl Exclusion {
             acyclic_native_runtime::FileLockMode::Exclusive,
         )
         .map_err(storage)?;
-        let (present, line_ended) = contains(&file, &self.pattern).map_err(storage)?;
-        if !present {
+        for pattern in &self.patterns {
+            use std::io::Seek as _;
+            (&*file).rewind().map_err(storage)?;
+            let (present, line_ended) = contains(&file, pattern).map_err(storage)?;
+            if present {
+                continue;
+            }
             let mut appended = Vec::new();
             if !line_ended {
                 appended.push(b'\n');
             }
             appended.extend_from_slice(b"# acyclic harness checkout incarnation\n");
-            appended.extend_from_slice(&self.pattern);
+            appended.extend_from_slice(pattern);
             appended.push(b'\n');
             acyclic_native_runtime::write_file_all(&mut &*file, &appended).map_err(storage)?;
         }
@@ -320,8 +340,12 @@ impl Exclusion {
             acyclic_native_runtime::FileLockMode::Exclusive,
         )
         .map_err(storage)?;
-        if !contains(&file, &self.pattern).map_err(storage)?.0 {
-            return Ok(false);
+        for pattern in &self.patterns {
+            use std::io::Seek as _;
+            (&*file).rewind().map_err(storage)?;
+            if !contains(&file, pattern).map_err(storage)?.0 {
+                return Ok(false);
+            }
         }
         settle(&info, &file)?;
         Ok(true)
@@ -330,7 +354,7 @@ impl Exclusion {
 
 /// The anchored Git exclusion rule for `path`, as raw filename bytes: Git
 /// matches paths as bytes on Unix, and records them as UTF-8 on Windows.
-fn pattern(path: &Path) -> Result<Vec<u8>> {
+pub(in crate::local) fn pattern(path: &Path) -> Result<Vec<u8>> {
     let mut result = Vec::new();
     for part in path.components() {
         let std::path::Component::Normal(part) = part else {
@@ -596,7 +620,11 @@ mod tests {
         fs::create_dir(&root).unwrap();
         git(&root, &["init", "-q"]);
         let held = acyclic_fs::hold_root(&root).unwrap();
-        let exclusion = Exclusion::capture(&held).unwrap().unwrap();
+        let paths = [
+            Path::new(".volumes/.incarnation"),
+            Path::new(".volumes/agents"),
+        ];
+        let exclusion = Exclusion::capture_paths(&held, &paths).unwrap().unwrap();
         let moved = temporary.path().join("original");
         let renamed = fs::rename(&root, &moved);
         // Windows refuses to rename a directory below held handles, so the
@@ -626,10 +654,15 @@ mod tests {
                 .unwrap()
                 .contains("/.volumes/.incarnation")
         );
+        assert!(
+            fs::read_to_string(moved.join(".git/info/exclude"))
+                .unwrap()
+                .contains("/.volumes/agents")
+        );
         // A path-only publisher would select the replacement's metadata.
         let named = acyclic_fs::hold_root(&root).unwrap();
         assert_ne!(named.identity(), held.identity());
-        let redirected = Exclusion::capture(&named).unwrap().unwrap();
+        let redirected = Exclusion::capture_paths(&named, &paths).unwrap().unwrap();
         redirected.publish().unwrap();
         assert_ne!(fs::read(&replacement).unwrap(), b"replacement user bytes");
     }

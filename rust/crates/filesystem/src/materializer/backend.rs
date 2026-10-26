@@ -12,14 +12,29 @@ pub struct NativeTreeMaterializationBackend {
     operation_identity: [u8; 16],
     pub(super) work: NativeMaterializationWork,
     _allocation: NativeAllocation,
+    _admission: acyclic_native_runtime::DescriptorAdmission,
 }
 impl NativeTreeMaterializationBackend {
-    /// Binds existing recovery directories without creating a parallel checkout.
+    /// The descriptors one materialization holds at once: its checkout,
+    /// operation, target and backup directories, a source and a target file
+    /// in transfer, and the directories it walks or validates beside them.
+    pub const DESCRIPTORS: usize = 8;
+    /// Admits one materialization's descriptors from the process-wide
+    /// allowance, waiting while other materializations hold it, so the
+    /// descriptors of materializations in flight stay bounded however many
+    /// start together. Take it before the materialization's first open.
+    pub async fn admission()
+    -> Result<acyclic_native_runtime::DescriptorAdmission, NativeTreeMaterializationError> {
+        Ok(acyclic_native_runtime::admit_descriptors(Self::DESCRIPTORS).await?)
+    }
+    /// Binds existing recovery directories without creating a parallel
+    /// checkout, holding `admission` for the backend's life.
     pub fn new(
         root: PathBuf,
         operation: PathBuf,
         mut allocation: NativeAllocation,
         work: NativeMaterializationWork,
+        admission: acyclic_native_runtime::DescriptorAdmission,
     ) -> Result<Arc<Self>, NativeTreeMaterializationError> {
         let bytes = root
             .capacity()
@@ -48,6 +63,7 @@ impl NativeTreeMaterializationBackend {
             operation_identity: held_operation.identity().to_bytes(),
             work,
             _allocation: header,
+            _admission: admission,
         }))
     }
     /// Existing accounting context.

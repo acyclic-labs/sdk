@@ -110,9 +110,8 @@ impl DarwinMountContext {
         work: &Work,
     ) -> Result<Self, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
-        let source_original_work = original_work(source.as_ref(), Some(work))?;
-        let callback_guard = source.native_callback_guard();
-        verify_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
+        let (source_original_work, callback_guard) =
+            crate::native_mount::shared::metering::install(source.as_ref(), work)?;
         let root = source
             .lookup_with_meter(&MountPath::root(), work)?
             .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
@@ -289,10 +288,11 @@ impl DarwinMountContext {
         if !self.writable {
             return Err(driver_errno(libc::EROFS));
         }
-        if let Some(guard) = &self.callback_guard {
-            crate::native_mount::adapter::CallbackRuntime::existing()?
-                .verify_callback(work, || guard.check_write(work))?;
-        }
+        crate::native_mount::shared::metering::verify_write(
+            self.source.as_ref(),
+            self.callback_guard.as_ref(),
+            work,
+        )?;
         Ok(work.admit(WorkCounters::UNCHARGED)?)
     }
 

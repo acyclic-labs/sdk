@@ -115,7 +115,7 @@ pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider, const N:
             records,
         });
     add_record(&mut request, path.clone(), sequence.clone())?;
-    let (outcome, retained) = commit(request, client, Some(operation), None).await?;
+    let (outcome, retained) = commit(request, client, Some(operation), None, None).await?;
     quota.adopt(retained)?;
     let CommitOutcome::Committed(envelope) = &outcome else {
         return Ok(AppendOutcome::TailConflict { actual_tail: tail });

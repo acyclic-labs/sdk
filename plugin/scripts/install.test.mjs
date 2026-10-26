@@ -1,26 +1,19 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
-  chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  chmodSync, existsSync, mkdirSync, readFileSync, readdirSync,
   realpathSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative } from "node:path";
 import test from "node:test";
+import { schedule } from "../../scripts/graphcoder-e2e/process.mjs";
+import { admitManagers } from "./package-managers.mjs";
 
-const plugin = dirname(dirname(fileURLToPath(import.meta.url)));
+import { plugin, target, executableName, nativeVersion, digest, fixture, scope } from "./install-fixture.mjs";
 const require = createRequire(import.meta.url);
-const { hostTarget, linuxLibc, sha256File } = require("../bin/verify.js");
-const target = hostTarget();
-const executableName = process.platform === "win32" ? "acyclic.exe" : "acyclic";
-const scratch = process.env.ACYCLIC_TEST_TEMP_ROOT
-  || join(dirname(plugin), "target", "plugin-installer-tests");
-mkdirSync(scratch, { recursive: true });
-
-function digest(path) {
-  return sha256File(path);
-}
+const { linuxLibc } = require("../bin/verify.js");
+const cases = [];
+const scenario = (name, run) => cases.push({ name, run });
 
 function treeSnapshot(root, prefix = "") {
   return readdirSync(root, { withFileTypes: true })
@@ -34,200 +27,95 @@ function treeSnapshot(root, prefix = "") {
     .sort();
 }
 
-function fixture() {
-  const root = mkdtempSync(join(scratch, "install-"));
-  const bin = join(root, "bin");
-  cpSync(join(plugin, "bin"), bin, {
-    recursive: true,
-    filter: source => !basename(source).startsWith("acyclic."),
-  });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ version: "9.8.7-test.1" }));
-  const source = join(bin, target, executableName);
-  mkdirSync(dirname(source), { recursive: true });
-  copyFileSync(process.execPath, source);
-  // Package managers ship executables writable by their owner; the host
-  // interpreter may be installed read-only (Homebrew installs node 0555).
-  chmodSync(source, 0o755);
-  // The copy stands in for a self-contained release binary, which an
-  // official Node build is. A Homebrew Node links a sibling libnode and
-  // cannot run from another directory.
-  const relocated = spawnSync(source, ["--version"], { encoding: "utf8" });
-  assert.equal(
-    relocated.stdout?.trim(),
-    process.version,
-    `these tests need a relocatable Node (an official build), not ${process.execPath}: ${relocated.stderr}`,
-  );
-  writeFileSync(join(bin, "platform-binaries.json"), JSON.stringify({
-    version: 1,
-    targets: { [target]: { path: `${target}/${executableName}`, sha256: digest(source) } },
-  }));
-  return { root, bin, source, installed: join(bin, executableName) };
-}
-
-function install(bin, crash, failure, extraEnvironment = {}) {
-  return spawnSync(process.execPath, [join(bin, "install.js")], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      ACYCLIC_INSTALL_SKIP_DRAIN: "1",
-      ...extraEnvironment,
-      ...(crash ? { ACYCLIC_INSTALL_TEST_CRASH: crash } : {}),
-      ...(failure ? { ACYCLIC_INSTALL_TEST_FAIL: failure } : {}),
-    },
-  });
-}
-
-test("installer publishes the exact release certification receipt", () => {
-  const value = fixture();
-  const state = mkdtempSync(join(scratch, "state-"));
-  try {
-    const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
-    const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
-    const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
-    const name = `native-mount-${target}.json`;
-    const certification = join(value.root, "certification");
-    mkdirSync(certification);
-    const receipt = {
-      schema: "acyclic-native-mount-qualification-v2",
-      os: platform,
-      arch: architecture,
-      required_kind: backend,
-      release_version: "9.8.7-test.1",
-      executable_blake3: "a".repeat(64),
-      capability: {
-        kind: backend,
-        available: true,
-        writable: true,
-        provider_process_io_observable: platform !== "windows",
-        session_isolation: "SharedProcess",
-        unavailable_reason: null,
-      },
-      passed: true,
-    };
-    writeFileSync(join(certification, name), JSON.stringify(receipt));
-    const environment = {
-      ACYCLIC_INSTALL_TEST_CERTIFICATION: "1",
-      ...(process.platform === "win32"
-        ? { LOCALAPPDATA: state }
-        : { XDG_STATE_HOME: state }),
-    };
-    const installed = install(value.bin, null, null, environment);
-    assert.equal(installed.status, 0, installed.stderr);
-    const destination = process.platform === "win32"
-      ? join(state, "Acyclic", "state-v5", "certification", name)
-      : join(state, "acyclic", "state-v5", "certification", name);
-    assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
-  } finally {
-    rmSync(value.root, { recursive: true, force: true });
-    rmSync(state, { recursive: true, force: true });
-  }
-});
-
-test("Linux libc selection is explicit and fail closed", () => {
+scenario("Linux libc selection is explicit and fail closed", async () => {
   assert.equal(linuxLibc({ header: { glibcVersionRuntime: "2.39" } }), "gnu");
   assert.equal(linuxLibc({ header: {} }), "musl");
 });
 
-test("installer recovers cleanup failure after durable identity publication", () => {
+scenario("installer recovers cleanup failure after durable identity publication", async () => {
   const value = fixture();
   try {
     writeFileSync(value.installed, "previous binary bytes");
-    const interrupted = install(value.bin, null, "cleanup-after-identity");
-    assert.notEqual(interrupted.status, 0);
+    const interrupted = await value.install(null, "cleanup-after-identity");
+    assert.notEqual(interrupted.code, 0);
     assert.match(interrupted.stderr, /injected Acyclic installer failure/);
     assert.equal(digest(value.installed), digest(value.source));
     assert.equal(existsSync(join(value.bin, "install-transaction.json")), true);
 
-    const recovered = install(value.bin);
-    assert.equal(recovered.status, 0, recovered.stderr);
+    const recovered = await value.install();
+    assert.equal(recovered.code, 0, recovered.stderr);
     assert.equal(digest(value.installed), digest(value.source));
     const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json"), "utf8"));
     assert.equal(identity.sha256, digest(value.source));
     assert.equal(existsSync(join(value.bin, "install-transaction.json")), false);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-function installAsync(bin) {
-  return new Promise(resolve => {
-    const child = spawn(process.execPath, [join(bin, "install.js")], {
-      env: {
-        ...process.env,
-        NODE_ENV: "test",
-        ACYCLIC_INSTALL_SKIP_DRAIN: "1",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", chunk => { stderr += chunk; });
-    child.on("close", status => resolve({ status, stderr }));
-  });
-}
-
-test("installed command is the verified executable itself", () => {
+scenario("installed command is the verified executable itself", async () => {
   const value = fixture();
   try {
     const placeholder = join(value.bin, "acyclic");
     assert.equal(readFileSync(placeholder, "utf8").startsWith("#!"), false);
-    const installed = install(value.bin);
-    assert.equal(installed.status, 0, installed.stderr);
+    const installed = await value.install();
+    assert.equal(installed.code, 0, installed.stderr);
     assert.equal(digest(value.installed), digest(value.source));
     // On Windows the command's `bin/acyclic` resolves to acyclic.exe only
     // once the placeholder is gone; on Unix the placeholder is the executable.
     assert.equal(existsSync(placeholder), process.platform !== "win32");
-    const ran = spawnSync(value.installed, ["--version"], { encoding: "utf8" });
-    assert.equal(ran.status, 0, ran.stderr);
-    assert.equal(ran.stdout.trim(), process.version);
+    const ran = await value.run(value.installed, ["--version"]);
+    assert.equal(ran.code, 0, ran.stderr);
+    assert.equal(ran.stdout.trim(), nativeVersion);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-test("every install runs the installed executable once, and a failed run does not fail it", () => {
-  const { root, bin, installed } = fixture();
-  const log = join(root, "warm-up.log");
-  const warmUps = () => readFileSync(log, "utf8").trim().split("\n");
-  const first = install(bin, undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
-  assert.equal(first.status, 0, first.stderr);
-  assert.deepEqual(warmUps(), [`${installed} status 0`]);
-  // An install that finds the executable in place warms it again.
-  const again = install(bin, undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
-  assert.equal(again.status, 0, again.stderr);
-  assert.deepEqual(warmUps(), [`${installed} status 0`, `${installed} status 0`]);
-  const missing = join(root, "missing-executable");
-  const failed = install(bin, undefined, undefined, {
-    ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log,
-    ACYCLIC_INSTALL_TEST_WARM_UP_EXECUTABLE: missing,
-  });
-  assert.equal(failed.status, 0, failed.stderr);
-  assert.equal(warmUps().at(-1), `${missing} error ENOENT`);
-  assert.equal(digest(installed), digest(join(bin, target, executableName)));
-});
-
-test("installer is idempotent and rejects modified installed bytes", () => {
+scenario("every install runs the installed executable once, and a failed run does not fail it", async () => {
   const value = fixture();
   try {
-    const first = install(value.bin);
-    assert.equal(first.status, 0, first.stderr);
-    const second = install(value.bin);
-    assert.equal(second.status, 0, second.stderr);
+    const { root, bin, installed } = value;
+    const log = join(root, "warm-up.log");
+    const warmUps = () => readFileSync(log, "utf8").trim().split("\n");
+    const first = await value.install(undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
+    assert.equal(first.code, 0, first.stderr);
+    assert.deepEqual(warmUps(), [`${installed} status 0`]);
+    const again = await value.install(undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
+    assert.equal(again.code, 0, again.stderr);
+    assert.deepEqual(warmUps(), [`${installed} status 0`, `${installed} status 0`]);
+    const missing = join(root, "missing-executable");
+    const failed = await value.install(undefined, undefined, {
+      ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log,
+      ACYCLIC_INSTALL_TEST_WARM_UP_EXECUTABLE: missing,
+    });
+    assert.equal(failed.code, 0, failed.stderr);
+    assert.equal(warmUps().at(-1), `${missing} error ENOENT`);
+    assert.equal(digest(installed), digest(join(bin, target, executableName)));
+  } finally { await value.close(); }
+});
+
+scenario("installer is idempotent and rejects modified installed bytes", async () => {
+  const value = fixture();
+  try {
+    const first = await value.install();
+    assert.equal(first.code, 0, first.stderr);
+    const second = await value.install();
+    assert.equal(second.code, 0, second.stderr);
     writeFileSync(value.installed, "tampered");
-    const rejected = install(value.bin);
-    assert.notEqual(rejected.status, 0);
+    const rejected = await value.install();
+    assert.notEqual(rejected.code, 0);
     assert.match(rejected.stderr, /durable identity/);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-test("running the installed command leaves the package unchanged", () => {
+scenario("running the installed command leaves the package unchanged", async () => {
   const value = fixture();
   try {
-    const installed = install(value.bin);
-    assert.equal(installed.status, 0, installed.stderr);
+    const installed = await value.install();
+    assert.equal(installed.code, 0, installed.stderr);
     const before = treeSnapshot(value.root);
     if (process.platform !== "win32") {
       for (const name of readdirSync(value.bin)) {
@@ -237,77 +125,36 @@ test("running the installed command leaves the package unchanged", () => {
       chmodSync(value.bin, 0o555);
       assert.equal(statSync(value.installed).mode & 0o111, 0o111);
     }
-    const launched = spawnSync(value.installed, ["--version"], { encoding: "utf8" });
-    assert.equal(launched.status, 0, launched.stderr);
+    const launched = await value.run(value.installed, ["--version"]);
+    assert.equal(launched.code, 0, launched.stderr);
     assert.deepEqual(treeSnapshot(value.root), before);
   } finally {
     if (process.platform !== "win32" && existsSync(value.bin)) {
       chmodSync(value.bin, 0o755);
       for (const name of readdirSync(value.bin)) chmodSync(join(value.bin, name), 0o755);
     }
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-test("concurrent installers serialize first install", async () => {
+scenario("concurrent installers serialize first install", async () => {
   const value = fixture();
   try {
-    const results = await Promise.all(Array.from({ length: 8 }, () => installAsync(value.bin)));
-    for (const result of results) assert.equal(result.status, 0, result.stderr);
+    const results = await Promise.all(Array.from({ length: 8 }, () => value.install()));
+    for (const result of results) assert.equal(result.code, 0, result.stderr);
     assert.equal(digest(value.installed), digest(value.source));
-    assert.equal(existsSync(join(value.bin, "install.lock")), false);
+    assert.equal(statSync(join(value.bin, "install.lock")).isFile(), true);
     assert.equal(existsSync(join(value.bin, "install-transaction.json")), false);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-test("installer recovers a lock whose owner exited", () => {
+scenario("installer rejects traversal in a recovery journal", async () => {
   const value = fixture();
   try {
-    const lock = join(value.bin, "install.lock");
-    mkdirSync(lock);
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: 2147483647, createdAt: 0 }));
-    const recovered = install(value.bin);
-    assert.equal(recovered.status, 0, recovered.stderr);
-    assert.equal(digest(value.installed), digest(value.source));
-    assert.equal(existsSync(lock), false);
-  } finally {
-    rmSync(value.root, { recursive: true, force: true });
-  }
-});
-
-test("installer reclaims a lock whose owner's PID now names another process", () => {
-  const value = fixture();
-  // A live process under the recorded PID, which started long after the
-  // (crashed) owner the lock records.
-  const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
-  try {
-    const lock = join(value.bin, "install.lock");
-    mkdirSync(lock);
-    const createdAt = Date.now() - 3_600_000;
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({
-      pid: bystander.pid,
-      createdAt,
-      startedAt: createdAt,
-    }));
-    const started = Date.now();
-    const recovered = install(value.bin);
-    assert.equal(recovered.status, 0, recovered.stderr);
-    assert.ok(Date.now() - started < 60_000, "a reused PID must not hold the lock");
-    assert.equal(digest(value.installed), digest(value.source));
-    assert.equal(existsSync(lock), false);
-  } finally {
-    bystander.kill();
-    rmSync(value.root, { recursive: true, force: true });
-  }
-});
-
-test("installer rejects traversal in a recovery journal", () => {
-  const value = fixture();
-  try {
-    const first = install(value.bin);
-    assert.equal(first.status, 0, first.stderr);
+    const first = await value.install();
+    assert.equal(first.code, 0, first.stderr);
     const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json"), "utf8"));
     writeFileSync(join(value.bin, "install-transaction.json"), JSON.stringify({
       version: 1,
@@ -318,218 +165,241 @@ test("installer rejects traversal in a recovery journal", () => {
       identityNext: "installed-binary.json.next-1-1",
       identity,
     }));
-    const rejected = install(value.bin);
-    assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /unsafe Acyclic install transaction path/);
+    const rejected = await value.install();
+    assert.notEqual(rejected.code, 0);
+    assert.match(rejected.stderr, /step=publish native package/);
     assert.equal(existsSync(value.installed), true);
     assert.equal(existsSync(value.bin), true);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-for (const crash of ["staged", "backed-up", "activated"]) {
-  test(`installer recovers after the ${crash} transaction boundary`, () => {
+for (const crash of ["staged", "ready", "published", "activated"]) {
+  scenario(`installer recovers after the ${crash} transaction boundary`, async () => {
     const value = fixture();
     try {
-      const interrupted = install(value.bin, crash);
-      assert.equal(interrupted.status, 86, interrupted.stderr);
-      const recovered = install(value.bin);
-      assert.equal(recovered.status, 0, recovered.stderr);
+      const interrupted = await value.install(crash);
+      assert.equal(interrupted.code, 86, interrupted.stderr);
+      const recovered = await value.install();
+      assert.equal(recovered.code, 0, recovered.stderr);
       assert.equal(digest(value.installed), digest(value.source));
       const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json"), "utf8"));
       assert.equal(identity.sha256, digest(value.source));
     } finally {
-      rmSync(value.root, { recursive: true, force: true });
+      await value.close();
     }
   });
 }
 
-test("same version cannot be replaced with different bytes", () => {
+scenario("same version cannot be replaced with different bytes", async () => {
   const value = fixture();
   try {
-    const first = install(value.bin);
-    assert.equal(first.status, 0, first.stderr);
-    writeFileSync(value.source, "different release bytes");
+    const first = await value.install();
+    assert.equal(first.code, 0, first.stderr);
+    writeFileSync(value.source, Buffer.concat([readFileSync(value.source), Buffer.from("different release bytes")]));
     const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json"), "utf8"));
     manifest.targets[target].sha256 = digest(value.source);
     writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));
-    const conflict = install(value.bin);
-    assert.notEqual(conflict.status, 0);
+    const conflict = await value.install();
+    assert.notEqual(conflict.code, 0);
     assert.match(conflict.stderr, /immutable Acyclic release/);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
-test("the published package declares the Codex hook MCP server on the installed command", () => {
+scenario("the published package declares the native session MCP server on the installed command", async () => {
   // npm 12 keys the report by package name; earlier npm returns an array.
-  const [packed] = Object.values(JSON.parse(run("npm pack --dry-run --json --ignore-scripts", plugin)));
+  const [packed] = Object.values(JSON.parse(await managers.npm.run(preparation, ["pack", "--dry-run", "--json", "--ignore-scripts"], plugin)));
   const files = packed.files.map(file => file.path.replaceAll("\\", "/"));
   for (const path of [".mcp.json", ".codex-plugin/plugin.json", "hooks/hooks.json", "bin/acyclic"]) {
     assert.ok(files.includes(path), `package omits ${path}`);
   }
   assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./.mcp.json");
   const servers = JSON.parse(readFileSync(join(plugin, ".mcp.json"), "utf8")).mcpServers;
-  assert.deepEqual(Object.keys(servers), ["acyclic-hooks"]);
+  assert.deepEqual(Object.keys(servers), ["acyclic-sessions"]);
   // Codex starts the server from the plugin root. `bin/acyclic` is the
   // native executable on Unix; on Windows the installer removes it, so Codex
   // resolves the command through PATHEXT to `bin/acyclic.exe` (checked for
   // every package manager below).
-  assert.equal(servers["acyclic-hooks"].cwd, ".");
-  assert.equal(servers["acyclic-hooks"].command, "./bin/acyclic");
-  assert.deepEqual(servers["acyclic-hooks"].args, ["__mcp"]);
-  assert.equal(servers["acyclic-hooks"].required, true);
+  assert.equal(servers["acyclic-sessions"].cwd, ".");
+  assert.equal(servers["acyclic-sessions"].command, "./bin/acyclic");
+  assert.deepEqual(servers["acyclic-sessions"].args, ["__mcp", "codex"]);
+  assert.deepEqual(servers["acyclic-sessions"].env_vars, ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
+  assert.equal(servers["acyclic-sessions"].required, true);
 });
 
-// Installs a package whose "native executable" is this Node binary with each
-// package manager, and checks that the `acyclic-plugin` command runs the executable
-// with no interpreter in between, across an upgrade to different bytes and an
-// uninstall.
-function packageRelease(version, extraBytes) {
+// The same two immutable tarballs are read by every independent manager case.
+// Each manager owns its consumer profile, cache/store and process-tree scope.
+let managers, releases, preparation;
+async function packageRelease(version, extraBytes) {
   const value = fixture();
-  const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json"), "utf8"));
-  if (extraBytes) {
-    writeFileSync(value.source, Buffer.concat([readFileSync(value.source), extraBytes]));
-    manifest.targets[target].sha256 = digest(value.source);
-    writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));
+  try {
+    const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json"), "utf8"));
+    if (extraBytes) {
+      writeFileSync(value.source, Buffer.concat([readFileSync(value.source), extraBytes]));
+      manifest.targets[target].sha256 = digest(value.source);
+      writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));
+    }
+    const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+    writeFileSync(join(value.root, "package.json"), JSON.stringify({
+      name: packageJson.name, version, bin: packageJson.bin,
+      scripts: packageJson.scripts, files: packageJson.files,
+    }));
+    const packed = await managers.npm.run(value, ["pack", "--silent", "--pack-destination", value.root]);
+    return { ...value, tarball: join(value.root, packed.trim().split(/\r?\n/).at(-1) ?? "") };
+  } catch (cause) {
+    await value.close();
+    throw cause;
   }
-  const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
-  writeFileSync(join(value.root, "package.json"), JSON.stringify({
-    name: packageJson.name,
-    version,
-    bin: packageJson.bin,
-    scripts: packageJson.scripts,
-  }));
-  const packed = run(`npm pack --silent --pack-destination "${value.root}"`, value.root);
-  return { ...value, tarball: join(value.root, packed.trim().split(/\r?\n/).at(-1) ?? "") };
 }
 
-function run(command, cwd, environment = {}) {
-  const result = spawnSync(command, {
-    cwd,
-    shell: true,
-    encoding: "utf8",
-    env: { ...process.env, NODE_ENV: "test", ...environment },
-  });
-  assert.equal(result.status, 0, `${command}\n${result.stdout}\n${result.stderr}`);
-  return result.stdout;
-}
-
-function available(tool) {
-  return spawnSync(`${tool} --version`, { shell: true }).status === 0;
-}
-
-const managers = {
+const layouts = {
   npm: {
-    // npm 12 runs install scripts only for packages it is told to trust, and
-    // names a tarball by its path.
-    install: (tarball, home) => `npm install --global --prefix "${home}" --cache "${join(home, "cache")}" --allow-scripts="${tarball}" "${tarball}"`,
-    remove: home => `npm uninstall --global --prefix "${home}" @acyclic-labs/plugin`,
-    bin: home => (process.platform === "win32" ? home : join(home, "bin")),
-    root: home => (process.platform === "win32"
+    install: (tarball, home) => ["install", "--global", "--prefix", home,
+      "--allow-scripts=" + tarball, tarball],
+    remove: home => ["uninstall", "--global", "--prefix", home, "@acyclic-labs/plugin"],
+    bin: home => process.platform === "win32" ? home : join(home, "bin"),
+    root: home => process.platform === "win32"
       ? join(home, "node_modules", "@acyclic-labs", "plugin")
-      : join(home, "lib", "node_modules", "@acyclic-labs", "plugin")),
+      : join(home, "lib", "node_modules", "@acyclic-labs", "plugin"),
   },
   pnpm: {
-    project: { pnpm: { onlyBuiltDependencies: ["@acyclic-labs/plugin"] } },
-    install: (tarball, home) => `pnpm add "${tarball}" --dir "${home}" --store-dir "${join(home, "store")}"`,
-    remove: home => `pnpm remove @acyclic-labs/plugin --dir "${home}" --store-dir "${join(home, "store")}"`,
+    project: {},
+    // Local tarballs require their exact resolved dependency paths. A bare
+    // package-name approval does not authorize an arbitrary file artifact.
+    prepare: home => writeFileSync(join(home, "pnpm-workspace.yaml"), JSON.stringify({
+      allowBuilds: Object.fromEntries(releases.map(({ tarball }) =>
+        [`@acyclic-labs/plugin@file:${relative(home, tarball).replaceAll("\\", "/")}`, true])),
+    })),
+    install: (tarball, home) => ["add", tarball, "--dir", home,
+      "--store-dir", join(home, "store"), "--offline"],
+    remove: home => ["remove", "@acyclic-labs/plugin", "--dir", home, "--store-dir", join(home, "store")],
     bin: home => join(home, "node_modules", ".bin"),
     root: home => join(home, "node_modules", "@acyclic-labs", "plugin"),
   },
   bun: {
     project: { trustedDependencies: ["@acyclic-labs/plugin"] },
-    // Bun leaves its Windows shims behind on removal for every package.
+    // The native Windows shim is owned by Bun and survives its package removal.
     keepsShims: process.platform === "win32",
-    environment: home => ({ BUN_INSTALL_CACHE_DIR: join(home, "cache") }),
-    // `bun add` of a second tarball of the same package reports a dependency
-    // loop, so the upgrade changes the declared dependency and reinstalls.
     install: (tarball, home) => {
       const manifest = JSON.parse(readFileSync(join(home, "package.json"), "utf8"));
       manifest.dependencies = { "@acyclic-labs/plugin": `file:${tarball}` };
       writeFileSync(join(home, "package.json"), JSON.stringify(manifest));
-      return `bun install --cwd "${home}"`;
+      return ["install", "--cwd", home];
     },
-    remove: home => `bun remove @acyclic-labs/plugin --cwd "${home}"`,
+    remove: home => ["remove", "@acyclic-labs/plugin", "--cwd", home],
     bin: home => join(home, "node_modules", ".bin"),
     root: home => join(home, "node_modules", "@acyclic-labs", "plugin"),
   },
 };
 
-for (const [name, manager] of Object.entries(managers)) {
-  test(`${name} links the acyclic-plugin command to the native executable`, { skip: !available(name) }, () => {
-    const first = packageRelease("9.8.7-test.1");
-    const second = packageRelease("9.8.7-test.2", Buffer.from("upgraded release bytes"));
-    const home = mkdtempSync(join(scratch, `${name}-`));
+// A fixed shell program exercises the package manager's real command shim.
+// All variable paths remain in the environment, never in shell source text.
+function invoke(owner, directory) {
+  const env = { PATH: `${directory}${process.platform === "win32" ? ";" : ":"}${owner.env.PATH}` };
+  return process.platform === "win32"
+    ? owner.run(owner.env.ComSpec, ["/d", "/s", "/c", "acyclic-plugin --version"], env)
+    : owner.run("sh", ["-c", "exec acyclic-plugin --version"], env);
+}
+
+for (const [name, layout] of Object.entries(layouts)) {
+  scenario(`${name} links the acyclic-plugin command to the native executable`, async () => {
+    const owner = scope(`${name}-`), home = join(owner.root, "consumer");
+    mkdirSync(home);
     try {
-      if (manager.project) {
-        writeFileSync(join(home, "package.json"), JSON.stringify({ name: "consumer", private: true, ...manager.project }));
+      if (layout.project) {
+        writeFileSync(join(home, "package.json"), JSON.stringify({ name: "consumer", private: true, ...layout.project }));
       }
-      const environment = manager.environment?.(home) ?? {};
-      const commandPath = { PATH: `${manager.bin(home)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
-      const invoke = () => run("acyclic-plugin --version", home, { ...environment, ...commandPath }).trim();
-      for (const release of [first, second]) {
-        run(manager.install(release.tarball, home), home, environment);
-        const bin = join(manager.root(home), "bin");
-        const executable = join(bin, executableName);
+      layout.prepare?.(home);
+      for (const release of releases) {
+        await managers[name].run(owner, layout.install(release.tarball, home), home);
+        const bin = join(layout.root(home), "bin"), executable = join(bin, executableName);
         assert.equal(digest(executable), digest(release.source));
-        assert.equal(invoke(), process.version);
+        const ran = await invoke(owner, layout.bin(home));
+        assert.equal(ran.code, 0, ran.stderr);
+        assert.equal(ran.stdout.trim(), nativeVersion);
         if (process.platform === "win32") {
           assert.equal(existsSync(join(bin, "acyclic")), false);
-          // No shim may start an interpreter: each runs bin/acyclic itself.
-          for (const shim of readdirSync(manager.bin(home)).filter(file => file.startsWith("acyclic"))) {
-            const path = join(manager.bin(home), shim);
+          for (const shim of readdirSync(layout.bin(home)).filter(file => file.startsWith("acyclic"))) {
+            const path = join(layout.bin(home), shim);
             if (statSync(path).size > 64 * 1024) continue;
             assert.doesNotMatch(readFileSync(path, "utf8"), /node(\.exe)?["' ]|_prog/, `${shim} starts an interpreter`);
           }
         } else if (name === "npm") {
-          assert.equal(realpathSync(join(manager.bin(home), "acyclic-plugin")), realpathSync(executable));
+          assert.equal(realpathSync(join(layout.bin(home), "acyclic-plugin")), realpathSync(executable));
         }
       }
-      run(manager.remove(home), home, environment);
-      assert.equal(existsSync(manager.root(home)), false);
-      if (!manager.keepsShims) {
-        const left = existsSync(manager.bin(home))
-          ? readdirSync(manager.bin(home)).filter(file => file.startsWith("acyclic")) : [];
-        assert.deepEqual(left, [], `${name} left ${left} in ${manager.bin(home)}`);
+      await managers[name].run(owner, layout.remove(home), home);
+      assert.equal(existsSync(layout.root(home)), false);
+      if (!layout.keepsShims) {
+        const left = existsSync(layout.bin(home))
+          ? readdirSync(layout.bin(home)).filter(file => file.startsWith("acyclic")) : [];
+        assert.deepEqual(left, [], `${name} left ${left} in ${layout.bin(home)}`);
       }
-    } finally {
-      for (const path of [first.root, second.root, home]) rmSync(path, { recursive: true, force: true });
-    }
+    } finally { await owner.close(); }
   });
 }
 
-// npm 12 skips install scripts for packages it has not been told to trust, so
-// the command's first run finishes the install, and later runs are the
-// executable itself.
-test("the acyclic-plugin command installs the executable when install scripts were skipped",
-  { skip: process.platform === "win32" || !available("npm") }, () => {
-    const release = packageRelease("9.8.7-test.1");
-    const home = mkdtempSync(join(scratch, "npm-no-scripts-"));
-    try {
-      run(`${managers.npm.install(release.tarball, home)} --ignore-scripts`, home);
-      const bin = join(managers.npm.root(home), "bin");
-      assert.equal(existsSync(join(bin, "installed-binary.json")), false);
-      const commandPath = { PATH: `${managers.npm.bin(home)}:${process.env.PATH}` };
-      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), process.version);
-      assert.equal(digest(join(bin, executableName)), digest(release.source));
-      assert.equal(realpathSync(join(managers.npm.bin(home), "acyclic-plugin")), realpathSync(join(bin, executableName)));
-      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), process.version);
-    } finally {
-      for (const path of [release.root, home]) rmSync(path, { recursive: true, force: true });
+scenario("the acyclic-plugin command recovers when install scripts were skipped", async () => {
+  const owner = scope("npm-no-scripts-"), home = join(owner.root, "consumer");
+  mkdirSync(home);
+  try {
+    const release = releases[0];
+    await managers.npm.run(owner, [...layouts.npm.install(release.tarball, home), "--ignore-scripts"], home);
+    const bin = join(layouts.npm.root(home), "bin");
+    assert.equal(existsSync(join(bin, "installed-binary.json")), false);
+    if (process.platform === "win32") {
+      // CreateProcess cannot execute the POSIX fallback. Explicit bootstrap is
+      // required before the interpreter-free Windows command exists.
+      const missing = await invoke(owner, layouts.npm.bin(home));
+      assert.notEqual(missing.code, 0);
+      const installed = await owner.run(process.execPath, [join(bin, "install.js")]);
+      assert.equal(installed.code, 0, installed.stderr);
     }
-  });
+    const first = await invoke(owner, layouts.npm.bin(home));
+    assert.equal(first.code, 0, first.stderr);
+    assert.equal(first.stdout.trim(), nativeVersion);
+    assert.equal(digest(join(bin, executableName)), digest(release.source));
+    if (process.platform !== "win32") {
+      assert.equal(realpathSync(join(layouts.npm.bin(home), "acyclic-plugin")), realpathSync(join(bin, executableName)));
+    }
+    const again = await invoke(owner, layouts.npm.bin(home));
+    assert.equal(again.code, 0, again.stderr);
+    assert.equal(again.stdout.trim(), nativeVersion);
+  } finally { await owner.close(); }
+});
 
-test("the acyclic-plugin command explains how to reinstall when it cannot install itself",
-  { skip: process.platform === "win32" }, () => {
-    const value = fixture();
-    try {
-      rmSync(join(value.bin, "platform-binaries.json"));
-      const ran = spawnSync(`"${join(value.bin, "acyclic")}" --version`, { shell: true, encoding: "utf8" });
-      assert.equal(ran.status, 1);
-      assert.match(ran.stderr, /npm install -g --allow-scripts=@acyclic-labs\/plugin @acyclic-labs\/plugin/);
-    } finally {
-      rmSync(value.root, { recursive: true, force: true });
-    }
-  });
+scenario("the acyclic-plugin command explains how to reinstall when it cannot install itself", async () => {
+  const value = fixture();
+  try {
+    rmSync(join(value.bin, "platform-binaries.json"));
+    const ran = process.platform === "win32"
+      ? await value.run(process.execPath, [join(value.bin, "install.js")])
+      : await value.run("sh", [join(value.bin, "acyclic"), "--version"]);
+    assert.equal(ran.code, 1);
+    assert.match(ran.stderr, /npm install -g --allow-scripts=@acyclic-labs\/plugin @acyclic-labs\/plugin/);
+  } finally { await value.close(); }
+});
+
+scenario("package-manager admission refuses a missing pinned installation", async () => {
+  await assert.rejects(admitManagers(preparation, join(preparation.root, "absent")),
+    /step=admit pinned installer package managers:.*recovery=npm ci/s);
+});
+
+test("native package installation through every package manager", { concurrency: process.platform !== "win32" }, async context => {
+  preparation = scope("package-preparation-");
+  releases = [];
+  try {
+    managers = await admitManagers(preparation);
+    // Each tarball is immutable once packing completes. All cases share these
+    // read-only inputs; no consumer store or mutable profile is shared.
+    releases.push(await packageRelease("9.8.7-test.1"));
+    releases.push(await packageRelease("9.8.7-test.2", Buffer.from("upgraded release bytes")));
+    await schedule(cases, process.platform, ({ name, run }) => context.test(name, run));
+  } finally {
+    for (const release of releases) await release.close();
+    await preparation.close();
+  }
+});

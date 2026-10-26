@@ -6,6 +6,7 @@ use crate::sync::owned::{OwnedMutexGuard, lock_owned};
 pub(in crate::local) struct Native {
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
     discard: bool,
+    binding: Option<(PathBuf, PathBuf)>,
 }
 
 impl std::ops::Deref for Native {
@@ -20,6 +21,11 @@ impl Drop for Native {
         // Keep callbacks and the destination fence inside the last owner.
         if let Err(error) = self.mount.abandon() {
             tracing::error!(?error, "workspace mount retirement failed");
+        }
+        if let Some((destination, view)) = &self.binding
+            && let Err(error) = volumes::unlink_binding(destination, view)
+        {
+            tracing::error!(?error, "volume binding retirement failed");
         }
     }
 }
@@ -96,28 +102,59 @@ impl MountedVolume {
         relative: &str,
         read_only: bool,
     ) -> Result<Entered> {
+        let options = if read_only {
+            self.options.clone().restrict_to_read_only()
+        } else {
+            self.options.clone()
+        };
+        self.enter_with_options(root, relative, options).await
+    }
+
+    pub(in crate::local) async fn enter_with_options(
+        &self,
+        root: &Path,
+        relative: &str,
+        options: acyclic_fs::MountOptions,
+    ) -> Result<Entered> {
         enter(&self.native, &self.users, async || {
-            let options = if read_only {
-                self.options.clone().restrict_to_read_only()
-            } else {
-                self.options.clone()
-            };
-            #[cfg(windows)]
-            volumes::recover_volume_after_crash(
-                root,
-                Path::new(relative),
-                self.workspace.workspace().id().volume_id(),
-            )?;
-            volumes::prepare_mount_directory(root, Path::new(relative))?;
-            self.workspace
+            if root.join(relative) != self.destination {
+                return Err(Error::Invalid(
+                    "projection differs from its volume binding".into(),
+                ));
+            }
+            let mount = self
+                .workspace
                 .workspace()
-                .mount(&self.destination, options)
+                .mount_view(super::task_views::view_options(
+                    &self.task_view_admission,
+                    options,
+                ))
                 .await
-                .map(|mount| Native {
-                    mount,
-                    discard: false,
-                })
-                .map_err(Error::from)
+                .map_err(Error::from)?;
+            let path = mount.path().to_path_buf();
+            let mut native = Native {
+                mount,
+                discard: false,
+                binding: None,
+            };
+            // This is the binding's reserved alias, not authored project
+            // content. On restart it can still name the preceding process's
+            // retired root. Replace only the link itself; never follow it or
+            // write its old target. A regular file/nonempty directory fails.
+            let previous = volumes::alias_target(&self.destination)?;
+            if let Some(previous) = &previous {
+                let admission = self.task_view_admission.get().map(Arc::as_ref);
+                if !acyclic_fs::shared_view_namespace_contains(previous, admission)?
+                    || previous.try_exists().map_err(storage)?
+                {
+                    return Err(Error::Conflict(
+                        "projection alias does not name a retired shared view".into(),
+                    ));
+                }
+            }
+            volumes::bind_alias(&self.destination, &path, previous.as_deref())?;
+            native.binding = Some((self.destination.clone(), path));
+            Ok(native)
         })
         .await
     }
@@ -129,7 +166,7 @@ impl MountedVolume {
         .await
     }
 
-    pub(super) async fn prepare_command(&self) -> Result<()> {
+    pub(in crate::local) async fn prepare_command(&self) -> Result<()> {
         let mut slot = self.native().await;
         if let Some(native) = slot.as_ref() {
             if native.discard {

@@ -44,21 +44,29 @@ impl NativeMountAuthority {
     }
 
     /// Created resources are delegated only from the original live task admission.
-    pub async fn created_scope(&self, context: &crate::runtime::ToolContext) -> Result<Scope> {
+    pub async fn created_scope(
+        &self,
+        context: &crate::runtime::TaskContext,
+        ceiling: &crate::runtime::RuntimeScope,
+    ) -> Result<Scope> {
         let owner = context
-            .task()
             .owned_mailbox
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
-        owner.validate_scope(context.effective_scope(), None)?;
+        owner.validate_scope(ceiling, None)?;
         owner.verify_owner(None)?.await?;
         let (task, fence) = owner.task_binding();
-        if !context.task().original_task_binding_matches(task, fence) {
+        if !context.original_task_binding_matches(task, fence) {
             return Err(Error::Unauthorized("child mount owner differs".into()));
         }
-        let access = context.task().scope().created_access.as_ref().ok_or(
-            Error::FilesystemAccessConfiguration("child mount allocation"),
-        )?;
+        let access =
+            context
+                .scope()
+                .created_access
+                .as_ref()
+                .ok_or(Error::FilesystemAccessConfiguration(
+                    "child mount allocation",
+                ))?;
         if access.operation.into_bytes() != task.into_bytes() {
             return Err(Error::Unauthorized("child mount allocation differs".into()));
         }
@@ -81,7 +89,7 @@ impl NativeMountAuthority {
         let scope = self.verifier.admit_native_descendant(
             &self.scope,
             "child-checkout",
-            context.effective_scope().grants(),
+            ceiling.grants(),
             Some(*agent),
             &mut None,
         )?;

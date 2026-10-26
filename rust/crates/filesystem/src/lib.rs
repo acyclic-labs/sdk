@@ -73,6 +73,9 @@ pub mod cancellation;
 pub mod compat_wire;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub mod core_state;
+pub mod mount_qualification;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod package_install;
 // Unit fixtures use the production memory and local compositions directly.
 // cfg(test) supplies those implementations without a self dev-dependency.
 pub mod demand;
@@ -326,6 +329,7 @@ pub use native_mount::{
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     reclaim_native_mount_destination_fence, recover_native_mount_destination,
     restore_checkout_host_path, seal_checkout, seal_checkout_with_permit,
+    shared_view_namespace_contains, shared_view_root, shared_view_root_in,
 };
 #[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub use native_mount::{

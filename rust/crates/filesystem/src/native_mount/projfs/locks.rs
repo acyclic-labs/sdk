@@ -48,3 +48,14 @@ pub(super) unsafe fn runtime<'a>(
     let pointer = data.InstanceContext.cast::<Runtime>();
     pointer.as_ref().map(|value| (data, value))
 }
+
+/// The views of a shared instance, whose instance context they are; a
+/// shared callback resolves its view from them and then calls through
+/// [`runtime`] with that view's routed data.
+pub(super) unsafe fn shared_views<'a>(
+    data: *const PRJ_CALLBACK_DATA,
+) -> Option<(&'a PRJ_CALLBACK_DATA, &'a super::shared::SharedViews)> {
+    let data = data.as_ref()?;
+    let pointer = data.InstanceContext.cast::<super::shared::SharedViews>();
+    pointer.as_ref().map(|value| (data, value))
+}

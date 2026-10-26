@@ -49,14 +49,22 @@ pub fn prepare<T>(
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
     mount.check(Action::List, &path, now)?;
-    let root = mount.native_root.as_deref().unwrap_or(&mounts.root);
-    let requested = if mount.native_root.is_some() {
+    let io = |cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause));
+    // A volume's root is its binding, which may link to the view projecting
+    // it, so the canonical cwd is checked against the canonical root.
+    let native_root = mount
+        .native_root
+        .as_deref()
+        .map(std::fs::canonicalize)
+        .transpose()
+        .map_err(io)?;
+    let root = native_root.as_deref().unwrap_or(&mounts.root);
+    let requested = if native_root.is_some() {
         root.join(&path)
     } else {
         mounts.root.join(relative)
     };
-    let cwd = std::fs::canonicalize(requested)
-        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
+    let cwd = std::fs::canonicalize(requested).map_err(io)?;
     let selected = cwd
         .strip_prefix(root)
         .map_err(|_| Error::Invalid("shell cwd escapes the task view".into()))?;

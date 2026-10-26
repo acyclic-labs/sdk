@@ -22,15 +22,15 @@ fn filter() -> FollowFilter {
 
 fn changes() -> AppendRecord {
     AppendRecord::changes(
-        bytes::Bytes::from_static(b"publication-identity"),
-        ["b", "z"]
+        b"publication-identity",
+        &["b", "z"]
             .into_iter()
             .map(|key| wire::ChangeEntry {
                 key: key.into(),
                 operation: "write".into(),
                 metadata: key.into(),
             })
-            .collect(),
+            .collect::<Vec<_>>(),
         vec![],
     )
     .unwrap()
@@ -67,39 +67,141 @@ fn typed_projection_removes_outside_entries_while_opaque_mixed_keys_are_denied()
     );
 }
 
-#[test]
-fn malformed_typed_lists_never_disagree_with_the_immutable_index() {
+/// The value `changes()` would have with its first key replaced, under the
+/// original headers: a forged index.
+fn forged() -> AppendRecord {
     let mut body = changes();
     let mut value = decode(&body.value, &body.headers).unwrap();
     value.entries.first_mut().unwrap().key = "a".into();
-    body.value = value.encode_to_vec().into();
+    body.value = AppendRecord::changes(&value.context, &value.entries, vec![])
+        .unwrap()
+        .value;
+    body
+}
+
+#[test]
+fn malformed_typed_lists_never_disagree_with_the_immutable_index() {
+    let body = forged();
     assert_eq!(
         validate(&body.value, &body.headers),
         Err(StreamError::InvalidArgument)
     );
-    assert!(crate::request::validate_records(&[body.clone()]).is_err());
-    assert!(crate::wire_codec::append_record(crate::wire_codec::append_record_wire(body)).is_err());
-    assert!(AppendRecord::changes(bytes::Bytes::new(), vec![], vec![]).is_err());
+    assert!(crate::request::validate_records(std::slice::from_ref(&body)).is_err());
+    assert!(AppendRecord::changes(&[], &[], vec![]).is_err());
+}
+
+/// No wire or persisted form carries a change record's keys: every ingress
+/// derives them from the value, so a disagreeing copy cannot cross one.
+#[test]
+fn every_wire_form_stores_each_key_once_and_derives_the_index() {
+    let body = changes();
+    let wire = crate::wire_codec::append_record_wire(body.clone());
+    assert!(wire.keys.is_empty());
+    assert_eq!(crate::wire_codec::append_record(wire).unwrap(), body);
+    let forged =
+        crate::wire_codec::append_record(crate::wire_codec::append_record_wire(forged())).unwrap();
+    assert_eq!(
+        forged
+            .headers
+            .keys()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&[u8]>>(),
+        [b"a".as_slice(), b"z"],
+        "the index is the value's, never the forged headers'"
+    );
+    // A wire record that carries keys beside a change value is a second copy.
+    let mut doubled = crate::wire_codec::append_record_wire(body);
+    doubled.keys = vec![
+        bytes::Bytes::from_static(b"b"),
+        bytes::Bytes::from_static(b"z"),
+    ];
+    assert_eq!(
+        crate::wire_codec::append_record(doubled),
+        Err(StreamError::InvalidArgument)
+    );
+    // The negative control: an opaque record keeps its keys on the wire.
+    let opaque = AppendRecord {
+        value: b"opaque".as_slice().into(),
+        headers: RecordHeaders::new(vec![b"k".as_slice().into()], vec![]).unwrap(),
+    };
+    assert_eq!(crate::wire_codec::append_record_wire(opaque).keys.len(), 1);
+}
+
+#[test]
+fn keys_share_their_prefixes_and_metadata_is_stored_once() {
+    let long = |suffix: &str| format!(".system/harness-uploads/{suffix}");
+    let record = AppendRecord::changes(
+        &[],
+        &[long("a.json"), long("b.json")]
+            .into_iter()
+            .map(|key| wire::ChangeEntry {
+                key: key.into(),
+                operation: "create".into(),
+                metadata: bytes::Bytes::new(),
+            })
+            .collect::<Vec<_>>(),
+        vec![],
+    )
+    .unwrap();
+    // context(1) count(1); then shared(1) suffix(1+30) op(1+6) meta(1), and
+    // shared(1) suffix(1+6) op(1+6) meta(1): the second key stores 6 bytes.
+    assert_eq!(record.value.len(), 2 + 1 + 31 + 7 + 1 + 1 + 7 + 7 + 1);
+    let decoded = decode_changes(&record.value).unwrap();
+    assert_eq!(
+        decoded.entries.get(1).unwrap().key.as_ref(),
+        long("b.json").as_bytes()
+    );
 }
 
 #[test]
 fn canonical_change_validation_rejects_wire_malleability() {
     let headers = changes().headers;
-    // Duplicate context, explicit empty context, unknown field, nonminimal
-    // length, truncated entry, and a canonical list with the wrong key count.
-    for bytes in [
-        b"\x0a\x01a\x0a\x01a".as_slice(),
-        b"\x0a\x00",
-        b"\x1a\x01a",
-        b"\x0a\x81\x00a",
-        b"\x12\x02\x0a",
-        b"\x12\x06\x0a\x01b\x12\x01w",
+    let canonical = changes().value.to_vec();
+    assert_eq!(validate(&canonical, &headers), Ok(()));
+    let mut cases: Vec<Vec<u8>> = Vec::new();
+    // A nonminimal context length.
+    let (first, rest) = canonical.split_first().unwrap();
+    let mut nonminimal = vec![0x80 | first, 0x00];
+    nonminimal.extend_from_slice(rest);
+    cases.push(nonminimal);
+    // Trailing bytes, and a truncated list.
+    cases.push([canonical.as_slice(), b"\0"].concat());
+    cases.push(canonical.split_last().unwrap().1.to_vec());
+    // No entries, and more entries than the value holds.
+    cases.push(b"\x00\x00".to_vec());
+    cases.push(b"\x00\x02\x00\x01b\x05write\x00".to_vec());
+    // A first entry that claims a shared prefix, a shared length shorter
+    // than the true common prefix, keys out of order, an equal key, and an
+    // empty or control-character operation.
+    for value in [
+        b"\x00\x01\x01\x01b\x05write\x00".as_slice(),
+        b"\x00\x02\x00\x02ab\x05write\x00\x00\x02ac\x05write\x00",
+        b"\x00\x02\x00\x01b\x05write\x00\x00\x01a\x05write\x00",
+        b"\x00\x02\x00\x01b\x05write\x00\x01\x00\x05write\x00",
+        b"\x00\x01\x00\x01b\x00\x00",
+        b"\x00\x01\x00\x01b\x02w\n\x00",
     ] {
-        assert_eq!(validate(bytes, &headers), Err(StreamError::InvalidArgument));
+        cases.push(value.to_vec());
+    }
+    for bytes in cases {
+        assert!(decode_changes(&bytes).is_err(), "{bytes:?}");
+        assert_eq!(
+            validate(&bytes, &headers),
+            Err(StreamError::InvalidArgument),
+            "{bytes:?}"
+        );
+    }
+    // The negative control: the same shapes written canonically decode.
+    for value in [
+        b"\x00\x01\x00\x01b\x05write\x00".as_slice(),
+        b"\x00\x02\x00\x02ab\x05write\x00\x01\x01c\x05write\x00",
+    ] {
+        assert!(decode_changes(value).is_ok(), "{value:?}");
     }
     let empty_key = AppendRecord::changes(
-        bytes::Bytes::new(),
-        vec![wire::ChangeEntry {
+        &[],
+        &[wire::ChangeEntry {
             key: bytes::Bytes::new(),
             operation: "write".into(),
             metadata: bytes::Bytes::new(),
@@ -108,6 +210,16 @@ fn canonical_change_validation_rejects_wire_malleability() {
     )
     .unwrap();
     assert_eq!(validate(&empty_key.value, &empty_key.headers), Ok(()));
+    // Any other claimed change format is refused, not read as opaque.
+    let stale = RecordHeaders::new(
+        vec![],
+        vec![Attribute {
+            name: ATTRIBUTE.into(),
+            value: b"changes/v1".as_slice().into(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(validate(b"", &stale), Err(StreamError::InvalidArgument));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -127,10 +239,7 @@ async fn prepared_ingress(provider: &impl StreamProvider) {
             .unwrap();
     }
     let meter = std::sync::Arc::new(crate::test_meter::Meter::local());
-    let mut body = changes();
-    let mut value = decode(&body.value, &body.headers).unwrap();
-    value.entries.first_mut().unwrap().key = "a".into();
-    body.value = value.encode_to_vec().into();
+    let body = forged();
     let request = CommitRequest {
         conditions: vec![
             CommitCondition::Tail {

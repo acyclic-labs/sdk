@@ -160,6 +160,73 @@ fn retirement_preserves_registry_identity_for_pending_and_new_starters() {
     );
 }
 
+fn shared_admission(registry: &registry::Registry, active: &loom::sync::Mutex<u8>) {
+    let work = NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)
+    .unwrap();
+    let held = registry.lock(&mut &work).unwrap();
+    {
+        let mut active = active.lock().unwrap();
+        *active += 1;
+        assert_eq!(
+            *active, 1,
+            "a shared registry descriptor admitted two threads"
+        );
+    }
+    loom::thread::yield_now();
+    *active.lock().unwrap() -= 1;
+    held.unlock(&mut &work).unwrap();
+}
+
+#[test]
+fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
+    let temporary = tempfile::tempdir().unwrap();
+    let state = temporary.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let base = rustix::fs::statx(
+        rustix::fs::CWD,
+        temporary.path(),
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW | rustix::fs::AtFlags::STATX_DONT_SYNC,
+        rustix::fs::StatxFlags::TYPE | rustix::fs::StatxFlags::MNT_ID,
+    )
+    .unwrap();
+    let helper_stat = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
+    let scenario = move |broken| {
+        let kernel =
+            super::super::disconnected::kernel::Kernel::install(base, helper_stat, false, false);
+        kernel.set_registry_directory(state.clone());
+        if broken {
+            // The flock alone: every thread shares the descriptor that owns it.
+            kernel.disable_registry_admission();
+        }
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)
+        .unwrap();
+        // One descriptor, as every mount in a process shares.
+        let registry =
+            loom::sync::Arc::new(registry::Registry::new(registry::open(&mut &work).unwrap()));
+        let active = loom::sync::Arc::new(loom::sync::Mutex::new(0));
+        let peer = {
+            let (registry, active) = (registry.clone(), active.clone());
+            loom::thread::spawn(move || shared_admission(&registry, &active))
+        };
+        shared_admission(&registry, &active);
+        peer.join().unwrap();
+    };
+    let candidate = scenario.clone();
+    loom::model(move || candidate(false));
+    rejected(
+        move || loom::model(move || scenario(true)),
+        "a shared registry descriptor admitted two threads",
+    );
+}
+
 fn rejected(control: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
     let error =
         std::panic::catch_unwind(control).expect_err("registry mutation escaped its oracle");

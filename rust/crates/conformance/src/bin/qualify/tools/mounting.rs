@@ -81,6 +81,7 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             volume_id,
             destination: mount_dir.clone(),
             writable: true,
+            shared: false,
         },
         mount_source_for_mount,
     )
@@ -267,6 +268,7 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
             volume_id,
             destination: mount_dir.clone(),
             writable: true,
+            shared: false,
         },
         mount_source,
     )
@@ -424,6 +426,7 @@ pub(super) fn mount_smoke2(args: &[String]) -> Result<(), Failure> {
                 volume_id,
                 destination: mount_dir.clone(),
                 writable: true,
+                shared: false,
             },
             mount_source,
         )

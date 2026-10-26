@@ -100,6 +100,7 @@ fn scratch_mount_owner() -> TestResult {
                 volume_id: source.volume_id()?,
                 destination: PathBuf::from(root).join(SCRATCH_PATH),
                 writable: true,
+                shared: false,
             },
             source,
         )?;
@@ -242,5 +243,89 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         Err(acyclic_fs::NativeMountError::DestinationBusy)
     ));
     assert_ne!(std::fs::metadata(&destination)?.dev(), original.dev());
+    Ok(())
+}
+
+/// A crash can leave a binding linking to a view of the crashed process's
+/// reaped root. Recovery removes that link, and only that kind of link: a
+/// live view's link is its owner's, and one naming anything but a view is
+/// still refused, as
+/// `scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence` checks.
+#[test]
+fn recovery_removes_a_crashed_binding_link_to_a_shared_view() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let destination = root.path().join(SCRATCH_PATH);
+    std::fs::create_dir(root.path().join(".volumes"))?;
+    let roots = acyclic_fs::shared_view_root()?
+        .parent()
+        .ok_or("shared root has no parent")?
+        .to_path_buf();
+    let reaped = roots.join(format!("{:032x}", 0)).join("v0000000000000001");
+    std::os::unix::fs::symlink(&reaped, &destination)?;
+    recover(root.path())?;
+    assert!(
+        std::fs::symlink_metadata(&destination).is_err(),
+        "the crashed binding's link survived recovery"
+    );
+    // A live view's link survives recovery, and its projection keeps it.
+    let live_root = roots.join(format!(
+        "{:032x}",
+        u128::from_be_bytes(acyclic_fs::MountId::new().into_bytes())
+    ));
+    let live = live_root.join("v0000000000000001");
+    std::fs::create_dir_all(&live)?;
+    std::os::unix::fs::symlink(&live, &destination)?;
+    recover(root.path())?;
+    unlink_binding(&destination, &live)?;
+    assert!(
+        std::fs::symlink_metadata(&destination)?
+            .file_type()
+            .is_symlink(),
+        "a live view's link was removed"
+    );
+    // The old root's parent is gone. Both a missing target and a different
+    // live target must fail closed, preserving the live alias in either case.
+    assert!(bind_alias(&destination, &reaped, None).is_err());
+    assert_eq!(std::fs::read_link(&destination)?, live);
+    assert!(matches!(
+        bind_alias(&destination, &roots.join("another"), None),
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(std::fs::read_link(&destination)?, live);
+    std::fs::remove_file(&destination)?;
+    std::fs::remove_dir(&live)?;
+    std::fs::remove_dir(&live_root)?;
+    Ok(())
+}
+
+#[test]
+fn admitted_shared_alias_recovery_refuses_foreign_views_and_rebinds_reaped_parents() -> TestResult {
+    let fixture = tempfile::tempdir()?;
+    let admission = acyclic_fs::hold_root(fixture.path())?;
+    let admitted = held_directories(&admission, Path::new(".volumes/agents"))?;
+    let roots = acyclic_fs::shared_view_root_in(&admitted)?
+        .parent()
+        .ok_or("shared root has no parent")?
+        .to_path_buf();
+    let reaped = roots.join(format!("{:032x}", 0)).join("v0000000000000001");
+    let destination = fixture.path().join(SCRATCH_PATH);
+    std::os::unix::fs::symlink(&reaped, &destination)?;
+    recover(fixture.path())?;
+    assert!(std::fs::symlink_metadata(&destination).is_err());
+
+    // Exact prior custody can replace a link after its root was removed.
+    let next = roots.join("next");
+    std::fs::create_dir(&next)?;
+    std::os::unix::fs::symlink(&reaped, &destination)?;
+    bind_alias(&destination, &next, Some(&reaped))?;
+    assert_eq!(std::fs::read_link(&destination)?, next);
+    std::fs::remove_file(&destination)?;
+
+    // A path with the right basename outside the admitted namespace grants
+    // no recovery authority. Neither the link nor foreign content is removed.
+    let foreign = fixture.path().join("foreign/v0000000000000001");
+    std::os::unix::fs::symlink(&foreign, &destination)?;
+    assert!(recover(fixture.path()).is_err());
+    assert_eq!(std::fs::read_link(&destination)?, foreign);
     Ok(())
 }

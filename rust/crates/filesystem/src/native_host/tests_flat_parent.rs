@@ -121,11 +121,11 @@ fn flat_stat_matches_direct_leaf_and_exact_admission() -> Result<(), Box<dyn std
             .map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
             // Real old-path control: a duplicate of this same authority precedes
             // the retained leaf operation. It must fail the exact-read oracle.
-            let duplicate = HostRoot {
-                directory: clone_directory(&root.directory, &mut &legacy)
+            let duplicate = HostRoot::from_parts(
+                clone_directory(&root.directory, &mut &legacy)
                     .map_err(|e| TestCaseError::fail(e.to_string()))?,
-                identity: root.identity(),
-            };
+                root.identity(),
+            );
             let actual = duplicate
                 .stat(&path, &mut &legacy)
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;

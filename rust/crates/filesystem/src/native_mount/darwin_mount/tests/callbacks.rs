@@ -199,9 +199,9 @@ fn accepted_io_scope_retains_original_work_until_its_last_clone_drops() -> TestR
     )?;
     let original = work(CALLBACK_POLICY, &cancellation)?;
     let other = work(CALLBACK_POLICY, &cancellation)?;
-    let active = NativeMountWorkScope::new(Arc::clone(&context), &original)?;
+    let active = NativeMountWorkScope::new(&context, &original)?;
     assert!(matches!(
-        NativeMountWorkScope::new(Arc::clone(&context), &other),
+        NativeMountWorkScope::new(&context, &other),
         Err(NativeMountError::ControlPending)
     ));
     let accepted = active.try_clone_for_io()?;

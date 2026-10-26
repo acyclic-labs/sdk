@@ -92,10 +92,9 @@ switch ($Lane) {
             }
         }
 
-        # Black-box fork/join conformance through hooks, the CLI and live ProjFS
-        # mounts. The shared test support module carries ignored tests of its own.
-        cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
-            --ignored --test-threads=1 --skip support::
+        # The shared harness owns native-host fork, capture and merge on ProjFS.
+        cargo test -p acyclic-harness --all-features --locked --lib `
+            local::host_workspace::tests:: -- --test-threads=4
 
         return
     }
@@ -193,26 +192,8 @@ bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
-# Exact external-host lockfile inputs; every test uses this source-built CLI.
-$PiHosts = (Resolve-Path 'plugin/tests/hosts').Path
-cargo build -p acyclic-plugin --bin acyclic --locked
-$env:ACYCLIC_BINARY = Join-Path $CargoTargetDir 'debug/acyclic.exe'
-$env:ACYCLIC_PI_TEST_NODE = (Get-Command node).Source
-$env:ACYCLIC_PI_TEST_CLI = Join-Path $PiHosts 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
-$env:ACYCLIC_PI_TEST_PROVIDER_DIR = $PiHosts
-Push-Location $PiHosts
-try {
-    npm ci --ignore-scripts --no-audit --no-fund
-    bun run test:pi-context
-    bun run test:pi-context-mail
-    bun run test:pi-bootstrap
-    bun run test:pi-session
-    bun run test:pi-installation
-    bun run test:pi-service
-    bun run test:pi-native-recursive
-    bun run test:pi-context-fresh
-    bun run test:pi-context-pages
-    bun run test:pi-builtin-paths
-} finally {
-    Pop-Location
-}
+# Native hosts own tools and providers; the shared harness owns their lifecycle.
+npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+bun run --cwd plugin/tests/hosts test:shim
+cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
+cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4

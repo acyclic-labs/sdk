@@ -13,11 +13,13 @@ fuzz_target!(|data: &[u8]| {
             let _ = FollowFilter::new(filter);
         }
     }
-    if let Ok(value) = wire::ChangeRecord::decode(data) {
-        assert_eq!(
-            wire::ChangeRecord::decode(value.encode_to_vec().as_slice()).unwrap(),
-            value
-        );
+    // A change value has exactly one encoding: whatever decodes re-encodes
+    // to the same bytes.
+    if let Ok(value) = acyclic_stream::decode_changes(data) {
+        let encoded = acyclic_stream::AppendRecord::changes(&value.context, &value.entries, vec![])
+            .unwrap()
+            .value;
+        assert_eq!(encoded.as_ref(), data);
     }
     if let Some((head, tail)) = data.split_at_checked(16) {
         let id: [u8; 16] = head.try_into().unwrap();

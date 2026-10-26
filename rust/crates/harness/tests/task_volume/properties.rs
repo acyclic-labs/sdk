@@ -70,9 +70,9 @@ proptest! {
             result?;
             let mut records = provider.read(ReadRequest { path: StreamPath::new("task-volume")?, from: 0, limit: 2 }).await?;
             let header=records.next().await.ok_or("missing header")??;
-            assert_eq!(Write::from_record(&header)?,None);
+            assert_eq!(Write::from_record(&header)?,Vec::new());
             let record = records.next().await.ok_or("missing event")??;
-            let decoded=Write::from_record(&record)?.ok_or("missing decoded file")?;
+            let decoded=Write::from_record(&record)?.into_iter().next().ok_or("missing decoded file")?;
             assert_eq!(decoded,file);
             if !decoded.bytes.is_empty() {
                 let offset=record.value.len().checked_sub(decoded.bytes.len()).ok_or("payload exceeds segment")?;

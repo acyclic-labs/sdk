@@ -47,6 +47,10 @@ pub struct NativeMountRequest {
     pub destination: PathBuf,
     /// Whether authored effects may be captured.
     pub writable: bool,
+    /// Lists the view in the process's shared native instance at the
+    /// destination's parent, named by the destination's last component,
+    /// instead of mounting it at the destination. Linux only.
+    pub shared: bool,
 }
 
 /// Platform-neutral node facts required by kernel callbacks.
@@ -609,85 +613,6 @@ impl From<std::io::Error> for MountSourceError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error, None)
     }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn native_materialization_errno(error: &crate::NativeTreeMaterializationError) -> i32 {
-    match error {
-        crate::NativeTreeMaterializationError::Io(error) => {
-            error.raw_os_error().unwrap_or(libc::EIO)
-        }
-        crate::NativeTreeMaterializationError::Cancelled => libc::ESTALE,
-        crate::NativeTreeMaterializationError::AllocationFailed(_) => libc::ENOMEM,
-        crate::NativeTreeMaterializationError::PayloadTooLarge { .. } => libc::EFBIG,
-        _ => libc::EIO,
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn native_workspace_errno(error: &crate::WorkspaceError) -> i32 {
-    use crate::WorkspaceError;
-    match error {
-        WorkspaceError::Cancelled(_)
-        | WorkspaceError::Filesystem(crate::FsError::Cancelled(_))
-        | WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => {
-            libc::ECANCELED
-        }
-        WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) => {
-            native_materialization_errno(error)
-        }
-        WorkspaceError::NotFound | WorkspaceError::Filesystem(crate::FsError::NotFound) => {
-            libc::ENOENT
-        }
-        WorkspaceError::NotDirectory | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => {
-            libc::ENOTDIR
-        }
-        WorkspaceError::IsDirectory => libc::EISDIR,
-        WorkspaceError::DirectoryNotEmpty => libc::ENOTEMPTY,
-        WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
-        WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
-        | WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed) => libc::ENOMEM,
-        WorkspaceError::Name(_)
-        | WorkspaceError::Path(_)
-        | WorkspaceError::NotRegularFile
-        | WorkspaceError::NamespacePath(_) => libc::EINVAL,
-        WorkspaceError::ReadLimitExceeded => libc::EFBIG,
-        WorkspaceError::StaleGeneration
-        | WorkspaceError::StaleSource
-        | WorkspaceError::StaleIdentity
-        | WorkspaceError::StaleTarget
-        | WorkspaceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
-        _ => libc::EIO,
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -> bool {
-    if let crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) = error {
-        return native_materialization_failure_is_fatal(error);
-    }
-    matches!(
-        crate::workspace::workspace_bounded_error(error),
-        Some(crate::WorkspaceError::Work(_) | crate::WorkspaceError::Cancelled(_))
-    ) || matches!(
-        error,
-        crate::WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
-            | crate::WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed)
-    )
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn native_materialization_failure_is_fatal(
-    error: &crate::NativeTreeMaterializationError,
-) -> bool {
-    matches!(
-        error,
-        crate::NativeTreeMaterializationError::Work(_)
-            | crate::NativeTreeMaterializationError::Cancelled
-            | crate::NativeTreeMaterializationError::AllocationFailed(_)
-            | crate::NativeTreeMaterializationError::ExternalMutation
-            | crate::NativeTreeMaterializationError::AllocationChanged { .. }
-    )
 }
 
 impl From<NativeMountStartupAdmissionError> for MountSourceError {

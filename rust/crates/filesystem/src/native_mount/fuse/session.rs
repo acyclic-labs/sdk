@@ -17,18 +17,45 @@ pub(super) struct FuseSessionState {
     pub(super) before: Option<(u64, u64)>,
     pub(super) mount: super::mount::Mount,
     pub(super) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    pub(super) device: Option<OwnedFd>,
+    pub(super) device: Option<FuseDevice>,
     pub(super) notifier: Option<Notifier>,
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
     pub(super) failure: Option<NativeMountError>,
+    /// This view's place in a shared instance; a shared view owns no mount,
+    /// device, worker or invalidator of its own.
+    pub(super) shared: Option<super::shared_instance::SharedFuseView>,
     pub(super) _allocation: NativeAllocation,
+}
+
+/// The session's FUSE device. Until fuser's session owns the device this
+/// state holds a descriptor; afterwards it holds a notifier, which shares
+/// fuser's descriptor and keeps it open, so a mounted view costs one.
+pub(super) enum FuseDevice {
+    Owned(OwnedFd),
+    Session {
+        _notifier: Notifier,
+        device: std::os::fd::RawFd,
+    },
+}
+
+impl FuseDevice {
+    pub(super) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        match self {
+            Self::Owned(device) => device.as_fd(),
+            // SAFETY: the notifier shares the open device that owns this
+            // descriptor, which therefore stays open while it lives.
+            Self::Session { device, .. } => unsafe { std::os::fd::BorrowedFd::borrow_raw(*device) },
+        }
+    }
 }
 
 impl FuseSessionState {
     pub(super) fn is_retired(&self) -> bool {
         self.worker.is_none()
+            && self.shared.is_none()
             && !self.mount.pending()
             && self.before.is_none()
             && self
@@ -53,16 +80,24 @@ impl FuseSessionState {
             }
             Ok(())
         };
+        if let Some(mut view) = self.shared.take() {
+            // Retirement drains the view's admitted requests; dropping the
+            // last view of an instance unmounts it.
+            started(WriteOperations.delta(1))?;
+            view.retire();
+            drop(view);
+        }
         if self.mount.needs_unmount() {
             started(WriteOperations.delta(1))?;
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            self.mount.stop(path, self.device.as_ref())?;
+            self.mount
+                .stop(path, self.device.as_ref().map(FuseDevice::as_fd))?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            if !self.mount.wait_device_detached(device)? {
+            if !self.mount.wait_device_detached(device.as_fd())? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
@@ -125,6 +160,9 @@ impl FuseSession {
                 "volume root is not a directory",
             ));
         }
+        if request.shared {
+            return Self::start_shared_into(request, source, work, out, retirement, root, stamp);
+        }
         let metadata = crate::native_host::unix_name(
             request.destination.as_os_str(),
             &mut &*work,
@@ -135,8 +173,8 @@ impl FuseSession {
             root,
             stamp,
             request.writable,
-            metadata.st_uid,
-            metadata.st_gid,
+            (metadata.st_uid, metadata.st_gid),
+            0,
             work,
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
@@ -173,6 +211,7 @@ impl FuseSession {
             retirement: None,
             cleanup,
             failure: None,
+            shared: None,
             _allocation: allocation,
         }));
         let job = (Arc::clone(&core), Arc::clone(&state));
@@ -189,6 +228,7 @@ impl FuseSession {
             if let Some(packet) = started.retirement.as_mut() {
                 prepare(packet)?;
             }
+            map_read_buffers();
             let mut config = Config::default();
             config.mount_options = vec![
                 fuser::MountOption::FSName("acyclic-fs".to_owned()),
@@ -199,23 +239,29 @@ impl FuseSession {
             if !request.writable {
                 config.mount_options.push(fuser::MountOption::RO);
             }
-            config.n_threads = Some(8);
+            config.n_threads = Some(crate::native_mount::CALLBACK_THREADS as usize);
             config.clone_fd = false;
             work.charge(WriteOperations.delta(2))?;
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
             };
             let FuseSessionState { mount, device, .. } = &mut *started;
-            mount.open_into(
+            let mut received = None;
+            let opened = mount.open_into(
                 &request.destination,
                 request.writable,
                 || super::lifecycle::fuse_recovery_helper(work),
-                device,
-            )?;
+                &mut received,
+            );
+            *device = received.map(FuseDevice::Owned);
+            opened?;
+            // A failed handshake closes the session's descriptor, so the
+            // state holds its own until fuser's session owns the device.
             let descriptor = device
                 .as_ref()
                 .ok_or(NativeMountError::FuseShutdownFailed)?
-                .try_clone()?;
+                .as_fd()
+                .try_clone_to_owned()?;
             let session =
                 fuser::Session::from_fd(filesystem, descriptor, fuser::SessionACL::Owner, config)
                     .map_err(|error| {
@@ -224,6 +270,13 @@ impl FuseSession {
                 })?;
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
+            started.device = Some(FuseDevice::Session {
+                _notifier: session.notifier(),
+                device: {
+                    use std::os::fd::{AsFd as _, AsRawFd as _};
+                    session.as_fd().as_raw_fd()
+                },
+            });
             // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
             started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
             let (directory, identity) =
@@ -238,15 +291,101 @@ impl FuseSession {
         result
     }
 
+    /// Lists the view in the shared instance at the destination's parent.
+    /// The view owns no mount, so it takes no destination fence; the shared
+    /// root holds the one fence.
+    fn start_shared_into(
+        request: &NativeMountRequest,
+        source: Arc<dyn MountFilesystem>,
+        work: &NativeMaterializationWork,
+        out: &mut Option<Self>,
+        retirement: &mut Option<NativeMountRetirement>,
+        root: MountLookup,
+        stamp: Option<ViewStamp>,
+    ) -> Result<(), NativeMountError> {
+        let _services = crate::native_mount::adapter::CallbackRuntime::existing()?;
+        work.state.lock().check()?;
+        let parent = request
+            .destination
+            .parent()
+            .ok_or(NativeMountError::InvalidDestination)?;
+        let metadata =
+            crate::native_host::unix_name(parent.as_os_str(), &mut &*work, fuse_recovery_stat)?;
+        let allocation = work.claim(
+            std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        )?;
+        let cleanup = work.reserve_work(WorkCounters {
+            backend_write_operations: 1,
+            backend_read_operations: 3,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let close_root = work.reserve_cleanup_write()?;
+        let bytes = request.destination.as_os_str().as_bytes();
+        let mut path = fuse_vec(bytes.len().checked_add(1).ok_or(WorkError::Overflow)?, work)?;
+        work.admit(Copy.delta(bytes.len() as u64))?;
+        path.extend_from_slice(bytes);
+        path.push(0);
+        work.record_admitted(Copy.delta(bytes.len() as u64))?;
+        let mut startup = None;
+        // The core observes its source before the view is listed, as a
+        // standalone mount's core does before it mounts.
+        let view = super::shared_instance::SharedFuseView::start(&request.destination, |base| {
+            let core = ProjectionCore::new(
+                source,
+                root,
+                stamp,
+                request.writable,
+                (metadata.st_uid, metadata.st_gid),
+                base,
+                work,
+            )?;
+            startup = Some(NativeMountWorkScope::new(&core, work)?);
+            let observer: Arc<dyn ViewObserver> = core.clone();
+            core.source
+                .observe_view_with_meter(Arc::downgrade(&observer), work)?;
+            Ok(core)
+        })?;
+        let core = Arc::clone(view.core());
+        let (directory, identity) =
+            crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
+        close_root.attempt(|| drop(directory)).1?;
+        let state = Arc::new(Mutex::new(FuseSessionState {
+            path,
+            before: None,
+            mount: super::mount::Mount::default(),
+            worker: None,
+            device: None,
+            notifier: None,
+            identity: Some(identity),
+            retirement: retirement.take(),
+            cleanup,
+            failure: None,
+            shared: Some(view),
+            _allocation: allocation,
+        }));
+        *out = Some(Self {
+            core,
+            state,
+            invalidator: None,
+        });
+        drop(startup);
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn prepare_destination_cleanup(
         &mut self,
         destination: &std::path::Path,
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         // Lock order: customer session -> driver state -> original work ledger.
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // A shared view holds no fence; its retirement removes its directory.
+        if state.shared.is_some() {
+            return Ok(());
+        }
+        state
             .retirement
             .as_mut()
             .and_then(|packet| packet.destination_guard.as_mut())
@@ -266,7 +405,9 @@ impl FuseSession {
     }
     pub(in crate::native_mount) fn native_root_identity(&self) -> Option<NativeRootIdentity> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.device.as_ref().and(state.identity)
+        (state.device.is_some() || state.shared.is_some())
+            .then_some(state.identity)
+            .flatten()
     }
     pub(in crate::native_mount) fn take_callback_failure(
         &self,
@@ -277,11 +418,8 @@ impl FuseSession {
         self.core.completed_callback_work()
     }
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .before
-            .is_none()
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.before.is_none() && state.shared.is_none()
     }
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -327,6 +465,35 @@ impl FuseSession {
                 })?;
         }
         Ok(())
+    }
+}
+
+/// Set in the negative control of the read buffers' test: glibc keeps its
+/// adaptive threshold.
+#[cfg(test)]
+pub(super) const DYNAMIC_THRESHOLD: &str = "ACYCLIC_FS_TEST_DYNAMIC_MMAP_THRESHOLD";
+
+/// Keeps every session's read buffers in their own mappings. glibc raises its
+/// mapping threshold past each mapped block it frees, so once one session
+/// unmounts, later sessions' buffers would come from the heap: zeroed there,
+/// resident whole, and kept by the process after their session ends. A fixed
+/// threshold keeps each buffer a mapping that only the requests the kernel
+/// writes into make resident, returned whole when its session ends.
+pub(super) fn map_read_buffers() {
+    #[cfg(test)]
+    if std::env::var_os(DYNAMIC_THRESHOLD).is_some() {
+        return;
+    }
+    #[cfg(target_env = "gnu")]
+    {
+        // fuser reads each request into a buffer of its largest write plus
+        // a page, one per callback thread.
+        const READ_BUFFER_BYTES: i32 = 16 << 20;
+        static FIXED: std::sync::Once = std::sync::Once::new();
+        // SAFETY: mallopt only adjusts allocator tuning; it is thread-safe.
+        FIXED.call_once(|| unsafe {
+            libc::mallopt(libc::M_MMAP_THRESHOLD, READ_BUFFER_BYTES);
+        });
     }
 }
 

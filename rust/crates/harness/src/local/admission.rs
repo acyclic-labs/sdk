@@ -670,10 +670,19 @@ impl LocalHarness {
     /// callers must first join active execution and drop client observations.
     pub async fn disconnect(self) -> Result<()> {
         #[cfg(any(test, feature = "native-execution"))]
-        if let Some(workspace) = &self.workspace {
-            crate::local::workspace::volumes::retire(&workspace.mounts).await?;
-        }
-        Ok(())
+        let retired = if let Some(workspace) = &self.workspace {
+            crate::local::workspace::volumes::retire(&workspace.mounts).await
+        } else {
+            Ok(())
+        };
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let retired = Ok(());
+        // Native view destructors join callbacks. They must not occupy the
+        // coordination thread that those callbacks may still need to finish.
+        acyclic_native_runtime::spawn_blocking(move || drop(self))
+            .await
+            .map_err(storage)?;
+        retired
     }
 }
 

@@ -7,7 +7,6 @@
 )]
 
 use super::provider_stack;
-use super::view_ledger::same_work;
 use super::{
     DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
     MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin,
@@ -121,6 +120,7 @@ pub(in crate::native_mount) use process_owner::{
     current_process_owner, require_dead_process_owner,
 };
 mod cleanup;
+pub(super) use cleanup::detach_dead_shared_root;
 #[cfg(test)]
 pub(super) use cleanup::detach_projection;
 mod recovery_control;
@@ -131,6 +131,8 @@ mod metadata;
 mod probe_guard;
 use metadata::*;
 mod notifications;
+mod service;
+mod shared;
 use notifications::*;
 
 #[cfg(test)]

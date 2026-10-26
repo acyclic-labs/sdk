@@ -44,12 +44,27 @@ where
         .await
     }
 
-    /// Mounts the actual sparse source without scanning unresolved descendants.
+    /// Mounts the sparse source as a task view: the one public way to mount
+    /// a per-agent view, as [`Workspace::mount_view`](crate::Workspace::mount_view)
+    /// describes. [`LazyMount::path`] names the view.
+    pub async fn mount_view(
+        &self,
+        options: MountOptions,
+    ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
+        let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
+        self.mount(destination.path(), options.for_task_view()).await
+    }
+
+    /// Mounts the actual sparse source without scanning unresolved
+    /// descendants, as an instance of its own at `destination`: for a single
+    /// mount such as a user's checkout. A task view is mounted with
+    /// [`Self::mount_view`] instead.
     pub async fn mount(
         &self,
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
+        let _startup = super::super::admit_mount_startup().await?;
         let work = options.work(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -96,6 +111,7 @@ where
             volume_id,
             destination: session_destination.0,
             writable: options.writable,
+            shared: options.shared,
         };
         let source = Arc::new(
             match LazyMountSource::new(

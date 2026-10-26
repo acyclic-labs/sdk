@@ -53,6 +53,23 @@ fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<()
         OsString::from("aarch64"),
     ];
     verify_receipt(&args)?;
+    // The former typed verifier silently ignored extra top-level fields and
+    // decoded a missing optional reason as null. Neither is the emitted schema.
+    let mut extra = document.clone();
+    extra
+        .as_object_mut()
+        .ok_or("object")?
+        .insert("unknown".into(), serde_json::json!(true));
+    std::fs::write(&receipt, serde_json::to_vec(&extra)?)?;
+    assert!(verify_receipt(&args).is_err());
+    let mut missing_reason = document.clone();
+    missing_reason
+        .get_mut("capability")
+        .and_then(Value::as_object_mut)
+        .ok_or("capability object")?
+        .remove("unavailable_reason");
+    std::fs::write(&receipt, serde_json::to_vec(&missing_reason)?)?;
+    assert!(verify_receipt(&args).is_err());
     receipt_array(&mut document, "coverage")?.reverse();
     receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
     receipt_array(&mut document, "cases")?.reverse();
@@ -92,7 +109,7 @@ fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<()
     assert!(
         error
             .to_string()
-            .contains("does not match release target x86_64")
+            .contains("does not match the release artifact")
     );
     Ok(())
 }

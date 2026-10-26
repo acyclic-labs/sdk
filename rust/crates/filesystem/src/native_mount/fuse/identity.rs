@@ -479,12 +479,17 @@ impl ProjectionState {
             return Ok(inode);
         }
         let inode = self.next_inode;
-        if inode < ROOT_INODE
-            || (inode == ROOT_INODE && (!path.components().is_empty() || !self.by_inode.is_empty()))
+        if inode < self.root_inode
+            || (inode == self.root_inode
+                && (!path.components().is_empty() || !self.by_inode.is_empty()))
         {
             return Err(libc::EOVERFLOW.into());
         }
-        let following = inode.checked_add(1).ok_or(libc::EOVERFLOW)?;
+        // An inode past the view's span would route to another view.
+        let following = inode
+            .checked_add(1)
+            .filter(|following| *following <= self.inode_limit)
+            .ok_or(libc::EOVERFLOW)?;
         let mut key = fuse_clone_path(&path, work)?;
         key.claim(
             std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64,

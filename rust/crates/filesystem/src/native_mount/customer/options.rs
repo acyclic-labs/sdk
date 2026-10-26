@@ -57,6 +57,8 @@ pub struct MountOptions {
     pub(super) work: Option<NativeMaterializationWork>,
     pub(super) callback_guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(super) native_original: Option<NativeMaterializationWork>,
+    pub(crate) shared: bool,
+    pub(crate) view_root: Option<Arc<crate::HeldRoot>>,
 }
 
 impl MountOptions {
@@ -87,6 +89,15 @@ impl MountOptions {
             .ok_or(MountLifecycleError::NativePolicy(
                 "native mounts require an authenticated policy and capability view",
             ))
+    }
+
+    /// Original allowance admitted with the authenticated policy owner.
+    /// Additional lifetime guards must retain this context rather than create
+    /// a ledger that the policy owner cannot authorize.
+    pub fn require_native_work(&self) -> Result<&NativeMaterializationWork, MountLifecycleError> {
+        self.work.as_ref().ok_or(MountLifecycleError::NativePolicy(
+            "native lifetime guards require the admitted work context",
+        ))
     }
 
     pub(super) fn work(
@@ -128,6 +139,8 @@ impl MountOptions {
             work: None,
             callback_guard: None,
             native_original: None,
+            shared: false,
+            view_root: None,
         }
     }
 
@@ -161,6 +174,23 @@ impl MountOptions {
             publication: MountPublication::Manual,
             ..Self::read_write()
         }
+    }
+
+    /// Selects the native backend for an issued task view. Linux and Windows
+    /// share an instance; Darwin retains its existing per-view native session.
+    /// This choice stays below the common task-view API used by every host.
+    #[must_use]
+    pub(crate) const fn for_task_view(mut self) -> Self {
+        self.shared = cfg!(any(target_os = "linux", windows));
+        self
+    }
+
+    /// Places task views inside an already admitted writable root. This
+    /// configures the shared instance; it grants no additional filesystem access.
+    #[must_use]
+    pub fn view_root(mut self, root: Arc<crate::HeldRoot>) -> Self {
+        self.view_root = Some(root);
+        self
     }
 
     /// Projects one exact workspace directory as the native mount root.

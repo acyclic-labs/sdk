@@ -1,20 +1,127 @@
 use super::*;
 
-/// A held root whose relative operations cannot escape through links.
-pub struct HostRoot {
-    pub(crate) directory: Dir,
-    pub(crate) identity: NativeRootIdentity,
+/// A root named by path and identity whose descriptor the process-wide
+/// descriptor cache keeps only while recently used, so that an idle owner of
+/// it holds none. Each use reopens a closed descriptor by path and refuses
+/// any directory other than the very one first opened.
+#[derive(Clone)]
+pub struct CachedRoot {
+    directory: std::sync::Arc<acyclic_native_runtime::CachedFile>,
+    identity: NativeRootIdentity,
 }
-impl HostRoot {
-    pub(crate) fn open<W: NativeHostWork>(path: &Path, work: &mut W) -> Result<Self, W::Error> {
-        let (directory, identity) = open_root_directory(path, work)?;
+
+impl std::fmt::Debug for CachedRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CachedRoot")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CachedRoot {
+    /// Caches `root`, opened at `path`.
+    pub(crate) fn new<W: NativeHostWork>(
+        root: HostRoot,
+        path: &Path,
+        work: &mut W,
+    ) -> Result<Self, W::Error> {
+        let identity = root.identity;
+        let directory = root.directory.into_std_file();
+        let directory = charging(work, |charge| {
+            acyclic_native_runtime::CachedFile::directory(directory, path, charge)
+        })?;
         Ok(Self {
-            directory,
+            directory: std::sync::Arc::new(directory),
             identity,
         })
     }
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
+    }
+    /// The root, held until the returned root drops. A closed descriptor
+    /// reopens by path, charged as two reads; a reopen that finds another
+    /// directory fails with [`io::ErrorKind::InvalidData`].
+    pub(crate) fn held<W: NativeHostWork>(&self, work: &mut W) -> Result<HostRoot, W::Error> {
+        let lease = charging(work, |charge| self.directory.lease_charged(charge))?;
+        // Duplicating a descriptor is no I/O; the duplicate outlives the lease.
+        let directory = lease.file().try_clone()?;
+        let root = HostRoot::from_parts(Dir::from_std_file(directory), self.identity);
+        #[cfg(target_os = "linux")]
+        let root = HostRoot {
+            origin: Some(self.clone()),
+            ..root
+        };
+        Ok(root)
+    }
+}
+
+/// Runs `operation`, charging `work` each cost the descriptor cache reports
+/// before the cache does that work: a reopen as the open and the identity
+/// read, a cache-owned allocation as claimed and released, and the flush of
+/// another file's writes as a durability operation.
+fn charging<W: NativeHostWork, T>(
+    work: &mut W,
+    operation: impl FnOnce(
+        &mut dyn FnMut(acyclic_native_runtime::DescriptorCost) -> io::Result<()>,
+    ) -> io::Result<T>,
+) -> Result<T, W::Error> {
+    use acyclic_native_runtime::DescriptorCost;
+    let mut refused = None;
+    let mut charge = |cost| {
+        let charged = match cost {
+            DescriptorCost::Reopen => work.started_io(READ).and_then(|()| work.started_io(READ)),
+            DescriptorCost::Allocation(bytes) => work
+                .claim(bytes as u64)
+                .and_then(|allocation| work.release(allocation)),
+            DescriptorCost::Flush => work.started_io(WorkCounters {
+                durability_operations: 1,
+                ..WorkCounters::UNCHARGED
+            }),
+        };
+        charged.map_err(|error| {
+            refused = Some(error);
+            io::Error::other("native work refused a descriptor cache cost")
+        })
+    };
+    let result = operation(&mut charge);
+    match (result, refused) {
+        (Err(_), Some(error)) => Err(error),
+        (result, _) => result.map_err(Into::into),
+    }
+}
+
+/// A held root whose relative operations cannot escape through links.
+pub struct HostRoot {
+    pub(crate) directory: Dir,
+    pub(crate) identity: NativeRootIdentity,
+    /// The cached root this was reopened from, which a holder that outlives
+    /// it keeps instead of a descriptor: an inotify watch, which on Linux
+    /// alone holds its root past startup.
+    #[cfg(target_os = "linux")]
+    pub(crate) origin: Option<CachedRoot>,
+}
+impl HostRoot {
+    pub(crate) fn open<W: NativeHostWork>(path: &Path, work: &mut W) -> Result<Self, W::Error> {
+        let (directory, identity) = open_root_directory(path, work)?;
+        Ok(Self::from_parts(directory, identity))
+    }
+    pub const fn identity(&self) -> NativeRootIdentity {
+        self.identity
+    }
+    /// A root held as `directory`, whose identity is `identity`.
+    pub(crate) const fn from_parts(directory: Dir, identity: NativeRootIdentity) -> Self {
+        Self {
+            directory,
+            identity,
+            #[cfg(target_os = "linux")]
+            origin: None,
+        }
+    }
+    /// The cached root this was reopened from, if any.
+    #[cfg(target_os = "linux")]
+    pub(crate) const fn origin(&self) -> Option<&CachedRoot> {
+        self.origin.as_ref()
     }
     /// The held root's incarnation, from one generation query of the held
     /// root beside the identity its open already read. A host whose object

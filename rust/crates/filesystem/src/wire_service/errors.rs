@@ -145,7 +145,7 @@ fn filesystem_code(error: &FsError) -> Code {
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalObjectsBucket(error) => objects_service_code(error),
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-        E::LocalRoot(error) | E::LocalStaging(error) => io_code(error),
+        E::LocalRoot(error) => io_code(error),
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalOptionsConflict => Code::FailedPrecondition,
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]

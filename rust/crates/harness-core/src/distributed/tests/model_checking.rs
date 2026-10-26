@@ -190,7 +190,7 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
                 &mut work,
             )
             .unwrap();
-            let (outcome, _) = commit(request, &writer_client, Some(task), None)
+            let (outcome, _) = commit(request, &writer_client, Some(task), None, None)
                 .await
                 .unwrap();
             matches!(outcome, CommitOutcome::Committed(_))

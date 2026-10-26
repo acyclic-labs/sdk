@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct CoreLog {
-    pub(super) file: Arc<File>,
+    pub(super) file: Arc<acyclic_native_runtime::CachedFile>,
     /// Bytes appended to the log.
     pub(super) length: u64,
     /// Bytes of the log known to be durable.
@@ -20,6 +20,17 @@ pub(super) struct CoreLog {
 }
 
 impl CoreLog {
+    /// The log's descriptor, reopened and checked against the log's identity
+    /// when it was closed, charging a reopen to the native work.
+    pub(in crate::core_state) fn lease(
+        &self,
+        work: Option<&crate::materializer::NativeMaterializationWork>,
+    ) -> std::io::Result<acyclic_native_runtime::FileLease> {
+        let meter = work.map(crate::materializer::NativeMaterializationWork::runtime_meter);
+        self.file.lease_metered(meter.as_deref())
+    }
+
+
     pub(in crate::core_state) fn residents(&self) -> RwLockWriteGuard<'_, Residents> {
         self.residents
             .write()

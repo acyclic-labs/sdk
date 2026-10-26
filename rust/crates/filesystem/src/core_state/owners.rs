@@ -186,31 +186,15 @@ mod tests {
         let root = directory.path().join("namespace");
         let first = LocalCoreStateStore::open_shared_owner(&root).unwrap();
         let retired = directory.path().join("retired");
-        #[cfg(windows)]
-        {
-            // Windows pins the namespace while its owner holds the directory.
-            let error = std::fs::rename(&root, &retired).unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-            assert!(root.is_dir() && !retired.exists());
-            let joined = LocalCoreStateStore::open_shared_owner(&root).unwrap();
-            let (Ownership::Owned(a), Ownership::Owned(b)) = (&first.ownership, &joined.ownership)
-            else {
-                panic!("joined store is not owned")
-            };
-            assert!(Arc::ptr_eq(a, b));
-            drop(joined);
-            drop(first);
-        }
+        // An idle owner holds no descriptor in its namespace, so no platform
+        // pins the directory: replacing it is refused at the join instead.
         std::fs::rename(&root, &retired).unwrap();
         std::fs::create_dir(&root).unwrap();
-        #[cfg(not(windows))]
-        {
-            assert!(matches!(
-                LocalCoreStateStore::open_shared_owner(&root),
-                Err(LocalCoreStateStoreError::OwnershipConflict(_))
-            ));
-            drop(first);
-        }
+        assert!(matches!(
+            LocalCoreStateStore::open_shared_owner(&root),
+            Err(LocalCoreStateStoreError::OwnershipConflict(_))
+        ));
+        drop(first);
         LocalCoreStateStore::open_shared_owner(&root).unwrap();
     }
 }

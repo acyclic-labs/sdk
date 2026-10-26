@@ -47,10 +47,7 @@ impl CheckpointFamily {
             let identity = crate::native_host::directory_identity(&directory, work)?;
             Ok((
                 parent,
-                crate::native_host::HostRoot {
-                    directory,
-                    identity,
-                },
+                crate::native_host::HostRoot::from_parts(directory, identity),
             ))
         }
         let (parent, held) = match work {
@@ -186,7 +183,8 @@ impl CoreLog {
             self.adopt_native(work)?;
         }
         self.flush_physical(root)?;
-        let durability = CheckpointDurability::new(&self.file, work)?;
+        let lease = self.lease(work)?;
+        let durability = CheckpointDurability::new(lease.file(), work)?;
         // The durable WAL owns recovery until every record file and every
         // changed family directory has crossed its barrier. A directory flush
         // covers all names in that family, including earlier record writes.
@@ -263,7 +261,6 @@ impl CoreLog {
             .map(|work| {
                 work.reserve_work(crate::WorkCounters {
                     backend_write_operations: 1,
-                    backend_read_operations: 1,
                     ..Default::default()
                 })
             })
@@ -271,7 +268,7 @@ impl CoreLog {
         // The reset outcome is unknown until truncation, cursor and cached
         // metadata all agree. Every early return retains the broken fence.
         self.broken = true;
-        let truncated = acyclic_native_runtime::truncate_file(&self.file, 0);
+        let truncated = self.lease(work).and_then(|lease| lease.write(|file| acyclic_native_runtime::truncate_file(file, 0)));
         let truncate_recorded = reset
             .as_mut()
             .map(|reset| {
@@ -282,20 +279,6 @@ impl CoreLog {
             })
             .transpose();
         truncated?;
-        let sought = (&*self.file).seek(SeekFrom::Start(0));
-        let seek_recorded = reset
-            .as_mut()
-            .map(|reset| {
-                reset.record_completed(crate::WorkCounters {
-                    backend_read_operations: 1,
-                    ..Default::default()
-                })
-            })
-            .transpose();
-        if let Err(error) = sought {
-            self.broken = true;
-            return Err(error.into());
-        }
         self.length = 0;
         self.flushed = 0;
         crash_point("log truncated", self.flushed);
@@ -303,7 +286,6 @@ impl CoreLog {
         self.sequence = 0;
         self.dirty.clear();
         truncate_recorded?;
-        seek_recorded?;
         self.broken = false;
         Ok(())
     }

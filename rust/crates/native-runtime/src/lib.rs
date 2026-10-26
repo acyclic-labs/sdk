@@ -25,6 +25,8 @@ mod held_sync;
 mod linux;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lines;
 pub mod obs;
 mod process_tree;
 #[cfg(windows)]
@@ -46,8 +48,9 @@ pub use process_tree::PreparedClosedProcess;
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
-    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessCustodyLease, ProcessInput,
-    ProcessOutput, ProcessTree, ProcessWake,
+    CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, OwnedCaptureInput,
+    ProcessCaptureFailure, ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput,
+    ProcessOutput, ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWake,
 };
 
 mod file;
@@ -73,6 +76,14 @@ pub(crate) use file::{
     NativeFilePayload, is_uncertain_io_error, validate_prepared_read_range, validate_write_batch,
     with_file_admission, with_file_scope, write_bounded_in_place,
 };
+mod claim;
+pub use claim::{ClaimCheck, StoreClaim, StoreHandle};
+mod descriptor;
+pub use descriptor::{
+    ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
+    DescriptorCost, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
+    cached_descriptor_capacity, cached_descriptors,
+};
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;
@@ -95,7 +106,7 @@ pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
-pub use shell::{platform_shell, shell_command};
+pub use shell::{host_command, platform_shell, shell_command};
 mod meter;
 pub use meter::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
@@ -113,7 +124,7 @@ pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,
 };
-pub use task::{AbortHandle, TaskHandle, spawn, spawn_blocking};
+pub use task::{AbortHandle, TaskHandle, TaskSpawner, coordination_runtime, spawn, spawn_blocking};
 mod completion;
 pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]

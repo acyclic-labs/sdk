@@ -4,7 +4,7 @@ use crate::lock_order::{CURSOR, Mutex as RankedMutex};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::native_host::HostListedEntry;
 use crate::native_host::NativeHostWork;
-use crate::native_host::{HostRoot, HostStat, HostStatReader};
+use crate::native_host::{CachedRoot, HostRoot, HostStat, HostStatReader};
 use crate::source_watch::CallbackWork;
 #[cfg(feature = "test-support")]
 use acyclic_native_runtime::testing::spawn_blocking;

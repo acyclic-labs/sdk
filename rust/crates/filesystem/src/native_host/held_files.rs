@@ -54,6 +54,66 @@ impl HostRoot {
         Ok(Some(records))
     }
 
+    #[cfg(any(test, feature = "native-mount"))]
+    pub(crate) fn remove_record_file<W: NativeHostWork>(
+        &self,
+        leaf: &Path,
+        work: &mut W,
+    ) -> Result<(), W::Error> {
+        remove_leaf(&self.directory, leaf, false, work)?;
+        sync_directory_held(&self.directory, work)
+    }
+
+    /// Publishes variable-length immutable bytes using the same held-directory
+    /// transaction as incarnation records. Existing bytes must agree exactly.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub(crate) fn publish_immutable<W: NativeHostWork<Error = DemandError>>(
+        &self,
+        leaf: &Path,
+        bytes: &[u8],
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        use std::io::Read as _;
+        loop {
+            match open_leaf(&self.directory, leaf, &NativeOpenOptions::Read, work) {
+                Ok(mut file) => {
+                    let mut offset = 0;
+                    let mut chunk = [0; 4096];
+                    loop {
+                        let count = file.read(&mut chunk)?;
+                        if count == 0 {
+                            break;
+                        }
+                        if bytes.get(offset..offset + count) != chunk.get(..count) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "immutable publication changed",
+                            )
+                            .into());
+                        }
+                        offset += count;
+                    }
+                    if offset != bytes.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "immutable publication length changed",
+                        )
+                        .into());
+                    }
+                    return sync_directory_held(&self.directory, work);
+                }
+                Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+            let temporary =
+                PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
+            match publish_record(&self.directory, &temporary, leaf, bytes, work) {
+                Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {}
+                result => return result,
+            }
+        }
+    }
+
     pub(crate) fn open_directory<W: NativeHostWork>(
         &self,
         relative: &Path,
@@ -66,10 +126,7 @@ impl HostRoot {
             directory_path(&self.directory, relative, false, work)
         })?;
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     #[cfg(any(test, feature = "native-mount"))]
@@ -104,6 +161,8 @@ impl HostRoot {
         Ok(Self {
             directory: clone_directory(&self.directory, work)?,
             identity: self.identity,
+            #[cfg(target_os = "linux")]
+            origin: self.origin.clone(),
         })
     }
 
@@ -150,13 +209,9 @@ impl HostRoot {
         let Some(directory) = held else {
             return self.try_clone(work);
         };
-        // Only the returned root needs an identity. The native component
-        // opens already reject links and enforce each ancestor's access.
+        // Only the returned root needs an identity.
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     /// The `N` bytes published at `leaf` in this directory, after publishing

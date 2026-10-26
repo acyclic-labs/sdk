@@ -12,6 +12,7 @@ pub(super) struct Api {
     pub(super) stream_stop: StreamAction,
     pub(super) stream_invalidate: StreamAction,
     pub(super) stream_release: StreamAction,
+    pub(super) current_event_id: CurrentEventId,
 }
 
 // SAFETY: the table holds function addresses and the address of an immutable
@@ -106,6 +107,7 @@ impl Api {
                 stream_stop: function!(c"FSEventStreamStop" as StreamAction),
                 stream_invalidate: function!(c"FSEventStreamInvalidate" as StreamAction),
                 stream_release: function!(c"FSEventStreamRelease" as StreamAction),
+                current_event_id: function!(c"FSEventsGetCurrentEventId" as CurrentEventId),
             })
         })();
         if result.is_err() {

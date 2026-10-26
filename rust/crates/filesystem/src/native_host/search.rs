@@ -117,10 +117,7 @@ impl HostRoot {
         };
         let directory = Dir::from_std_file(file);
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     /// The descendant directory at `relative`, held for search only.
@@ -131,10 +128,7 @@ impl HostRoot {
     ) -> Result<Self, W::Error> {
         let directory = search_path(&self.directory, relative, work)?;
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     /// The descendant directory at `relative`, readable, reached through
@@ -166,10 +160,7 @@ impl HostRoot {
             open_windows_directory(&parent, leaf, false, work).map(|(directory, _)| directory)
         })?;
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     /// The device and object id of whatever `path` names once every link is

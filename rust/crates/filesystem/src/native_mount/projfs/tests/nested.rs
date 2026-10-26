@@ -19,6 +19,7 @@ async fn nested_destination_is_rejected_before_marking() -> Result<(), Box<dyn s
             volume_id: child.volume_id()?,
             destination: nested.clone(),
             writable: true,
+            shared: false,
         },
         Arc::clone(&child) as Arc<dyn MountFilesystem>,
     ) else {

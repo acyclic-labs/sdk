@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) struct Configuration<'a> {
+    pub passive: bool,
     pub files: Arc<LocalFilesystem>,
     #[cfg(any(test, feature = "native-execution"))]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
@@ -125,6 +126,19 @@ fn scopes(
         "project:merge".to_owned(),
     ];
     grants.extend(task_grants);
+    if config.passive {
+        grants.retain(|grant| {
+            matches!(
+                grant.as_str(),
+                "fork:publish"
+                    | "project:merge"
+                    | "operation:declare"
+                    | "operation:observe"
+                    | "operation:cancel"
+                    | "operation:wake"
+            ) || grant.starts_with("task:spawn:")
+        });
+    }
     for volume in [config.project, config.scratch] {
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             grants.push(volume.capability(operation, &mut None)?);

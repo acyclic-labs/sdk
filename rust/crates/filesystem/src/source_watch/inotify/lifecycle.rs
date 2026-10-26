@@ -45,6 +45,7 @@ impl NativeSourceWatch {
             shared = Some(Arc::new_cyclic(|this| Shared {
                 inotify: AtomicI32::new(-1),
                 root: AtomicI32::new(-1),
+                cached_root: Mutex::new(None),
                 subscriber: hub.next_subscriber(),
                 this: this.clone(),
                 inbox: Mutex::new(hub::Inbox::default()),
@@ -75,12 +76,18 @@ impl NativeSourceWatch {
             work.started_io(READ)?;
             hub.subscribe(initialized)?;
             subscribed = true;
-            work.started_io(READ)?;
-            // SAFETY: duplicating a live descriptor the root holds.
-            root = Some(owned(unsafe {
-                libc::fcntl(directory.directory_fd(), libc::F_DUPFD_CLOEXEC, 0)
-            })?);
-            let held_root = root.as_ref().ok_or(DemandError::InvalidRequest)?;
+            let origin = directory.origin().cloned();
+            if origin.is_none() {
+                work.started_io(READ)?;
+                // SAFETY: duplicating a live descriptor the root holds.
+                root = Some(owned(unsafe {
+                    libc::fcntl(directory.directory_fd(), libc::F_DUPFD_CLOEXEC, 0)
+                })?);
+            }
+            let held_root = match &root {
+                Some(root) => root.as_fd(),
+                None => directory.directory.as_fd(),
+            };
             watch_ancestors(
                 initialized,
                 held_root,
@@ -113,12 +120,16 @@ impl NativeSourceWatch {
             work.started_io(READ)?;
             let descriptor = hub.add(initialized, root_path, WATCHED, hub::Interest::All)?;
             watches.push((PathBuf::new(), descriptor));
-            initialized.root.store(
-                root.take()
-                    .ok_or(DemandError::InvalidRequest)?
-                    .into_raw_fd(),
-                Ordering::Release,
-            );
+            if let Some(root) = root.take() {
+                initialized
+                    .root
+                    .store(root.into_raw_fd(), Ordering::Release);
+            } else {
+                *initialized
+                    .cached_root
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = origin;
+            }
             *initialized
                 .ancestors
                 .lock()

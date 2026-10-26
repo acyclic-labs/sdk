@@ -12,47 +12,23 @@ pub(super) fn entries(
             .map_err(|error| work.native_io_failure(error))?
             .map_err(Into::into);
     }
-    let mut keys = work.vec(selected.len())?;
+    let encoded_len = acyclic_stream::changes_encoded_len(context, selected)?;
     let mut entries = work.vec(selected.len())?;
     for entry in selected {
-        let key = work.bytes(entry.key)?;
-        keys.push(key.clone().into());
         entries.push(acyclic_stream::wire::ChangeEntry {
-            key,
+            key: work.bytes(entry.key)?,
             operation: text(entry.operation, work)?,
             metadata: work.bytes(entry.metadata)?,
         });
     }
-    let change = acyclic_stream::wire::ChangeRecord {
-        context: work.bytes(context)?,
-        entries,
-    };
-    let encoded_len = change.encoded_len();
-    let header_len = selected.iter().map(|entry| entry.key.len()).sum::<usize>()
-        + b"acyclic.recordchanges/v1".len();
-    if encoded_len + header_len > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(acyclic_stream::StreamError::LimitExceeded.into());
-    }
-    let mut value = work.vec(encoded_len)?;
     let writes = codec_work(encoded_len as u64, encoded_len as u64, 0);
     work.admit(writes)?;
-    change
-        .encode(&mut value)
-        .map_err(|_| crate::WorkError::Overflow)?;
-    work.charge(writes)?;
-    let mut attributes = work.vec(1)?;
-    attributes.push(Attribute {
-        name: text("acyclic.record", work)?,
-        value: b"changes/v1".as_slice().into(),
-    });
     work.accounting()
         .claim_owned(RecordHeaders::control_bytes() as u64, 1)
         .map_err(authority_error)?;
-    let headers = RecordHeaders::new(keys, attributes)?;
-    Ok(AppendRecord {
-        value: work.plain_bytes(value)?.into(),
-        headers,
-    })
+    let record = AppendRecord::changes(&work.bytes(context)?, &entries, Vec::new())?;
+    work.charge(writes)?;
+    Ok(record)
 }
 
 fn text(value: &str, work: &mut AuthorityWork<'_>) -> Result<String, AuthorityStoreError> {

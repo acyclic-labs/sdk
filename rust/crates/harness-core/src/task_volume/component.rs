@@ -3,14 +3,21 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// A portable, canonical namespace component.
-#[derive(
-    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
-)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Deserialize, crate::HeapLayout)]
+#[serde(try_from = "String")]
 // The conversion copies the decoded text into a shared allocation.
 #[heap_layout(as = std::sync::Arc<str>)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Component(#[cfg_attr(feature = "wasm", tsify(type = "string"))] pub(super) Arc<str>);
+
+impl Serialize for Component {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 impl Component {
     /// Validates a task, request, tool, principal or mount identity.

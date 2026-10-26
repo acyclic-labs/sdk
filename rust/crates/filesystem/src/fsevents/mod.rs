@@ -7,7 +7,9 @@
 //! stream every watcher in the crate runs on: [`FsEventsWatcher`] translates
 //! its events exactly as the `notify` `FSEvents` backend does, so it stands in
 //! for that backend behind the same [`Watcher`] interface, and a native
-//! source's watch reads them itself.
+//! source's watch reads them itself. Every stream is a registration on one
+//! process-wide hub of a few shared native streams, since a process can run
+//! only about 512 of them.
 
 #![allow(
     unsafe_code,
@@ -63,7 +65,10 @@ unsafe extern "C" {
         context: *mut c_void,
         work: extern "C" fn(*mut c_void),
     );
+    #[cfg(test)]
     fn dispatch_release(object: DispatchQueue);
+    fn dispatch_suspend(object: DispatchQueue);
+    fn dispatch_resume(object: DispatchQueue);
 }
 
 const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
@@ -110,6 +115,7 @@ type StreamCreate = unsafe extern "C" fn(
 type StreamSetDispatchQueue = unsafe extern "C" fn(FsEventStreamRef, DispatchQueue);
 type StreamStart = unsafe extern "C" fn(FsEventStreamRef) -> u8;
 type StreamAction = unsafe extern "C" fn(FsEventStreamRef);
+type CurrentEventId = unsafe extern "C" fn() -> u64;
 
 fn native_error(message: &'static str) -> DemandError {
     DemandError::Io(std::io::Error::other(message))
@@ -148,13 +154,13 @@ fn native_allocate<W: SourceDemandReadWork>(work: &mut W, cleanup: u64) -> Resul
 
 mod api;
 mod callback;
+mod hub;
 mod notify_adapter;
 mod stream;
 use api::Api;
-use callback::{
-    ACTIVE_STREAM, StreamContext, drain, release_context, stream_callback, terminal_suffix,
-};
 pub(crate) use callback::{BorrowedEventHandlerFn, EventBatch};
+use callback::{OnQueue, drain, on_queue, terminal_suffix};
+use hub::{Hub, Registration};
 pub use notify_adapter::FsEventsWatcher;
 pub(crate) use stream::{EventStream, StreamTerminal};
 #[cfg(test)]

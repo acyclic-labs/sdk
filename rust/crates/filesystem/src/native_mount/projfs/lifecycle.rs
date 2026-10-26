@@ -94,6 +94,7 @@ impl ProjFsSession {
                 capture_failure: self.capture_failure.take(),
                 capture_attempted: self.capture_attempted,
                 projection_cleanup: self.projection_cleanup.take(),
+                shared: None,
             };
             self.original_stop_work = self.original_stop_work.allocation_work();
             let mut lifecycle = lock_recover(&projector.lifecycle);
@@ -115,6 +116,16 @@ impl ProjFsSession {
         wait.check()
             .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
         if self.controller.is_none() {
+            // A shared view retires on the caller: refuse while a control
+            // holds its original work, as the lifecycle thread waits for it.
+            if self.shared.is_some()
+                && self
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|runtime| lock_recover(&runtime.active_work).upgrade().is_some())
+            {
+                return Err(NativeMountError::ControlPending);
+            }
             return self.stop_physical();
         }
         if self
@@ -146,6 +157,14 @@ impl ProjFsSession {
 
 impl Drop for ProjFsSession {
     fn drop(&mut self) {
+        if self.shared.is_some() {
+            // An abandoned shared view retires here; if that fails, the
+            // view's own drop still unlists it and stops its passes.
+            if let Err(error) = self.stop_physical() {
+                tracing::warn!(%error, "an abandoned shared ProjFS view did not retire");
+            }
+            return;
+        }
         if self.controller.is_some()
             && let Ok(projector) = self.request_retirement()
         {

@@ -61,7 +61,7 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
         }
         let (_conversation_directory, mut harness) = if matches!(case, Case::MandatoryCapacity) {
             let (directory, mut harness) = super::super::poll_sweep::conversation_harness().await?;
-            harness.provider = provider.clone();
+            harness.agent.as_mut().unwrap().1 = provider.clone();
             (Some(directory), harness)
         } else {
             (

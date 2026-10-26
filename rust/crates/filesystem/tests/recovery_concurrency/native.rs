@@ -8,7 +8,7 @@ fn finite_native_budget() -> WorkBudget {
     serde_json::from_value(value).expect("finite native budget")
 }
 
-fn native_backend(
+async fn native_backend(
     directory: &std::path::Path,
     work: &NativeMaterializationWork,
 ) -> Arc<NativeTreeMaterializationBackend> {
@@ -26,7 +26,10 @@ fn native_backend(
     root.1
         .absorb(&mut operation.1)
         .expect("same original allocation context");
-    NativeTreeMaterializationBackend::new(root.0, operation.0, root.1, work.clone())
+    let admission = NativeTreeMaterializationBackend::admission()
+        .await
+        .expect("descriptor admission");
+    NativeTreeMaterializationBackend::new(root.0, operation.0, root.1, work.clone(), admission)
         .expect("real original-resource backend")
 }
 
@@ -81,7 +84,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
             let work = original
                 .native_volume_work(budget)
                 .expect("original native resource");
-            let backend = native_backend(directory.path(), &work);
+            let backend = native_backend(directory.path(), &work).await;
             let store = CrashJournalStore::default();
             let journal = native_prepared_packet(&store, &backend, &work, 0x71).await;
             let operation_id = journal.plan.operation_id;
@@ -204,7 +207,7 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
     let work = original
         .native_volume_work(budget)
         .expect("original native resource");
-    let backend = native_backend(directory.path(), &work);
+    let backend = native_backend(directory.path(), &work).await;
     let store = CrashJournalStore::default();
     let journal = native_prepared_packet(&store, &backend, &work, 0x72).await;
     let operation_id = journal.plan.operation_id;

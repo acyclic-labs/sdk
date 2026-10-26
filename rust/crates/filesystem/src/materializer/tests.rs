@@ -171,7 +171,7 @@ fn allow<S: std::error::Error + 'static, B: std::error::Error + 'static>()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_backend(
+async fn native_backend(
     root: &Path,
     operation: &Path,
 ) -> Result<std::sync::Arc<NativeTreeMaterializationBackend>, NativeTreeMaterializationError> {
@@ -184,7 +184,8 @@ fn native_backend(
     let (root, mut allocation) = work.path(root, None)?;
     let (operation, mut operation_allocation) = work.path(operation, None)?;
     allocation.absorb(&mut operation_allocation)?;
-    NativeTreeMaterializationBackend::new(root, operation, allocation, work)
+    let admission = NativeTreeMaterializationBackend::admission().await?;
+    NativeTreeMaterializationBackend::new(root, operation, allocation, work, admission)
 }
 
 /// Flat path model whose writes, like every journal CAS, are durable
@@ -472,7 +473,7 @@ async fn overlapping_or_noncanonical_plans_are_rejected_before_capture() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn fixture() -> (
+async fn fixture() -> (
     tempfile::TempDir,
     PathBuf,
     PathBuf,
@@ -483,14 +484,14 @@ fn fixture() -> (
     let operation = temporary.path().join("operation");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(operation.join("target")).unwrap();
-    let backend = native_backend(&root, &operation).unwrap();
+    let backend = native_backend(&root, &operation).await.unwrap();
     (temporary, root, operation, backend)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_selected_paths_complete_and_roll_back() -> Result<(), Box<dyn std::error::Error>> {
-    let (_temporary, root, operation, backend) = fixture();
+    let (_temporary, root, operation, backend) = fixture().await;
     std::fs::create_dir(root.join(".git"))?;
     std::fs::write(root.join(".git/config"), b"git")?;
     std::fs::write(root.join("old"), b"old")?;
@@ -520,7 +521,7 @@ async fn native_selected_paths_complete_and_roll_back() -> Result<(), Box<dyn st
 #[tokio::test]
 async fn native_mutated_endpoints_are_preserved() -> Result<(), Box<dyn std::error::Error>> {
     for endpoint in ["target/file", "file", "removed", "rollback"] {
-        let (_temporary, root, operation, backend) = fixture();
+        let (_temporary, root, operation, backend) = fixture().await;
         let target = operation.join("target/file");
         std::fs::write(root.join("file"), b"before")?;
         let edit = MaterializationEdit::Install {
@@ -597,7 +598,7 @@ async fn native_recovery_handles_both_rename_boundaries() -> Result<(), Box<dyn 
             MaterializationRecovery::Complete,
             MaterializationRecovery::RollBack,
         ] {
-            let (_temporary, root, operation, backend) = fixture();
+            let (_temporary, root, operation, backend) = fixture().await;
             std::fs::write(root.join("file"), b"before")?;
             std::fs::write(operation.join("target/file"), b"after")?;
             let plan = plan(vec![MaterializationEdit::Install {
@@ -641,7 +642,7 @@ async fn native_recovery_handles_both_rename_boundaries() -> Result<(), Box<dyn 
 #[tokio::test]
 async fn native_metadata_keeps_children_and_rejects_replaced_directories()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (_temporary, root, _operation, backend) = fixture();
+    let (_temporary, root, _operation, backend) = fixture().await;
     let directory = root.join("directory");
     std::fs::create_dir(&directory)?;
     let before = native_metadata(&host_path(
@@ -716,7 +717,7 @@ async fn native_metadata_keeps_children_and_rejects_replaced_directories()
 #[cfg(unix)]
 #[tokio::test]
 async fn native_dangling_links_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let (_temporary, root, _operation, backend) = fixture();
+    let (_temporary, root, _operation, backend) = fixture().await;
     std::os::unix::fs::symlink("missing", root.join("link"))?;
     let materializer = JournaledMaterializer::new(Store::default(), backend);
     let plan = plan(vec![MaterializationEdit::Remove {
@@ -736,8 +737,8 @@ async fn native_dangling_links_round_trip() -> Result<(), Box<dyn std::error::Er
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn nested_operation_is_rejected_without_effects() {
+#[tokio::test]
+async fn nested_operation_is_rejected_without_effects() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("checkout");
     let operation = root.join("operation");
@@ -745,7 +746,7 @@ fn nested_operation_is_rejected_without_effects() {
     let sentinel = operation.join("target/sentinel");
     std::fs::write(&sentinel, b"keep").unwrap();
     assert!(matches!(
-        native_backend(&root, &operation),
+        native_backend(&root, &operation).await,
         Err(NativeTreeMaterializationError::InvalidLayout)
     ));
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");

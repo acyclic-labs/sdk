@@ -373,6 +373,7 @@ dependencies = [
  "jsonschema",
  "keyring",
  "loom",
+ "notify",
  "once_cell",
  "proc-macro2",
  "proptest",
@@ -808,6 +809,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "windows",
@@ -877,35 +879,15 @@ dependencies = [
 name = "acyclic-plugin"
 version = "0.2.0"
 dependencies = [
- "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-native-runtime",
  "acyclic-plugin-identity",
- "acyclic-stream",
  "acyclic-test-support",
- "async-trait",
- "axum",
- "base64 0.23.1",
  "blake3",
- "bytes",
- "futures",
- "hex",
- "libc",
- "notify",
- "reqwest 0.12.28",
- "rustix 1.1.5",
- "serde",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "tokio",
- "toml_edit",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber",
- "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3042,6 +3024,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-harness-providers",
+ "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
  "alacritty_terminal",
@@ -6886,7 +6869,6 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
- "toml_writer",
  "winnow",
 ]
 

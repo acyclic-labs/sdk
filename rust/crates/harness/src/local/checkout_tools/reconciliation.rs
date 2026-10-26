@@ -152,7 +152,7 @@ pub(in crate::local) async fn replace_owed_write(
     Ok(())
 }
 
-pub(super) async fn publish<F, Fut>(
+pub(in crate::local) async fn publish<F, Fut>(
     workspace: &LocalWorkspace,
     view: &workspace::View,
     refresh_mount: bool,
@@ -232,7 +232,7 @@ where
     Ok(())
 }
 
-pub(super) async fn advance_mount<F, Fut>(
+pub(in crate::local) async fn advance_mount<F, Fut>(
     workspace: &LocalWorkspace,
     before_effect: &F,
 ) -> Result<()>

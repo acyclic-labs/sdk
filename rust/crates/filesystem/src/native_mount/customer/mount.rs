@@ -180,8 +180,25 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Mounts the complete workspace or one exact subtree as a native directory.
-    /// Root lookup is owned by private admission, never an unchecked path:
+    /// Mounts the workspace as a task view: the one public way to mount a
+    /// per-agent view. On Linux and Windows the view is a namespace of the
+    /// process's one shared native instance, at a fresh path that no other
+    /// view of the process has had or will have, so it costs no mount,
+    /// thread or descriptor of its own; [`Mount::path`] names it. macOS uses
+    /// the existing native mount backend until it supports shared instances.
+    pub async fn mount_view(
+        &self,
+        options: MountOptions,
+    ) -> Result<Mount<A, O>, MountLifecycleError> {
+        let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
+        self.mount(destination.path(), options.for_task_view()).await
+    }
+
+    /// Mounts the complete workspace or one exact subtree as a native
+    /// directory at `destination`, as an instance of its own: for a single
+    /// mount such as a user's checkout. A task view is mounted with
+    /// [`Self::mount_view`] instead. Root lookup is owned by private
+    /// admission, never an unchecked path:
     ///
     /// ```compile_fail
     /// use acyclic_fs::native_mount::customer::selection::root::AdmittedRoot;
@@ -191,6 +208,7 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
+        let _startup = super::super::admit_mount_startup().await?;
         let work = options.work(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -223,6 +241,7 @@ where
                 volume_id: self.id().volume_id(),
                 destination: session_destination.0,
                 writable: options.writable,
+                shared: options.shared,
             },
             Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
             &work,

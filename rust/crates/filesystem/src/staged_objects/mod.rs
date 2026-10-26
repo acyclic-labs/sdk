@@ -30,7 +30,7 @@ const MAXIMUM_DRAINED_IDENTITIES: usize = 4_096;
 mod index;
 use index::{Index, Lookup, Staged};
 mod io;
-use io::{staged_native_read, staged_owned_bytes, staged_vector};
+use io::{read_spilled, staged_native_read, staged_owned_bytes, staged_vector};
 use read::resident_read;
 mod admission;
 mod publication;
@@ -40,26 +40,43 @@ mod spill;
 /// One private local admission buffer backed by a durable provider.
 pub struct StagedObjects<S> {
     inner: S,
-    spill: NativeFile,
+    spill_directory: PathBuf,
     index: std::sync::RwLock<Index>,
-    spill_io: RwLock<()>,
+    /// The unlinked spill file, open only while some object is spilled, so
+    /// that a store with nothing spilled holds no descriptor. Its shared
+    /// lock keeps a drain from reusing an offset being read.
+    spill_io: RwLock<Option<NativeFile>>,
     collection: Arc<crate::Collection>,
 }
 
 impl<S> StagedObjects<S> {
-    /// Opens an unlinked spill file for bounded private staging.
-    pub async fn open(inner: S, spill_directory: PathBuf) -> std::io::Result<Self> {
-        let spill =
-            acyclic_native_runtime::run_blocking_io(move || create_spill(&spill_directory), None)
-                .expect("unmetered task construction cannot fail")
-                .await??;
-        Ok(Self {
+    /// Stages privately, spilling past the resident window to an unlinked
+    /// file in `spill_directory` that exists only while it holds objects.
+    pub fn open(inner: S, spill_directory: PathBuf) -> Self {
+        Self {
             inner,
-            spill: NativeFile::from_file(spill, None).map_err(|(error, _)| error)?,
+            spill_directory,
             index: std::sync::RwLock::new(Index::default()),
-            spill_io: RwLock::new(()),
+            spill_io: RwLock::new(None),
             collection: Arc::default(),
-        })
+        }
+    }
+    /// The spill file, created on the first spill.
+    async fn spill_file<'a>(
+        &self,
+        spill: &'a mut Option<NativeFile>,
+    ) -> std::io::Result<&'a NativeFile> {
+        if spill.is_none() {
+            let directory = self.spill_directory.clone();
+            let file =
+                acyclic_native_runtime::run_blocking_io(move || create_spill(&directory), None)
+                    .expect("unmetered task construction cannot fail")
+                    .await??;
+            *spill = Some(NativeFile::from_file(file, None).map_err(|(error, _)| error)?);
+        }
+        spill
+            .as_ref()
+            .ok_or_else(|| std::io::ErrorKind::NotFound.into())
     }
     pub(crate) fn inner(&self) -> &S {
         &self.inner

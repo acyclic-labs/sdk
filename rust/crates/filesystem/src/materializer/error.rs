@@ -59,15 +59,19 @@ pub enum NativeTreeMaterializationError {
 pub(crate) fn native_materialization_work_error(
     error: crate::DemandError,
 ) -> NativeTreeMaterializationError {
-    use crate::DemandError as D;
-    use NativeTreeMaterializationError as N;
-    match error {
-        D::Work(error) => N::Work(error),
-        D::Cancelled => N::Cancelled,
-        D::OriginalWorkPoisoned => N::OriginalWorkPoisoned,
-        D::Allocation(error) => N::AllocationFailed(error),
-        D::Io(error) => N::Io(error),
-        error => N::Io(std::io::Error::other(error)),
+    error.into()
+}
+impl From<crate::DemandError> for NativeTreeMaterializationError {
+    fn from(error: crate::DemandError) -> Self {
+        use crate::DemandError as D;
+        match error {
+            D::Work(error) => Self::Work(error),
+            D::Cancelled => Self::Cancelled,
+            D::OriginalWorkPoisoned => Self::OriginalWorkPoisoned,
+            D::Allocation(error) => Self::AllocationFailed(error),
+            D::Io(error) => Self::Io(error),
+            error => Self::Io(std::io::Error::other(error)),
+        }
     }
 }
 impl NativeTreeMaterializationError {

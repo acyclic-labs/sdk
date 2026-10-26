@@ -149,8 +149,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
         ) {
             super::recent::snapshot(&index, query, maximum_files)?
-        } else if let Query::PendingApprovals(task) = query {
-            super::approval_query::snapshot(&index, task, maximum_files)?
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
@@ -320,34 +318,41 @@ pub fn record_changes(
             if record.sequence != cursor.position {
                 return Err(Error::ResetRequired);
             }
-            let file = segment::decode(&record.value)?;
+            let decoded = segment::decode_files(&record.value)?;
             cursor.position += 1;
             cursor.accepted = cursor.accepted.max(cursor.position);
             cursor.commit = *record.commit_id.as_bytes();
-            let settled =
-                if matches!(query, Query::PendingApprovals(_)) && query.matches_file(&file) {
+            let mut files = Vec::new();
+            let mut removed = Vec::new();
+            for file in decoded {
+                if !query.matches_file(&file) {
+                    continue;
+                }
+                let settled = if matches!(query, Query::PendingApprovals(_)) {
                     super::approval_query::Pending::prepare(&file.key)
                         .filter(|(_, open)| !open)
                         .map(|(key, _)| key)
                 } else {
                     None
                 };
-            let file = query.matches_file(&file).then_some(file);
-            let (file, removed) = if let Some(key) = settled {
-                (None, vec![key])
-            } else if query == Query::ActiveAgents {
-                match file {
-                    Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
-                        (None, vec![file.key])
-                    }
-                    file => (file, Vec::new()),
+                if let Some(key) = settled {
+                    removed.push(key);
+                } else if query == Query::ActiveAgents
+                    && !super::ChildStatus::parse(&file.bytes)?.active()
+                {
+                    removed.push(file.key);
+                } else {
+                    files.push(file);
                 }
+            }
+            let file = if files.is_empty() {
+                None
             } else {
-                (file, Vec::new())
+                Some(files.remove(0))
             };
             let change = Change {
                 file,
-                files: Vec::new(),
+                files,
                 removed,
                 cursor: cursor.clone(),
             };

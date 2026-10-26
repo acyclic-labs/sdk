@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { hostFixtureDirectory } from "../../plugin/tests/hosts/fixture-directory.mjs";
+import { hostFixtureDirectory } from "./fixture-directory.mjs";
 
 test("installed host directories cannot select a parent outside their declared root", () => {
-  const root = mkdtempSync(join(tmpdir(), "leased-host-"));
+  const lease = mkdtempSync(join(tmpdir(), "leased-host-"));
+  const root = join(lease, "workspace");
+  mkdirSync(root);
   try {
     const directories = [".pi-native-recursive-", ".pi-native-cuts-", ".pi-native-recursive-"]
       .map(prefix => hostFixtureDirectory(prefix, root));
@@ -15,5 +17,5 @@ test("installed host directories cannot select a parent outside their declared r
     for (const prefix of ["../outside-", "/outside-", "a/b-", "a\\b-"])
       assert.throws(() => hostFixtureDirectory(prefix, root));
     assert.throws(() => hostFixtureDirectory("host-", "relative-root"));
-  } finally { rmSync(root, { recursive: true }); }
+  } finally { rmSync(lease, { recursive: true }); }
 });

@@ -44,12 +44,17 @@ impl NativeDemandFile {
         context.claim(controls)?;
         ownership.retain(controls, context)?;
         #[cfg(windows)]
-        let file = provider.inner.root.open_file_yielding(&relative, context);
+        let file = provider
+            .inner
+            .root
+            .held(context)
+            .and_then(|root| root.open_file_yielding(&relative, context));
         #[cfg(not(windows))]
         let file = provider
             .inner
             .root
-            .open_file(&relative, context)
+            .held(context)
+            .and_then(|root| root.open_file(&relative, context))
             .map(cap_std::fs::File::into_std);
         let file = match file {
             Ok(file) => file,
@@ -122,7 +127,8 @@ impl NativeDemandFile {
             .provider
             .inner
             .root
-            .open_file_yielding(&self.relative, context)
+            .held(context)
+            .and_then(|root| root.open_file_yielding(&self.relative, context))
         {
             Ok(file) => file,
             Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -252,9 +258,19 @@ impl NativeDemandFile {
     ) -> Result<(), DemandError> {
         let held = stat_held(&self.provider, file, context)?;
         #[cfg(unix)]
-        let named = self.provider.inner.root.stat(&self.relative, context);
+        let named = self
+            .provider
+            .inner
+            .root
+            .held(context)
+            .and_then(|root| root.stat(&self.relative, context));
         #[cfg(windows)]
-        let named = self.provider.inner.root.stat(&self.relative, context);
+        let named = self
+            .provider
+            .inner
+            .root
+            .held(context)
+            .and_then(|root| root.stat(&self.relative, context));
         if version(&held) != self.expected
             || named.as_ref().map(version).ok() != Some(self.expected)
         {
@@ -344,10 +360,20 @@ fn stat_held(
 ) -> Result<HostStat, DemandError> {
     #[cfg(windows)]
     {
-        file.with(|file| provider.inner.root.stat_file(file, context))
+        file.with(|file| {
+            provider
+                .inner
+                .root
+                .held(context)
+                .and_then(|root| root.stat_file(file, context))
+        })
     }
     #[cfg(not(windows))]
     {
-        provider.inner.root.stat_file(file, context)
+        provider
+            .inner
+            .root
+            .held(context)
+            .and_then(|root| root.stat_file(file, context))
     }
 }

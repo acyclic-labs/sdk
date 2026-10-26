@@ -25,6 +25,7 @@ async fn a_dead_provider_is_preserved_under_held_recovery_custody()
                 volume_id: source.volume_id()?,
                 destination: destination.clone(),
                 writable: true,
+                shared: false,
             },
             source as std::sync::Arc<dyn crate::native_mount::MountFilesystem>,
         )?;
@@ -116,6 +117,7 @@ async fn a_dead_provider_is_preserved_under_held_recovery_custody()
             volume_id: source.volume_id()?,
             destination: destination.clone(),
             writable: true,
+            shared: false,
         },
         source as std::sync::Arc<dyn crate::native_mount::MountFilesystem>,
     )?;

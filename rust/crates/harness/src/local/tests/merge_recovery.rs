@@ -15,11 +15,11 @@ fn write(index: usize, path: &str, text: &str) -> ScriptedTurn {
     super::checked_commands::call(index, tool, &command)
 }
 
-async fn recover(continues: bool) -> Result<()> {
+async fn recover_both_paths() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let fs = |index, command| super::checked_commands::call(index, "fs", command);
-    let mut turns = vec![
+    let turns = vec![
         write(0, "calc.py", "base"),
         fs(1, "commit -m base"),
         fs(2, "branch topic"),
@@ -29,14 +29,20 @@ async fn recover(continues: bool) -> Result<()> {
         fs(6, "switch main"),
         write(7, "calc.py", "ours"),
         fs(8, "commit -m ours"),
-        fs(9, "merge topic"),
+        // Continue in a child of the unchanged pre-merge main branch. The
+        // abort path then selects that original root; no saved branch has a
+        // parent advanced by the first merge's resolved commit.
+        fs(9, "branch continuing"),
+        fs(10, "switch continuing"),
+        fs(11, "merge topic"),
+        write(12, "calc.py", "resolved"),
+        fs(13, "merge --continue"),
+        fs(14, "show HEAD:calc.py"),
+        fs(15, "switch main"),
+        fs(16, "merge topic"),
+        fs(17, "merge --abort"),
+        ScriptedTurn::Text("done".into()),
     ];
-    if continues {
-        turns.extend([write(10, "calc.py", "resolved"), fs(11, "merge --continue")]);
-    } else {
-        turns.push(fs(10, "merge --abort"));
-    }
-    turns.push(ScriptedTurn::Text("done".into()));
     let provider = scripted(turns);
     let harness = LocalHarness::open(
         super::checkout_config(directory.path(), (model()?, provider.clone()))?
@@ -71,41 +77,40 @@ async fn recover(continues: bool) -> Result<()> {
             _ => None,
         })
         .collect();
-    let merge = &results["checkout-9"];
-    assert!(
-        merge.contains("conflict") && !merge.contains("uncertain"),
-        "{merge}"
-    );
-    let recovery = if continues {
-        "checkout-11"
-    } else {
-        "checkout-10"
-    };
+    for merge in ["checkout-11", "checkout-16"] {
+        let result = &results[merge];
+        assert!(
+            result.contains("conflict") && !result.contains("uncertain"),
+            "{merge}: {result}"
+        );
+    }
     for (call, result) in &results {
-        let expected_error = *call == "checkout-9";
+        let expected_error = matches!(*call, "checkout-11" | "checkout-16");
         assert_eq!(
             result.contains("\"error\""),
             expected_error,
             "{call}: {result}"
         );
     }
+    for recovery in ["checkout-13", "checkout-17"] {
+        assert!(
+            !results[recovery].contains("error"),
+            "{}",
+            results[recovery]
+        );
+    }
     assert!(
-        !results[recovery].contains("error"),
+        results["checkout-14"].contains("resolved"),
         "{}",
-        results[recovery]
+        results["checkout-14"]
     );
     let text =
         std::fs::read_to_string(directory.path().join("calc.py")).map_err(super::super::storage)?;
-    assert_eq!(text.trim_end(), if continues { "resolved" } else { "ours" });
+    assert_eq!(text.trim_end(), "ours");
     Ok(())
 }
 
 #[tokio::test]
-async fn a_conflicted_merge_continues_with_the_host_shell_resolution() -> Result<()> {
-    recover(true).await
-}
-
-#[tokio::test]
-async fn a_conflicted_merge_aborts_to_the_branch_it_merged_into() -> Result<()> {
-    recover(false).await
+async fn conflicted_merges_continue_and_abort_through_the_host_shell() -> Result<()> {
+    recover_both_paths().await
 }

@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
-const { sha256File } = require("../bin/verify.js");
+const { sha256File, verifyTarget } = require("../bin/verify.js");
 
 function fail(message) {
   throw new Error(message);
@@ -62,33 +62,35 @@ for (const path of [
   join(plugin, ".codex-plugin", "plugin.json"),
   join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
-for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json")]) {
+for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json")]) {
   if (assets[path].version !== packageManifest.version) {
     fail(`host plugin manifest version mismatch: ${path}`);
   }
 }
 
-// Codex delivers hooks to the plugin's one MCP server, which exposes no tool
-// to the model; the shell-capable package exposes no other MCP server.
-const HOOK_SERVER = "acyclic-hooks";
+// Native command hooks capture at session boundaries. MCP only coordinates
+// separate native host processes; it never executes their tools or model loop.
+const HOOK_SERVER = "acyclic-sessions";
 const expectedMcp = {
   mcpServers: {
     [HOOK_SERVER]: {
       type: "stdio",
       command: "./bin/acyclic",
-      args: ["__mcp"],
+      args: ["__mcp", "codex"],
       cwd: ".",
-      env_vars: ["XDG_STATE_HOME"],
+      env_vars: ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"],
       required: true,
     },
   },
 };
 if (JSON.stringify(assets[join(plugin, ".mcp.json")]) !== JSON.stringify(expectedMcp)) {
-  fail("the plugin MCP declaration must be exactly the Codex hook server");
+  fail("the plugin MCP declaration must be exactly the native session coordinator");
 }
 if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.json") {
   fail("the Codex plugin manifest must declare ./.mcp.json");
@@ -96,10 +98,9 @@ if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.
 const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
   .flat()
   .flatMap(group => group.hooks ?? []);
-if (!hookHandlers.some(hook => hook.type === "mcp_tool")
-  || hookHandlers.some(hook => hook.type === "mcp_tool"
-    && (hook.server !== HOOK_SERVER || hook.tool !== "hook"))) {
-  fail("Codex MCP hooks must call the plugin's hook server");
+if (hookHandlers.length !== 3 || hookHandlers.some(hook => hook.type !== "command")
+  || JSON.stringify(Object.keys(assets[join(plugin, "hooks", "hooks.json")].hooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd"])) {
+  fail("Codex hooks must capture only native session boundaries");
 }
 
 // The `acyclic-plugin` command must link to an interpreter-less placeholder that the
@@ -130,31 +131,21 @@ if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SU
 }
 if (args.require_universal) {
   const version = packageManifest.version;
+  const helper = verifyTarget(join(plugin, "bin")).source;
   const receipts = [
-    ["linux-x64-gnu", "linux", "x86_64", "linux-fuse"],
-    ["darwin-arm64", "macos", "aarch64", "macos-nfs"],
-    ["win32-x64", "windows", "x86_64", "windows-projfs"],
+    ["linux-x64-gnu", "linux", "x86_64"],
+    ["darwin-arm64", "macos", "aarch64"],
+    ["win32-x64", "windows", "x86_64"],
   ];
-  for (const [target, os, arch, backend] of receipts) {
+  for (const [target, os, arch] of receipts) {
     const path = join(plugin, "certification", `native-mount-${target}.json`);
     if (!existsSync(path) || !statSync(path).isFile()) fail(`missing certification receipt: ${path}`);
-    const receipt = JSON.parse(readFileSync(path, "utf8"));
-    if (
-      receipt.schema !== "acyclic-native-mount-qualification-v2"
-      || receipt.os !== os
-      || receipt.arch !== arch
-      || receipt.required_kind !== backend
-      || receipt.release_version !== version
-      || receipt.passed !== true
-      || typeof receipt.executable_blake3 !== "string"
-      || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
-      || receipt.capability?.kind !== backend
-      || receipt.capability?.available !== true
-      || receipt.capability?.writable !== true
-      || receipt.capability?.provider_process_io_observable !== (os !== "windows")
-      || receipt.capability?.session_isolation !== "SharedProcess"
-      || receipt.capability?.unavailable_reason !== null
-    ) fail(`invalid certification receipt: ${path}`);
+    const executable = verifyTarget(join(plugin, "bin"), target).source;
+    const argv = ["__verify-release-certification", path, executable, os, arch, version];
+    const verified = spawnSync(helper, argv, { stdio: "inherit", windowsHide: true });
+    if (verified.error || verified.status !== 0) {
+      fail(`step=verify ${target} certification${verified.error ? `: ${verified.error.message}` : ""}; recovery argv: ${JSON.stringify([helper, ...argv])}`);
+    }
   }
 }
 for (const target of args.require_target) {

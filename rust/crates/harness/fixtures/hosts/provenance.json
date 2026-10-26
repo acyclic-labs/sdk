@@ -1,0 +1,44 @@
+[
+  {
+    "fixture": "codex-0.146.0.stdout",
+    "captured_at": "2026-10-25T11:33:26.350075+00:00",
+    "platform": "bb2 linux-x64",
+    "metadata_url": "https://registry.npmjs.org/@openai%2Fcodex/0.146.0-linux-x64",
+    "package": "@openai/codex",
+    "package_version": "0.146.0-linux-x64",
+    "tarball_url": "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0-linux-x64.tgz",
+    "npm_integrity": "sha512-fswvyGprAPCMiOEue/7MKMk7pCjh9kZIJfJX5i9atmfnmGYbYCcUhZsEH9LEP0+0t5xyPqDbfNXY7NSxIVuXxA==",
+    "tarball_sha256": "91a32565acb7fef5d300294577092a121503406e34ce7e992af8bdf1998b65fb",
+    "binary_member": "package/vendor/x86_64-unknown-linux-musl/bin/codex",
+    "binary_sha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04",
+    "argv": [
+      "codex",
+      "--version"
+    ],
+    "stdout_sha256": "446dce03fa8317c76f51ca91da1f075e192a75cf86c889c594034ef9ec2fcc52",
+    "stderr_bytes": 0,
+    "exit_code": 0,
+    "profile": "empty job-owned HOME and CODEX_HOME; minimal explicit environment; no auth or model"
+  },
+  {
+    "fixture": "codex-0.164.0.stdout",
+    "captured_at": "2026-10-25T11:33:30.165376+00:00",
+    "platform": "bb2 linux-x64",
+    "metadata_url": "https://registry.npmjs.org/@openai%2Fcodex/0.164.0-linux-x64",
+    "package": "@openai/codex",
+    "package_version": "0.164.0-linux-x64",
+    "tarball_url": "https://registry.npmjs.org/@openai/codex/-/codex-0.164.0-linux-x64.tgz",
+    "npm_integrity": "sha512-XLAoaWsGOT2khzl+P4FYDPTkzAr9W0VFXFaVkqlFdkM0soa1gH/4S0wSD57Ek3HHwkirAEGz2/Mwehseh+l5Mg==",
+    "tarball_sha256": "62659fefd9a8efa21a496402fde3c11c025bbeee735a582968f8ffd14cb5f79c",
+    "binary_member": "package/vendor/x86_64-unknown-linux-musl/bin/codex",
+    "binary_sha256": "b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306",
+    "argv": [
+      "codex",
+      "--version"
+    ],
+    "stdout_sha256": "1c27284b7f5c74467a59a96821de67dc184c09423d800257b4f2e8eb3b1445a6",
+    "stderr_bytes": 0,
+    "exit_code": 0,
+    "profile": "empty job-owned HOME and CODEX_HOME; minimal explicit environment; no auth or model"
+  }
+]

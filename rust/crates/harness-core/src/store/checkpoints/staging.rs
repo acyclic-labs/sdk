@@ -37,7 +37,8 @@ pub(in crate::store) async fn stage_immutable<P: StreamProvider>(
             CommitCondition::Absent { path: path.clone() },
         )?;
         crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
-        let (outcome, received) = crate::distributed::commit(request, client, None, None).await?;
+        let (outcome, received) =
+            crate::distributed::commit(request, client, None, None, None).await?;
         quota.adopt(received)?;
         if let CommitOutcome::Committed(envelope) = &outcome {
             if let Some(io) = quota

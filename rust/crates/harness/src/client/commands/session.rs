@@ -12,6 +12,7 @@ mod activity;
 mod approval;
 #[path = "session_archive.rs"]
 mod archive;
+pub(super) use archive::output_bytes;
 #[path = "session_confirmation.rs"]
 mod confirmation;
 #[path = "session_consume.rs"]

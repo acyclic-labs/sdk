@@ -176,7 +176,7 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> T
         Err(DemandError::NativeWorkUnavailable)
     ));
     assert_eq!(watch.platform_owned_bytes(), owned);
-    for (writes, reads) in [(3, 1), (4, 0)] {
+    for (writes, reads) in [(0, 1), (1, 0)] {
         let mut work = DemandWork::new(
             WorkBudget {
                 backend_write_operations: writes,
@@ -361,18 +361,25 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
 fn startup_denial_cleans_the_actual_created_stream_and_queue() -> TestResult {
     let (_root, directory) = held()?;
     drop(driver(&directory, Arc::new(Ignored), &mut ordinary_work())?);
-    for limit in [1, 7, 9, 10, 11, 12] {
+    // Every write allowance below the least that starts fails cleanly.
+    for limit in 0..=finite_budget().backend_write_operations {
         let mut budget = finite_budget();
         budget.backend_write_operations = limit;
         let mut work = DemandWork::new(budget, &CancellationToken::new());
-        let error = driver(&directory, Arc::new(Ignored), &mut work)
-            .err()
-            .ok_or("startup used the reserved teardown allowance")?;
-        assert!(matches!(error, DemandError::Work(_)));
-        assert_eq!(work.budget, budget);
-        assert_eq!(work.live_allocation_bytes(), 0);
+        match driver(&directory, Arc::new(Ignored), &mut work) {
+            Ok(watch) => {
+                assert!(limit > 1, "startup used the reserved teardown allowance");
+                drop(watch);
+                return Ok(());
+            }
+            Err(error) => {
+                assert!(matches!(error, DemandError::Work(_)));
+                assert_eq!(work.budget, budget);
+                assert_eq!(work.live_allocation_bytes(), 0);
+            }
+        }
     }
-    Ok(())
+    Err("no write allowance started a watch".into())
 }
 
 #[test]

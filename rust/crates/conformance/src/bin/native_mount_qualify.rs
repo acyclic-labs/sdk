@@ -1,6 +1,6 @@
 //! Real-kernel native-mount qualification with a machine-readable receipt.
 
-use std::collections::BTreeSet;
+use acyclic_fs::mount_qualification::COVERAGE;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -18,7 +18,7 @@ use acyclic_fs::{
 use acyclic_native_runtime::ProcessTree;
 use bytes::Bytes;
 use notify::{RecursiveMode, Watcher};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
 type LocalTransaction =
@@ -58,56 +58,6 @@ struct Report {
     cases: Vec<Case>,
 }
 
-#[derive(Deserialize)]
-struct ReceiptCase {
-    name: String,
-    status: String,
-    reason: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct ReceiptCapability {
-    kind: Option<String>,
-    available: bool,
-    writable: bool,
-    provider_process_io_observable: bool,
-    session_isolation: String,
-    unavailable_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ReceiptReport {
-    schema: String,
-    os: String,
-    arch: String,
-    coverage: Vec<String>,
-    capability: ReceiptCapability,
-    required_kind: Option<String>,
-    release_version: Option<String>,
-    executable_blake3: Option<String>,
-    passed: bool,
-    cases: Vec<ReceiptCase>,
-}
-
-const COVERAGE: &[&str] = &[
-    "create-read-write",
-    "atomic-save",
-    "rename-delete",
-    "rename-before-hydration",
-    "nested-paths",
-    "large-directory-paging",
-    "concurrent-handles",
-    "watchers",
-    "crash-detach-recovery",
-    "mount-restoration",
-    "hard-links",
-    "symbolic-links-reparse-points",
-    "metadata",
-    "case-behavior",
-    "escape-attempts",
-    "root-checkout-untouched",
-    "git-administration-untouched",
-];
 const MACOS_NFS_PARALLEL_CLIENTS: usize = 4;
 const MACOS_NFS_LARGE_TREE_ENTRIES: usize = 512;
 #[cfg(windows)]

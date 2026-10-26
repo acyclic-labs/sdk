@@ -22,13 +22,16 @@ pub(super) fn published(reference: &Component, values: &BTreeMap<FileKey, FileVa
 }
 
 impl LocalHarness {
+    // Return at most one unpublished answer. The controller commits it before
+    // observing the next turn, so interruption never retains or replays a batch
+    // of answer bodies in memory.
     pub(super) async fn child_processed(
         &self,
         child: TaskId,
         journal: &FilesystemWorkflowJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
         reference: &Component,
         values: &BTreeMap<FileKey, FileValue>,
-    ) -> Result<(u64, Vec<FileValue>)> {
+    ) -> Result<(u64, Option<FileValue>)> {
         if self
             .runtime
             .task_host()
@@ -66,42 +69,37 @@ impl LocalHarness {
                 "child result cursor exceeds its checkpoint".into(),
             ));
         }
-        let mut results = Vec::new();
         if published == processed {
-            return Ok((processed, results));
+            return Ok((processed, None));
         }
-        for turn in (published + 1)..=processed {
-            let earlier;
-            let committed = if turn == processed {
-                &record
-            } else {
-                let revision = turn
-                    .checked_mul(2)
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or_else(|| Error::Invalid("child result revision overflow".into()))?;
-                earlier = journal.observe_transition(revision, Some(&io)).await?;
-                &earlier
-            };
-            let result = crate::filesystem::child_agent::completed_turn(child, committed)?;
-            if result.turn != turn {
-                return Err(Error::Conflict(
-                    "child result turn differs from its checkpoint".into(),
-                ));
-            }
-            let bytes = serde_json::to_vec(&result).map_err(storage)?;
-            if bytes.len() as u64 > self.limits.file_bytes {
-                return Err(Error::Invalid(
-                    "child result exceeds the original file bound".into(),
-                ));
-            }
-            results.push(FileValue::new(
-                FileKey::Child {
-                    reference: reference.clone(),
-                    file: ChildFile::Result(turn),
-                },
-                bytes,
+        let turn = published
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("child result cursor overflow".into()))?;
+        let earlier;
+        let committed = if turn == processed {
+            &record
+        } else {
+            let revision = turn
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| Error::Invalid("child result revision overflow".into()))?;
+            earlier = journal.observe_transition(revision, Some(&io)).await?;
+            &earlier
+        };
+        let result = crate::filesystem::child_agent::completed_turn(child, committed)?;
+        if result.turn != turn {
+            return Err(Error::Conflict(
+                "child result turn differs from its checkpoint".into(),
             ));
         }
-        Ok((processed, results))
+        let bytes = io.encode(&result, self.limits.file_bytes, false)?;
+        let file = FileValue::new(
+            FileKey::Child {
+                reference: reference.clone(),
+                file: ChildFile::Result(turn),
+            },
+            bytes,
+        );
+        Ok((processed, Some(file)))
     }
 }

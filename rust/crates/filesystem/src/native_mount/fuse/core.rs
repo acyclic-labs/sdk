@@ -1,28 +1,12 @@
 use super::*;
 use crate::native_mount::{
     NativeMountCallbackGuard, NativeMountMeterActivation, NativeMountStartupAdmissionError,
-    run_native_mount_handler, run_native_mount_handler_on_meter, view_ledger::same_work,
+    run_native_mount_handler, run_native_mount_handler_on_meter,
 };
 use crate::sync::{Mutex, atomic::AtomicBool};
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
-pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
-    match error {
-        NativeMountError::Source(error) => crate::native_mount::errno(error),
-        NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-            crate::native_mount::errno(error)
-        }
-        NativeMountError::Materialization(error) => {
-            crate::native_mount::native_materialization_errno(error)
-        }
-        NativeMountError::Io(error) => error.raw_os_error().unwrap_or(libc::EIO),
-        NativeMountError::Allocation(_) => libc::ENOMEM,
-        NativeMountError::CallbackDenied { .. } => libc::EACCES,
-        NativeMountError::Demand(crate::DemandError::Cancelled) => libc::ESTALE,
-        NativeMountError::FuseUnsupportedCapabilities(_) => libc::EOPNOTSUPP,
-        _ => libc::EIO,
-    }
-}
+pub(super) use crate::native_mount::callback_errno;
 
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {
@@ -73,6 +57,11 @@ impl StateGuard<'_> {
             unreachable!("the guard owns its lock until drop");
         };
         self.core.invalidation.notify_all();
+        if let Some(wake) = self.core.shared_wake.get()
+            && state.invalidation_wanted()
+        {
+            wake.wake();
+        }
         #[cfg(all(test, acyclic_fs_loom))]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
@@ -91,6 +80,11 @@ impl Drop for StateGuard<'_> {
             return;
         };
         let mut superseded = std::mem::take(&mut state.superseded_attributes);
+        let wake = self
+            .core
+            .shared_wake
+            .get()
+            .filter(|_| state.invalidation_wanted());
         drop(state);
         #[cfg(test)]
         DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
@@ -102,6 +96,9 @@ impl Drop for StateGuard<'_> {
         let notify = true;
         if notify {
             self.core.invalidation.notify_all();
+        }
+        if let Some(wake) = wake {
+            wake.wake();
         }
         if let Some(notifier) = self.core.notifier.get() {
             for (inode, credit) in superseded.iter_mut() {
@@ -117,31 +114,7 @@ impl Drop for StateGuard<'_> {
     }
 }
 
-pub(super) fn fuse_native_source_original(
-    source: &dyn MountFilesystem,
-    candidate: Option<&Work>,
-) -> Result<Option<Work>, NativeMountError> {
-    let original = source.native_original_work()?;
-    if let Some(original) = &original {
-        if candidate.is_some_and(|work| !same_work(original, work)) {
-            return Err(NativeMountError::ControlPending);
-        }
-        original.admit(WorkCounters::UNCHARGED)?;
-    }
-    Ok(original)
-}
-
-fn verify_guard(
-    guard: Option<&Arc<dyn NativeMountCallbackGuard>>,
-    work: Option<&Work>,
-) -> Result<(), NativeMountError> {
-    if let Some(guard) = guard {
-        let work = work.ok_or(NativeMountError::ControlPending)?;
-        crate::native_mount::adapter::CallbackRuntime::existing()?
-            .verify_callback(work, || guard.check(work))?;
-    }
-    Ok(())
-}
+pub(super) use crate::native_mount::shared::metering::source_original as fuse_native_source_original;
 
 pub(super) struct ProjectionCore {
     pub(super) source: Arc<dyn MountFilesystem>,
@@ -156,47 +129,35 @@ pub(super) struct ProjectionCore {
     pub(super) handler_failed: AtomicBool,
     pub(super) handler_error: Mutex<FuseHandlerReports>,
     pub(super) callback_guard: Option<Arc<dyn NativeMountCallbackGuard>>,
+    /// Set for a view of a shared session, whose one invalidator serves
+    /// every view: pending invalidation queues this view there.
+    pub(super) shared_wake: OnceLock<Arc<super::shared::SharedWake>>,
+    /// The shared invalidator's blocked key for this view.
+    pub(super) shared_blocked: Mutex<Option<InvalidationKey>>,
     source_original_work: Option<Work>,
     allocation_custody: Arc<crate::demand::NativeMountAllocationCustody>,
     _allocation: NativeAllocation,
 }
 
-/// Retains the original callback meter for accepted native I/O.
-#[must_use]
-pub struct NativeMountWorkScope {
-    core: Arc<ProjectionCore>,
-    meter: Work,
-    generation: u64,
-}
+pub use crate::native_mount::shared::metering::NativeMountWorkScope;
 
-impl NativeMountWorkScope {
-    pub(super) fn new(core: &Arc<ProjectionCore>, meter: &Work) -> Result<Self, NativeMountError> {
-        let generation = core
+impl crate::native_mount::shared::metering::MeteredView for ProjectionCore {
+    fn activate(&self, work: &Work) -> Result<u64, NativeMountError> {
+        let generation = self
             .startup_meter
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .enter(meter)?;
-        let _state = core.state_to_finish();
-        Ok(Self {
-            core: Arc::clone(core),
-            meter: meter.clone(),
-            generation,
-        })
+            .enter(work)?;
+        let _state = self.state_to_finish();
+        Ok(generation)
     }
-    /// Retains the original callback meter for accepted I/O.
-    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
-        Self::new(&self.core, &self.meter)
-    }
-}
 
-impl Drop for NativeMountWorkScope {
-    fn drop(&mut self) {
-        self.core
-            .startup_meter
+    fn deactivate(&self, work: &Work, generation: u64) {
+        self.startup_meter
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .leave(&self.meter, self.generation);
-        let _state = self.core.state_to_finish();
+            .leave(work, generation);
+        let _state = self.state_to_finish();
     }
 }
 
@@ -206,13 +167,12 @@ impl ProjectionCore {
         root: MountLookup,
         stamp: Option<ViewStamp>,
         writable: bool,
-        uid: u32,
-        gid: u32,
+        owner: (u32, u32),
+        inode_base: u64,
         work: &Work,
     ) -> Result<Arc<Self>, NativeMountError> {
-        let source_original_work = fuse_native_source_original(source.as_ref(), Some(work))?;
-        let callback_guard = source.native_callback_guard();
-        verify_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
+        let (source_original_work, callback_guard) =
+            crate::native_mount::shared::metering::install(source.as_ref(), work)?;
         let allocation_custody =
             crate::demand::NativeMountAllocationCustody::new(&mut work.clone())
                 .map_err(NativeMountStartupAdmissionError::from)?;
@@ -221,8 +181,8 @@ impl ProjectionCore {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let mut state = ProjectionState::new(writable, uid, gid);
-        state.next_inode = ROOT_INODE;
+        let mut state = ProjectionState::new(writable, owner.0, owner.1, inode_base);
+        state.next_inode = state.root_inode;
         state.intern_projected(
             FuseOwned::empty(MountPath::root()),
             &root,
@@ -243,6 +203,8 @@ impl ProjectionCore {
             handler_failed: AtomicBool::new(false),
             handler_error: Mutex::new(FuseHandlerReports::default()),
             callback_guard,
+            shared_wake: OnceLock::new(),
+            shared_blocked: Mutex::new(None),
             source_original_work,
             allocation_custody,
             _allocation: allocation,
@@ -316,21 +278,14 @@ impl ProjectionCore {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .upgrade();
-        let candidate = active.as_ref().or(self.source_original_work.as_ref());
-        let current = fuse_native_source_original(self.source.as_ref(), candidate)?;
-        match (&self.source_original_work, &current) {
-            (None, None) => (),
-            (Some(original), Some(current)) if same_work(original, current) => (),
-            _ => return Err(NativeMountError::ControlPending),
-        }
-        let current_guard = self.source.native_callback_guard();
-        match (&self.callback_guard, &current_guard) {
-            (None, None) => (),
-            (Some(original), Some(current)) if Arc::ptr_eq(original, current) => (),
-            _ => return Err(NativeMountError::ControlPending),
-        }
-        verify_guard(self.callback_guard.as_ref(), candidate)?;
-        Ok(candidate.cloned())
+        crate::native_mount::shared::metering::select(
+            self.source.as_ref(),
+            active,
+            self.source_original_work.as_ref(),
+            self.callback_guard.as_ref(),
+            None,
+            false,
+        )
     }
 
     #[allow(
@@ -386,42 +341,7 @@ impl ProjectionCore {
     ) -> Result<T, i32> {
         result.map_err(|failure| {
             let errno = callback_errno(&failure.0);
-            let reply_only = match &failure.0 {
-                NativeMountError::Io(_) => true,
-                NativeMountError::Source(_)
-                | NativeMountError::Demand(crate::DemandError::Mount(_)) => {
-                    let error = match &failure.0 {
-                        NativeMountError::Source(error) => error,
-                        NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-                            error.as_ref()
-                        }
-                        _ => unreachable!(),
-                    };
-                    match error.semantic_error() {
-                        MountSourceError::Io(_, _)
-                        | MountSourceError::Stale
-                        | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => true,
-                        MountSourceError::NamespacePath(
-                            crate::kernel::NamespacePathError::Work(_)
-                            | crate::kernel::NamespacePathError::Cancelled
-                            | crate::kernel::NamespacePathError::AllocationFailed,
-                        ) => false,
-                        _ => !matches!(
-                            errno,
-                            libc::EIO
-                                | libc::ENOMEM
-                                | libc::ECANCELED
-                                | libc::ESTALE
-                                | libc::EACCES
-                        ),
-                    }
-                }
-                NativeMountError::Materialization(error) => {
-                    !crate::native_mount::native_materialization_failure_is_fatal(error)
-                }
-                _ => false,
-            };
-            if !reply_only {
+            if crate::native_mount::shared::outcome::stops_mount(&failure.0) {
                 self.retain_handler_failure(failure);
             }
             errno
@@ -439,7 +359,11 @@ impl ViewObserver for ProjectionCore {
         }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.invalidation.notified = state.invalidation.notified.max(Some(position));
+        drop(state);
         self.invalidation.notify_all();
+        if let Some(wake) = self.shared_wake.get() {
+            wake.wake();
+        }
     }
 }
 

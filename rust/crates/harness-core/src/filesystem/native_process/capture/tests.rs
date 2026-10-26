@@ -1,4 +1,13 @@
 use super::*;
+
+#[test]
+fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
+    assert!(
+        std::mem::size_of::<Started<(), ()>>()
+            < std::mem::size_of::<acyclic_native_runtime::ProcessTree>(),
+        "the old handoff retains the whole physical process tree in every completion slot"
+    );
+}
 use proptest::prelude::*;
 
 #[test]

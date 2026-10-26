@@ -2,8 +2,7 @@ use super::*;
 use crate::distributed::StreamAuthorityStore;
 use crate::{EmbeddedCapabilities, MemoryObjectStore, Workspace};
 use acyclic_auth::{contract::*, testing as signed};
-use acyclic_stream::{FollowFilter, MemoryStream, wire};
-use prost::Message;
+use acyclic_stream::{FollowFilter, MemoryStream};
 
 type Engine = Fs<StreamAuthorityStore<MemoryStream>, MemoryObjectStore>;
 type Space = Workspace<StreamAuthorityStore<MemoryStream>, MemoryObjectStore>;
@@ -138,7 +137,7 @@ async fn changes_follow_uses_indexed_grants_and_owner_deny_wins() -> TestResult 
     let FollowUpdate::Record(record) = follow.next().await.ok_or("missing allowed change")?? else {
         panic!("allowed change was skipped");
     };
-    let decoded = wire::ChangeRecord::decode(record.value.as_ref())?;
+    let decoded = acyclic_stream::decode_changes(record.value.as_ref())?;
     assert_eq!(decoded.entries.len(), 1);
     assert_eq!(decoded.entries[0].key.as_ref(), b"allowed");
     // With the full-volume cap, the same stored deny must still remove data.

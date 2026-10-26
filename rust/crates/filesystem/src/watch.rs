@@ -278,6 +278,11 @@ struct SharedState {
     /// Host subtrees whose events are never hints, in fence preference order.
     excluded: Vec<PathBuf>,
     excluded_allocation: Option<crate::NativeAllocation>,
+    /// Directories a non-recursive Windows watch observes. The single
+    /// recursive root handle reports the whole tree; only children of these
+    /// directories become hints. `None` observes everything.
+    #[cfg(windows)]
+    registered: Option<WindowsRegistrations>,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -304,6 +309,8 @@ impl SharedState {
             fence: None,
             excluded: Vec::new(),
             excluded_allocation: None,
+            #[cfg(windows)]
+            registered: None,
         }
     }
 
@@ -866,29 +873,109 @@ fn wide_hint_names(
         .map(|name| Ok(HintName::Wide(name)))
 }
 
+/// The directories a non-recursive Windows watch observes, keyed by their
+/// canonical root-relative path: the long names the held handles resolve
+/// to, folded for case. A change reported in another case or through an 8.3
+/// short name therefore finds the same key.
 #[cfg(windows)]
-struct WindowsDirectoryWatch {
-    path: Arc<(Vec<u16>, Option<crate::NativeAllocation>)>,
-    identity: NativeRootIdentity,
-    watcher: crate::source_watch::NativeSourceWatch,
+#[derive(Debug)]
+struct WindowsRegistrations {
+    /// The root handle's final path, under which reported short names resolve.
+    root: Vec<u16>,
+    _root_allocation: Option<crate::materializer::NativeAllocation>,
+    entries: std::collections::BTreeMap<Vec<u16>, WindowsRegistration>,
+    /// Negative control: key the requested path as given and match reported
+    /// paths exactly, as the per-directory design did.
+    #[cfg(test)]
+    exact: bool,
 }
 
+/// One directory a non-recursive Windows watch observes through the root
+/// handle: its actual root-relative path and the identity bound when it was
+/// admitted, and its retained bytes.
 #[cfg(windows)]
-struct WindowsDirectorySink {
-    prefix: Arc<(Vec<u16>, Option<crate::NativeAllocation>)>,
-    delivery: Arc<NativeEventDelivery>,
+#[derive(Debug)]
+struct WindowsRegistration {
+    path: Vec<u16>,
+    identity: NativeRootIdentity,
     _allocation: Option<crate::materializer::NativeAllocation>,
 }
 
 #[cfg(windows)]
-impl crate::source_watch::HostChangeSink for WindowsDirectorySink {
+impl WindowsRegistrations {
+    /// The relative part of a full path beneath the root, if it is beneath it.
+    fn relative<'a>(&self, full: &'a [u16]) -> Option<&'a [u16]> {
+        full.get(self.root.len()..)
+            .and_then(|rest| rest.split_first())
+            .filter(|(separator, _)| matches!(**separator, 47 | 92))
+            .map(|(_, relative)| relative)
+    }
+
+    fn contains_folded<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        relative: &[u16],
+        work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        let (key, bytes) = crate::native_host::fold_case_wide(relative, work)?;
+        let found = self.entries.contains_key(key.as_slice());
+        drop(key);
+        work.release(bytes)?;
+        Ok(found)
+    }
+
+    /// Whether a reported directory is observed. Folding may only over-report;
+    /// a short name the host can no longer resolve is delivered, not dropped.
+    fn observes<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        directory: &[u16],
+        work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        #[cfg(test)]
+        if self.exact {
+            return Ok(self.entries.contains_key(directory));
+        }
+        if self.contains_folded(directory, work)? {
+            return Ok(true);
+        }
+        if !directory.contains(&u16::from(b'~')) {
+            return Ok(false);
+        }
+        let length = self
+            .root
+            .len()
+            .checked_add(1)
+            .and_then(|length| length.checked_add(directory.len()))
+            .ok_or(WorkError::Overflow)?;
+        let (mut full, bytes) = crate::native_host::buffer::<u16, W>(length, work)?;
+        full.extend_from_slice(&self.root);
+        full.push(u16::from(b'\\'));
+        full.extend_from_slice(directory);
+        let resolved = crate::native_host::long_path_wide(&full, work);
+        drop(full);
+        work.release(bytes)?;
+        let Some((long, bytes)) = resolved? else {
+            return Ok(true);
+        };
+        let observed = match self.relative(&long) {
+            Some(relative) => self.contains_folded(relative, work),
+            None => Ok(true),
+        };
+        drop(long);
+        work.release(bytes)?;
+        observed
+    }
+}
+
+/// The one sink of a Windows watch's recursive root handle.
+#[cfg(windows)]
+struct WindowsRootSink {
+    delivery: Arc<NativeEventDelivery>,
+}
+
+#[cfg(windows)]
+impl crate::source_watch::HostChangeSink for WindowsRootSink {
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64
-            + if self.prefix.0.is_empty() {
-                std::mem::size_of_val(&*self.prefix) as u64 + self.prefix.0.capacity() as u64 * 2
-            } else {
-                0
-            }
     }
     fn host_changed(
         &self,
@@ -924,7 +1011,7 @@ impl crate::source_watch::HostChangeSink for WindowsDirectorySink {
 }
 
 #[cfg(windows)]
-impl WindowsDirectorySink {
+impl WindowsRootSink {
     fn host_changed_with_work<W: crate::demand::SourceDemandReadWork>(
         &self,
         changes: &[crate::source_watch::HostChange],
@@ -938,8 +1025,9 @@ impl WindowsDirectorySink {
             })?;
             match change {
                 HostChange::Rebound(path) | HostChange::Altered(path) => {
-                    let names = wide_hint_names(&self.prefix.0)
-                        .chain(path.components().map(host_hint_name));
+                    // The Windows reader reports wide paths only. A path here
+                    // is still a hint: over-reporting never loses a change.
+                    let names = path.components().map(host_hint_name);
                     self.deliver_names_measured(names, None, work)?;
                 }
                 HostChange::File(_) => {}
@@ -982,9 +1070,39 @@ impl WindowsDirectorySink {
             })?;
             match change {
                 HostChangeWide::Path { action, path } => {
+                    let mut action = *action;
+                    if let Some(registered) = &state.registered {
+                        work.started_io(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::default()
+                        })?;
+                        let parent = path
+                            .iter()
+                            .rposition(|unit| matches!(*unit, 47 | 92))
+                            .and_then(|at| path.get(..at))
+                            .unwrap_or_default();
+                        if !parent.is_empty() && !registered.observes(parent, work)? {
+                            // A rename out of the observed directories is
+                            // that directory's departure.
+                            if action == 5
+                                && state
+                                    .pending_rename
+                                    .as_ref()
+                                    .is_some_and(|pending| pending.tracker == file)
+                            {
+                                self.depart_locked(&mut state, work)?;
+                            }
+                            continue;
+                        }
+                        // A rename into them whose departure was unobserved is
+                        // an arrival.
+                        if action == 5 && state.pending_rename.is_none() {
+                            action = 1;
+                        }
+                    }
                     self.deliver_names_locked(
-                        wide_hint_names(&self.prefix.0).chain(wide_hint_names(path)),
-                        self.prefix.0.is_empty().then_some((*action, file)),
+                        wide_hint_names(path),
+                        Some((action, file)),
                         &mut state,
                         work,
                     )?;
@@ -995,6 +1113,37 @@ impl WindowsDirectorySink {
                     state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
                     self.delivery.fenced.notify_all();
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Queues the observed half of a rename whose destination is unobserved.
+    fn depart_locked<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        state: &mut SharedState,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        let Some(pending) = state.pending_rename.take() else {
+            return Ok(());
+        };
+        if state.invalidation.is_some() {
+            return Ok(());
+        }
+        work.started_io(WorkCounters {
+            items_returned: 1,
+            ..WorkCounters::default()
+        })?;
+        // The pending half already counted against the queue bound.
+        match self.delivery.sender.try_send(QueuedWatchChange {
+            change: WatchChange::Removed(pending.from),
+            allocations: [pending.allocation, None],
+        }) {
+            Ok(()) => {
+                self.delivery.queued.fetch_add(1, Ordering::Release);
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             }
         }
         Ok(())
@@ -1235,10 +1384,6 @@ pub struct NativeWatch {
     receiver: Mutex<QueueReceiver<QueuedWatchChange>>,
     held_root: NativeWatchHeldRoot,
     #[cfg(windows)]
-    windows_directories: Vec<WindowsDirectoryWatch>,
-    #[cfg(windows)]
-    windows_backing_allocation: Option<crate::materializer::NativeAllocation>,
-    #[cfg(windows)]
     windows_delivery: Arc<NativeEventDelivery>,
     queued: Arc<AtomicU32>,
     shared: Arc<Mutex<SharedState>>,
@@ -1266,11 +1411,62 @@ impl std::fmt::Debug for NativeWatch {
 }
 
 struct NativeWatchHeldRoot {
-    root: Option<crate::native_host::HostRoot>,
+    root: Option<WatchRoot>,
     cleanup: Option<crate::materializer::NativeCleanupWrite>,
 }
 
+/// The watched root: held while the watch starts, then named by path and
+/// identity in the process-wide descriptor cache, so that an idle watch
+/// holds no descriptor for it.
+enum WatchRoot {
+    Held(crate::native_host::HostRoot),
+    Cached(crate::native_host::CachedRoot),
+}
+
+/// A held root, borrowed while the watch starts or reopened from the cache.
+enum HeldWatchRoot<'a> {
+    Borrowed(&'a crate::native_host::HostRoot),
+    Leased(crate::native_host::HostRoot),
+}
+
+impl std::ops::Deref for HeldWatchRoot<'_> {
+    type Target = crate::native_host::HostRoot;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(root) => root,
+            Self::Leased(root) => root,
+        }
+    }
+}
+
 impl NativeWatchHeldRoot {
+    /// The root, held until the returned root drops.
+    fn held<W: crate::native_host::NativeHostWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<Option<HeldWatchRoot<'_>>, W::Error> {
+        Ok(match &self.root {
+            None => None,
+            Some(WatchRoot::Held(root)) => Some(HeldWatchRoot::Borrowed(root)),
+            Some(WatchRoot::Cached(root)) => Some(HeldWatchRoot::Leased(root.held(work)?)),
+        })
+    }
+
+    /// Hands the started watch's root to the descriptor cache.
+    fn cache<W: crate::native_host::NativeHostWork>(
+        &mut self,
+        path: &Path,
+        work: &mut W,
+    ) -> Result<(), W::Error> {
+        self.root = match self.root.take() {
+            Some(WatchRoot::Held(root)) => Some(WatchRoot::Cached(
+                crate::native_host::CachedRoot::new(root, path, work)?,
+            )),
+            root => root,
+        };
+        Ok(())
+    }
+
     fn close_with_native_work(
         &mut self,
         work: &crate::NativeMaterializationWork,
@@ -1304,6 +1500,20 @@ impl NativeWatchHeldRoot {
         recorded?;
         Ok(true)
     }
+}
+
+/// Whether reopening a cached root failed because its path no longer names it.
+fn root_replaced(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    let link = error.raw_os_error() == Some(libc::ELOOP);
+    #[cfg(not(unix))]
+    let link = false;
+    link || matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::InvalidData
+    )
 }
 
 impl Drop for NativeWatchHeldRoot {
@@ -1386,7 +1596,7 @@ impl NativeWatch {
         }
         #[cfg(windows)]
         {
-            self.clear_windows_directories_with_work(&mut work)
+            self.clear_windows_registrations_with_work(&mut work)
                 .map_err(demand_watch_error)?;
         }
         match &self.watcher {
@@ -1570,14 +1780,13 @@ impl NativeWatch {
             .transpose()?;
         let held =
             crate::native_host::HostRoot::open(root_path, work).map_err(demand_watch_error)?;
-        let held_root = NativeWatchHeldRoot {
-            root: Some(held),
+        let mut held_root = NativeWatchHeldRoot {
+            root: Some(WatchRoot::Held(held)),
             cleanup,
         };
-        let held = held_root
-            .root
-            .as_ref()
-            .ok_or(NativeWatchError::SourceUnavailable)?;
+        let Some(WatchRoot::Held(held)) = held_root.root.as_ref() else {
+            return Err(NativeWatchError::SourceUnavailable);
+        };
         let metadata = held
             .stat(
                 #[cfg(unix)]
@@ -1599,6 +1808,16 @@ impl NativeWatch {
             .map_err(demand_watch_error)?;
         #[cfg(not(windows))]
         let complete = true;
+        // From here the root is reopened from the process-wide descriptor
+        // cache, so the source watch keeps the cached root, not a descriptor.
+        held_root
+            .cache(root_path, work)
+            .map_err(demand_watch_error)?;
+        let held = held_root
+            .held(work)
+            .map_err(demand_watch_error)?
+            .ok_or(NativeWatchError::SourceUnavailable)?;
+        let held = &*held;
         let (root, root_allocation) = Self::copy_startup_path(root_path, work, original)?;
         let capacity = usize::try_from(options.maximum_queued_changes)
             .map_err(|_| NativeWatchError::InvalidOptions)?;
@@ -1733,20 +1952,22 @@ impl NativeWatch {
         #[cfg(windows)]
         let source_result = {
             Self::startup_control(work)?;
-            let prefix = Arc::new((Vec::new(), None));
-            Self::startup_control(work)?;
-            let sink = Arc::new(WindowsDirectorySink {
-                prefix,
+            // One recursive handle observes the whole root. A non-recursive
+            // watch filters it to its registered directories, so its cost
+            // does not grow with the directories it observes.
+            if !options.recursive {
+                let registrations = Self::windows_registrations(held, work)?;
+                shared
+                    .lock()
+                    .map_err(|_| NativeWatchError::StatePoisoned)?
+                    .registered = Some(registrations);
+            }
+            let sink = Arc::new(WindowsRootSink {
                 delivery: Arc::clone(&windows_delivery),
-                _allocation: None,
             });
             Some(
                 crate::source_watch::NativeSourceWatch::start_held_with_sink_with_work(
-                    held,
-                    sink,
-                    complete,
-                    options.recursive,
-                    work,
+                    held, sink, complete, work,
                 ),
             )
         };
@@ -1818,10 +2039,6 @@ impl NativeWatch {
             watched_directories,
             receiver: Mutex::new(receiver),
             held_root,
-            #[cfg(windows)]
-            windows_directories: Vec::new(),
-            #[cfg(windows)]
-            windows_backing_allocation: None,
             #[cfg(windows)]
             windows_delivery,
             queued,
@@ -2045,11 +2262,10 @@ impl NativeWatch {
         Ok(())
     }
 
+    /// Registers each directory on the path with the root handle's filter.
+    /// Each component is still opened beneath the held root, so a link,
+    /// reparse point or file refuses as before, but nothing stays open.
     #[cfg(windows)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     fn watch_directory_wide_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         directory: &NamespacePath,
@@ -2058,7 +2274,6 @@ impl NativeWatch {
         use crate::demand::DemandError;
         let mut retained_bytes = 0_u64;
         let mut path_bytes = 0_u64;
-        let mut backing_claim = 0_u64;
         let result = (|| {
             let path = work.with_original_leaf(|work| {
                 NamespacePath::validate_component_lengths(
@@ -2082,8 +2297,7 @@ impl NativeWatch {
             let result = (|| {
                 let mut held = self
                     .held_root
-                    .root
-                    .as_ref()
+                    .held(work)?
                     .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
                     .open_dir_held(&[], work)?;
                 let mut component_start = 0;
@@ -2128,144 +2342,11 @@ impl NativeWatch {
                     };
                     held = next;
                     component_start = index + 1;
-                    let mut found = None;
-                    for (at, observed) in self.windows_directories.iter().enumerate() {
-                        work.started_io(WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::default()
-                        })?;
-                        if observed.path.0.as_slice() == prefix {
-                            found = Some(at);
-                            break;
-                        }
-                    }
-                    if let Some(at) = found {
-                        let observed = self
-                            .windows_directories
-                            .get(at)
-                            .ok_or(DemandError::InvalidRequest)?;
-                        if observed.identity == identity && observed.watcher.is_exact() {
-                            continue;
-                        }
-                        let copied = WorkCounters {
-                            bytes_copied: ((self.windows_directories.len() - at - 1) as u64)
-                                .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
-                                .ok_or(WorkError::Overflow)?,
-                            ..WorkCounters::default()
-                        };
-                        work.admit(copied)?;
-                        self.windows_directories
-                            .get_mut(at)
-                            .ok_or(DemandError::InvalidRequest)?
-                            .watcher
-                            .retire_with_work(work)?;
-                        if !self
-                            .windows_directories
-                            .get(at)
-                            .ok_or(DemandError::InvalidRequest)?
-                            .watcher
-                            .is_stopped()
-                        {
-                            return Err(DemandError::WorkerUnavailable);
-                        }
-                        work.record(copied)?;
-                        let prior = self.windows_directories.remove(at);
-                        drop(prior);
-                    }
-                    if self.windows_directories.len() == self.windows_directories.capacity() {
-                        let count = self
-                            .windows_directories
-                            .len()
-                            .checked_add(1)
-                            .ok_or(WorkError::Overflow)?;
-                        let bytes = (count as u64)
-                            .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
-                            .ok_or(WorkError::Overflow)?;
-                        let old_bytes = (self.windows_directories.capacity() as u64)
-                            .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
-                            .ok_or(WorkError::Overflow)?;
-                        let copied = WorkCounters {
-                            bytes_copied: old_bytes,
-                            ..WorkCounters::default()
-                        };
-                        work.admit(copied)?;
-                        let allocation = watch_claim_allocation(bytes, work)?;
-                        let mut grown = Vec::with_capacity(count);
-                        grown.append(&mut self.windows_directories);
-                        self.windows_directories = grown;
-                        drop(self.windows_backing_allocation.take());
-                        if allocation.is_none() {
-                            work.release(backing_claim)?;
-                            retained_bytes = retained_bytes
-                                .checked_sub(backing_claim)
-                                .and_then(|prior| prior.checked_add(bytes))
-                                .ok_or(WorkError::Overflow)?;
-                            backing_claim = bytes;
-                        }
-                        self.windows_backing_allocation = allocation;
-                        work.record(copied)?;
-                    }
-                    let key_bytes = (prefix.len() as u64)
-                        .checked_mul(2)
+                    retained_bytes = retained_bytes
+                        .checked_add(
+                            self.register_windows_directory(&held, prefix, identity, work)?,
+                        )
                         .ok_or(WorkError::Overflow)?;
-                    let copied = WorkCounters {
-                        bytes_copied: key_bytes,
-                        ..WorkCounters::default()
-                    };
-                    work.admit(copied)?;
-                    let allocation = watch_claim_allocation(key_bytes, work)?;
-                    if allocation.is_none() {
-                        retained_bytes = retained_bytes
-                            .checked_add(key_bytes)
-                            .ok_or(WorkError::Overflow)?;
-                    }
-                    let mut key = (prefix.to_vec(), allocation);
-                    work.record(copied)?;
-                    let key_arc_bytes = std::mem::size_of_val(&key) as u64;
-                    let mut allocation = watch_claim_allocation(key_arc_bytes, work)?;
-                    if let (Some(key_allocation), Some(arc_allocation)) =
-                        (&mut key.1, &mut allocation)
-                    {
-                        key_allocation
-                            .absorb(arc_allocation)
-                            .map_err(NativeWatchError::from)?;
-                    } else {
-                        retained_bytes = retained_bytes
-                            .checked_add(key_arc_bytes)
-                            .ok_or(WorkError::Overflow)?;
-                    }
-                    let key = Arc::new(key);
-                    let sink_bytes = size_of::<WindowsDirectorySink>() as u64;
-                    let allocation = watch_claim_allocation(sink_bytes, work)?;
-                    if allocation.is_none() {
-                        retained_bytes = retained_bytes
-                            .checked_add(sink_bytes)
-                            .ok_or(WorkError::Overflow)?;
-                    }
-                    let sink = Arc::new(WindowsDirectorySink {
-                        prefix: Arc::clone(&key),
-                        delivery: Arc::clone(&self.windows_delivery),
-                        _allocation: allocation,
-                    });
-                    let NativeWatchDriver::Source(source) = &self.watcher else {
-                        return Err(DemandError::from(
-                            NativeWatchError::BoundedObservationUnavailable,
-                        ));
-                    };
-                    let watcher =
-                        match source.start_directory_with_work(&held, sink, self.complete, work) {
-                            Ok(watcher) => watcher,
-                            Err(crate::demand::DemandError::SourceWatchStartup(owner)) => {
-                                self.pending_source_watch = Some(Arc::clone(&owner));
-                                return Err(crate::demand::DemandError::SourceWatchStartup(owner));
-                            }
-                            Err(error) => return Err(error),
-                        };
-                    self.windows_directories.push(WindowsDirectoryWatch {
-                        path: key,
-                        identity,
-                        watcher,
-                    });
                 }
                 Ok(())
             })();
@@ -2279,29 +2360,162 @@ impl NativeWatch {
         result
     }
 
+    /// The empty registration set of a non-recursive Windows watch, with the
+    /// root handle's final path its canonical keys are relative to.
     #[cfg(windows)]
-    fn clear_windows_directories_with_work<W: crate::demand::SourceDemandReadWork>(
-        &mut self,
+    fn windows_registrations<W: crate::demand::SourceDemandReadWork>(
+        held: &crate::native_host::HostRoot,
         work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        while let Some(observed) = self.windows_directories.last_mut() {
+    ) -> Result<WindowsRegistrations, NativeWatchError> {
+        let (root, bytes) = crate::native_host::canonical_directory_wide(&held.directory, work)
+            .map_err(demand_watch_error)?;
+        // Ordinary work keeps the claim for the watch, as its root path does.
+        let allocation = if work.is_native_original() {
+            work.release(bytes).map_err(demand_watch_error)?;
+            watch_claim_allocation(bytes, work).map_err(demand_watch_error)?
+        } else {
+            None
+        };
+        Ok(WindowsRegistrations {
+            root,
+            _root_allocation: allocation,
+            entries: std::collections::BTreeMap::new(),
+            #[cfg(test)]
+            exact: false,
+        })
+    }
+
+    /// Registers one held directory with the root handle's filter under its
+    /// canonical key, or rebinds a replaced directory's path to the identity
+    /// admitted now. Returns the bytes claimed without a retained allocation.
+    #[cfg(windows)]
+    fn register_windows_directory<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        directory: &cap_std::fs::Dir,
+        requested: &[u16],
+        identity: NativeRootIdentity,
+        work: &mut W,
+    ) -> Result<u64, crate::demand::DemandError> {
+        let (full, full_bytes) = crate::native_host::canonical_directory_wide(directory, work)?;
+        let result = (|| {
+            let mut state = self
+                .shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+            let registered = state
+                .registered
+                .as_mut()
+                .ok_or(crate::demand::DemandError::InvalidRequest)?;
             work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::default()
             })?;
-            observed.watcher.retire_with_work(work)?;
-            if !observed.watcher.is_stopped() {
-                return Err(crate::demand::DemandError::WorkerUnavailable);
-            }
-            let removed = self
-                .windows_directories
-                .pop()
-                .ok_or(crate::demand::DemandError::InvalidRequest)?;
-            drop(removed);
+            #[cfg(test)]
+            let exact = registered.exact;
+            #[cfg(not(test))]
+            let exact = false;
+            let (path, (key, key_bytes)) = if exact {
+                (requested, (requested.to_vec(), 0))
+            } else {
+                let path = registered
+                    .relative(&full)
+                    .ok_or(crate::demand::DemandError::InvalidRequest)?;
+                (path, crate::native_host::fold_case_wide(path, work)?)
+            };
+            let result = (|| {
+                if let Some(current) = registered.entries.get_mut(key.as_slice()) {
+                    current.identity = identity;
+                    return Ok((0, None));
+                }
+                let path_bytes = (path.len() as u64)
+                    .checked_mul(2)
+                    .ok_or(WorkError::Overflow)?;
+                let entry_bytes = path_bytes
+                    .checked_mul(2)
+                    .and_then(|bytes| {
+                        bytes.checked_add(size_of::<(Vec<u16>, WindowsRegistration)>() as u64)
+                    })
+                    .ok_or(WorkError::Overflow)?;
+                let copied = WorkCounters {
+                    bytes_copied: path_bytes,
+                    ..WorkCounters::default()
+                };
+                work.admit(copied)?;
+                let allocation = watch_claim_allocation(entry_bytes, work)?;
+                let unretained = if allocation.is_none() { entry_bytes } else { 0 };
+                let registration = WindowsRegistration {
+                    path: path.to_vec(),
+                    identity,
+                    _allocation: allocation,
+                };
+                work.record(copied)?;
+                Ok((unretained, Some(registration)))
+            })();
+            let unretained = match result {
+                Ok((unretained, Some(registration))) => {
+                    registered.entries.insert(key, registration);
+                    Ok(unretained)
+                }
+                Ok((unretained, None)) => {
+                    drop(key);
+                    Ok(unretained)
+                }
+                Err(error) => {
+                    drop(key);
+                    Err(error)
+                }
+            };
+            work.release(key_bytes)?;
+            unretained
+        })();
+        drop(full);
+        work.release(full_bytes)?;
+        result
+    }
+
+    /// Negative control: key registrations as requested and match reported
+    /// paths exactly.
+    #[cfg(all(test, windows))]
+    pub(crate) fn windows_match_exactly(&self) {
+        if let Ok(mut state) = self.shared.lock()
+            && let Some(registered) = &mut state.registered
+        {
+            registered.exact = true;
         }
-        self.windows_directories = Vec::new();
-        drop(self.windows_backing_allocation.take());
+    }
+
+    /// Directories a non-recursive Windows watch currently observes.
+    #[cfg(all(test, windows))]
+    pub(crate) fn windows_registered(&self) -> usize {
+        self.shared
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .registered
+                    .as_ref()
+                    .map(|registered| registered.entries.len())
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(windows)]
+    fn clear_windows_registrations_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        work.check()?;
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if let Some(registered) = &mut state.registered {
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::default()
+            })?;
+            registered.entries.clear();
+        }
         Ok(())
     }
 
@@ -2368,21 +2582,127 @@ impl NativeWatch {
         Ok(())
     }
 
+    /// Drops the registrations at and beneath a removed or renamed path,
+    /// except those whose path a later demand already bound to a
+    /// replacement directory.
+    #[cfg(windows)]
+    fn forget_windows_subtree_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        relative: &Path,
+        work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        use std::ops::Bound;
+        use std::os::windows::ffi::OsStrExt as _;
+        let units = relative.as_os_str().encode_wide().count();
+        let removed_bytes = (units as u64).checked_mul(2).ok_or(WorkError::Overflow)?;
+        let removed_allocation =
+            watch_claim_allocation(removed_bytes, work).map_err(demand_watch_error)?;
+        let removed = relative.as_os_str().encode_wide().collect::<Vec<_>>();
+        #[cfg(test)]
+        let exact = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .registered
+            .as_ref()
+            .is_some_and(|registered| registered.exact);
+        #[cfg(not(test))]
+        let exact = false;
+        // Keys are folded for case; the removed path is folded to match.
+        let (removed, folded_bytes) = if exact {
+            (removed, 0)
+        } else {
+            let folded =
+                crate::native_host::fold_case_wide(&removed, work).map_err(demand_watch_error)?;
+            drop(removed);
+            folded
+        };
+        let result = (|| {
+            let mut cursor: Option<Vec<u16>> = None;
+            loop {
+                // One candidate at a time: the sink keeps delivering while
+                // each binding is re-authenticated without the state lock.
+                let candidate = {
+                    let state = self
+                        .shared
+                        .lock()
+                        .map_err(|_| NativeWatchError::StatePoisoned)?;
+                    let Some(registered) = &state.registered else {
+                        return Ok(());
+                    };
+                    let bound = cursor
+                        .as_deref()
+                        .map_or(Bound::Included(removed.as_slice()), Bound::Excluded);
+                    registered
+                        .entries
+                        .range::<[u16], _>((bound, Bound::Unbounded))
+                        .take_while(|(key, _)| key.starts_with(&removed))
+                        .find(|(key, _)| {
+                            key.get(removed.len())
+                                .is_none_or(|unit| matches!(*unit, 47 | 92))
+                        })
+                        .map(|(key, registration)| {
+                            (
+                                key.clone(),
+                                registration.identity,
+                                registration.path.clone(),
+                            )
+                        })
+                };
+                let Some((key, identity, path)) = candidate else {
+                    return Ok(());
+                };
+                work.started_io(WorkCounters {
+                    items_examined: 1,
+                    bytes_copied: ((key.len() + path.len()) as u64)
+                        .checked_mul(2)
+                        .ok_or(WorkError::Overflow)?,
+                    ..WorkCounters::UNCHARGED
+                })
+                .map_err(demand_watch_error)?;
+                if !self
+                    .windows_registration_is_current(&path, identity, work)
+                    .map_err(demand_watch_error)?
+                {
+                    let mut state = self
+                        .shared
+                        .lock()
+                        .map_err(|_| NativeWatchError::StatePoisoned)?;
+                    if let Some(registered) = &mut state.registered
+                        && registered
+                            .entries
+                            .get(key.as_slice())
+                            .is_some_and(|current| current.identity == identity)
+                    {
+                        drop(registered.entries.remove(key.as_slice()));
+                    }
+                }
+                cursor = Some(key);
+            }
+        })();
+        drop(removed);
+        work.release(folded_bytes).map_err(demand_watch_error)?;
+        if removed_allocation.is_none() {
+            work.release(removed_bytes).map_err(demand_watch_error)?;
+        }
+        result
+    }
+
     #[cfg(windows)]
     fn windows_registration_is_current<W: crate::demand::SourceDemandReadWork>(
         &self,
-        observed: &WindowsDirectoryWatch,
+        path: &[u16],
+        identity: NativeRootIdentity,
         work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
         use crate::demand::DemandError;
         let mut held = self
             .held_root
-            .root
-            .as_ref()
+            .held(work)?
             .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
             .open_dir_held(&[], work)?;
         let mut current = None;
-        for component in observed.path.0.split(|unit| matches!(*unit, 47 | 92)) {
+        for component in path.split(|unit| matches!(*unit, 47 | 92)) {
             work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
@@ -2404,7 +2724,7 @@ impl NativeWatch {
                 Err(error) => return Err(error),
             }
         }
-        Ok(current == Some(observed.identity))
+        Ok(current == Some(identity))
     }
 
     #[allow(
@@ -2452,65 +2772,7 @@ impl NativeWatch {
                             .map_err(demand_watch_error)
                     };
                     #[cfg(windows)]
-                    let result = (|| {
-                        use std::os::windows::ffi::OsStrExt;
-                        let mut at = 0;
-                        while at < self.windows_directories.len() {
-                            work.started_io(WorkCounters {
-                                items_examined: 1,
-                                ..WorkCounters::UNCHARGED
-                            })
-                            .map_err(demand_watch_error)?;
-                            let observed = self
-                                .windows_directories
-                                .get(at)
-                                .ok_or(NativeWatchError::WorkerUnavailable)?;
-                            let mut registered = observed.path.0.iter();
-                            let matches = relative
-                                .as_os_str()
-                                .encode_wide()
-                                .all(|unit| registered.next() == Some(&unit))
-                                && registered
-                                    .next()
-                                    .is_none_or(|unit| matches!(*unit, 47 | 92));
-                            // A queued rename/removal may predate a demand that
-                            // already bound this path to its replacement directory.
-                            // Retire only registrations whose held identity no
-                            // longer matches the path beneath the held root.
-                            if !matches
-                                || self
-                                    .windows_registration_is_current(observed, work)
-                                    .map_err(demand_watch_error)?
-                            {
-                                at += 1;
-                                continue;
-                            }
-                            self.windows_directories
-                                .get_mut(at)
-                                .ok_or(NativeWatchError::WorkerUnavailable)?
-                                .watcher
-                                .retire_with_work(work)
-                                .map_err(demand_watch_error)?;
-                            if !self
-                                .windows_directories
-                                .get(at)
-                                .ok_or(NativeWatchError::WorkerUnavailable)?
-                                .watcher
-                                .is_stopped()
-                            {
-                                return Err(NativeWatchError::WorkerUnavailable);
-                            }
-                            work.started_io(WorkCounters {
-                                bytes_copied: ((self.windows_directories.len() - at - 1) as u64)
-                                    .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
-                                    .ok_or(WorkError::Overflow)?,
-                                ..WorkCounters::UNCHARGED
-                            })
-                            .map_err(demand_watch_error)?;
-                            drop(self.windows_directories.remove(at));
-                        }
-                        Ok(())
-                    })();
+                    let result = self.forget_windows_subtree_with_work(&relative, work);
                     drop(relative);
                     drop(allocation);
                     let released = work.release(bytes).map_err(demand_watch_error);
@@ -2684,7 +2946,7 @@ impl NativeWatch {
         drop(shared);
         self.rescan_in_progress = true;
         #[cfg(windows)]
-        self.clear_windows_directories_with_work(work)
+        self.clear_windows_registrations_with_work(work)
             .map_err(demand_watch_error)?;
         #[cfg(target_os = "linux")]
         if !self.recursive {
@@ -3034,10 +3296,6 @@ impl NativeWatch {
             self.fenced.notify_all();
             return Ok(());
         }
-        #[cfg(windows)]
-        let children_delivered = self
-            .fence_windows_directories(started, timeout, work)
-            .map_err(demand_watch_error)?;
         let delivered = match &self.watcher {
             #[cfg(target_os = "macos")]
             NativeWatchDriver::Source(_) => {
@@ -3064,8 +3322,6 @@ impl NativeWatch {
                 }
             }
         };
-        #[cfg(windows)]
-        let delivered = delivered && children_delivered;
         let unchanged = self
             .root_unchanged_with_work(work)
             .map_err(demand_watch_error)?;
@@ -3083,56 +3339,6 @@ impl NativeWatch {
         drop(state);
         self.fenced.notify_all();
         Ok(())
-    }
-
-    #[cfg(windows)]
-    fn fence_windows_directories<W: crate::demand::SourceDemandReadWork>(
-        &mut self,
-        started: Instant,
-        timeout: Duration,
-        work: &mut W,
-    ) -> Result<bool, crate::demand::DemandError> {
-        use crate::demand::DemandError;
-        let mut delivered = true;
-        let mut at = 0;
-        while let Some(observed) = self.windows_directories.get(at) {
-            work.started_io(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            match observed
-                .watcher
-                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
-            {
-                Ok(complete) => delivered &= complete,
-                Err(DemandError::Io(error)) => {
-                    // Windows completes a removed directory's pending read with
-                    // access denied. Authenticate its binding beneath the held
-                    // root before treating that failure as an obsolete watch.
-                    if self.windows_registration_is_current(observed, work)? {
-                        return Err(DemandError::Io(error));
-                    }
-                    observed.watcher.retire_with_work(work)?;
-                    if !observed.watcher.is_stopped() {
-                        return Err(DemandError::WorkerUnavailable);
-                    }
-                    work.started_io(WorkCounters {
-                        bytes_copied: ((self.windows_directories.len() - at - 1) as u64)
-                            .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
-                            .ok_or(WorkError::Overflow)?,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    drop(self.windows_directories.remove(at));
-                    // The failed stream cannot prove delivery. Its replacement
-                    // must be captured by the existing rescan protocol.
-                    delivered = false;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
-            at += 1;
-        }
-        Ok(delivered)
     }
 
     /// `FSEvents` cannot report that it delivered everything up to now. A
@@ -3206,8 +3412,14 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
         work.check()?;
-        let Some(root) = self.held_root.root.as_ref() else {
-            return Ok(false);
+        // A reopen that finds the root gone, replaced or a link refuses it.
+        let root = match self.held_root.held(work) {
+            Ok(Some(root)) => root,
+            Ok(None) => return Ok(false),
+            Err(crate::demand::DemandError::Io(error)) if root_replaced(&error) => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
         };
         let held = root
             .stat(
@@ -4318,7 +4530,9 @@ mod demand_admission_tests {
             &watch,
             &namespace("/a/b")?,
             WorkBudget {
-                backend_read_operations: 7,
+                // The whole path reads seven times, two of them resolving each
+                // component's final path: one short stops at /a/b.
+                backend_read_operations: 6,
                 ..windows_budget()
             },
             &CancellationToken::new(),
@@ -4331,6 +4545,14 @@ mod demand_admission_tests {
                 ..
             })
         ));
+        assert_eq!(
+            watch
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .windows_registered(),
+            1,
+            "the admitted ancestor stays registered"
+        );
         observed(
             &watch,
             &namespace("/a/b")?,
@@ -4365,7 +4587,11 @@ mod demand_admission_tests {
         let cancellation = CancellationToken::new();
         let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         held.fence_with_work(Duration::from_secs(1), &mut work)?;
-        assert!(held.windows_directories.is_empty());
+        assert_eq!(
+            held.windows_registered(),
+            0,
+            "the replaced directory is no longer observed"
+        );
         assert_eq!(
             held.invalidation()?,
             Some(WatchInvalidationReason::NativeRescanRequired)
@@ -4426,7 +4652,7 @@ mod demand_admission_tests {
             ] {
                 held.forget_removed_directories_with_work(&[change], &mut work, None)?;
                 assert_eq!(
-                    held.windows_directories.len(),
+                    held.windows_registered(),
                     2,
                     "queued event erased a current binding"
                 );
@@ -4439,7 +4665,7 @@ mod demand_admission_tests {
                 None,
             )?;
             assert_eq!(
-                held.windows_directories.len(),
+                held.windows_registered(),
                 1,
                 "removed binding was not retired"
             );
@@ -4466,7 +4692,256 @@ mod demand_admission_tests {
         }
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         held.begin_rescan()?;
-        assert!(held.windows_directories.is_empty());
+        assert_eq!(held.windows_registered(), 0);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn changes_until(
+        watch: &Mutex<NativeWatch>,
+        expected: &NamespacePath,
+    ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut seen = Vec::new();
+        loop {
+            let receipt = watch
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+            if let WatchBatch::Changes { changes, .. } = receipt.value {
+                seen.extend(changes);
+            }
+            if seen.iter().any(|change| match change {
+                WatchChange::Renamed { from, to } => from == expected || to == expected,
+                WatchChange::Created(path)
+                | WatchChange::Removed(path)
+                | WatchChange::Modified(path)
+                | WatchChange::MetadataChanged(path)
+                | WatchChange::Arrived(path) => path == expected,
+            }) {
+                return Ok(seen);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{expected:?} never arrived: {seen:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(windows)]
+    fn mentions(changes: &[WatchChange], path: &NamespacePath) -> bool {
+        changes.iter().any(|change| match change {
+            WatchChange::Renamed { from, to } => from == path || to == path,
+            WatchChange::Created(changed)
+            | WatchChange::Removed(changed)
+            | WatchChange::Modified(changed)
+            | WatchChange::MetadataChanged(changed)
+            | WatchChange::Arrived(changed) => changed == path,
+        })
+    }
+
+    /// The root handle reports the whole tree; only children of registered
+    /// directories become hints, and a rename across the boundary is the
+    /// observed side's departure or arrival.
+    #[cfg(windows)]
+    #[test]
+    fn windows_nonrecursive_root_handle_delivers_only_registered_children()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("a"))?;
+        std::fs::create_dir(root.path().join("b"))?;
+        std::fs::write(root.path().join("a/f"), b"f")?;
+        std::fs::write(root.path().join("b/h"), b"h")?;
+        let watch = watcher(root.path())?;
+        watch
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .accept_lazy_baseline()?;
+        observed(
+            &watch,
+            &namespace("/a")?,
+            windows_budget(),
+            &CancellationToken::new(),
+        )?;
+        std::fs::write(root.path().join("b/g"), b"unobserved")?;
+        std::fs::write(root.path().join("a/e"), b"observed")?;
+        let seen = changes_until(&watch, &namespace("/a/e")?)?;
+        assert!(!mentions(&seen, &namespace("/b/g")?), "{seen:?}");
+        std::fs::rename(root.path().join("a/f"), root.path().join("b/f"))?;
+        let seen = changes_until(&watch, &namespace("/a/f")?)?;
+        assert!(
+            seen.contains(&WatchChange::Removed(namespace("/a/f")?)),
+            "{seen:?}"
+        );
+        assert!(!mentions(&seen, &namespace("/b/f")?), "{seen:?}");
+        std::fs::rename(root.path().join("b/h"), root.path().join("a/h"))?;
+        let seen = changes_until(&watch, &namespace("/a/h")?)?;
+        assert!(
+            seen.contains(&WatchChange::Created(namespace("/a/h")?)),
+            "{seen:?}"
+        );
+        assert!(!mentions(&seen, &namespace("/b/h")?), "{seen:?}");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn changes_through_marker(
+        watch: &Mutex<NativeWatch>,
+        root: &Path,
+        marker: &str,
+    ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
+        // The marker's parent is the root, which every watch observes; the
+        // change before it in the same handle has been filtered by then.
+        std::fs::write(root.join(marker), b"marker")?;
+        changes_until(watch, &namespace(&format!("/{marker}"))?)
+    }
+
+    #[cfg(windows)]
+    fn observed_watch(
+        root: &Path,
+        directory: &str,
+        exact: bool,
+    ) -> Result<Mutex<NativeWatch>, Box<dyn std::error::Error>> {
+        let watch = watcher(root)?;
+        {
+            let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            if exact {
+                held.windows_match_exactly();
+            }
+            held.accept_lazy_baseline()?;
+        }
+        observed(
+            &watch,
+            &namespace(directory)?,
+            windows_budget(),
+            &CancellationToken::new(),
+        )?;
+        Ok(watch)
+    }
+
+    /// A directory registered through another letter case is keyed by its
+    /// actual name folded for case, so its changes arrive. Exact matching,
+    /// the negative control, drops them.
+    #[cfg(windows)]
+    #[test]
+    fn windows_registration_through_another_case_observes_the_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for exact in [false, true] {
+            let root = tempfile::tempdir()?;
+            std::fs::create_dir(root.path().join("Alpha"))?;
+            let watch = observed_watch(root.path(), "/ALPHA", exact)?;
+            std::fs::write(root.path().join("Alpha/f"), b"f")?;
+            let seen = changes_through_marker(&watch, root.path(), "marker")?;
+            let delivered = mentions(&seen, &namespace("/Alpha/f")?)
+                || mentions(&seen, &namespace("/ALPHA/f")?);
+            assert_eq!(delivered, !exact, "exact={exact}: {seen:?}");
+        }
+        Ok(())
+    }
+
+    /// A directory registered through its 8.3 short name is keyed by its
+    /// long name, and a change reported through the short name resolves to
+    /// it. Exact matching, the negative control, drops the first.
+    #[cfg(windows)]
+    #[test]
+    fn windows_short_names_reach_their_registered_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for exact in [false, true] {
+            let root = tempfile::tempdir()?;
+            let long = "longdirectoryname-beta";
+            std::fs::create_dir(root.path().join(long))?;
+            let short = crate::native_host::short_path(&root.path().join(long))?;
+            let short = short
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("short name")?
+                .to_owned();
+            assert_ne!(short, long, "8.3 names are disabled on the temp volume");
+            let watch = observed_watch(root.path(), &format!("/{short}"), exact)?;
+            std::fs::write(root.path().join(long).join("f"), b"f")?;
+            let seen = changes_through_marker(&watch, root.path(), "marker-long")?;
+            let delivered = mentions(&seen, &namespace(&format!("/{long}/f"))?)
+                || mentions(&seen, &namespace(&format!("/{short}/f"))?);
+            assert_eq!(delivered, !exact, "exact={exact}: {seen:?}");
+            if exact {
+                continue;
+            }
+            std::fs::write(root.path().join(&short).join("g"), b"g")?;
+            let seen = changes_through_marker(&watch, root.path(), "marker-short")?;
+            assert!(
+                mentions(&seen, &namespace(&format!("/{long}/g"))?)
+                    || mentions(&seen, &namespace(&format!("/{short}/g"))?),
+                "{seen:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// One non-recursive watch over ten thousand directories holds the root
+    /// handle alone, and a fence visits none of them. The negative control
+    /// holds one handle per directory, as the per-directory design did, and
+    /// must break the same bound.
+    #[cfg(windows)]
+    #[test]
+    fn windows_nonrecursive_watch_of_ten_thousand_directories_holds_one_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const DIRECTORIES: usize = 10_000;
+        // Concurrent tests open and close their own handles meanwhile.
+        const HANDLE_SLACK: u64 = 1_000;
+        // A fence's own work, root identity checks included, is the same
+        // with no registration as with ten thousand.
+        const FENCE_GROWTH: u64 = 16;
+        let fence_items = |held: &mut NativeWatch| -> Result<u64, NativeWatchError> {
+            let cancellation = CancellationToken::new();
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            held.fence_with_work(Duration::from_secs(5), &mut work)?;
+            Ok(work.work.items_examined)
+        };
+        let handles = || {
+            acyclic_native_runtime::testing::sample_process_resources()
+                .map(|resources| resources.descriptors)
+        };
+        let flat = |before: u64, after: u64| after.saturating_sub(before) < HANDLE_SLACK;
+        let root = tempfile::tempdir()?;
+        for at in 0..DIRECTORIES {
+            std::fs::create_dir(root.path().join(format!("d{at}")))?;
+        }
+        let before = handles()?;
+        let watch = watcher(root.path())?;
+        let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let unregistered = fence_items(&mut held)?;
+        held.watch_tree(&[])?;
+        assert_eq!(held.windows_registered(), DIRECTORIES);
+        let after = handles()?;
+        assert!(
+            flat(before, after),
+            "{DIRECTORIES} registrations grew handles {before} -> {after}"
+        );
+        let registered = fence_items(&mut held)?;
+        assert!(
+            registered.saturating_sub(unregistered) < FENCE_GROWTH,
+            "a fence examined {unregistered} items unregistered, {registered} registered"
+        );
+        drop(held);
+        drop(watch);
+        let before = handles()?;
+        let per_directory = (0..DIRECTORIES)
+            .map(|at| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    // FILE_FLAG_BACKUP_SEMANTICS opens a directory.
+                    .custom_flags(0x0200_0000)
+                    .open(root.path().join(format!("d{at}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let after = handles()?;
+        assert!(
+            !flat(before, after),
+            "the bound must detect a handle per directory: {before} -> {after}"
+        );
+        drop(per_directory);
         Ok(())
     }
 }

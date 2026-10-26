@@ -355,6 +355,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 &self.client,
                 Some(operation),
                 Some(append_phase),
+                None,
             )
             .await?;
             let mut acknowledged =

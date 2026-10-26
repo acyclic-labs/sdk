@@ -99,12 +99,15 @@ fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error
         before: Some((0, 0)),
         mount,
         worker: None,
-        device: Some(std::fs::File::open("/dev/null")?.into()),
+        device: Some(super::super::session::FuseDevice::Owned(
+            std::fs::File::open("/dev/null")?.into(),
+        )),
         notifier: None,
         identity: None,
         retirement: None,
         cleanup,
         failure: None,
+        shared: None,
         _allocation: allocation,
     }));
     let mut facade = super::super::FuseSession {

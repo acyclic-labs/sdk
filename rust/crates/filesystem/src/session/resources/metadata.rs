@@ -1,10 +1,9 @@
 use super::*;
 use crate::VolumeConfig;
-use crate::kernel::{FileKind, LogicalName, NameEncoding, NamespacePath};
+use crate::kernel::{NameEncoding, NamespacePath};
 use acyclic_auth::authority::PolicyDecision;
 use acyclic_auth::contract::{Attribute, RecordAttributes};
-use acyclic_stream::{AppendRecord, Record, wire};
-use prost::Message;
+use acyclic_stream::{AppendRecord, Record};
 
 pub(super) fn project(
     mut record: Record,
@@ -13,17 +12,9 @@ pub(super) fn project(
     trie: &PathTrie,
     authorization: &acyclic_stream::session::ResourceAuthorization,
 ) -> Result<FollowUpdate, StreamError> {
-    if !record
-        .headers
-        .attributes()
-        .iter()
-        .any(|a| a.name == "acyclic.record" && a.value.as_ref() == b"changes/v1")
-    {
-        return Err(StreamError::InvalidArgument);
-    }
-    let changes = wire::ChangeRecord::decode(record.value.as_ref())
-        .map_err(|_| StreamError::InvalidArgument)?;
-    if changes.context.len() != 56
+    let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
+    if !acyclic_stream::is_changes(&record.headers)
+        || changes.context.len() != 56
         || changes.context.get(..16) != Some(volume.into_bytes().as_slice())
         || changes.entries.len() != record.headers.keys().len()
         || changes
@@ -49,7 +40,13 @@ pub(super) fn project(
     let now = authorization.now_unix_seconds()?;
     let mut visible = Vec::with_capacity(changes.entries.len());
     for entry in changes.entries {
-        let path = path(&entry, config)?;
+        let path = crate::publication_changes::entry::path(
+            &entry.key,
+            &entry.operation,
+            &entry.metadata,
+            config,
+        )
+        .map_err(|_| StreamError::InvalidArgument)?;
         // The lossless full path is authoritative. A 1-KiB indexed key must
         // never authorize a longer path or an alternate native representation.
         let prepared = trie
@@ -81,8 +78,8 @@ pub(super) fn project(
         });
     }
     let projected = AppendRecord::changes(
-        changes.context,
-        visible,
+        &changes.context,
+        &visible,
         record
             .headers
             .attributes()
@@ -96,77 +93,6 @@ pub(super) fn project(
     Ok(FollowUpdate::Record(record))
 }
 
-fn take<'a>(bytes: &mut &'a [u8], count: usize) -> Result<&'a [u8], StreamError> {
-    let (first, remaining) = bytes
-        .split_at_checked(count)
-        .ok_or(StreamError::InvalidArgument)?;
-    *bytes = remaining;
-    Ok(first)
-}
-fn number(bytes: &mut &[u8]) -> Result<u32, StreamError> {
-    Ok(u32::from_le_bytes(
-        take(bytes, 4)?
-            .try_into()
-            .map_err(|_| StreamError::InvalidArgument)?,
-    ))
-}
-fn path(entry: &wire::ChangeEntry, config: VolumeConfig) -> Result<NamespacePath, StreamError> {
-    let mut bytes = entry.metadata.as_ref();
-    if entry.operation == "publish" && bytes.is_empty() && entry.key.is_empty() {
-        return NamespacePath::new(vec![], config.limits).map_err(|_| StreamError::InvalidArgument);
-    }
-    if !matches!(entry.operation.as_str(), "create" | "remove" | "update") {
-        return Err(StreamError::InvalidArgument);
-    }
-    let depth = number(&mut bytes)? as usize;
-    if depth > config.limits.maximum_path_depth as usize || depth > bytes.len() / 6 {
-        return Err(StreamError::InvalidArgument);
-    }
-    let mut components = Vec::with_capacity(depth);
-    for _ in 0..depth {
-        let tag = *take(&mut bytes, 1)?
-            .first()
-            .ok_or(StreamError::InvalidArgument)?;
-        let encoding = NameEncoding::from_tag(tag).map_err(|_| StreamError::InvalidArgument)?;
-        let length = number(&mut bytes)? as usize;
-        if length > config.limits.maximum_component_bytes as usize {
-            return Err(StreamError::InvalidArgument);
-        }
-        components.push(
-            LogicalName::new(
-                encoding,
-                take(&mut bytes, length)?.to_vec(),
-                config.limits.maximum_component_bytes,
-            )
-            .map_err(|_| StreamError::InvalidArgument)?,
-        );
-    }
-    let mut present = [false; 2];
-    for seen in &mut present {
-        match take(&mut bytes, 1)? {
-            [0] => {}
-            [1] => {
-                *seen = true;
-                take(&mut bytes, 16)?;
-                let tag = *take(&mut bytes, 1)?
-                    .first()
-                    .ok_or(StreamError::InvalidArgument)?;
-                FileKind::from_tag(tag).map_err(|_| StreamError::InvalidArgument)?;
-                take(&mut bytes, 32)?;
-            }
-            _ => return Err(StreamError::InvalidArgument),
-        }
-    }
-    let expected = match entry.operation.as_str() {
-        "create" => [false, true],
-        "remove" => [true, false],
-        _ => [true, true],
-    };
-    if !bytes.is_empty() || present != expected {
-        return Err(StreamError::InvalidArgument);
-    }
-    NamespacePath::new(components, config.limits).map_err(|_| StreamError::InvalidArgument)
-}
 fn canonical_resource(
     volume: VolumeId,
     path: &NamespacePath,
@@ -191,6 +117,7 @@ fn canonical_resource(
 #[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
 mod tests {
     use super::*;
+    use acyclic_stream::wire;
     #[test]
     fn long_full_metadata_paths_cannot_hide_behind_an_allowed_truncated_key() {
         let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
@@ -198,14 +125,12 @@ mod tests {
         let text = components.join("/");
         assert!(text.len() > acyclic_stream::MAX_RECORD_KEY_BYTES);
         let mut metadata = Vec::new();
-        metadata.extend_from_slice(&u32::try_from(components.len()).unwrap().to_le_bytes());
+        prost::encoding::encode_varint(components.len() as u64 + 1, &mut metadata);
         for component in components {
             metadata.push(1);
-            metadata.extend_from_slice(&u32::try_from(component.len()).unwrap().to_le_bytes());
+            prost::encoding::encode_varint(component.len() as u64, &mut metadata);
             metadata.extend_from_slice(component.as_bytes());
         }
-        metadata.push(0);
-        metadata.push(1);
         metadata.extend_from_slice(&[7; 16]);
         metadata.push(1);
         metadata.extend_from_slice(&[8; 32]);
@@ -216,7 +141,13 @@ mod tests {
             operation: "create".into(),
             metadata: metadata.into(),
         };
-        let full = path(&entry, config).unwrap();
+        let full = crate::publication_changes::entry::path(
+            &entry.key,
+            &entry.operation,
+            &entry.metadata,
+            config,
+        )
+        .unwrap();
         assert_eq!(full.depth(), 130);
         let volume = VolumeId::from_bytes([13; 16]);
         let full_resource = canonical_resource(volume, &full, config).unwrap();
@@ -301,7 +232,8 @@ mod tests {
         let mut context = volume.into_bytes().to_vec();
         context.extend_from_slice(&[8; 32]);
         context.extend_from_slice(&1u64.to_le_bytes());
-        let appended = AppendRecord::changes(context.into(), vec![entry.clone()], vec![]).unwrap();
+        let appended =
+            AppendRecord::changes(&context, std::slice::from_ref(&entry), vec![]).unwrap();
         let record = Record {
             sequence: 3,
             value: appended.value,
@@ -341,7 +273,15 @@ mod tests {
         for cut in [0, 1, entry.metadata.len() - 1] {
             let mut malformed = entry.clone();
             malformed.metadata = malformed.metadata.slice(..cut);
-            assert!(path(&malformed, config).is_err());
+            assert!(
+                crate::publication_changes::entry::path(
+                    &malformed.key,
+                    &malformed.operation,
+                    &malformed.metadata,
+                    config
+                )
+                .is_err()
+            );
         }
     }
 }

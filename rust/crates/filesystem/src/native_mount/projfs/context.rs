@@ -1,76 +1,36 @@
 use super::*;
 
-/// Original invocation retained through mounted I/O.
-pub struct NativeMountWorkScope {
-    runtime: Arc<Runtime>,
-    work: crate::NativeMaterializationWork,
-    generation: u64,
-}
+pub use crate::native_mount::shared::metering::NativeMountWorkScope;
 
-impl NativeMountWorkScope {
-    pub(super) fn enter(
-        runtime: Arc<Runtime>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Self, NativeMountError> {
-        work.admit(crate::WorkCounters::UNCHARGED)?;
-        let generation = lock_recover(&runtime.active_work).enter(work)?;
-        Ok(Self {
-            runtime,
-            work: work.clone(),
-            generation,
-        })
+impl crate::native_mount::shared::metering::MeteredView for Runtime {
+    fn activate(&self, work: &crate::NativeMaterializationWork) -> Result<u64, NativeMountError> {
+        lock_recover(&self.active_work).enter(work)
     }
 
-    /// Retains this same invocation for one physical I/O operation.
-    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
-        Self::enter(Arc::clone(&self.runtime), &self.work)
-    }
-}
-
-impl Drop for NativeMountWorkScope {
-    fn drop(&mut self) {
-        lock_recover(&self.runtime.active_work).leave(&self.work, self.generation);
+    fn deactivate(&self, work: &crate::NativeMaterializationWork, generation: u64) {
+        lock_recover(&self.active_work).leave(work, generation);
     }
 }
 
 impl Runtime {
+    /// The meter a callback charges, the view's own when no invocation is
+    /// active; `authored` checks the callback as a write.
     pub(super) fn native_work(
         &self,
         authored: bool,
     ) -> Result<crate::NativeMaterializationWork, NativeMountError> {
-        let original = self.source.native_original_work()?;
-        match (&*lock_recover(&self.original_work), &original) {
-            (Some(installed), Some(current)) if same_work(installed, current) => {}
-            (None, None) => {}
-            _ => return Err(NativeMountError::Lifecycle("source invocation changed")),
-        }
-        let guard = self.source.native_callback_guard();
-        match (&self.callback_guard, &guard) {
-            (Some(installed), Some(current)) if Arc::ptr_eq(installed, current) => {}
-            (None, None) => {}
-            _ => return Err(NativeMountError::Lifecycle("source authorization changed")),
-        }
-        let work = lock_recover(&self.active_work)
-            .upgrade()
-            .unwrap_or_else(|| lock_recover(&self.work).clone());
-        if original
-            .as_ref()
-            .is_some_and(|original| !same_work(original, &work))
-        {
-            return Err(NativeMountError::Lifecycle(
-                "callback invocation differs from its source",
-            ));
-        }
-        work.admit(crate::WorkCounters::UNCHARGED)?;
-        if let Some(guard) = guard {
-            let callbacks = super::super::adapter::CallbackRuntime::existing()?;
-            if authored {
-                callbacks.verify_callback(&work, || guard.check_write(&work))?;
-            } else {
-                callbacks.verify_callback(&work, || guard.check(&work))?;
-            }
-        }
-        Ok(work)
+        let active = lock_recover(&self.active_work).upgrade();
+        let original = lock_recover(&self.original_work).clone();
+        let fallback = lock_recover(&self.work).clone();
+        crate::native_mount::shared::metering::select(
+            self.source.as_ref(),
+            active,
+            original.as_ref(),
+            self.callback_guard.as_ref(),
+            Some(fallback),
+            authored,
+        )?
+        .ok_or(NativeMountError::ControlPending)
     }
 }
 

@@ -207,6 +207,16 @@ impl ViewLedger {
         ViewStamp::of(&self.latest)
     }
 
+    /// Whether every intervening invalidation has an exact, enumerated effect.
+    pub(super) fn enumerated_since(
+        &self,
+        stamp: ViewStamp,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<bool, MountSourceError> {
+        storage::charge(carrier, scan_work(2))?;
+        Ok(stamp.precedes_none_of(&self.everything) && stamp.precedes_none_of(&self.unconfirmed))
+    }
+
     pub(super) fn record(
         &self,
         change: &ViewChange<'_>,

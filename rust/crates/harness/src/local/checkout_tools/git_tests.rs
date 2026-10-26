@@ -56,9 +56,8 @@ proptest! {
             let authority_id = acyclic_fs::kernel::volume_authority_id(workspace.volume_id());
             let cancellation = CancellationToken::new();
             let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let head = match authority.create_authority::<()>(authority_id, acyclic_fs::Epoch::GENESIS, &mut work, None).await.unwrap() {
-                acyclic_fs::CreateAuthorityOutcome::Created(head) => head,
-                _ => unreachable!("fresh authority"),
+            let acyclic_fs::CreateAuthorityOutcome::Created(head) = authority.create_authority::<()>(authority_id, acyclic_fs::Epoch::GENESIS, &mut work, None).await.unwrap() else {
+                unreachable!("fresh authority");
             };
             // A zero lease is deliberately rejected by the window's schema.
             let mut lease = lease;

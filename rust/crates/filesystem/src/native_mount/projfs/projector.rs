@@ -11,6 +11,16 @@ impl Projector {
             worker: Mutex::new(None),
             lifecycle: Mutex::new(ProjectorLifecycle::default()),
             lifecycle_changed: Condvar::new(),
+            service: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Signals new work: wakes `settle` waiters and this view's runner,
+    /// its own lifecycle thread or the shared instance's projector service.
+    pub(super) fn wake(&self) {
+        self.changed.notify_all();
+        if let Some(hook) = self.service.get() {
+            hook.schedule();
         }
     }
 
@@ -48,16 +58,20 @@ impl Projector {
         if directories.is_empty() {
             return Ok(());
         }
-        let workers = std::thread::available_parallelism()
+        let wanted = std::thread::available_parallelism()
             .map_or(1, usize::from)
             .min(MATERIALIZE_WORKERS);
+        // Helpers come from one process-wide pool, so concurrent views
+        // never hold more than its size in extra threads between them.
+        let helpers = MaterializeHelpers::acquire(wanted.saturating_sub(1));
         let queue = MaterializeQueue::new(directories);
         std::thread::scope(|scope| {
-            for _ in 1..workers {
+            for _ in 0..helpers.count() {
                 scope.spawn(|| self.materialize_from(&projection, &queue));
             }
             self.materialize_from(&projection, &queue);
         });
+        drop(helpers);
         queue.finish()
     }
 
@@ -95,7 +109,7 @@ impl Projector {
                         names: HashMap::new(),
                     });
                 state.stale.insert(directory);
-                self.changed.notify_all();
+                self.wake();
                 return Ok(Vec::new());
             }
             Err(error) => return Err(format!("listing {directory:?}: {error}")),
@@ -133,7 +147,7 @@ impl Projector {
                 if placed == Placed::Retry {
                     names.remove(entry.component.as_slice());
                     lock_recover(&self.state).stale.insert(directory.clone());
-                    self.changed.notify_all();
+                    self.wake();
                     continue;
                 }
                 if is_directory {
@@ -382,7 +396,7 @@ impl Projector {
             }
             state.stale.insert(parent);
         }
-        self.changed.notify_all();
+        self.wake();
     }
 
     pub(super) fn invalidate_all(&self) {
@@ -391,7 +405,7 @@ impl Projector {
         state.stale.extend(state.directories.keys().cloned());
         let written = std::mem::take(&mut state.written);
         state.pending.extend(written);
-        self.changed.notify_all();
+        self.wake();
     }
 
     pub(super) fn attach(self: &Arc<Self>, runtime: Arc<Runtime>) -> Result<(), NativeMountError> {
@@ -405,106 +419,140 @@ impl Projector {
     }
 
     pub(super) fn run(&self, runtime: &Runtime, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) {
-        let source = runtime.source.as_ref();
         let mut state = lock_recover(&self.state);
         loop {
-            loop {
-                if state.stopping {
-                    return;
-                }
-                if state.processed < state.notified || state.retry || !state.stale.is_empty() {
-                    break;
-                }
-                if state.pending.is_empty() {
+            match state.readiness() {
+                Readiness::Stopped => return,
+                Readiness::Ready => {}
+                Readiness::Idle => {
                     state = self
                         .changed
                         .wait(state)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                } else {
+                    continue;
+                }
+                Readiness::Delayed => {
                     let (next, waited) = self
                         .changed
                         .wait_timeout(state, HELD_RETRY)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state = next;
-                    if waited.timed_out() {
-                        break;
+                    if !waited.timed_out() {
+                        continue;
                     }
                 }
             }
-            let work = match runtime.native_work(false) {
-                Ok(work) => work,
-                Err(error) => {
-                    state.failure = Some(error.to_string());
-                    state.processed = state.notified;
-                    state.retry = false;
-                    self.changed.notify_all();
-                    state = self
-                        .changed
-                        .wait_timeout(state, HELD_RETRY)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .0;
-                    continue;
-                }
-            };
-            let projection = Projection {
-                runtime,
-                work: &work,
-                context,
-                starting: false,
-            };
-            state.retry = false;
-            state.relisting = !state.stale.is_empty();
-            let through = state.notified;
-            let mut listings = state
-                .directories
-                .iter()
-                .filter(|(path, directory)| {
-                    directory
-                        .basis
-                        .is_none_or(|basis| !basis.still_describes(source, path, None))
-                })
-                .map(|(path, _)| path.clone())
-                .collect::<Vec<_>>();
-            listings.extend(state.stale.drain());
-            listings.sort_by_key(|path| path.components().len());
-            listings.dedup();
-            let superseded = state
-                .written
-                .iter()
-                .filter(|(path, written)| written.superseded(source, path))
-                .map(|(path, written)| (path.clone(), *written))
-                .collect::<Vec<_>>();
-            let mut unconfirmed = Vec::new();
-            for (path, written) in superseded {
-                state.written.remove(&path);
-                if written.unconfirmed(source, &path) {
-                    unconfirmed.push((path, written));
-                } else {
-                    state.pending.insert(path, written);
-                }
+            let ran;
+            (state, ran) = self.pass(runtime, context, state);
+            if !ran {
+                state = self
+                    .changed
+                    .wait_timeout(state, HELD_RETRY)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
             }
-            drop(state);
-            self.confirm(source, unconfirmed);
-            let mut failure = None;
-            for directory in listings {
-                let _tree = lock_recover(&self.tree);
-                let known = lock_recover(&self.state)
-                    .directories
-                    .contains_key(&directory);
-                if known && let Err(error) = self.materialize_locked(projection, vec![directory]) {
-                    failure.get_or_insert(error);
-                }
-            }
-            self.replace_pending(projection, &mut failure);
-            self.clear_vacated(projection);
-            state = lock_recover(&self.state);
-            state.relisting = false;
-            state.processed = state.processed.max(through);
-            if let Some(failure) = failure {
-                state.failure.get_or_insert(failure);
-            }
-            self.changed.notify_all();
         }
+    }
+
+    /// One pass for the shared projector service; returns what the view
+    /// needs next.
+    pub(super) fn service_pass(
+        &self,
+        runtime: &Runtime,
+        context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    ) -> Readiness {
+        let state = lock_recover(&self.state);
+        let readiness = state.readiness();
+        if matches!(readiness, Readiness::Stopped | Readiness::Idle) {
+            return readiness;
+        }
+        let (state, ran) = self.pass(runtime, context, state);
+        match state.readiness() {
+            Readiness::Stopped => Readiness::Stopped,
+            // A pass that could not start retries after the held interval.
+            _ if !ran => Readiness::Delayed,
+            readiness => readiness,
+        }
+    }
+
+    /// Relists stale directories and replaces superseded entries once.
+    /// Returns false when the pass could not start.
+    fn pass<'a>(
+        &'a self,
+        runtime: &Runtime,
+        context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+        mut state: MutexGuard<'a, ProjectorState>,
+    ) -> (MutexGuard<'a, ProjectorState>, bool) {
+        let source = runtime.source.as_ref();
+        let work = match runtime.native_work(false) {
+            Ok(work) => work,
+            Err(error) => {
+                state.failure = Some(error.to_string());
+                state.processed = state.notified;
+                state.retry = false;
+                self.changed.notify_all();
+                return (state, false);
+            }
+        };
+        let projection = Projection {
+            runtime,
+            work: &work,
+            context,
+            starting: false,
+        };
+        state.retry = false;
+        state.relisting = !state.stale.is_empty();
+        let through = state.notified;
+        let mut listings = state
+            .directories
+            .iter()
+            .filter(|(path, directory)| {
+                directory
+                    .basis
+                    .is_none_or(|basis| !basis.still_describes(source, path, None))
+            })
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        listings.extend(state.stale.drain());
+        listings.sort_by_key(|path| path.components().len());
+        listings.dedup();
+        let superseded = state
+            .written
+            .iter()
+            .filter(|(path, written)| written.superseded(source, path))
+            .map(|(path, written)| (path.clone(), *written))
+            .collect::<Vec<_>>();
+        let mut unconfirmed = Vec::new();
+        for (path, written) in superseded {
+            state.written.remove(&path);
+            if written.unconfirmed(source, &path) {
+                unconfirmed.push((path, written));
+            } else {
+                state.pending.insert(path, written);
+            }
+        }
+        drop(state);
+        self.confirm(source, unconfirmed);
+        let mut failure = None;
+        for directory in listings {
+            let _tree = lock_recover(&self.tree);
+            let known = lock_recover(&self.state)
+                .directories
+                .contains_key(&directory);
+            if known && let Err(error) = self.materialize_locked(projection, vec![directory]) {
+                failure.get_or_insert(error);
+            }
+        }
+        self.replace_pending(projection, &mut failure);
+        self.clear_vacated(projection);
+        state = lock_recover(&self.state);
+        state.relisting = false;
+        state.processed = state.processed.max(through);
+        if let Some(failure) = failure {
+            state.failure.get_or_insert(failure);
+        }
+        self.changed.notify_all();
+        (state, true)
     }
 
     pub(super) fn replace_pending(&self, projection: Projection<'_>, failure: &mut Option<String>) {
@@ -575,7 +623,7 @@ impl Projector {
         let mut state = lock_recover(&self.state);
         if !state.pending.is_empty() {
             state.retry = true;
-            self.changed.notify_all();
+            self.wake();
         }
     }
 

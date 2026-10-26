@@ -43,7 +43,8 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
             {
                 return Err(StreamError::Unavailable);
             }
-            let headers = crate::RecordHeaders::new(
+            let headers = crate::changes::record_headers(
+                &bytes,
                 keys.iter()
                     .map(|key| parse_bytes(key).map(Into::into))
                     .collect::<Result<Vec<_>, _>>()?,

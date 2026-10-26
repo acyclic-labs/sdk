@@ -40,6 +40,16 @@ pub use sources::CommandSources;
 mod syntax;
 pub use files::*;
 pub use session::CommandSession;
+
+/// Encode a bounded outcome for command files or a live query projection.
+/// Both use the same terminal omission envelope when the encoded result is too large.
+pub fn encode_command_result(
+    sequence: u64,
+    result: &crate::Result<serde_json::Value>,
+    maximum: u64,
+) -> crate::Result<Vec<u8>> {
+    session::output_bytes(sequence, result, maximum)
+}
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",

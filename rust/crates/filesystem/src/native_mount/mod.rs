@@ -51,6 +51,7 @@ pub use adapter::{
 mod view_gate;
 pub(crate) use view_gate::ViewGateReadAdmissions;
 
+mod shared;
 mod view_ledger;
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
@@ -138,6 +139,23 @@ fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
 /// Entries a driver requests from the source per directory page.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const DIRECTORY_PAGE_SIZE: u32 = 256;
+/// Callback threads one mount runs, whatever the host's core count: enough
+/// that callbacks proceed while others block in the source, and a constant
+/// cost per live mount.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CALLBACK_THREADS: u32 = 8;
+/// Descriptors one mount's startup holds at once: its destination probe, the
+/// device and the session's own copy of it, the mount helper's channel pair
+/// and diagnostic file, and the root it validates.
+const MOUNT_STARTUP_DESCRIPTORS: usize = 8;
+
+/// Admits one mount's startup descriptors from the process-wide allowance,
+/// waiting while other startups and materializations hold it, so mounts that
+/// start together cannot exhaust the process's descriptors.
+async fn admit_mount_startup()
+-> Result<acyclic_native_runtime::DescriptorAdmission, NativeMountError> {
+    Ok(acyclic_native_runtime::admit_descriptors(MOUNT_STARTUP_DESCRIPTORS).await?)
+}
 /// Named attributes a driver requests from the source per page.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
@@ -164,45 +182,11 @@ fn create_metadata(clock: &clock::Clock, mode: u32, kind: u32, uid: u32, gid: u3
     }
 }
 
-#[cfg(target_os = "linux")]
-fn errno(error: &MountSourceError) -> i32 {
-    match error.semantic_error() {
-        MountSourceError::AccessDenied => libc::EACCES,
-        MountSourceError::ReadOnly => libc::EROFS,
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::NotDirectory => libc::ENOTDIR,
-        MountSourceError::IsDirectory => libc::EISDIR,
-        MountSourceError::DirectoryNotEmpty => libc::ENOTEMPTY,
-        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
-        MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
-        MountSourceError::NativeWork(error) => native_materialization_errno(error),
-        MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
-        MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
-        MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
-        MountSourceError::Stale | MountSourceError::Cancelled => libc::ESTALE,
-        MountSourceError::Engine(_)
-        | MountSourceError::Work(_)
-        | MountSourceError::Filesystem(_)
-        | MountSourceError::ServicesNotInitialized
-        | MountSourceError::ServiceUnavailable(_)
-        | MountSourceError::MutationFinalization { .. }
-        | MountSourceError::OriginalSnapshotUnavailable
-        | MountSourceError::Indeterminate
-        | MountSourceError::PublicationRetryLimit
-        | MountSourceError::NativeRecordJson(_, _)
-        | MountSourceError::NativeRecordLockTimeout(_, _)
-        | MountSourceError::NativeRecordOwnershipConflict(_, _)
-        | MountSourceError::NativeRecordContextTransaction(_, _)
-        | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
-        MountSourceError::Metadata(_) => libc::EIO,
-        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-        MountSourceError::NativeWatchOriginalIo(_)
-        | MountSourceError::NativeWatchOriginalBackend(_) => libc::EIO,
-    }
+/// The errno every native callback answers for a failure, as the shared
+/// classification spells it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
+    shared::outcome::CallbackFailure::of(error).errno()
 }
 
 #[cfg(target_os = "windows")]
@@ -255,6 +239,10 @@ fn start_driver_into<F>(
 where
     F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
 {
+    #[cfg(not(any(target_os = "linux", windows)))]
+    if request.shared {
+        return Err(NativeMountError::UnsupportedTarget);
+    }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         #[cfg(target_os = "linux")]
@@ -286,6 +274,8 @@ mod fence_io;
 mod recovery;
 mod registry;
 pub use recovery::*;
+pub(crate) use shared::shared_view_destination;
+pub use shared::{shared_view_namespace_contains, shared_view_root, shared_view_root_in};
 mod startup;
 pub use startup::*;
 mod session;

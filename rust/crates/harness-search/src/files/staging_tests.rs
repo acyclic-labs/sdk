@@ -122,8 +122,9 @@ impl Interleaved {
                 commit_id: CommitId::from_bytes([0; 32]),
                 committed_at_micros: 0,
             })
-            .ok()
-            .flatten()
+            .ok()?
+            .into_iter()
+            .next()
         })?;
         match write.key {
             FileKey::Task {

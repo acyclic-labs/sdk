@@ -39,12 +39,23 @@ impl<T: DeserializeOwned> Decoder for BoundedCodec<T> {
 
     fn decode(&mut self, buffer: &mut BytesMut) -> io::Result<Option<T>> {
         self.refresh_decoder_bound();
-        self.decoder.decode(buffer).map_err(Into::into)
+        loop {
+            let before = buffer.len();
+            let message = self.decoder.decode(buffer).map_err(io::Error::from)?;
+            if message.is_some() || buffer.len() == before {
+                return Ok(message);
+            }
+            // rmcp returns None for an ignored notification even when a
+            // complete following frame remains. Consume it before waiting
+            // for more input; strict progress makes the loop finite.
+        }
     }
 
     fn decode_eof(&mut self, buffer: &mut BytesMut) -> io::Result<Option<T>> {
-        self.refresh_decoder_bound();
-        self.decoder.decode_eof(buffer).map_err(Into::into)
+        match self.decode(buffer)? {
+            Some(message) => Ok(Some(message)),
+            None => self.decoder.decode_eof(buffer).map_err(Into::into),
+        }
     }
 }
 
@@ -99,8 +110,46 @@ impl Write for BoundedWrite<'_> {
     }
 }
 
-#[cfg(test)]
-#[cfg(acyclic_harness_loom)]
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn skipped_notification_does_not_hide_the_next_buffered_frame() -> io::Result<()> {
+        // The current rmcp server enum accepts extension notifications.
+        // Use a response-only receiver to exercise an actual ignored frame.
+        #[derive(Debug, serde::Deserialize, PartialEq)]
+        struct Response {
+            id: u32,
+            result: serde_json::Value,
+        }
+        let messages = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/private\"}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n";
+        let expected = Response {
+            id: 1,
+            result: serde_json::json!({}),
+        };
+        let mut codec = BoundedCodec::<Response>::new(Arc::new(AtomicU32::new(256)));
+        assert_eq!(
+            codec.decode(&mut BytesMut::from(messages.as_slice()))?,
+            Some(expected)
+        );
+
+        // Actual dependency behavior is the negative control: None asks a
+        // framed reader to wait despite an already buffered response.
+        let mut underlying = JsonRpcMessageCodec::<Response>::new_with_max_length(256);
+        let mut pending = BytesMut::from(messages.as_slice());
+        assert!(
+            underlying
+                .decode(&mut pending)
+                .map_err(io::Error::from)?
+                .is_none()
+        );
+        assert!(!pending.is_empty());
+        Ok(())
+    }
+}
+
+#[cfg(all(test, acyclic_harness_loom))]
 mod tests {
     use super::*;
     use loom::sync::mpsc;

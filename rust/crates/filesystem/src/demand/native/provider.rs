@@ -212,6 +212,7 @@ impl NativeDemandSource {
             let bytes = self
                 .inner
                 .root
+                .held(context)?
                 .read_source_link(relative, maximum, context)?;
             let retained = bytes
                 .retained_capacity()
@@ -223,10 +224,18 @@ impl NativeDemandSource {
             return Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, retained));
         }
         #[cfg(unix)]
-        let (bytes, allocation) = self.inner.root.read_link(relative, maximum, context)?;
+        let (bytes, allocation) = self
+            .inner
+            .root
+            .held(context)?
+            .read_link(relative, maximum, context)?;
         #[cfg(windows)]
         let (bytes, allocation) = {
-            let (units, allocation) = self.inner.root.read_link(relative, maximum, context)?;
+            let (units, allocation) = self
+                .inner
+                .root
+                .held(context)?
+                .read_link(relative, maximum, context)?;
             let result = (|| {
                 let copying = WorkCounters {
                     bytes_copied: units.len() as u64 * 2,

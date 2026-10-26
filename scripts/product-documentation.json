@@ -1,6 +1,9 @@
 [
   "docs/buildbox-install.md",
   "docs/gate-feature-cache.md",
+  "plugin/scripts/fixtures/PROVENANCE.md",
+  "plugin/tests/hosts/fixtures/native/PROVENANCE.md",
+  "rust/crates/harness/fixtures/hosts/README.md",
   "scripts/buildbox/README.md",
   "scripts/graphcoder-e2e/README.md",
   ".github/pull_request_template.md",

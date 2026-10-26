@@ -35,14 +35,15 @@ impl Fixture {
         // can distinguish its leaked lock from another fixture's valid lock.
         // All retirement, refill, unlink and unlock operations stay unchanged.
         let registry = root.path().join("registry.lock");
-        guard.as_mut().unwrap().registry_file = Some(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&registry)?
-                .into(),
-        );
+        guard.as_mut().unwrap().registry_file =
+            Some(crate::sync::native::Arc::new(registry::Registry::new(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&registry)?
+                    .into(),
+            )));
         let before = work.receipt();
         let live = work.live_allocation_bytes();
         let fence = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?.0;
@@ -173,17 +174,13 @@ fn legacy_release(guard: &mut MountDestinationGuard) -> Result<(), NativeMountEr
         wait: None,
         pending: None,
     };
-    lock_mount_file_with_work(registry, true, &mut work)?;
+    let held = registry.lock(&mut work)?;
     let removed = crate::native_host::remove_ascii_leaf(
         guard.parent_directory.as_ref().unwrap(),
         guard.cleanup_name.as_ref().unwrap(),
         &mut work,
     );
-    let unlocked = crate::native_host::NativeHostWork::attempt_io(
-        &mut work,
-        crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-        || fence_io::unlock(registry),
-    );
+    let unlocked = held.unlock(&mut work);
     removed?;
     unlocked?;
     guard.file.take();
@@ -220,9 +217,9 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
         .registry_file
         .as_ref()
         .unwrap();
-    fence_io::lock(private)?;
+    fence_io::lock(&private.file)?;
     assert!(!fixture.registry_is_unlocked()?);
-    fence_io::unlock(private)?;
+    fence_io::unlock(&private.file)?;
     assert!(fixture.registry_is_unlocked()?);
     global.unlock()?;
     Ok(())
@@ -246,10 +243,9 @@ fn failed_cleanup_retries_keep_registry_release_funded_after_cancellation()
                     )
                 ))
             ));
-            assert!(
-                !fixture.registry_is_unlocked()?,
-                "control did not strand the lock"
-            );
+            // Its refused unlock no longer strands the lock: the registry's
+            // hold unlocks as it drops. The control still fails retirement.
+            assert!(fixture.registry_is_unlocked()?);
             assert!(!fixture.exact_retired(1, 0));
         } else {
             assert!(fixture.packet.retire(None)?);

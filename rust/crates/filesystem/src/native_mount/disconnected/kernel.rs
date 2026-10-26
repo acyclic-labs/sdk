@@ -21,6 +21,7 @@ pub(in crate::native_mount) struct Kernel {
     fixture: std::sync::OnceLock<Fixture>,
     pinned: std::sync::OnceLock<(RawFd, u64)>,
     missing_registry_wait: std::sync::OnceLock<()>,
+    missing_registry_admission: std::sync::OnceLock<()>,
     registry_directory: std::sync::OnceLock<std::path::PathBuf>,
     recovery_fence: std::sync::OnceLock<(u64, u64, RawFd)>,
     state: Mutex<State>,
@@ -55,6 +56,7 @@ impl Kernel {
             fixture: std::sync::OnceLock::new(),
             pinned: std::sync::OnceLock::new(),
             missing_registry_wait: std::sync::OnceLock::new(),
+            missing_registry_admission: std::sync::OnceLock::new(),
             registry_directory: std::sync::OnceLock::new(),
             recovery_fence: std::sync::OnceLock::new(),
             state: Mutex::new(State {
@@ -111,6 +113,16 @@ impl Kernel {
 
     pub(in crate::native_mount) fn registry_wait_disabled(&self) -> bool {
         self.missing_registry_wait.get().is_some()
+    }
+
+    // Immutable fault configuration: threads sharing the registry descriptor
+    // contend for its lock alone.
+    pub(in crate::native_mount) fn disable_registry_admission(&self) {
+        self.missing_registry_admission.set(()).unwrap();
+    }
+
+    pub(in crate::native_mount) fn registry_admission_disabled(&self) -> bool {
+        self.missing_registry_admission.get().is_some()
     }
 
     pub(in crate::native_mount) fn early_release(&self) -> bool {

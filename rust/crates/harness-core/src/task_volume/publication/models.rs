@@ -126,3 +126,86 @@ fn a_retry_revalidates_the_owner_before_publishing() {
         .unwrap_or("");
     assert!(text.contains("retry did not revalidate owner"), "{text}");
 }
+
+#[test]
+fn an_unrelated_coordinator_event_reauthorizes_with_negative_control() {
+    fn scenario(broken: bool) {
+        let provider = Arc::new(MemoryStream::default());
+        let coordinator = StreamPath::new("coordinator-model").unwrap();
+        let event = || {
+            let (record, _) =
+                segment::encode(&Write::new(FileKey::Goal, b"event".to_vec()), None).unwrap();
+            AppendRequest {
+                path: coordinator.clone(),
+                records: vec![record.into()],
+                if_tail: None,
+                idempotency_key: None,
+            }
+        };
+        loom::future::block_on(Box::pin(provider.append(event()))).unwrap();
+        let volume = loom::future::block_on(Box::pin(TaskVolume::open(
+            provider.clone(),
+            StreamPath::new("owner-fence-model").unwrap(),
+        )))
+        .unwrap();
+        let output = Write::new(
+            FileKey::Task {
+                task: Component::new("task").unwrap(),
+                file: TaskFile::Tool {
+                    turn: 0,
+                    call: Component::new("bash").unwrap(),
+                    file: ToolFile::Request,
+                },
+            },
+            b"request".to_vec(),
+        );
+        let generation = loom::future::block_on(Box::pin(volume.head())).unwrap();
+        // A sibling task's coordinator event, racing the owner's publication.
+        let peer = {
+            let provider = provider.clone();
+            let request = event();
+            loom::thread::spawn(move || {
+                loom::future::block_on(Box::pin(provider.append(request))).unwrap();
+            })
+        };
+        if broken {
+            model_checking::set_fault(model_checking::Fault::StopAfterFenceConflict);
+        }
+        let result =
+            loom::future::block_on(Box::pin(publish(&volume, generation, &output, || {
+                let provider = provider.clone();
+                let coordinator = coordinator.clone();
+                async move {
+                    // The owner still holds its fence: authorization re-derives
+                    // the condition at the coordinator's current revision.
+                    let expected = provider.watermarks(coordinator.clone()).await?.accepted;
+                    Ok::<_, Error>((
+                        vec![CommitCondition::Tail {
+                            path: coordinator,
+                            expected,
+                        }],
+                        None,
+                    ))
+                }
+            })));
+        assert!(
+            result.is_ok(),
+            "output stopped on an unrelated coordinator event"
+        );
+        peer.join().unwrap();
+        let snapshot = loom::future::block_on(Box::pin(volume.snapshot(&Query::Root, 8))).unwrap();
+        assert_eq!(snapshot.files, [output]);
+    }
+    loom::model(|| scenario(false));
+    let error = std::panic::catch_unwind(|| loom::model(|| scenario(true)))
+        .expect_err("a fence conflict without reauthorization was accepted");
+    let text = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        text.contains("output stopped on an unrelated coordinator event"),
+        "{text}"
+    );
+}

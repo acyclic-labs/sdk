@@ -1,170 +1,220 @@
-# Acyclic
+# Native host workspace coordination
 
-Acyclic gives supported native coding-agent subagents independent, recursively
-forked distributed-filesystem workspaces. Recognized filesystem tools are
-routed into the child mount; process-level confinement is a separate,
-host-and-platform-qualified capability. It adds a familiar local-history interface
-through `acyclic-plugin git`; it never intercepts bare `git` and never changes the
-filesystem SDK's fork, lease, conflict, merge, or recovery semantics.
+Claude Code, Codex and Pi run their own sessions, providers, tools, permissions
+and agent loops. Acyclic coordinates isolated workspaces, capture and merges
+through an already-running GraphCoder harness.
 
-## Install
-
-The provenance-attested npm package installs a checksum-verified platform
-binary and the Codex plugin assets:
+Start GraphCoder outside the host sandbox, from the workspace:
 
 ```sh
-npm install -g @acyclic-labs/plugin
-acyclic-plugin install codex
+graphcoder --host-workspace --host-state-directory /path/to/explicit/state
+acyclic install codex
+acyclic host codex -- --sandbox workspace-write --ask-for-approval never
 ```
 
-Rust users can install the standalone executable from crates.io:
+Codex requires **0.164.0 or later**; install and doctor reject older or unknown
+versions. Pi targets **1.1.0**. Use `--plugin-root PATH` for package assets and
+`--settings PATH` for a Claude settings file or Pi extension file.
+
+The plugin's `spawn` tool starts a separate native host process in the admitted
+lazy view under `<workspace>/.volumes/agents/`: `codex exec`, `claude -p`, or
+`pi --mode json -p`. Native instruction/config discovery and tools run there.
+Native built-in subagents keep their host behavior and **are not harness forks**.
+
+The root launcher forwards the same explicit native policy arguments to managed
+children. Spawn cannot override them. Codex requires explicit `--sandbox` and
+`--ask-for-approval`; Claude requires explicit `--settings` and
+`--permission-mode`. For Codex and Claude, the launcher records its already
+writable workspace with native `--add-dir` on both parent and child. Changing
+the child's cwd therefore retains the parent's workspace boundary, including
+the coordination mailbox; this adds no path outside the parent's workspace.
+Launch Claude with its native plugin directory enabled:
 
 ```sh
-cargo install --locked acyclic-plugin
-acyclic --help
+acyclic host claude-code -- --model claude-haiku-5-5 \
+  --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude
+acyclic host pi --
 ```
 
-Cargo names the executable `acyclic`, while the npm package and the guidance
-Acyclic gives agents call it `acyclic-plugin`. Link that name to it so agents
-can run it:
+Direct native sessions continue to work normally. Managed spawn requires the
+launcher context; host metadata does not provide the effective security policy,
+so the plugin does not guess it. Native configuration directories remain owned
+by the native host. The plugin never reads credentials or native transcripts.
+Pi's native CLI receives its saved native session file when resuming.
+
+The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
+`resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
+`prompt`. They use the same child request, inbox, control, status, delivered
+and result files as GraphCoder. Wait completes after the accepted inputs settle.
+Live observations return the latest completed result; earlier results remain in
+the shared child files.
+Cancel stops and reaps the native child process tree before capturing partial
+writes. Resume re-launches the saved native session in the recreated view.
+Archive freezes the shared child reference permanently.
+
+Capture happens at native turn/session boundaries and child process exit.
+Failed or cancelled native tools leave their filesystem state capturable;
+there is no per-tool pending-write ledger or pre/post hook pairing.
 
 ```sh
-ln -s "$(command -v acyclic)" "$(dirname "$(command -v acyclic)")/acyclic-plugin"
+acyclic agents
+acyclic fs log
+acyclic --task TASK_ID fs merge agents/CHILD_REF
 ```
 
-On Windows, in PowerShell:
+All sandboxed coordination and custody writes stay within the existing workspace:
 
-```powershell
-$acyclic = (Get-Command acyclic).Source
-New-Item -ItemType HardLink -Path (Join-Path (Split-Path $acyclic) "acyclic-plugin.exe") -Target $acyclic
+| Path | Use |
+| --- | --- |
+| `.acyclic-sdk/host-files/owner.json` | Discover the running GraphCoder owner |
+| `.acyclic-sdk/host-files/requests/` | Publish coordination requests |
+| `.acyclic-sdk/host-files/results/` | Read and retire disposable results |
+| `.acyclic-sdk/host-processes/` | Native process custody and exclusive ownership |
+| `.volumes/agents/` | Admitted native child working views |
+
+Install declares workspace access without adding sandbox roots. Commands never
+start a service or write state-directory identities or lifecycle locks. Keep the
+host sandbox and permissions enabled. GraphCoder must already be running.
+
+Codex exports [`PLUGIN_DATA`](https://developers.openai.com/plugins/build/plugins)
+to plugin hooks, and Claude exports
+[`CLAUDE_PLUGIN_DATA`](https://code.claude.com/docs/en/plugins-reference)
+to hooks and MCP servers. These are persistent plugin
+directories, not a grant for commands run by the model's sandboxed shell. The
+coordination client derives every mutable path from the admitted workspace,
+regardless of either variable or `XDG_STATE_HOME`. External or symlinked mailbox
+directories are rejected before publishing a request. Installation changes native
+configuration outside the sandbox; ordinary coordination commands never do.
+
+Pi 1.1 has [no built-in sandbox or permission layer](https://github.com/agentic-labs/pi-mono).
+It inherits the launching
+process's restrictions. The plugin preserves those restrictions; outside-write
+denial for Pi must be verified under the user's external sandbox.
+
+The no-model command contract uses fixture profiles and the real native tool:
+
+```sh
+python3 plugin/tests/hosts/sandbox-commands.py --host codex \
+  --binary /path/to/package/plugin/bin/acyclic --graphcoder /path/to/graphcoder \
+  --native /path/to/codex --package /path/to/package/plugin --scratch /path/to/scratch
 ```
 
-The Cargo installation provides the standalone CLI, service, hook runner, and
-MCP bridge. The npm package remains the distribution that also carries the
-Codex plugin, marketplace assets, and native qualification receipts for tagged
-release binaries. A source-built Cargo binary remains uncertified until that
-exact executable completes the native-mount qualification.
+Select `pi` for native RPC Bash and extension capture; that case explicitly
+reports Pi's unrestricted default. Each case checks agents, log, capture,
+merge, discard and the hook command, with an external-data mailbox negative
+control. The coordinator runs real Claude Code sandbox qualification after
+merge, with `--model claude-haiku-5-5`. These probes complement that live matrix.
 
-Native hooks and the npm-installed `acyclic-plugin` command both run the installed
-Acyclic binary directly: installation verifies it against the release checksum
-once, and no interpreter starts on each run. When the package manager skipped
-install scripts, as npm 12 does by default, the command's first run completes
-the installation.
-Codex runs command hooks through the session shell (`PowerShell` on Windows), so
-the Codex plugin delivers its per-prompt, per-tool, and subagent hooks to
-`acyclic __mcp`, a hook-only MCP server that Codex keeps connected for each
-thread and that lists no tools to the model; only `SessionStart`, which starts
-the service, and `SessionEnd` remain command hooks. Acyclic adds no
-workspace MCP server or second command implementation to shell-capable
-hosts. The separate [identity MCP server](identity-mcp.md) exposes customer
-login and identity operations with `acyclic-plugin identity-mcp`. Codex plugins do not inject
-arbitrary executables into `PATH`, so install the npm package globally when
-humans or agent shell commands need the `acyclic-plugin` command.
+On Linux, `--host pi --pi-sandbox-codex /path/to/codex` launches native Pi under
+that host's existing workspace-write sandbox. The same command contract then
+requires outside writes to fail. This tests inherited restrictions without
+adding a sandbox implementation to Pi or the plugin.
 
-`acyclic-plugin install <host>` changes only per-user host
-configuration. Pass `--project` explicitly before Acyclic may create project
-configuration. No `init` command or repository marker exists.
+The separate [identity package](identity-mcp.md) retains its command surface.
 
-Supported target names are `codex`, `claude-code`, `cursor`, `copilot`,
-`opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, and `pydantic-ai`.
-`acyclic-plugin install --detected` installs detected local targets. Process
-confinement is certified only after that host/platform's escape suite passes;
-native-mount qualification alone does not make that claim. MCP-only and
-provisional targets say so at session start.
+The probe-only resource check exercises each production host adapter with
+stand-in native sessions held alive at the N/2N samples:
 
-## Use
-
-Normal commands and filesystem tools are transparently redirected to a child
-mount. Acyclic itself has this public command surface:
-
-```text
-acyclic-plugin git <git-style argv...>
-acyclic-plugin agents
-acyclic-plugin discard agents/<ref>
-acyclic-plugin install <host> [--project]
-acyclic-plugin install --detected
-acyclic-plugin uninstall <host> [--purge]
-acyclic-plugin doctor [--json]
-acyclic-plugin login [--json]
-acyclic-plugin signup --agent [--json]
-acyclic-plugin whoami [--json]
-acyclic-plugin orgs [--json]
-acyclic-plugin refresh [--json]
-acyclic-plugin logout [--json]
-acyclic-plugin bearer --org ID --output NEW_FILE [--json]
-acyclic-plugin identity-mcp
+```sh
+python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER codex
 ```
 
-Set `ACYCLIC_API_URL` to the public Edge origin, or pass `--endpoint ORIGIN`
-to each identity command. `acyclic-plugin signup --agent` generates an Ed25519 key,
-solves the server hashcash challenge, and saves an agent registration. It
-requires new or pending agent credentials. `refresh` renews agent-only certificates with
-a key signature. `login` upgrades an agent through device approval; identity
-and org reads require the resulting session. See the
-[wire contract](identity-api.md) for the pending signup retry contract.
-`acyclic-plugin login` prints a device approval URL and
-code on stderr, waits for approval, and saves the session. With `--json`, stdout
-contains one JSON result or error; device approval instructions on stderr are
-also JSON. Identity results never include access or refresh tokens.
-`acyclic-plugin logout` revokes the OAuth session and clears local session tokens,
-preserving agent keys. Failed revocation retains credentials for retry.
+Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
+with the harness `test-support` feature for its OS resource query. These
+instrumented binaries are test fixtures, not the shipping package. The oracle
+shares the harness's descriptor/thread bounds and requires zero mount growth;
+it samples the shared mount owner, excluding descendant host-runtime resources.
+Each child acknowledges the hold barrier before and after each sample; the
+same N sessions remain alive through the 2N sample. Releasing and waiting for
+children before sampling must fail that barrier. The per-child-mount
+counterfactual must fail the same resource check. The real-host e2e
+owner runs the corresponding scale and sandbox matrix with native sessions.
 
-Use `bearer --org ID --output NEW_FILE` after login to mint a short-lived organization bearer. The new output file contains the token; stdout contains only its account, expiry and filename. Existing files and credential sidecar names are refused. Unix output has mode 0600; on Windows use a private directory with its inherited ACL.
+The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
+`Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
+native model-session acceptance.
 
-The credential file defaults to `~/.acyclic/identity.json`. Override it with
-`ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. Filenames ending in `.lock` or
-`.next` are reserved for credential sidecars. Existing Windows short filenames
-resolve to the same lock as their long name. It is bound to its API origin,
-written atomically, and locked across identity operations so two processes
-cannot reuse a rotating refresh token. Unix files have mode 0600; on Windows,
-use a private user directory with its inherited ACL. `whoami` and `orgs`
-refresh expiring access tokens automatically. A failed or ambiguous refresh
-clears the local session; sign in again rather than replaying a refresh token.
+The canonical scripted qualifier also exposes one selected scenario to an
+acceptance caller that already owns its admitted artifacts, process scope,
+fixture environment, output directory and cancellation:
 
-`acyclic-plugin install pi [--project]` installs the initial Pi diagnostics extension.
-Pi owns its context, compaction and model retries. This source slice exposes
-`/acyclic-doctor`; recursive workspace execution and host qualification remain
-pending. `acyclic-plugin uninstall pi` restores the owned settings and retains cached,
-pinned extension assets. Modified settings are preserved and reported for manual
-resolution. The current API target is Pi 1.1.0; see [Pi qualification](pi/README.md).
+```js
+import {scriptedScenario, runScriptedScenario} from './tests/hosts/qualify-scripted.mjs';
 
-`acyclic-plugin doctor` reports the packaged binary identity, plugin/cache version,
-marketplace and hook assets, service and durable recovery state, native mount
-backend, CLI availability, and an exact-binary-bound live
-platform-certification receipt. Its human and JSON forms are rendered from the
-same stable check result. Uninstall drains the service and keeps durable
-workspace/recovery state by default; `--purge` also removes that state
-explicitly.
+const scenario = scriptedScenario(artifacts, codex, 'managed:lifecycle');
+const receipt = await runScriptedScenario({
+  scenario, processes, directory, env, cwd, expired,
+});
+```
 
-Use `acyclic-plugin git status`, `diff`, `commit`, `switch`, `merge`, `rebase`, and
-the other documented local porcelain inside a managed workspace. Child refs
-are visible as `agents/...`; only a direct parent may merge or discard a child,
-and descendants publish upward one level at a time. Bare `git` continues to use
-the checkout's real `.git` repository and is intentionally absent in child
-mounts.
+This call runs exactly one scenario. It creates no process scope, profile or
+timer, and does not stage artifacts again. The returned
+`acyclic.plugin.scripted-scenario/v1` receipt records the selection, exit status,
+elapsed seconds, expiry and acceptance; `NAME.log` is created exclusively in
+the caller's output directory. Callers retain that receipt with their source,
+artifact and host admission proofs.
 
-If a merge projects text conflict markers, edit the mounted files, declare each
-resolved path with `acyclic-plugin git add <path>`, and run
-`acyclic-plugin git merge --continue`; use `acyclic-plugin git merge --abort` to restore the
-exact pre-merge workspace. Non-text conflicts are reported with typed paths and
-kinds rather than being flattened into text and must likewise be declared.
+Supported selections and required inputs are:
 
-The plugin keeps its durable state in the per-user `state-v5` namespace.
+| Selection | Admitted executables |
+| --- | --- |
+| `managed:lifecycle`, `managed:recursive`, `managed:resume` | Acyclic, GraphCoder and Codex 0.164.0 or later |
+| `managed:bounded-framing` | Acyclic only |
+| `scale:codex`, `scale:claude-code`, `scale:pi` | Acyclic and GraphCoder with resource instrumentation |
 
-With `ACYCLIC_LOG` enabled, the background service writes to `logs/service.log`
-in that namespace, or to `ACYCLIC_LOG_FILE` when supplied (`{pid}` is still
-expanded). Each destination retains at most 4 MiB in the active log and 4 MiB
-in `service.log.1` (or the supplied filename plus `.1`). The active file's lock
-serializes cooperating writers, including aliases. Oversize records and filesystem failures
-discard diagnostic output; logging never writes to JSON-RPC standard output.
-Rollover copies through one bounded `.1.next` staging file and publishes the
-archive only after copying succeeds. Transient logical retention is at most
-12 MiB per destination; restart removes the reserved staging entry. Logs are
-best effort: individual writes can be partial and no power-loss durability is
-promised. A failed archive copy preserves both published files.
-Oversized existing files and invalid destinations are rejected at startup.
-Explicit PID destinations retain independently.
-Explicit foreground file logging uses the same bound and lock. Foreground
-stderr logging and Chrome trace output keep their existing behavior.
-Log destinations are trusted host configuration: reserve the active and
-archive/staging names, and keep the active file in place while writers run.
+For standalone framing, the same qualifier stages only its required binary
+from Cargo's JSON output and uses the shared fixture and case-budget owners:
+
+```sh
+node plugin/tests/hosts/qualify-scripted.mjs CARGO_JSON FRESH_OUTPUT managed:bounded-framing
+```
+
+Managed-session and scale fixtures currently require Linux POSIX launch tools.
+Their captured native initialization records and scripted process behavior
+do not establish live model acceptance. Windows generic process transport does
+not translate these fixture executables; a Windows fixture launch contract and
+macOS selected-case qualification remain separate acceptance work.
+
+Captured Codex version output and its command, package integrity, binary hashes
+and capture provenance live in `rust/crates/harness/fixtures/hosts/`. The shared
+harness owns the version-admission test. Malformed controls are explicit
+mutations of a real capture. The session stand-ins replay captured native
+initialization records for all three hosts from `tests/hosts/fixtures/native/`,
+with SHA-256 admission and capture provenance. Managed-model acceptance remains
+with the coordinator and the real-host owner.
+
+The no-model CLI admission regression uses the actual native Codex 0.146.0 and
+0.164.0 executables, checking their output against those captures. Provide
+absolute admitted executable paths in `ACYCLIC_TEST_BINARY`,
+`ACYCLIC_TEST_CODEX_OLD` and `ACYCLIC_TEST_CODEX_CURRENT`, then run:
+
+```sh
+node --test --test-reporter=tap --test-concurrency=1 plugin/tests/hosts/version-admission.test.mjs
+```
+
+It checks both install and doctor reject the old host before reading the plugin
+package or changing configuration, and supported doctor retains the sandbox
+roots. Profiles are fresh and contain no login. Windows execution uses the
+shared process host and the fleet's serial Windows runner.
+
+The no-model MCP framing probe runs all three host entry points without opening
+workspace state or native login files:
+
+```sh
+python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
+```
+
+It checks CRLF, buffered requests and an oversized peer that keeps its input
+pipe open without sending a newline. Framing uses the shared harness MCP codec.
+
+The mailbox regression runs the production MCP shim for every host against a
+local protocol fixture, without launching a native session:
+
+```sh
+python3 plugin/tests/hosts/settled-session.py ACYCLIC
+```
+
+Settled empty and stopped sessions must remain read-only. Queued messages must
+reach the next-input claim; orphaned turns must recover before claiming.
+Pending waits reuse the refresh or completion observation for that child;
+responding to a waiter must not issue a second observation request.

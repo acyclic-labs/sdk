@@ -1,11 +1,18 @@
 {
   "mcpServers": {
-    "acyclic-hooks": {
+    "acyclic-sessions": {
       "type": "stdio",
       "command": "./bin/acyclic",
-      "args": ["__mcp"],
+      "args": [
+        "__mcp",
+        "codex"
+      ],
       "cwd": ".",
-      "env_vars": ["XDG_STATE_HOME"],
+      "env_vars": [
+        "ACYCLIC_HOST_ARGS",
+        "ACYCLIC_WORKSPACE",
+        "ACYCLIC_TASK"
+      ],
       "required": true
     }
   }

@@ -354,7 +354,11 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
         let (mounts, signed) = harness
             .workspace()
             .unwrap()
-            .created_mounts(&project, &binding_context)
+            .created_mounts(
+                &project,
+                binding_context.task(),
+                binding_context.effective_scope(),
+            )
             .await?;
         let check_binding = |signed: &crate::core::Scope| {
             assert_eq!(

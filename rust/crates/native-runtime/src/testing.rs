@@ -22,6 +22,12 @@ pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
 pub use process::{ProcessCapture, capture_process};
+mod resources;
+pub mod scale;
+pub use resources::{
+    Descriptor, ProcessResources, descriptors, descriptors_naming, process_resources,
+    sample_process_resources,
+};
 mod metadata;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]
@@ -351,6 +357,14 @@ where
             result
         }),
     )
+}
+
+pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    CURRENT.sync_scope(context, || spawn(future))
 }
 
 /// Executes the real blocking closure, retaining ownership after caller drop.

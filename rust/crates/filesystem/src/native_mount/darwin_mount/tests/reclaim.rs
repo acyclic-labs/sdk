@@ -13,6 +13,7 @@ fn request(
         volume_id: source.volume_id()?,
         destination: destination.to_path_buf(),
         writable: true,
+        shared: false,
     })
 }
 

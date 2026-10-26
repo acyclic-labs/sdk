@@ -80,11 +80,15 @@ impl ProcessCustodyLease {
     }
 }
 
-/// One owner's directory of live process-tree records.
+/// One owner's directory of live process-tree records. It holds no
+/// descriptor while idle: each spawn opens the directory and checks that it is
+/// still the one this custody fenced, and the tree's record keeps that
+/// descriptor while the tree runs.
 pub struct ProcessCustody {
     path: PathBuf,
+    /// The directory's device and inode when this custody opened it.
     #[cfg(unix)]
-    directory: File,
+    identity: (u64, u64),
 }
 
 /// One tree's record, removed by its owner once the tree is gone.
@@ -105,7 +109,7 @@ impl ProcessCustody {
         Ok(Self {
             path: path.to_path_buf(),
             #[cfg(unix)]
-            directory: File::open(path)?,
+            identity: unix::identity(&File::open(path)?)?,
         })
     }
 
@@ -233,10 +237,17 @@ mod unix {
     use std::process::Command;
 
     impl ProcessCustody {
-        /// Makes `command`'s direct child the warden of its tree.
+        /// Makes `command`'s direct child the warden of its tree. Answers
+        /// the custody directory, opened for this spawn, which the caller
+        /// keeps open while the spawn borrows it.
         pub(in crate::process_tree) fn arm(&self, command: &mut Command) -> io::Result<File> {
-            let directory = self.directory.try_clone()?;
-            let descriptor = self.directory.as_raw_fd();
+            let directory = File::open(&self.path)?;
+            // A directory put in place of the fenced one holds records no
+            // fence of this custody has seen.
+            if identity(&directory)? != self.identity {
+                return Err(io::Error::other("process custody directory was replaced"));
+            }
+            let descriptor = directory.as_raw_fd();
             let owner = libc::pid_t::try_from(std::process::id())
                 .map_err(|_| io::ErrorKind::InvalidInput)?;
             // SAFETY: the warden makes only async-signal-safe calls, and the
@@ -252,6 +263,15 @@ mod unix {
         pub(in crate::process_tree) const fn new(directory: File, pid: libc::pid_t) -> Self {
             Self { directory, pid }
         }
+    }
+
+    /// An open directory's device and inode.
+    pub(super) fn identity(directory: &File) -> io::Result<(u64, u64)> {
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() {
+            return Err(io::ErrorKind::NotADirectory.into());
+        }
+        Ok((metadata.dev(), metadata.ino()))
     }
 
     /// Fences one record. False for a name that is not a record.

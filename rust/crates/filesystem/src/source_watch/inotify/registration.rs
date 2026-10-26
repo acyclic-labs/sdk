@@ -60,7 +60,7 @@ pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
 )]
 pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
     watch: &Shared,
-    root: &OwnedFd,
+    root: BorrowedFd<'_>,
     ancestors: &mut Vec<(i32, std::ffi::OsString)>,
     retained: &mut u64,
     cleanup: &mut StartupCleanup,
@@ -326,6 +326,18 @@ impl Shared {
             })?;
             let mut held: Option<(OwnedFd, u64)> = None;
             let result = (|| {
+                // A cached root is reopened for this admission only.
+                let cached = self
+                    .cached_root
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+                    .map(|root| root.held(work))
+                    .transpose()?;
+                let root = cached.as_ref().map_or_else(
+                    || self.root.load(Ordering::Acquire),
+                    |root| root.directory_fd(),
+                );
                 let mut added = false;
                 for component in directory.components() {
                     let std::path::Component::Normal(name) = component else {
@@ -342,10 +354,9 @@ impl Shared {
                         prefix.push(component);
                         Ok::<_, DemandError>(())
                     })?;
-                    let parent = held.as_ref().map_or_else(
-                        || self.root.load(Ordering::Acquire),
-                        |(directory, _)| directory.as_raw_fd(),
-                    );
+                    let parent = held
+                        .as_ref()
+                        .map_or(root, |(directory, _)| directory.as_raw_fd());
                     let opened = match Self::open_component_with_work(parent, name, work) {
                         Ok(directory) => directory,
                         Err(DemandError::Io(error))

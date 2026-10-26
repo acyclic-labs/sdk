@@ -82,10 +82,7 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     // Creation already owns the validated leaf. Return that capability rather
     // than discarding it and making every caller reopen the ambient path.
     let identity = directory_identity(&directory, work)?;
-    Ok(HostRoot {
-        directory,
-        identity,
-    })
+    Ok(HostRoot::from_parts(directory, identity))
 }
 
 pub(crate) fn directory_path<W: NativeHostWork>(

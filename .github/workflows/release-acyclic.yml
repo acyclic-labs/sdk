@@ -300,6 +300,7 @@ jobs:
 
   installer-recovery:
     name: Transactional installer recovery
+    needs: build
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:
@@ -313,8 +314,25 @@ jobs:
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: acyclic-linux-x64-gnu
+          path: ${{ runner.temp }}/installer-binary
+      - name: Prepare the shipping installer fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 "$RUNNER_TEMP/installer-binary/linux-x64-gnu/acyclic"
+          npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+          npm ci --prefix plugin/scripts/fixtures --ignore-scripts --no-audit --no-fund || {
+            printf '%s\n' 'step=prepare pinned installer package managers; recovery: npm ci --prefix plugin/scripts/fixtures --ignore-scripts --no-audit --no-fund' >&2
+            exit 1
+          }
       - name: Exercise transactional installer recovery
-        run: node --test plugin/scripts/install.test.mjs
+        env:
+          ACYCLIC_TEST_BINARY: ${{ runner.temp }}/installer-binary/linux-x64-gnu/acyclic
+          ACYCLIC_TEST_TEMP_ROOT: ${{ runner.temp }}/installer-fixtures
+        run: node --test --test-reporter=tap plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs plugin/scripts/install-durable-rename.test.mjs plugin/scripts/install-custody.test.mjs
 
   assemble:
     name: Validate and assemble

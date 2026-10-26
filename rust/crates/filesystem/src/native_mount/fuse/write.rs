@@ -5,17 +5,11 @@ impl FuseProjection {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        match (
-            &self.core.callback_guard,
-            self.core.source.native_callback_guard(),
-        ) {
-            (None, None) => Ok(()),
-            (Some(original), Some(current)) if Arc::ptr_eq(original, &current) => {
-                crate::native_mount::adapter::CallbackRuntime::existing()?
-                    .verify_callback(work, || original.check_write(work))
-            }
-            _ => Err(NativeMountError::ControlPending),
-        }
+        crate::native_mount::shared::metering::verify_write(
+            self.core.source.as_ref(),
+            self.core.callback_guard.as_ref(),
+            work,
+        )
     }
 
     pub(super) fn source_write<T>(

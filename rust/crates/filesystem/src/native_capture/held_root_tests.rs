@@ -1,6 +1,39 @@
 use super::*;
 use crate::native_host::stat_probe::{Fault, Probe, events};
 
+#[test]
+fn immutable_publication_cannot_follow_a_replaced_directory_or_leaf() -> Result<(), DemandError> {
+    let fixture = tempfile::tempdir()?;
+    let path = fixture.path().join("workspace");
+    let moved = fixture.path().join("moved");
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir(&path)?;
+    std::fs::create_dir(&outside)?;
+    let held = hold_root(&path)?;
+    std::fs::rename(&path, &moved)?;
+    std::os::unix::fs::symlink(&outside, &path)?;
+    held.publish_immutable(std::path::Path::new("request"), b"retained")?;
+    assert_eq!(std::fs::read(moved.join("request"))?, b"retained");
+    assert!(!outside.join("request").exists());
+    std::fs::write(outside.join("target"), b"unchanged")?;
+    std::os::unix::fs::symlink(outside.join("target"), moved.join("link"))?;
+    assert!(
+        held.publish_immutable(std::path::Path::new("link"), b"replaced")
+            .is_err()
+    );
+    assert_eq!(std::fs::read(outside.join("target"))?, b"unchanged");
+    held.remove_file(std::path::Path::new("request"))?;
+    assert!(!moved.join("request").exists());
+    assert!(!outside.join("request").exists());
+    held.remove_file(std::path::Path::new("link"))?;
+    assert_eq!(std::fs::read(outside.join("target"))?, b"unchanged");
+    assert!(
+        held.remove_file(std::path::Path::new("../outside/target"))
+            .is_err()
+    );
+    Ok(())
+}
+
 /// One checkout capture: hold the root, then read its incarnation.
 fn capture(path: &std::path::Path) -> Result<crate::NativeRootIncarnation, DemandError> {
     hold_root(path)?.incarnation()

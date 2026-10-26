@@ -66,7 +66,10 @@ impl CoreLog {
         let length = bytes.len() as u64;
         let file_control = work.map(super::super::group::file_control).transpose()?;
         let mut log = Self {
-            file: Arc::new(file),
+            file: Arc::new(acyclic_native_runtime::CachedFile::new_metered(
+                file, &paths.current, !root.inspection, !root.inspection,
+                work.map(crate::materializer::NativeMaterializationWork::runtime_meter).as_deref(),
+            )?),
             length,
             flushed: 0,
             epoch: crate::identity::fresh_time_uuid(),

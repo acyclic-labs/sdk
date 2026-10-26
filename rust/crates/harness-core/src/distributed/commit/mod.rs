@@ -104,11 +104,12 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
     clippy::too_many_lines,
     reason = "Acknowledgment and same-key recovery settle one originally admitted commit quota."
 )]
-pub(crate) async fn commit<P: StreamProvider>(
+pub(crate) async fn commit<P: StreamProvider + ?Sized>(
     (request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     client: &Arc<P>,
     operation: Option<OperationId>,
     mut phase: Option<&mut CommitPhase>,
+    deadline_unix_millis: Option<u64>,
 ) -> Result<(acyclic_stream::CommitOutcome, u64)> {
     if let Some(phase) = phase.as_deref_mut() {
         *phase = CommitPhase::Uncommitted;
@@ -162,7 +163,7 @@ pub(crate) async fn commit<P: StreamProvider>(
             .cloned()
         {
             let result = client
-                .native_commit(request, None, original.runtime_meter())
+                .native_commit(request, deadline_unix_millis, original.runtime_meter())
                 .await;
             return match native_call_result(&original, result)? {
                 Ok(output) => {
@@ -177,7 +178,10 @@ pub(crate) async fn commit<P: StreamProvider>(
                 Err(error) => Ok(Err(error)),
             };
         }
-        Ok::<_, Error>(client.commit(request).await)
+        Ok::<_, Error>(match deadline_unix_millis {
+            Some(deadline) => client.commit_before(request, deadline).await,
+            None => client.commit(request).await,
+        })
     }
     .await?;
     if let Err(error) = &committed
@@ -302,7 +306,7 @@ pub(super) async fn append_if_execution_idle<P: StreamProvider>(
         add_condition(&mut request, condition)?;
     }
     add_record(&mut request, stream.path().clone(), record.clone())?;
-    let (outcome, retained) = commit(request, client, Some(operation), None).await?;
+    let (outcome, retained) = commit(request, client, Some(operation), None, None).await?;
     quota.adopt(retained)?;
     let CommitOutcome::Committed(envelope) = &outcome else {
         return Err(guarded_boundary(

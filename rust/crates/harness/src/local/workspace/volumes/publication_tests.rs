@@ -258,6 +258,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
             .mount_authority
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("test mount owner"))?,
+        &workspace.task_view_admission,
     )
     .await?;
     let rebound = rebound.named(Some("scratch"))?.1;
@@ -265,7 +266,10 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         rebound.view.source.as_ref().unwrap(),
         original
     ));
-    assert_eq!(rebound.native_root, None);
+    assert_ne!(
+        rebound.native_root.as_deref(),
+        Some(original.destination.as_path())
+    );
     let alias = task.path().join(SCRATCH_PATH);
     std::fs::rename(&alias, task.path().join("original-alias")).map_err(storage)?;
     link_directory(blocked.path(), &alias).map_err(storage)?;
@@ -351,6 +355,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
         destination: mounts.root.join(".volumes/zzz"),
         options: scratch.options.clone(),
+        task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(0)),
         execution: StateArc::new(AsyncMutex::new(())),
@@ -425,6 +430,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
         destination: mounts.root.join(".volumes/aaa"),
         options: scratch.options.clone(),
+        task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(1)),
         execution: StateArc::new(AsyncMutex::new(())),
@@ -485,6 +491,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
         destination: other.path().join(SCRATCH_PATH),
         options: first.options.clone(),
+        task_view_admission: Arc::clone(&first.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(0)),
         execution: StateArc::new(AsyncMutex::new(())),

@@ -54,7 +54,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 ..WorkCounters::UNCHARGED
             })?;
             let requested = usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?;
-            let bytes = staged_native_read(&self.spill, offset, requested, native).await?;
+            let spill = spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?;
+            let bytes = staged_native_read(spill, offset, requested, native).await?;
             let observed = byte_length(&bytes);
             native.record_admitted(WorkCounters {
                 object_bytes_read: observed,
@@ -79,12 +80,15 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     ..WorkCounters::UNCHARGED
                 })
                 .map_err(crate::async_storage::object_error)?;
-            self.read_spilled(&[(object_id, offset, length)])
-                .await?
-                .pop()
-                .ok_or(ObjectStoreError::Corrupt)?
-                .into_parts()
-                .1
+            read_spilled(
+                spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?,
+                &[(object_id, offset, length)],
+            )
+            .await?
+            .pop()
+            .ok_or(ObjectStoreError::Corrupt)?
+            .into_parts()
+            .1
         };
         let mut index = self.index_mut();
         if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES

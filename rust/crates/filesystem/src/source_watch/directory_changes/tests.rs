@@ -42,7 +42,7 @@ fn driver(
 }
 fn assert_retired(shared: &Shared) {
     assert!(shared.retired(&shared.lock_reads()));
-    assert!(!shared.buffer_owned.load(Ordering::Acquire));
+    assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
 }
 fn wait_retired(shared: &Shared) -> Instant {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -128,55 +128,12 @@ fn startup_denies_cleanup_before_native_io() -> TestResult {
     Ok(())
 }
 #[test]
-fn reader_startup_publication_waits_for_acknowledgement() -> TestResult {
-    let (_root, held) = held()?;
-    let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    let watch = driver(&held, &mut work)?;
-    assert_eq!(
-        *watch
-            .shared
-            .reader_ready
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-        ReaderStartup::Ready,
-    );
-    for outcome in [ReaderStartup::Ready, ReaderStartup::Failed] {
-        *watch
-            .shared
-            .reader_ready
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = ReaderStartup::Pending;
-        let acknowledged = std::thread::scope(|scope| {
-            let (entered, observed) = std::sync::mpsc::channel();
-            let shared = &watch.shared;
-            let waiter = scope.spawn(move || {
-                let ready = shared
-                    .reader_ready
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                entered.send(()).unwrap();
-                // Without the production wait, Pending is captured while
-                // this lock still excludes the acknowledgement below.
-                *shared.await_reader_startup(ready)
-            });
-            observed.recv().unwrap();
-            shared.finish_reader_startup(outcome);
-            waiter.join().unwrap()
-        });
-        assert_eq!(acknowledged, outcome);
-    }
-    watch.stop_with_work(&mut work)?;
-    assert_retired(&watch.shared);
-    Ok(())
-}
-#[test]
 fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     let (_root, held) = held()?;
     let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     let watch = driver(&held, &mut startup)?;
     assert!(!watch.shared.recursive);
     let directory = watch.shared.directory.load(Ordering::Acquire);
-    let completed = watch.shared.completed.load(Ordering::Acquire);
     let owned = watch.platform_owned_bytes();
     assert!(matches!(
         watch.stop_with_cleanup_wait(&CancellationToken::new()),
@@ -206,10 +163,11 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
         Err(DemandError::Cancelled)
     ));
     assert_eq!(work.work, WorkCounters::UNCHARGED);
+    // Stopping cancels the pending read, waits for it and closes the
+    // directory: two writes.
     let mut denied = DemandWork::new(
         WorkBudget {
-            backend_read_operations: 1,
-            backend_write_operations: 4,
+            backend_write_operations: 1,
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
@@ -222,12 +180,11 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     assert!(!watch.is_stopped());
     assert!(watch.delivery().is_exact());
     assert_eq!(watch.shared.directory.load(Ordering::Acquire), directory);
-    assert_eq!(watch.shared.completed.load(Ordering::Acquire), completed);
     assert_eq!(watch.platform_owned_bytes(), owned);
     let mut admitted = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     watch.stop_with_work(&mut admitted)?;
     assert_eq!(admitted.work.allocation_operations, 0);
-    assert_eq!(watch.platform_owned_bytes(), owned - BUFFER_BYTES);
+    assert_eq!(watch.platform_owned_bytes(), owned - INITIAL_BUFFER_BYTES);
     assert_retired(&watch.shared);
     assert!(!watch.delivery().is_exact());
     assert!(watch.is_stopped());
@@ -273,79 +230,11 @@ mod original {
         });
     }
     #[test]
-    fn child_reads_keep_root_authority_and_registration_keeps_its_owner() -> TestResult {
-        for source_bytes_read in [0, 1024 * 1024] {
-            for observer_bytes in [0, 4 * 1024 * 1024] {
-                let (root, held) = held()?;
-                let cancellation = CancellationToken::new();
-                let producer = birth(
-                    WorkBudget {
-                        source_bytes_read,
-                        ..budget()
-                    },
-                    &cancellation,
-                );
-                let observer = birth(
-                    WorkBudget {
-                        source_bytes_read: observer_bytes,
-                        ..budget()
-                    },
-                    &cancellation,
-                );
-                let mut producer_work =
-                    crate::NativeMaterializationWork::from_meter(producer.clone());
-                let mut observer_work =
-                    crate::NativeMaterializationWork::from_meter(observer.clone());
-                let source = driver(&held, &mut producer_work)?;
-                let child = source.start_directory_with_work(
-                    &held,
-                    Arc::new(Quiet),
-                    true,
-                    &mut observer_work,
-                )?;
-                assert!(
-                    child
-                        .delivery()
-                        .original
-                        .as_ref()
-                        .unwrap()
-                        .shares_ledger(&observer_work)
-                );
-                let callback = child.delivery().callback_work();
-                assert!(
-                    callback
-                        .native_source_work()
-                        .unwrap()
-                        .shares_ledger(&producer_work)
-                );
-                let observer_prefix = observer_work.receipt();
-                std::fs::write(root.path().join("payload"), b"changed")?;
-                let result = child.fence_with_work(Duration::from_secs(1), &mut producer_work);
-                if source_bytes_read == 0 {
-                    assert!(matches!(result, Err(DemandError::Work(_))));
-                    assert_eq!(producer_work.receipt().source_bytes_read, 0);
-                } else {
-                    assert!(result?);
-                    assert!(producer_work.receipt().source_bytes_read > 0);
-                }
-                assert_eq!(
-                    observer_work.receipt().source_bytes_read,
-                    observer_prefix.source_bytes_read
-                );
-                // No caller cancellation is under test here. Retire accepted
-                // resources directly; a cancellable try-lock may report a
-                // transient WorkerUnavailable while a completion owns it.
-                child.stop_accepted_cleanup()?;
-                source.stop_accepted_cleanup()?;
-            }
-        }
-        Ok(())
-    }
-    #[test]
     fn native_birth_denies_the_known_final_drop_plan_before_the_first_native_owner() -> TestResult {
         let (_root, held) = held()?;
+        // One write short of the six that two retirement attempts reserve.
         let budget = WorkBudget {
-            backend_write_operations: 9,
+            backend_write_operations: 5,
             ..budget()
         };
         let birth = birth(budget, &CancellationToken::new());
@@ -532,19 +421,16 @@ mod original {
         assert!(owner.upgrade().is_some());
         assert_eq!(completion.directory.load(Ordering::Acquire), directory);
         assert!(is_open(&completion.directory));
-        assert!(completion.buffer_owned.load(Ordering::Acquire));
+        assert_eq!(
+            completion.buffer_bytes.load(Ordering::Acquire),
+            INITIAL_BUFFER_BYTES
+        );
         assert_eq!(completion.lock_reads().cursor, cursor);
         assert!(matches!(
             watch.stop_with_cleanup_wait(&CancellationToken::new()),
             Err(DemandError::NativeWorkUnavailable)
         ));
-        assert!(
-            completion
-                .thread
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_some()
-        );
+        assert!(!completion.parked.load(Ordering::Acquire));
         // The retry still owns its terminal reservation. Its capacity cannot
         // return to the original ledger until the protected handle retires.
         let parked_budget = birth.with_original_leaf(|work| work.budget);

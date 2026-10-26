@@ -37,6 +37,16 @@ mod compaction;
 mod config;
 pub(crate) mod context;
 mod files;
+#[cfg(feature = "native-execution")]
+pub mod host_files;
+#[cfg(feature = "native-execution")]
+pub mod host_owner;
+#[cfg(feature = "native-execution")]
+pub mod host_process;
+#[cfg(feature = "native-execution")]
+pub(crate) mod host_task;
+#[cfg(feature = "native-execution")]
+pub mod host_workspace;
 mod inheritance;
 mod input;
 pub(crate) mod open;
@@ -76,14 +86,13 @@ pub struct LocalHarness {
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
-    model: Model,
-    /// Unbound: each model command binds it to its executing task's reader.
-    provider: Arc<dyn ModelProvider>,
+    /// Absent for passive native-host coordination.
+    agent: Option<(Model, Arc<dyn ModelProvider>)>,
     context_manifest: Option<crate::conversation::FileRef>,
     active_directory: String,
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]
-    settings: Arc<crate::native_settings::SettingsConfig>,
+    settings: Option<Arc<crate::native_settings::SettingsConfig>>,
     #[cfg(test)]
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
@@ -113,6 +122,17 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
+        self.agent.as_ref().ok_or_else(|| {
+            Error::Unsupported("native hosts own their agent loop and tool execution".into())
+        })
+    }
+    #[cfg(any(test, feature = "hooks"))]
+    fn settings(&self) -> Result<&Arc<crate::native_settings::SettingsConfig>> {
+        self.settings.as_ref().ok_or_else(|| {
+            Error::Unsupported("native hosts own their settings and permissions".into())
+        })
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()

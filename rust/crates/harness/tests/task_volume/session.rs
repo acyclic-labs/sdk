@@ -121,7 +121,7 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         for (offset, sequence) in (unread_from..generation.position).enumerate() {
             let record = unread.next().await.ok_or("unread follow ended")??;
             assert_eq!(record.sequence, sequence);
-            let file = Write::from_record(&record)?.ok_or("publication omitted file")?;
+            let file = Write::from_record(&record)?.into_iter().next().ok_or("publication omitted file")?;
             let expected = if offset < 40 { format!("goal-{offset}") } else { "between-tiers".into() };
             assert_eq!(file.bytes.as_ref(), expected.as_bytes());
         }

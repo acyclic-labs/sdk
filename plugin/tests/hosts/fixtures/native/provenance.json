@@ -1,0 +1,103 @@
+[
+  {
+    "host": "codex",
+    "version": "codex-cli 0.164.0",
+    "command": [
+      "/work/src/plugin/tests/hosts/node_modules/@openai/codex/bin/codex.js",
+      "sandbox",
+      "-c",
+      "sandbox_mode=\"workspace-write\"",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+      "--",
+      "/work/src/plugin/tests/hosts/node_modules/@openai/codex/bin/codex.js",
+      "-c",
+      "model_provider=\"offline\"",
+      "-c",
+      "model_providers.offline={name=\"offline\",base_url=\"http://127.0.0.1:1/v1\",wire_api=\"responses\",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}",
+      "exec",
+      "--skip-git-repo-check",
+      "--json",
+      "protocol output capture; no model endpoint exists"
+    ],
+    "cwd": "exclusive fixture HOME under job target",
+    "credential_variables_inherited": false,
+    "network": "native Codex workspace-write, network_access=false, nonexistent localhost provider",
+    "returncode": 124,
+    "stdout_sha256": "896acd5fe39caa12b5d42fda705a5d7cdd96c2c7f10f439fe55dd19e4298fe4c",
+    "stderr_sha256": "1aa26269eb1cc57f86b235a03cda53c004edb5b1e9fc99d4da4f00843293d721",
+    "fixture_sha256": "896acd5fe39caa12b5d42fda705a5d7cdd96c2c7f10f439fe55dd19e4298fe4c",
+    "event_types": [
+      "thread.started"
+    ],
+    "transformation": "Retain the first original session initialization JSON object line, without rewriting fields.",
+    "source_job": "/work/target"
+  },
+  {
+    "host": "claude-code",
+    "version": "2.1.278 (Claude Code)",
+    "command": [
+      "/work/src/plugin/tests/hosts/node_modules/@openai/codex/bin/codex.js",
+      "sandbox",
+      "-c",
+      "sandbox_mode=\"workspace-write\"",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+      "--",
+      "/work/src/plugin/tests/hosts/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--model",
+      "claude-haiku-5-5",
+      "protocol output capture; no model endpoint exists"
+    ],
+    "cwd": "exclusive fixture HOME under job target",
+    "credential_variables_inherited": false,
+    "network": "native Codex workspace-write with network_access=false",
+    "returncode": 1,
+    "stdout_sha256": "402f11e400ef6474114cd30f8ce2b2b97fda055239371407a8196797fd9a24aa",
+    "stderr_sha256": "addf42aa1e0c4297366b46f2681b878790b0124dee903b88f77b23b6ca07b909",
+    "fixture_sha256": "e3ff8587d72b8df14adc19df1b9badc9c2bb63985d57d68b550c2fc645c1a800",
+    "event_types": [
+      "system",
+      "assistant",
+      "result"
+    ],
+    "transformation": "Retain the first original session initialization JSON object line, without rewriting fields."
+  },
+  {
+    "host": "pi",
+    "version": "1.1.0",
+    "command": [
+      "/work/src/plugin/tests/hosts/node_modules/@openai/codex/bin/codex.js",
+      "sandbox",
+      "-c",
+      "sandbox_mode=\"workspace-write\"",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+      "--",
+      "/work/src/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+      "--mode",
+      "json",
+      "--provider",
+      "anthropic",
+      "--model",
+      "claude-haiku-5-5",
+      "-p",
+      "protocol output capture; no model endpoint exists"
+    ],
+    "cwd": "exclusive fixture HOME under job target",
+    "credential_variables_inherited": false,
+    "network": "native Codex workspace-write with network_access=false",
+    "returncode": 1,
+    "stdout_sha256": "ff7f7c2a456e1334299d4c0944c19212bb7a973eba16263c799f6258660095c0",
+    "stderr_sha256": "c3c6a0af258a345d69e693078bb4f5b42dad999be26679104b3a8ac250ec0d1d",
+    "fixture_sha256": "ff7f7c2a456e1334299d4c0944c19212bb7a973eba16263c799f6258660095c0",
+    "event_types": [
+      "session"
+    ],
+    "transformation": "Retain the first original session initialization JSON object line, without rewriting fields."
+  }
+]

@@ -64,7 +64,7 @@ impl NativeDemandSource {
         let claim = context.claim(bytes)?;
         ownership.retain(claim, context)?;
         let watch = Arc::new(crate::source_watch::NativeSourceWatch::start(
-            &self.inner.root,
+            &self.inner.root.held(context)?,
             Arc::new(NativeChanges {
                 inner: Arc::downgrade(&self.inner),
                 excluded: self.excluded.clone(),
@@ -244,12 +244,15 @@ impl NativeChanges {
                         let metadata = {
                             #[cfg(unix)]
                             {
-                                inner.root.stat(relative, work)
+                                inner
+                                    .root
+                                    .held(work)
+                                    .and_then(|root| root.stat(relative, work))
                             }
                             #[cfg(windows)]
                             {
                                 crate::native_host::with_wide_path(relative, work, |path, work| {
-                                    inner.root.stat(path, work)
+                                    inner.root.held(work).and_then(|root| root.stat(path, work))
                                 })
                             }
                         };

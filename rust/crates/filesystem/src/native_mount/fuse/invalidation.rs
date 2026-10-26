@@ -277,29 +277,44 @@ impl KernelCacheNotifier for Notifier {
     }
 }
 
+/// The inputs a failed pass ran with; an unchanged key does not retry.
+pub(super) type InvalidationKey = (Option<ViewStamp>, usize, u64, bool);
+
+/// The key of a pass that should run now, if one should.
+fn ready_invalidation(
+    core: &ProjectionCore,
+    state: &mut ProjectionState,
+    blocked: Option<InvalidationKey>,
+) -> Option<InvalidationKey> {
+    let activation = core
+        .startup_meter
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let key = (
+        state.invalidation.notified,
+        state.invalidation.deferred.len(),
+        activation.generation,
+        activation.depth != 0,
+    );
+    drop(activation);
+    if state.invalidation.is_pending(state.invalidation.notified)
+        && (blocked != Some(key) || state.invalidation.retry)
+    {
+        state.invalidation.retry = false;
+        return Some(key);
+    }
+    None
+}
+
 pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     let mut blocked = None;
     loop {
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut wait_key = loop {
+        let wait_key = loop {
             if core.stopping.load(Ordering::Acquire) {
                 return;
             }
-            let activation = core
-                .startup_meter
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let key = (
-                state.invalidation.notified,
-                state.invalidation.deferred.len(),
-                activation.generation,
-                activation.depth != 0,
-            );
-            drop(activation);
-            if state.invalidation.is_pending(state.invalidation.notified)
-                && (blocked != Some(key) || state.invalidation.retry)
-            {
-                state.invalidation.retry = false;
+            if let Some(key) = ready_invalidation(core, &mut state, blocked) {
                 break key;
             }
             #[cfg(all(test, acyclic_fs_loom))]
@@ -310,67 +325,95 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
                 .unwrap_or_else(PoisonError::into_inner);
         };
         drop(state);
-        let mut through = None;
-        let mut sdk_failure = None;
-        let result = core.request(|work| {
-            let mut items = {
-                let mut state = core.state_to_finish();
-                let items = state.invalidation.take_deferred();
-                wait_key.0 = state.invalidation.notified;
-                wait_key.1 = state.invalidation.deferred.len();
-                items
-            };
-            loop {
-                let dropped = drop_kernel_caches(notifier, &mut items, work, &mut sdk_failure);
-                core.state_to_finish()
-                    .invalidation
-                    .retain_pending_tail(items);
-                dropped?;
-                // A refused notification stays queued, so this pass settles
-                // nothing past it and the next pass starts with it.
-                if through.is_some() || sdk_failure.is_some() {
-                    break;
-                }
-                let mut state = core.state_to_finish();
-                let Some(target) = state
-                    .invalidation
-                    .notified
-                    .filter(|target| state.invalidation.scanned < Some(*target))
-                else {
-                    through = state.invalidation.notified;
-                    break;
-                };
-                items = state
-                    .stale_kernel_items(core.source.as_ref(), target, work)?
-                    .map(Vec::into_iter);
-                state.invalidation.scanned = Some(target);
-                through = Some(target);
-            }
-            sdk_failure.take().map_or(Ok(()), Err)
-        });
-        let denied = result.is_err();
-        // A failed pass does not fail the mount. It is logged, nothing new is
-        // cached until a pass succeeds, and the pass is retried once its
-        // inputs change.
-        if let Err((cause, _)) = &result {
-            tracing::warn!(
-                error = %sdk_failure.as_ref().unwrap_or(cause),
-                "FUSE invalidation failed; caching stops until a later pass succeeds"
-            );
-        }
-        {
-            let mut state = core.state_to_finish();
-            state.invalidation.denied = denied;
-            if denied {
-                state.invalidation.denials = state.invalidation.denials.wrapping_add(1);
-            }
-            state.invalidation.finish(through);
-        }
-        if denied {
-            core.invalidation.notify_all();
-        }
-        blocked = if denied { Some(wait_key) } else { None };
+        blocked = invalidation_pass(core, notifier, wait_key);
     }
+}
+
+/// One pass for a view of a shared session, if one should run now. The view's
+/// blocked key lives in its core, since one thread serves every view.
+pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
+    let mut blocked = core
+        .shared_blocked
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let ready = {
+        let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if core.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        ready_invalidation(core, &mut state, *blocked)
+    };
+    if let Some(key) = ready {
+        *blocked = invalidation_pass(core, notifier, key);
+    }
+}
+
+/// Runs one pass; returns the key to block on if the pass was denied.
+fn invalidation_pass(
+    core: &ProjectionCore,
+    notifier: &impl KernelCacheNotifier,
+    mut wait_key: InvalidationKey,
+) -> Option<InvalidationKey> {
+    let mut through = None;
+    let mut sdk_failure = None;
+    let result = core.request(|work| {
+        let mut items = {
+            let mut state = core.state_to_finish();
+            let items = state.invalidation.take_deferred();
+            wait_key.0 = state.invalidation.notified;
+            wait_key.1 = state.invalidation.deferred.len();
+            items
+        };
+        loop {
+            let dropped = drop_kernel_caches(notifier, &mut items, work, &mut sdk_failure);
+            core.state_to_finish()
+                .invalidation
+                .retain_pending_tail(items);
+            dropped?;
+            // A refused notification stays queued, so this pass settles
+            // nothing past it and the next pass starts with it.
+            if through.is_some() || sdk_failure.is_some() {
+                break;
+            }
+            let mut state = core.state_to_finish();
+            let Some(target) = state
+                .invalidation
+                .notified
+                .filter(|target| state.invalidation.scanned < Some(*target))
+            else {
+                through = state.invalidation.notified;
+                break;
+            };
+            items = state
+                .stale_kernel_items(core.source.as_ref(), target, work)?
+                .map(Vec::into_iter);
+            state.invalidation.scanned = Some(target);
+            through = Some(target);
+        }
+        sdk_failure.take().map_or(Ok(()), Err)
+    });
+    let denied = result.is_err();
+    // A failed pass does not fail the mount. It is logged, nothing new is
+    // cached until a pass succeeds, and the pass is retried once its
+    // inputs change.
+    if let Err((cause, _)) = &result {
+        tracing::warn!(
+            error = %sdk_failure.as_ref().unwrap_or(cause),
+            "FUSE invalidation failed; caching stops until a later pass succeeds"
+        );
+    }
+    {
+        let mut state = core.state_to_finish();
+        state.invalidation.denied = denied;
+        if denied {
+            state.invalidation.denials = state.invalidation.denials.wrapping_add(1);
+        }
+        state.invalidation.finish(through);
+    }
+    if denied {
+        core.invalidation.notify_all();
+    }
+    denied.then_some(wait_key)
 }
 
 fn drop_kernel_caches(

@@ -89,29 +89,27 @@ pub(super) async fn staged_native_read(
         .map_err(|_| ObjectStoreError::Corrupt)
 }
 
-impl<S> StagedObjects<S> {
-    pub(super) async fn read_spilled(
-        &self,
-        spilled: &[(ObjectId, u64, u64)],
-    ) -> Result<Vec<HashedObject>, ObjectStoreError> {
-        let reads = spilled
-            .iter()
-            .map(|&(_, offset, length)| {
-                usize::try_from(length)
-                    .map(|length| OwnedRead { offset, length })
-                    .map_err(|_| ObjectStoreError::Corrupt)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let bytes = self.spill.read_batch_async(reads).await?;
-        if bytes.len() != spilled.len() {
-            return Err(ObjectStoreError::Corrupt);
-        }
-        spilled
-            .iter()
-            .zip(bytes)
-            .map(|(&(object_id, _, _), bytes)| {
-                HashedObject::verify(object_id, bytes.into()).ok_or(ObjectStoreError::Corrupt)
-            })
-            .collect()
+pub(super) async fn read_spilled(
+    spill: &NativeFile,
+    spilled: &[(ObjectId, u64, u64)],
+) -> Result<Vec<HashedObject>, ObjectStoreError> {
+    let reads = spilled
+        .iter()
+        .map(|&(_, offset, length)| {
+            usize::try_from(length)
+                .map(|length| OwnedRead { offset, length })
+                .map_err(|_| ObjectStoreError::Corrupt)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bytes = spill.read_batch_async(reads).await?;
+    if bytes.len() != spilled.len() {
+        return Err(ObjectStoreError::Corrupt);
     }
+    spilled
+        .iter()
+        .zip(bytes)
+        .map(|(&(object_id, _, _), bytes)| {
+            HashedObject::verify(object_id, bytes.into()).ok_or(ObjectStoreError::Corrupt)
+        })
+        .collect()
 }

@@ -37,15 +37,9 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
     })
     .await?;
     for relative in ["stream/stream.lock", "objects/owner.lock"] {
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(directory.path().join(relative))?;
-        acyclic_native_runtime::FileLock::try_acquire(
-            lock,
-            acyclic_native_runtime::FileLockMode::Exclusive,
-        )?
-        .unlock()?;
+        drop(acyclic_native_runtime::StoreClaim::acquire(
+            &directory.path().join(relative),
+        )?);
     }
     let objects_journal = directory.path().join("objects").join("mutations.log");
     let journal_bytes_before_reopen = std::fs::metadata(&objects_journal)?.len();

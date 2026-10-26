@@ -459,6 +459,15 @@ fn recoverable_codec_error(error: &LocalCoreStateStoreError) -> bool {
     }
 }
 
+/// Reads an immutable content-addressed record without a lock. Its one
+/// publication is a no-replace rename of a complete file and it is never
+/// rewritten, so the current name holds either nothing or the whole record.
+pub(super) fn read_published<T: DeserializeOwned>(
+    paths: &RecordPaths,
+) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
+    paths.read(&paths.current)
+}
+
 pub(super) fn promote_previous(paths: &RecordPaths) -> Result<(), LocalCoreStateStoreError> {
     paths.copy(&paths.previous, &paths.current)?;
     paths.sync()

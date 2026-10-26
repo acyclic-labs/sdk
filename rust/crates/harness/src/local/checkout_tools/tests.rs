@@ -231,22 +231,23 @@ mod fencing;
 
 fn task_cache(broken: bool) {
     loom::model(move || {
-        let cache = StateArc::new(AsyncMutex::new(std::collections::BTreeMap::new()));
+        let views = StateArc::new(child_views::ChildViews::default());
         let workers: Vec<_> = (1..=2)
             .map(|value| {
-                let cache = StateArc::clone(&cache);
+                let views = StateArc::clone(&views);
                 thread::spawn(move || {
-                    complete(serialized(&cache, async |mut cache| {
-                        let key = TaskId::from_bytes([if broken { 1 } else { value }; 16]);
-                        let selected =
-                            task_views::cached_task(&mut cache, key, None, &(), async |_| {
-                                thread::yield_now();
-                                Ok(value)
-                            })
-                            .await
-                            .unwrap();
-                        (*selected, value)
-                    }))
+                    let key = TaskId::from_bytes([if broken { 1 } else { value }; 16]);
+                    let selected = complete(child_views::ChildViews::acquire(
+                        &views,
+                        key,
+                        async || {
+                            thread::yield_now();
+                            Ok(value)
+                        },
+                        async |_| Ok(()),
+                    ))
+                    .unwrap();
+                    (*selected, value)
                 })
             })
             .collect();
@@ -268,25 +269,18 @@ fn negative_control_detects_cross_task_cache_selection() {
 
 fn branch_selection(broken: bool) {
     loom::model(move || {
-        let parent = StateArc::new(AsyncMutex::new((
-            Some(1u8),
-            std::collections::BTreeMap::new(),
-        )));
+        let parent = StateArc::new(AsyncMutex::new(Some(1u8)));
         let switch = StateArc::clone(&parent);
         let switching = thread::spawn(move || {
             complete(serialized(&switch, async |mut state| {
-                state.0 = Some(2);
+                *state = Some(2);
             }))
         });
         let selecting = thread::spawn(move || {
-            complete(serialized(&parent, async |mut state| {
-                let (active, children) = &mut *state;
-                let expected = active.unwrap();
-                let task = TaskId::from_bytes([1; 16]);
-                let child = task_views::cached_task(
-                    children,
-                    task,
-                    if broken { None } else { active.as_ref() },
+            complete(serialized(&parent, async |state| {
+                let expected = state.unwrap();
+                let child = task_views::from_selected(
+                    if broken { None } else { state.as_ref() },
                     &0u8,
                     async |view| {
                         thread::yield_now();
@@ -295,7 +289,7 @@ fn branch_selection(broken: bool) {
                 )
                 .await
                 .unwrap();
-                assert_eq!(*child, expected, "child fork ignored the selected parent");
+                assert_eq!(child, expected, "child fork ignored the selected parent");
             }))
         });
         switching.join().unwrap();

@@ -61,10 +61,7 @@ impl HostRoot {
     ) -> Result<Self, DemandError> {
         let directory = directory_path(&self.directory, path, true, work)?;
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
     #[cfg(unix)]
     #[cfg(any(test, feature = "native-mount"))]

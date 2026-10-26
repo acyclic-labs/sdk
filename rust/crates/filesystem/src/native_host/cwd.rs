@@ -50,6 +50,135 @@ pub(crate) fn canonical_directory_wide<W: NativeHostWork>(
     }
 }
 
+/// Folds a wide name for case with the OS's invariant uppercase mapping,
+/// so names the file system treats as one name fold to one key.
+#[cfg(windows)]
+pub(crate) fn fold_case_wide<W: NativeHostWork>(
+    name: &[u16],
+    work: &mut W,
+) -> Result<(Vec<u16>, W::Allocation), W::Error> {
+    use windows::Win32::{
+        Foundation::LPARAM,
+        Globalization::{LCMAP_UPPERCASE, LCMapStringEx, LOCALE_NAME_INVARIANT},
+    };
+    let (mut output, allocation) = buffer(name.len(), work)?;
+    if name.is_empty() {
+        return Ok((output, allocation));
+    }
+    output.resize(name.len(), 0);
+    let mapped = work.attempt_io(
+        WorkCounters {
+            bytes_encoded: (name.len() as u64).saturating_mul(2),
+            ..WorkCounters::default()
+        },
+        || {
+            // SAFETY: the source and destination are distinct live slices.
+            let count = unsafe {
+                LCMapStringEx(
+                    LOCALE_NAME_INVARIANT,
+                    LCMAP_UPPERCASE,
+                    name,
+                    Some(&mut output),
+                    None,
+                    None,
+                    LPARAM(0),
+                )
+            };
+            usize::try_from(count)
+                .ok()
+                .filter(|count| *count != 0)
+                .ok_or_else(io::Error::last_os_error)
+        },
+    );
+    match mapped {
+        Ok(count) => {
+            output.truncate(count);
+            Ok((output, allocation))
+        }
+        Err(error) => {
+            drop(output);
+            work.release(allocation)?;
+            Err(error)
+        }
+    }
+}
+
+/// A wide buffer and the work allocation that owns it.
+#[cfg(windows)]
+type WideBuffer<W> = (Vec<u16>, <W as NativeHostWork>::Allocation);
+
+/// The long form of a full wide path whose components may be 8.3 short
+/// names, or `None` when the host cannot resolve it, for example because it
+/// is already gone.
+#[cfg(windows)]
+pub(crate) fn long_path_wide<W: NativeHostWork>(
+    path: &[u16],
+    work: &mut W,
+) -> Result<Option<WideBuffer<W>>, W::Error> {
+    use windows::{Win32::Storage::FileSystem::GetLongPathNameW, core::PCWSTR};
+    let capacity = path
+        .len()
+        .checked_add(1)
+        .ok_or(crate::WorkError::Overflow)?;
+    let (mut input, input_allocation) = buffer(capacity, work)?;
+    input.extend_from_slice(path);
+    input.push(0);
+    let query = |output: &mut [u16], work: &mut W| {
+        work.started_io(READ)?;
+        // SAFETY: the terminated input and the output remain live.
+        let count = unsafe { GetLongPathNameW(PCWSTR(input.as_ptr()), Some(output)) };
+        Ok::<_, W::Error>(count as usize)
+    };
+    let result = (|| {
+        let mut capacity = query(&mut [], work)?;
+        loop {
+            if capacity == 0 {
+                return Ok(None);
+            }
+            let (mut output, allocation) = buffer(capacity, work)?;
+            output.resize(capacity, 0);
+            let count = match query(&mut output, work) {
+                Ok(count) => count,
+                Err(error) => {
+                    drop(output);
+                    work.release(allocation)?;
+                    return Err(error);
+                }
+            };
+            if count != 0 && count < capacity {
+                output.truncate(count);
+                return Ok(Some((output, allocation)));
+            }
+            drop(output);
+            work.release(allocation)?;
+            capacity = count;
+        }
+    })();
+    drop(input);
+    work.release(input_allocation)?;
+    result
+}
+
+/// The 8.3 short form of a path, for tests that reach a directory by it.
+#[cfg(all(test, windows))]
+pub(crate) fn short_path(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use windows::{Win32::Storage::FileSystem::GetShortPathNameW, core::PCWSTR};
+    let input = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut output = vec![0_u16; 32_768];
+    // SAFETY: the terminated input and the output remain live.
+    let count = unsafe { GetShortPathNameW(PCWSTR(input.as_ptr()), Some(&mut output)) } as usize;
+    if count == 0 || count >= output.len() {
+        return Err(io::Error::last_os_error());
+    }
+    output.truncate(count);
+    Ok(std::ffi::OsString::from_wide(&output).into())
+}
+
 #[cfg(unix)]
 pub(super) fn cwd_metadata_flags() -> i32 {
     #[cfg(target_os = "linux")]

@@ -31,6 +31,14 @@ name = "materialization_bootstrap"
 path = "tests/materialization_bootstrap.rs"
 required-features = ["memory", "native-mount"]
 
+[[test]]
+name = "mount-qualification"
+path = "tests/mount_qualification.rs"
+
+[[test]]
+name = "package-install"
+path = "tests/package_install.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false
@@ -49,6 +57,11 @@ required-features = ["native-mount"]
 [[test]]
 name = "native_stage_loom"
 path = "tests/native_stage_loom.rs"
+required-features = ["native-mount"]
+
+[[test]]
+name = "native_view_table_loom"
+path = "tests/native_view_table_loom.rs"
 required-features = ["native-mount"]
 
 [[bench]]
@@ -159,6 +172,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Storage_FileSystem",
   "Win32_Storage_ProjectedFileSystem",
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_System_Environment",

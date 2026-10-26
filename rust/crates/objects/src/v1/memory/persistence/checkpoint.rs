@@ -44,23 +44,21 @@ impl Journal {
                 let mut output = Checkpoint::begin(file, self, state.sequence, &mut publication)?;
                 output.snapshot(state)?;
                 #[cfg(test)]
-                self.checkpoint_fault(1)
-                    .map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(1)?;
                 crate::physical::sync_publication(
                     &output.file,
                     self.limits.durability,
                     &publication,
                 )?;
                 #[cfg(test)]
-                self.checkpoint_fault(2)
-                    .map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(2)?;
+                let journal = journal_file(output.file, &destination.value, publication.meter())?;
                 let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
                 let reclaimed = tail.bytes.saturating_sub(output.bytes);
                 // Close the old journal before Windows replacement.
-                drop(std::mem::replace(&mut tail.file, output.file));
+                drop(std::mem::replace(&mut tail.file, journal));
                 #[cfg(test)]
-                self.checkpoint_fault(3)
-                    .map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(3)?;
                 if let Err(error) = self.root.replace_journal(|| {
                     acyclic_native_runtime::durable_rename(
                         &temporary.value,
@@ -73,8 +71,7 @@ impl Journal {
                     return Err(error.into());
                 }
                 #[cfg(test)]
-                self.checkpoint_fault(4)
-                    .map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(4)?;
                 tail.bytes = output.bytes;
                 tail.operations = output.operations;
                 tail.inline_bytes = 0;
@@ -89,10 +86,10 @@ impl Journal {
     }
 
     #[cfg(test)]
-    fn checkpoint_fault(&self, stage: u64) -> Result<(), LocalOpenError> {
+    fn checkpoint_fault(&self, stage: u64) -> Result<(), Error> {
         if self.fault_checkpoint.load(Ordering::Acquire) == stage {
             self.poisoned.store(true, Ordering::Release);
-            return Err(LocalOpenError::Unavailable);
+            return Err(Error::from(Unavailable));
         }
         Ok(())
     }
@@ -107,7 +104,7 @@ struct Checkpoint {
 }
 impl Checkpoint {
     fn begin(
-        mut file: File,
+        file: File,
         journal: &Journal,
         sequence: u64,
         publication: &mut Publication,
@@ -115,21 +112,21 @@ impl Checkpoint {
         let header = publication.encode(&journal.header)?;
         let length = u32::try_from(header.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = publication.codec(0, 0, header.len(), || blake3::hash(&header))?;
-        crate::physical::write_publication(&mut file, 0, MAGIC, publication)?;
+        crate::physical::write_publication(&file, 0, MAGIC, publication)?;
         crate::physical::write_publication(
-            &mut file,
+            &file,
             MAGIC.len() as u64,
             &length.to_le_bytes(),
             publication,
         )?;
         crate::physical::write_publication(
-            &mut file,
+            &file,
             (MAGIC.len() + 4) as u64,
             digest.as_bytes(),
             publication,
         )?;
         crate::physical::write_publication(
-            &mut file,
+            &file,
             (MAGIC.len() + 36) as u64,
             &header,
             publication,
@@ -175,18 +172,18 @@ impl Checkpoint {
         let length = u32::try_from(encoded.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = frame.codec(0, 0, encoded.len(), || blake3::hash(&encoded))?;
         crate::physical::write_publication(
-            &mut self.file,
+            &self.file,
             self.bytes,
             &length.to_le_bytes(),
             frame,
         )?;
         crate::physical::write_publication(
-            &mut self.file,
+            &self.file,
             self.bytes + 4,
             digest.as_bytes(),
             frame,
         )?;
-        crate::physical::write_publication(&mut self.file, self.bytes + 36, &encoded, frame)?;
+        crate::physical::write_publication(&self.file, self.bytes + 36, &encoded, frame)?;
         self.bytes = end;
         self.operations = pending.delta.ordinal;
         Ok(())

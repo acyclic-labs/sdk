@@ -533,6 +533,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             &self.host.stream,
             Some(publication.operation_id),
             phase,
+            None,
         )
         .await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
@@ -648,9 +649,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             bytes.clone(),
             work,
         )?;
-        let (outcome, retained) =
-            crate::distributed::commit(request, &self.host.stream, Some(self.operation_id()), None)
-                .await?;
+        let (outcome, retained) = crate::distributed::commit(
+            request,
+            &self.host.stream,
+            Some(self.operation_id()),
+            None,
+            None,
+        )
+        .await?;
         let received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),

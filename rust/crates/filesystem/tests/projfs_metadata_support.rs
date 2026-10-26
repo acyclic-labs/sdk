@@ -96,6 +96,7 @@ pub fn mount_source(
             volume_id: source.volume_id()?,
             destination: destination.clone(),
             writable: true,
+            shared: false,
         },
         Arc::clone(source) as Arc<dyn MountFilesystem>,
     )?;

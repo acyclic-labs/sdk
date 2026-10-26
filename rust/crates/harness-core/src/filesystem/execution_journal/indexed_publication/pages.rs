@@ -98,7 +98,8 @@ impl Cut<'_> {
                 continue;
             }
             let (outcome, retained) =
-                crate::distributed::commit(request, provider, Some(self.operation), None).await?;
+                crate::distributed::commit(request, provider, Some(self.operation), None, None)
+                    .await?;
             let held = crate::wire_codec::CodecQuota::from_retained(work, retained);
             let committed = match &outcome {
                 CommitOutcome::Conflict(_) => Ok(false),
@@ -146,9 +147,14 @@ impl Cut<'_> {
                     })?;
                 }
                 if request.0.wire_encoded_len() <= acyclic_stream::MAX_COMMAND_BYTES {
-                    let (outcome, retained) =
-                        crate::distributed::commit(request, provider, Some(self.operation), None)
-                            .await?;
+                    let (outcome, retained) = crate::distributed::commit(
+                        request,
+                        provider,
+                        Some(self.operation),
+                        None,
+                        None,
+                    )
+                    .await?;
                     let held = crate::wire_codec::CodecQuota::from_retained(work, retained);
                     let result = self.confirm(&outcome, expected, pending, observation, checkpoint);
                     drop(outcome);

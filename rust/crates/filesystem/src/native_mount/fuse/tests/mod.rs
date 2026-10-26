@@ -47,7 +47,7 @@ fn projection_core(
         None => crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?,
     };
-    super::ProjectionCore::new(source, root, stamp, true, 0, 0, &work)
+    super::ProjectionCore::new(source, root, stamp, true, (0, 0), 0, &work)
 }
 
 #[cfg(acyclic_fs_loom)]
@@ -63,6 +63,7 @@ mod inbox;
 mod mount;
 mod native;
 mod retirement;
+mod shared;
 
 use cache::*;
 use native::*;

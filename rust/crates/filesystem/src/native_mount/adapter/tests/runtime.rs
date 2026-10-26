@@ -27,6 +27,7 @@ fn macos_explicit_file_fsync_reaches_mount_source() -> Result<(), Box<dyn std::e
             volume_id: source.volume_id()?,
             destination: temporary.path().to_path_buf(),
             writable: true,
+            shared: false,
         },
         Arc::clone(&source) as Arc<dyn MountFilesystem>,
     )?;

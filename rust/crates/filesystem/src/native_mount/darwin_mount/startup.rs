@@ -219,7 +219,7 @@ impl DarwinMountSession {
             .native_allocation
             .grow((2 * std::mem::size_of::<usize>()) as u64)?;
         let context = Arc::new(context);
-        let _active = NativeMountWorkScope::new(Arc::clone(&context), original)?;
+        let _active = NativeMountWorkScope::new(&context, original)?;
         let observer: Arc<dyn ViewObserver> = context.clone();
         context
             .source

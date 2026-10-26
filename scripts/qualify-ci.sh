@@ -136,11 +136,10 @@ native_mount_tests() {
     --ignored --test-threads=1 native_mount::
 }
 
-# Black-box fork/join conformance through hooks, the CLI and live mounts. The
-# shared test support module carries ignored tests of its own, skipped here.
+# Native-host fork/capture/merge conformance uses the shared harness tests.
 fork_join_conformance() {
-  cargo test -p acyclic-plugin --locked --test fork_join -- \
-    --ignored --test-threads=1 --skip support::
+  cargo test -p acyclic-harness --all-features --locked --lib \
+    local::host_workspace::tests:: -- --test-threads=4
 }
 
 # Exercise the installed native host against its real local providers, not a
@@ -159,29 +158,13 @@ installed_graphcoder() {
   node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder"
 }
 
-# Keep external-host inputs pinned and exercise the source-built CLI, including
-# native lost-ack recovery and cancellation against the real installed Pi host.
-pinned_pi() {
-  local hosts="$PWD/plugin/tests/hosts" binary="$target_dir/debug/acyclic"
-  cargo build -p acyclic-plugin --bin acyclic --locked
-  export ACYCLIC_BINARY="$binary"
-  export ACYCLIC_PI_TEST_NODE="$(command -v node)"
-  export ACYCLIC_PI_TEST_CLI="$hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
-  export ACYCLIC_PI_TEST_PROVIDER_DIR="$hosts"
-  (
-    cd "$hosts"
-    npm ci --ignore-scripts --no-audit --no-fund
-    bun run test:pi-context
-    bun run test:pi-context-mail
-    bun run test:pi-bootstrap
-    bun run test:pi-session
-    bun run test:pi-installation
-    bun run test:pi-service
-    bun run test:pi-native-recursive
-    bun run test:pi-context-fresh
-    bun run test:pi-context-pages
-    bun run test:pi-builtin-paths
-  )
+# The native hosts own tools and providers. Qualify their thin adapters and the
+# shared lifecycle here; agent-host-qualification also runs scripted sessions.
+native_host_contracts() {
+  npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+  bun run --cwd plugin/tests/hosts test:shim
+  cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
+  cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
 }
 
 # Every shipped browser feature set, with its unit and integration tests,
@@ -328,7 +311,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi
     installed_graphcoder
-    pinned_pi
+    native_host_contracts
     stream_binding
     client_bindings
     # Warm the three isolated WASM targets concurrently; the complete workspace
@@ -393,7 +376,6 @@ case "$lane" in
     python3 scripts/buildbox/msvc-compiler.test.py
     python3 scripts/with-xwin-cache.test.py
     node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs scripts/pr-gate-payload.test.mjs
-    node --test plugin/tests/hosts/login-link.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
@@ -556,7 +538,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked --doc
     native_mount_tests
     installed_graphcoder
-    pinned_pi
+    native_host_contracts
     ;;
   linux-arm64-bindings)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
@@ -579,25 +561,23 @@ case "$lane" in
     finish_macos() {
       local status="${1:-0}" background_status=0
       trap - EXIT
-      finish napi x86_64 fork-join-build || background_status=$?
+      finish napi x86_64 || background_status=$?
       ((status != 0)) || status=$background_status
       return "$status"
     }
     CARGO_BUILD_JOBS=2 background napi native_binding
     CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
-    CARGO_BUILD_JOBS=1 background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join \
-      --no-run --target-dir "$target_dir-fork-join"
     trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
     CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked
     CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
     finish_macos
     installed_graphcoder
-    pinned_pi
+    native_host_contracts
     stream_binding
     client_bindings
     native_mount_tests
-    CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance
+    fork_join_conformance
     ;;
   *)
     echo "unknown qualification lane: $lane" >&2

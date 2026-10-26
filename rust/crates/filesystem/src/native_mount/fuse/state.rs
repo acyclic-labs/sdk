@@ -55,6 +55,10 @@ pub(super) struct ProjectionState {
     pub(super) writable: bool,
     pub(super) mount_uid: u32,
     pub(super) mount_gid: u32,
+    /// This view's root inode: [`ROOT_INODE`] past its inode base.
+    pub(super) root_inode: u64,
+    /// First inode past this view's span; no inode at or after it is issued.
+    pub(super) inode_limit: u64,
     pub(super) next_inode: u64,
     pub(super) next_handle: u64,
     pub(super) by_inode: HashMap<u64, InodeEntry>,
@@ -71,6 +75,11 @@ pub(super) struct ProjectionState {
 }
 
 impl ProjectionState {
+    /// Whether an invalidation pass has work or a waiter asked for a retry.
+    pub(super) fn invalidation_wanted(&self) -> bool {
+        self.invalidation.is_pending(self.invalidation.notified) || self.invalidation.retry
+    }
+
     pub(super) fn invalidate_attributes(
         &mut self,
         inode: u64,
@@ -86,12 +95,16 @@ impl ProjectionState {
         Ok(())
     }
 
-    pub(super) fn new(writable: bool, mount_uid: u32, mount_gid: u32) -> Self {
+    /// A projection whose inodes are `inode_base + 1 ..` within one view span.
+    pub(super) fn new(writable: bool, mount_uid: u32, mount_gid: u32, inode_base: u64) -> Self {
+        debug_assert_eq!(inode_base % VIEW_INODE_SPAN, 0, "view spans are aligned");
         Self {
             writable,
             mount_uid,
             mount_gid,
-            next_inode: ROOT_INODE + 1,
+            root_inode: inode_base + ROOT_INODE,
+            inode_limit: inode_base.saturating_add(VIEW_INODE_SPAN),
+            next_inode: inode_base + ROOT_INODE + 1,
             next_handle: 1,
             by_inode: HashMap::new(),
             inode_by_path: HashMap::new(),
@@ -203,7 +216,7 @@ impl ProjectionState {
             .map(|(inode, _)| *inode)
         {
             self.forget_unbound_names(source, confirmed, inode, &path, work)?;
-            if inode != ROOT_INODE
+            if inode != self.root_inode
                 && self
                     .by_inode
                     .get(&inode)
@@ -248,7 +261,7 @@ impl ProjectionState {
     }
 
     pub(super) fn release_lookup_reference(&mut self, inode: u64, references: u64) {
-        if inode == ROOT_INODE {
+        if inode == self.root_inode {
             return;
         }
         if let Some(entry) = self.by_inode.get_mut(&inode) {
@@ -377,8 +390,14 @@ impl ProjectionState {
         if !entry.remember_negative_child(component, stamp, work)? {
             return Err(libc::ENOENT.into());
         }
-        let lookup = self.by_inode.get(&ROOT_INODE).ok_or(libc::ESTALE)?.lookup;
-        let mut attr = self.attr(ROOT_INODE, &lookup).map_err(|_| libc::ESTALE)?;
+        let lookup = self
+            .by_inode
+            .get(&self.root_inode)
+            .ok_or(libc::ESTALE)?
+            .lookup;
+        let mut attr = self
+            .attr(self.root_inode, &lookup)
+            .map_err(|_| libc::ESTALE)?;
         attr.ino = INodeNo(0);
         Ok(Entry {
             attr,
@@ -437,14 +456,15 @@ impl ProjectionState {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(FileAttr, Duration), NativeMountError> {
         let lookup = resolved.lookup;
-        if inode == ROOT_INODE {
+        let root = self.root_inode;
+        if inode == root {
             work.charge(Items.delta(1))?;
             if lookup.node.kind != MountNodeKind::Directory {
                 return Err(libc::EIO.into());
             }
             let previous = self
                 .by_inode
-                .get(&ROOT_INODE)
+                .get(&root)
                 .ok_or(libc::ESTALE)?
                 .lookup
                 .node
@@ -453,7 +473,7 @@ impl ProjectionState {
                 if self
                     .inode_by_file
                     .get(&lookup.node.file_id)
-                    .is_some_and(|(inode, _)| *inode != ROOT_INODE)
+                    .is_some_and(|(inode, _)| *inode != root)
                 {
                     return Err(libc::EIO.into());
                 }
@@ -465,13 +485,13 @@ impl ProjectionState {
                 self.inode_by_file
                     .try_reserve(1)
                     .map_err(NativeMountError::Allocation)?;
-                self.forget_file(previous, ROOT_INODE);
+                self.forget_file(previous, root);
                 self.inode_by_file
-                    .insert(lookup.node.file_id, (ROOT_INODE, storage));
+                    .insert(lookup.node.file_id, (root, storage));
             }
         }
         let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
-        if inode != ROOT_INODE && entry.lookup.node.file_id != lookup.node.file_id {
+        if inode != root && entry.lookup.node.file_id != lookup.node.file_id {
             return Err(libc::ESTALE.into());
         }
         entry.lookup = lookup;
@@ -529,7 +549,7 @@ impl ProjectionState {
             paths.push(fuse_clone_path(binding.native_path(), work)?);
         }
         Ok(NodeFacts::Names {
-            file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id),
+            file_id: (inode != self.root_inode).then_some(entry.lookup.node.file_id),
             paths,
         })
     }

@@ -90,31 +90,64 @@ pub(super) fn finish_projection_cleanup(
         }
         drop(files.pop());
     }
+    credit.started_io(WriteOperations.delta(1), None)?;
+    delete_root_tag(root_handle).map_err(NativeMountError::from)
+}
+
+/// Removes the ProjFS reparse tag from a virtualization root opened for
+/// writing, which detaches the root from every provider.
+pub(super) fn delete_root_tag(root_handle: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
     let tag = windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS.to_le_bytes();
     let mut packet = [0_u8; 8];
     packet[..4].copy_from_slice(&tag);
     let mut returned = 0;
-    credit.started_io(WriteOperations.delta(1), None)?;
-    (|| {
-        use std::os::windows::io::AsRawHandle;
-        // SAFETY: the authenticated root handle and fixed reparse header remain live.
-        unsafe {
-            windows::Win32::System::IO::DeviceIoControl(
-                windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
-                windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
-                Some(packet.as_ptr().cast()),
-                u32::try_from(packet.len())
-                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
-                None,
-                0,
-                Some(&raw mut returned),
-                None,
-            )
+    // SAFETY: the root handle and fixed reparse header remain live.
+    unsafe {
+        windows::Win32::System::IO::DeviceIoControl(
+            windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
+            windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
+            Some(packet.as_ptr().cast()),
+            u32::try_from(packet.len())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+            None,
+            0,
+            Some(&raw mut returned),
+            None,
+        )
+    }
+    .map_err(std::io::Error::from)
+}
+
+/// Detaches a virtualization root by path, if it is one: the provider that
+/// served it is gone (stopped, or its process died).
+pub(in crate::native_mount) fn detach_root_by_path(root: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    // Backup semantics open the directory itself; no reparse follows.
+    let handle = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(
+            windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS.0
+                | windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT.0,
+        )
+        .open(root)?;
+    detach_root_handle(&handle)
+}
+
+fn detach_root_handle(handle: &std::fs::File) -> std::io::Result<()> {
+    const ERROR_NOT_A_REPARSE_POINT: u32 = 4390;
+    match delete_root_tag(handle) {
+        // Already detached; the control reports the Win32 code as an HRESULT.
+        Err(error)
+            if error.raw_os_error().is_some_and(|code| {
+                code as u32 == ERROR_NOT_A_REPARSE_POINT
+                    || code as u32 == 0x8007_0000 | ERROR_NOT_A_REPARSE_POINT
+            }) =>
+        {
+            Ok(())
         }
-        .map_err(std::io::Error::from)
-    })()
-    .map_err(NativeMountError::from)?;
-    Ok(())
+        result => result,
+    }
 }
 
 fn collect_projection(
@@ -193,12 +226,48 @@ fn collect_projection(
             if identity != stat.identity() {
                 return Err(NativeMountError::InvalidDestination);
             }
-            let held = HostRoot {
-                directory,
-                identity,
-            };
+            let held = HostRoot::from_parts(directory, identity);
             collect_projection(&held, &child, source, work, files, allocation)?;
         }
     }
+    Ok(())
+}
+
+/// ProjFS detachment is the only platform-specific part of dead-root
+/// recovery. Enumeration and deletion use the existing held-root core.
+pub(in crate::native_mount) fn detach_dead_shared_root(
+    roots: &crate::HeldRoot,
+    name: &std::path::Path,
+) -> Result<(), NativeMountError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows::Win32::Storage::FileSystem::{
+        FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+    };
+
+    crate::native_host::require_leaf(name)?;
+    let leaf: Vec<u16> = name.as_os_str().encode_wide().collect();
+    let mut work = crate::native_host::ordinary_work();
+    match crate::native_host::open_windows_at(
+        &roots.root.directory,
+        &leaf,
+        FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        &mut work,
+    ) {
+        Ok(handle) => {
+            let identity = roots.root.stat_file(&handle, &mut work)?.identity();
+            detach_root_handle(&handle)?;
+            roots.root.remove(&leaf, Some(identity), &mut work)?;
+        }
+        Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let staging = super::staging_path(name);
+    let staging: Vec<u16> = staging.as_os_str().encode_wide().collect();
+    roots.root.remove(&staging, None, &mut work)?;
     Ok(())
 }

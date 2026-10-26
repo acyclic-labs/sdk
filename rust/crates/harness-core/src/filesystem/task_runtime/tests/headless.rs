@@ -3,6 +3,93 @@ use crate::conversation::{ContentGrant, FileRef};
 use crate::runtime::TaskSpawner as _;
 
 #[tokio::test]
+async fn task_fork_source_uses_only_exact_registered_task_authority() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture
+        .tasks
+        .register(crate::runtime::TaskDefinition::<Value, Value>::live(
+            "test.ungranted",
+            "1",
+            |_, input| async move { Ok(input) },
+        )?)?;
+    assert!(!fixture.scope.grants().contains("tool:call:spawn"));
+    let runtime = runtime(&fixture)
+        .await?
+        .with_authority_custodian(&fixture.issuer)?;
+    let lease = fixture.admit(&runtime).await?;
+    runtime.task_host().start_task(&lease, &mut None).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
+    let definition = runtime.harness().task::<Value, Value>("test.deadline@1")?;
+    let ungranted = runtime.harness().task::<Value, Value>("test.ungranted@1")?;
+    assert!(matches!(
+        runtime
+            .fork_source_scope_for_task(task, fence.clone(), &ungranted)
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        runtime.fork_source_scope(task, fence.clone()).await,
+        Err(Error::Unauthorized(_))
+    ));
+    let substituted = crate::runtime::TaskDefinition::<Value, Value>::live(
+        "test.deadline",
+        "1",
+        |_, input| async move { Ok(input) },
+    )?;
+    assert!(matches!(
+        runtime
+            .fork_source_scope_for_task(task, fence.clone(), &substituted)
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let unregistered = crate::runtime::TaskDefinition::<Value, Value>::live(
+        "test.foreign",
+        "1",
+        |_, input| async move { Ok(input) },
+    )?;
+    assert!(
+        runtime
+            .fork_source_scope_for_task(task, fence.clone(), &unregistered)
+            .await
+            .is_err()
+    );
+    let mut forged = fence.clone();
+    forged.reservation_id = "forged".into();
+    assert!(
+        runtime
+            .fork_source_scope_for_task(task, forged, &definition)
+            .await
+            .is_err()
+    );
+    let signed = runtime
+        .fork_source_scope_for_task(task, fence.clone(), &definition)
+        .await?;
+    assert_eq!(signed.agent(), fixture.signed.agent());
+    assert_eq!(signed.capabilities(), fixture.scope.grants());
+    fixture
+        .issuer
+        .verifier(&mut None)?
+        .verify(&signed, &mut None)?;
+    fixture.clock.0.store(1000, Ordering::SeqCst);
+    assert!(
+        runtime
+            .fork_source_scope_for_task(task, fence.clone(), &definition)
+            .await
+            .is_err()
+    );
+    fixture.clock.0.store(10, Ordering::SeqCst);
+    fixture.issuer.revoke_workload(&fixture.signed)?;
+    assert!(
+        runtime
+            .fork_source_scope_for_task(task, fence, &definition)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn fork_source_authority_is_derived_by_the_runtime_and_rejects_foreign_roots_and_stale_leases()
 -> Result<()> {
     let mut fixture = Fixture::new().await?;

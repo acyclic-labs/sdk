@@ -27,10 +27,6 @@ impl NativeSourceWatch {
             .clone();
         self.stop(&mut work, true, wait)
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     pub(super) fn stop<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
@@ -54,25 +50,16 @@ impl NativeSourceWatch {
         } else {
             None
         };
-        let mut reads = lock(&self.shared.reads, wait)?;
-        let mut thread = lock(&self.shared.thread, wait)?;
+        // A native owner already stopping answers without the reads, which
+        // the hub may hold while it serves a stale packet: stopping only
+        // ever turns on, and the credits have their own lock.
+        self.shared.refuse_restop(native)?;
+        let mut reads = self.shared.lock_reads_unless_waiting(wait)?;
         check_wait(wait)?;
-        if native && self.shared.stopping.load(Ordering::Acquire) {
-            return Err(if self.shared.cleanup_pending() {
-                DemandError::WorkerUnavailable
-            } else {
-                DemandError::NativeWorkUnavailable
-            });
-        }
-        let running = thread.is_some();
-        let wake = running && is_open(&self.shared.completed);
+        self.shared.refuse_restop(native)?;
         let suffix = io_work(
-            u64::from(reads.pending) + u64::from(running && !native),
-            u64::from(reads.pending)
-                + u64::from(wake)
-                + u64::from(running)
-                + u64::from(is_open(&self.shared.directory))
-                + u64::from(is_open(&self.shared.completed)),
+            u64::from(reads.pending),
+            u64::from(reads.pending) + u64::from(is_open(&self.shared.directory)),
         );
         if native {
             let credit = self
@@ -92,55 +79,21 @@ impl NativeSourceWatch {
             work.admit(suffix)?;
         }
         self.shared.delivery.exact.store(false, Ordering::Release);
-        let mut result = if native {
-            Ok(())
-        } else {
-            self.shared.cancel_pending(&mut reads, work)
-        };
-        if reads.pending && !native {
-            return result;
-        }
-        self.shared.stopping.store(true, Ordering::Release);
-        if wake {
-            self.shared.cleanup_start(work, WRITE)?;
-            // SAFETY: the read lock retains the event through the wake.
-            let signalled =
-                unsafe { SetEvent(HANDLE(self.shared.completed.load(Ordering::Acquire))) }
-                    .map_err(io::Error::from)
-                    .map_err(DemandError::from);
-            if native {
-                #[cfg(test)]
-                if let Some(token) = self
-                    .shared
-                    .native_wait_cancellation
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take()
-                {
-                    token.cancel();
-                }
-                if let Err(error) = signalled {
-                    self.shared.note_failure(error);
-                }
-            } else {
-                result = result.and(signalled);
-            }
-        }
-        self.shared.reading_changed.notify_all();
         if native {
-            drop(thread);
-            if !running {
-                drop(reads);
-                self.shared.finish_native_reader();
-                reads = self.shared.lock_reads();
+            // The born owner retires here, on its active credit: the hub
+            // never waits on a stop, and a stop never waits on the hub.
+            self.shared.stopping.store(true, Ordering::Release);
+            #[cfg(test)]
+            if let Some(token) = self
+                .shared
+                .native_wait_cancellation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                token.cancel();
             }
-            while self.shared.cleanup_pending() {
-                reads = self
-                    .shared
-                    .reading_changed
-                    .wait(reads)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
+            self.shared.retire_native(&mut reads);
             let failure = match birth {
                 Some(birth) => birth.with_original_leaf(DemandWork::take_native_io_failure),
                 None => work.with_original_leaf(DemandWork::take_native_io_failure),
@@ -151,19 +104,17 @@ impl NativeSourceWatch {
             drop(reads);
             return failure.map_or(Ok(()), Err).and(check_wait(wait));
         }
-        drop(reads);
-        if let Some(handle) = thread.as_ref() {
-            self.shared.cleanup_start(work, READ)?;
-            // SAFETY: the owned handle stays live through actual quiescence.
-            if unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), INFINITE) }
-                != WAIT_OBJECT_0
-            {
-                return result.and(Err(io::Error::last_os_error().into()));
+        let mut result = self.shared.cancel_pending(&mut reads, work);
+        if reads.pending {
+            // Only the hub cannot wait for the cancelled read; its packet
+            // finishes the retirement.
+            if hub::serving() && result.is_ok() {
+                self.shared.stopping.store(true, Ordering::Release);
             }
-            result = result.and(self.shared.close_thread(&mut thread, work));
+            return result;
         }
-        drop(thread);
-        let mut reads = self.shared.lock_reads();
+        // Set under the reads, so no later packet drains them.
+        self.shared.stopping.store(true, Ordering::Release);
         result = result.and(self.shared.retire(&mut reads, work));
         if self.shared.retired(&reads) {
             self.shared.stop_completed.store(true, Ordering::Release);
@@ -184,33 +135,32 @@ impl Drop for NativeSourceWatch {
             }
             return;
         }
+        // A dropped native owner retires on the hub, which this wake hands
+        // it to.
         self.shared.dropped.store(true, Ordering::Release);
-        let already_stopping = self.shared.stopping.swap(true, Ordering::AcqRel);
+        self.shared.stopping.store(true, Ordering::Release);
         let reads = self
             .shared
             .delivery
             .ensure_stop_available()
             .is_ok()
             .then(|| self.shared.lock_reads());
-        if !already_stopping && is_open(&self.shared.completed) {
+        if !self.shared.parked.load(Ordering::Acquire) {
             let mut work = self.shared.delivery.callback_work();
-            let wake = self.shared.cleanup_start(&mut work, WRITE).and_then(|_| {
-                // SAFETY: this controller or its active callback retains the event.
-                unsafe { SetEvent(HANDLE(self.shared.completed.load(Ordering::Acquire))) }
-                    .map_err(io::Error::from)
-                    .map_err(DemandError::from)
-            });
+            let wake = self
+                .shared
+                .cleanup_start(&mut work, WRITE)
+                .and_then(|()| hub::wake(&self.shared));
             if let Err(error) = wake {
                 self.shared.note_failure(error);
             }
         }
         drop(reads);
-        self.shared.reading_changed.notify_all();
     }
 }
 
 impl Shared {
-    fn cleanup_pending(&self) -> bool {
+    pub(super) fn cleanup_pending(&self) -> bool {
         let cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         let [active, _] = &*cleanup;
         active.is_some()
@@ -241,31 +191,40 @@ impl Shared {
         if !reads.pending {
             return Ok(());
         }
-        self.cleanup_start(work, WRITE)?;
-        // SAFETY: the pending read owns both OVERLAPPED and buffer until completion.
-        let cancelled = unsafe {
-            CancelIoEx(
-                HANDLE(self.directory.load(Ordering::Acquire)),
-                Some(&raw const *reads.overlapped),
-            )
-        };
-        let result = match cancelled {
-            Err(error) if error.code() != ERROR_NOT_FOUND.to_hresult() => {
-                Err(io::Error::from(error).into())
-            }
-            _ => Ok(()),
-        };
+        let mut result = Ok(());
+        if !reads.cancelling {
+            self.cleanup_start(work, WRITE)?;
+            // SAFETY: the pending read owns both OVERLAPPED and buffer until completion.
+            let cancelled = unsafe {
+                CancelIoEx(
+                    HANDLE(self.directory.load(Ordering::Acquire)),
+                    Some(&raw const *reads.overlapped),
+                )
+            };
+            result = match cancelled {
+                Err(error) if error.code() != ERROR_NOT_FOUND.to_hresult() => {
+                    return Err(io::Error::from(error).into());
+                }
+                _ => Ok(()),
+            };
+            reads.cancelling = true;
+        }
+        // The buffer stays owned until the cancelled read completes.
+        if !self.await_completion(reads) {
+            return result;
+        }
         self.cleanup_start(work, READ)?;
         let mut transferred = 0;
-        // SAFETY: the same pending storage stays pinned during the wait.
+        // SAFETY: the same pending storage stays pinned; it has completed.
         let completed = unsafe {
             GetOverlappedResult(
                 HANDLE(self.directory.load(Ordering::Acquire)),
                 &raw const *reads.overlapped,
                 &mut transferred,
-                true,
+                false,
             )
         };
+        reads.cancelling = false;
         reads.pending = !matches!(&completed, Ok(()))
             && !completed.as_ref().err().is_some_and(|error| {
                 error.code() == ERROR_OPERATION_ABORTED.to_hresult()
@@ -278,23 +237,7 @@ impl Shared {
             _ => Ok(()),
         })
     }
-    fn close_thread<W: SourceDemandReadWork>(
-        &self,
-        thread: &mut Option<OwnedHandle>,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        if let Some(handle) = thread.as_ref() {
-            self.cleanup_start(work, WRITE)?;
-            // SAFETY: failed close keeps this exact owned handle for retry.
-            unsafe { CloseHandle(HANDLE(handle.as_raw_handle())) }.map_err(io::Error::from)?;
-            let _ = thread
-                .take()
-                .ok_or(DemandError::NativeWorkUnavailable)?
-                .into_raw_handle();
-        }
-        Ok(())
-    }
-    fn retire<W: SourceDemandReadWork>(
+    pub(super) fn retire<W: SourceDemandReadWork>(
         &self,
         reads: &mut Reads,
         work: &mut W,
@@ -303,50 +246,52 @@ impl Shared {
         if reads.pending {
             return result;
         }
-        for handle in [&self.directory, &self.completed] {
-            if is_open(handle) {
-                result = result.and(self.cleanup_start(work, WRITE).and_then(|_| close(handle)));
-            }
+        if is_open(&self.directory) {
+            result = result.and(
+                self.cleanup_start(work, WRITE)
+                    .and_then(|()| close(&self.directory)),
+            );
         }
-        if !is_open(&self.directory) && !is_open(&self.completed) {
+        if !is_open(&self.directory) {
             if let Some(buffer) = reads.buffer.take() {
+                let bytes = size_of_val(&*buffer) as u64;
                 drop(buffer);
-                result = result.and(self.ownership.retire(BUFFER_BYTES));
+                result = result.and(self.ownership.retire(bytes));
             }
-            self.buffer_owned.store(false, Ordering::Release);
+            self.buffer_bytes.store(0, Ordering::Release);
             reads.filled = 0;
             reads.cursor = 0;
-            if self.delivery.original.is_some() {
-                result = result.and(self.close_thread(
-                    &mut self.thread.lock().unwrap_or_else(PoisonError::into_inner),
-                    work,
-                ));
-            }
         }
         result
     }
     pub(super) fn retired(&self, reads: &Reads) -> bool {
-        !reads.pending
-            && reads.buffer.is_none()
-            && !is_open(&self.directory)
-            && !is_open(&self.completed)
-            && self
-                .thread
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_none()
+        !reads.pending && reads.buffer.is_none() && !is_open(&self.directory)
     }
-    pub(super) fn finish_native_reader(&self) {
+    /// Retires a native owner on its credits: the active one first, then,
+    /// once its owner has dropped, the terminal one. An owner whose terminal
+    /// attempt fails stays parked with its resources.
+    pub(super) fn retire_native(&self, reads: &mut Reads) {
+        if self.stop_completed.load(Ordering::Acquire) || self.parked.load(Ordering::Acquire) {
+            return;
+        }
         self.stopping.store(true, Ordering::Release);
         self.delivery.exact.store(false, Ordering::Release);
         let mut work = self.delivery.callback_work();
         loop {
-            let mut reads = self.lock_reads();
             let terminal = !self.cleanup_pending();
-            if let Err(error) = self.retire(&mut reads, &mut work) {
+            if terminal && !self.dropped.load(Ordering::Acquire) {
+                // The owner's drop wakes the hub to retry.
+                return;
+            }
+            let outcome = self.retire(reads, &mut work);
+            if reads.pending && outcome.is_ok() {
+                // The cancelled read's packet resumes this on the hub.
+                return;
+            }
+            if let Err(error) = outcome {
                 self.note_failure(error);
             }
-            let retired = self.retired(&reads);
+            let retired = self.retired(reads);
             let credit = {
                 let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
                 if retired {
@@ -359,16 +304,11 @@ impl Shared {
             drop(credit);
             if retired {
                 self.stop_completed.store(true, Ordering::Release);
+            } else if terminal {
+                self.parked.store(true, Ordering::Release);
             }
-            self.reading_changed.notify_all();
-            if retired {
+            if retired || terminal {
                 return;
-            }
-            while terminal || !self.dropped.load(Ordering::Acquire) {
-                reads = self
-                    .reading_changed
-                    .wait(reads)
-                    .unwrap_or_else(PoisonError::into_inner);
             }
         }
     }
@@ -378,16 +318,27 @@ fn check_wait(wait: Option<&crate::CancellationToken>) -> Result<(), DemandError
         wait.check().map_err(|_| DemandError::Cancelled)
     })
 }
-fn lock<'a, T>(
-    mutex: &'a Mutex<T>,
-    wait: Option<&crate::CancellationToken>,
-) -> Result<MutexGuard<'a, T>, DemandError> {
-    if wait.is_none() {
-        return Ok(mutex.lock().unwrap_or_else(PoisonError::into_inner));
+impl Shared {
+    /// A native owner that is already stopping cannot stop again: it is
+    /// busy while a credit remains, and out of native work once none does.
+    fn refuse_restop(&self, native: bool) -> Result<(), DemandError> {
+        if !native || !self.stopping.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        Err(if self.cleanup_pending() {
+            DemandError::WorkerUnavailable
+        } else {
+            DemandError::NativeWorkUnavailable
+        })
     }
-    match mutex.try_lock() {
-        Ok(guard) => Ok(guard),
-        Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
-        Err(std::sync::TryLockError::WouldBlock) => Err(DemandError::WorkerUnavailable),
+    /// The reads; under a cancellable wait, only if no one holds them.
+    fn lock_reads_unless_waiting(
+        &self,
+        wait: Option<&crate::CancellationToken>,
+    ) -> Result<ReadsGuard<'_>, DemandError> {
+        if wait.is_none() {
+            return Ok(self.lock_reads());
+        }
+        self.try_lock_reads().ok_or(DemandError::WorkerUnavailable)
     }
 }

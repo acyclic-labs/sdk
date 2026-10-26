@@ -114,6 +114,7 @@ impl NativeCheckout {
                 volume_id: source.volume_id().map_err(napi_error)?,
                 destination: destination.clone().into(),
                 writable,
+                shared: false,
             },
             source,
         )

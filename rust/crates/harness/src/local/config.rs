@@ -42,7 +42,7 @@ pub struct LocalHarnessConfig {
     pub(super) hermetic: bool,
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
-    pub(super) model: (Model, Arc<dyn ModelProvider>),
+    pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
@@ -84,10 +84,27 @@ impl LocalHarnessConfig {
     /// Selects a checkout path and its stock model binding.
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
+        Self::configuration(workspace.into(), Some(model))
+    }
+
+    /// Opens workspace coordination without a model, tools, settings or agent execution.
+    /// The trusted harness owner must start this outside the native host sandbox.
+    #[cfg(feature = "native-execution")]
+    #[must_use]
+    pub fn native_host(workspace: impl Into<PathBuf>) -> Self {
+        let mut config = Self::configuration(workspace.into(), None);
+        config.default_tools = false;
+        config.hermetic = true;
+        config.goal_continuations = None;
+        config.compaction = Some(crate::context::CompactionPolicy::Disabled);
+        config
+    }
+
+    fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
             active_directory: String::new(),
             goal_continuations: Some(Default::default()),
-            project: LocalProject::Workspace(workspace.into()),
+            project: LocalProject::Workspace(workspace),
             state_directory: None,
             hermetic: false,
             test_state: None,

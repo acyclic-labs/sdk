@@ -105,6 +105,35 @@ async fn recover_tree(head_only: bool, cancel_before_reopen: bool) -> Result<()>
     let files = Arc::clone(&harness.task_files);
     let (child, nested, request) = add_child(&harness, &files, parent, "child").await?;
     let (grandchild, _, _) = add_child(&harness, &nested, child, "grandchild").await?;
+    assert_ne!(nested.volume(), files.volume());
+    let reference = Component::new("grandchild").map_err(storage)?;
+    let (observed, observation) = harness
+        .observe_admitted_child(
+            nested.as_ref(),
+            &reference,
+            child,
+            crate::task_volume::ChildResultWindow::Latest,
+            1,
+        )
+        .await?;
+    assert_eq!(observed, grandchild);
+    assert_eq!(observation.pending_inputs, 1);
+    assert_eq!(
+        observation.generation,
+        nested.inner.head().await.map_err(storage)?
+    );
+    assert!(matches!(
+        harness
+            .observe_admitted_child(
+                files.as_ref(),
+                &reference,
+                child,
+                crate::task_volume::ChildResultWindow::Latest,
+                1,
+            )
+            .await,
+        Err(Error::NotFound(_))
+    ));
     let (sibling, _, _) = add_child(&harness, &files, parent, "sibling").await?;
     // Grandchild and sibling stay leased; child enters an actual model call.
     let running = harness.service_child(
@@ -115,16 +144,17 @@ async fn recover_tree(head_only: bool, cancel_before_reopen: bool) -> Result<()>
     );
     match futures::future::select(running, boundary).await {
         futures::future::Either::Right((Ok(()), running)) => {
-            let duplicate = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
+            // At this held provider boundary no owner can advance. The claim
+            // must reject synchronously; Pending proves a forbidden wait on
+            // the running executor, without using a wall-clock oracle.
+            let duplicate = futures::FutureExt::now_or_never(tokio::task::unconstrained(
                 harness.service_child(
                     files.clone(),
                     Component::new("child").map_err(storage)?,
                     request,
                     None,
                 ),
-            )
-            .await
+            ))
             .expect("duplicate child controller waited on live execution");
             assert!(matches!(duplicate, Err(Error::Conflict(message))
                 if message == "local turn already has an active driver"));

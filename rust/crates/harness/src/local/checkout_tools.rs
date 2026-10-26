@@ -9,8 +9,15 @@ use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
 pub(super) mod access;
-
-mod capture;
+pub(super) mod capture;
+#[cfg(test)]
+#[cfg(all(
+    feature = "filesystem-local",
+    any(target_os = "linux", windows),
+    not(acyclic_harness_loom)
+))]
+mod child_progress_tests;
+pub(super) mod child_views;
 mod children;
 pub(in crate::local) mod diff;
 mod git;
@@ -46,18 +53,20 @@ pub(super) struct CheckoutTools {
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
-    // Release the owner's flat task index before locking a selected ancestor;
-    // release that guard before publishing its child's cache entry. No path
-    // holds two checkout guards. Bindings share their workspace's guard.
+    // Child views live in the workspace's own index, never under this guard;
+    // only forking a child from a selected branch takes the branch owner's
+    // guard. No path holds two checkout guards. Bindings share their
+    // workspace's guard.
     state: StateArc<AsyncMutex<State>>,
     selected: bool,
 }
 
 pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
-    initial_view: acyclic_fs::WorkspaceId,
-    workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
-    children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
+    pub(in crate::local) initial_view: acyclic_fs::WorkspaceId,
+    pub(in crate::local) workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
+    pub(in crate::local) allocated_mounts:
+        std::collections::BTreeMap<String, std::sync::Weak<workspace::Mounts>>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
@@ -72,7 +81,7 @@ impl State {
             active: None,
             initial_view,
             workspace: None,
-            children: Default::default(),
+            allocated_mounts: Default::default(),
             watcher: None,
             mounts,
             initialized: false,

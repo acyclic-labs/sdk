@@ -19,12 +19,15 @@ test('Linux host qualification uses the smallest registered runner and retains e
  const registered=YAML.parse(fs.readFileSync('.github/actionlint.yaml','utf8'))['self-hosted-runner'].labels;
  for(const platform of job.strategy.matrix.platform)assert.ok(registered.includes(platform.runner));
  assert.equal(job['runs-on'],'${{ matrix.platform.runner }}');
+ const linux="runner.os == 'Linux'";
  const scenarios=[
-  ['Build host scenario',undefined,'cargo test -p acyclic-plugin --test e2e --no-run --locked'],
-  ['Run Pi installed diagnostics and native context qualification',undefined,
-   'suffix="" if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" cd plugin/tests/hosts bun run test:pi-context bun run test:pi-context-mail bun run test:pi-bootstrap bun run test:pi-session bun run test:pi-installation bun run test:pi-service bun run test:pi-native-recursive bun run test:pi-context-fresh bun run test:pi-context-pages bun run test:pi-builtin-paths'],
-  ['Run codex scenario',undefined,'cargo test -p acyclic-plugin --test e2e actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
-  ['Run claude scenario','success() || failure()','cargo test -p acyclic-plugin --test e2e actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
+  ['Build shared host scenarios',undefined,'cargo test --locked -p acyclic-plugin -p acyclic-harness --all-features --lib --bins --no-run'],
+  ['Run plugin unit tests',undefined,'cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4'],
+  ['Run shared native host lifecycle',undefined,'cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4'],
+  ['Run shared fork and merge recovery',undefined,'cargo test --locked -p acyclic-harness --all-features --lib local::tests::merge_recovery:: -- --test-threads=4'],
+  ['Run host manifest and shim contracts',undefined,'bun run --cwd plugin/tests/hosts test:shim'],
+  ['Run scripted native sessions in the Codex sandbox',linux,'node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/managed" "${{ steps.codex.outputs.binary }}" managed'],
+  ['Run shared mount scale through every host adapter',linux,'node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/scale" "${{ steps.codex.outputs.binary }}" scale'],
  ];
  /** @param {ReturnType<typeof YAML.parse>} document */
  const verify=document=>{
@@ -37,13 +40,14 @@ test('Linux host qualification uses the smallest registered runner and retains e
   for(const [name,condition,command] of scenarios){
    const step=qualification.steps.find(candidate=>candidate.name===name)??assert.fail('missing '+name);
    assert.equal(step.if,condition,name+': condition');
+   assert.equal(step['working-directory'],undefined,name+': working directory');
    assert.equal(step.run.replace(/\\\r?\n/g,' ').replace(/\s+/g,' ').trim(),command,name+': command');
   }
  };
  verify(workflow);
  for(const scope of ['workflow','job','step']){
   const altered=structuredClone(workflow);
-  const destination=scope==='workflow'?altered:scope==='job'?altered.jobs.qualify:altered.jobs.qualify.steps.find(step=>step.name==='Build host scenario');
+  const destination=scope==='workflow'?altered:scope==='job'?altered.jobs.qualify:altered.jobs.qualify.steps.find(step=>step.name==='Build shared host scenarios');
   destination.env={...destination.env,CARGO_BUILD_JOBS:'16'};
   assert.throws(()=>verify(altered),/Cargo follows the runner CPU count/);
  }
@@ -173,7 +177,10 @@ test('the required job checks Cargo lock consistency and committed lane artifact
    +'fi\n'
    +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
   'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
+  'node --test scripts/local-cloud.test.mjs',
   'cargo update --workspace --locked',
+  'node --test scripts/check-dev-dependency-cycles.test.mjs && node scripts/check-dev-dependency-cycles.mjs',
+  'node --test scripts/check-feature-matrix.test.mjs',
  ]);
  assert.equal(job.steps.filter(step=>step.uses).length,1);
  assert.doesNotMatch(JSON.stringify(job),/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)|(?:npm|bun|yarn|pnpm) (?:install|add)|cargo install/);
@@ -189,7 +196,8 @@ test('heavy workflows are reachable only through the release caller',()=>{
   assert.match(triggers(read(name)),/workflow_call:/,name);
   assert.doesNotMatch(triggers(read(name)),/workflow_dispatch:/,name);
  }
- assert.match(fs.readFileSync('scripts/qualify-ci.sh','utf8'),/policy\)\s+node scripts\/static-ci\.mjs/);
+ const policy=fs.readFileSync('scripts/qualify-ci.sh','utf8').match(/  policy\)([\s\S]*?)    ;;/)?.[1]??assert.fail('missing policy lane');
+ assert.match(policy,/^    node scripts\/static-ci\.mjs$/m);
 });
 
 test('all artifact uploads expire after three days, or thirty for release runs; coverage expires after one',()=>{
@@ -245,14 +253,18 @@ test('native builds and mount checks overlap qualification and still gate public
  assert.equal(workflow.jobs['native-mount'],undefined);
  assert.deepEqual(assemble.needs,['build','sdk-qualification','agent-host-qualification','installer-recovery']);
  const installer=workflow.jobs['installer-recovery'];
- assert.equal(installer.needs,undefined);
+ assert.equal(installer.needs,'build');
  assert.equal(installer.if,undefined);
  assert.equal(installer['runs-on'],'blacksmith-4vcpu-ubuntu-2404');
  assert.equal(installer.permissions.contents,'read');
  assert.equal(installer.steps[0].with.ref,'${{ inputs.source_sha }}');
  assert.equal(installer.steps[1].with['node-version'],'24.15.0');
- assert.equal(installer.steps[2].run,'node --test plugin/scripts/install.test.mjs');
- assert.equal(Object.values(workflow.jobs).flatMap(job=>job.steps??[]).filter(step=>step.run==='node --test plugin/scripts/install.test.mjs').length,1);
+ const downloaded=installer.steps.find(step=>step.uses?.startsWith('actions/download-artifact@'));
+ assert.equal(downloaded?.with.name,'acyclic-linux-x64-gnu');
+ assert.equal(downloaded?.with['run-id'],undefined,'the fixture must come from this exact release run');
+ const recovery=installer.steps.find(step=>step.name==='Exercise transactional installer recovery');
+ assert.equal(recovery?.env.ACYCLIC_TEST_BINARY,'${{ runner.temp }}/installer-binary/linux-x64-gnu/acyclic');
+ assert.equal(recovery?.run,'node --test --test-reporter=tap plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs plugin/scripts/install-durable-rename.test.mjs plugin/scripts/install-custody.test.mjs');
  assert.equal(assemble.if,undefined);
  const matrix=build.strategy.matrix.include;
  assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);

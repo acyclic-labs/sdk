@@ -36,8 +36,7 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
     let store = StagedObjects::open(
         crate::MemoryObjectStore::default(),
         directory.path().to_path_buf(),
-    )
-    .await?;
+    );
     let before = work.receipt();
     store
         .put_hashed(object, &mut crate::AuthorityWork::native(&work, &token))
@@ -142,8 +141,7 @@ async fn native_spill_denial_precedes_physical_write_and_restores_victims()
     let store = StagedObjects::open(
         crate::MemoryObjectStore::default(),
         directory.path().to_path_buf(),
-    )
-    .await?;
+    );
     let token = CancellationToken::new();
     let mut ids = Vec::new();
     for marker in 0..3_u8 {
@@ -154,10 +152,10 @@ async fn native_spill_denial_precedes_physical_write_and_restores_victims()
     let mut budget = native_write_budget();
     budget.backend_write_operations = 0;
     let denied = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
-    let _spill_file = store.spill_io.write().await;
+    let mut spill_file = store.spill_io.write().await;
     assert!(
         store
-            .spill_locked(&mut AuthorityWork::native(&denied, &token))
+            .spill_locked(&mut spill_file, &mut AuthorityWork::native(&denied, &token))
             .await
             .is_err()
     );
@@ -166,21 +164,15 @@ async fn native_spill_denial_precedes_physical_write_and_restores_victims()
     assert_eq!(store.index().spill_end, 0);
     assert_eq!(store.index().spilled_objects, 0);
     assert_eq!(store.index().order.len(), ids.len());
-    let physical = store
-        .spill
-        .read_batch_async(vec![OwnedRead {
-            offset: 0,
-            length: 1,
-        }])
-        .await?;
-    assert!(physical[0].is_empty());
+    // A refused spill leaves no spill file, so it holds no descriptor.
+    assert!(spill_file.is_none());
     for id in &ids {
         assert!(matches!(store.lookup(*id), Lookup::Resident(_)));
     }
     let work = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
     store
-        .spill_locked(&mut AuthorityWork::native(&work, &token))
+        .spill_locked(&mut spill_file, &mut AuthorityWork::native(&work, &token))
         .await?;
     assert!(work.receipt().backend_write_operations > 0);
     assert_eq!(work.receipt().object_bytes_written, store.index().spill_end);
@@ -373,8 +365,7 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
             cancel_once: AtomicBool::new(true),
         },
         directory.path().to_path_buf(),
-    )
-    .await?;
+    );
     let token = CancellationToken::new();
     let (first, first_bytes) = blob(OwnedBytes::from_static(b"acknowledged first"));
     let (second, second_bytes) = blob(OwnedBytes::from_static(b"retryable second"));
@@ -452,5 +443,25 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
     assert_eq!(retry.receipt().backend_write_operations, 2);
     assert_eq!(work.receipt().backend_write_operations, 1);
     drop(hold);
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_a_store_with_spilled_objects_holds_a_spill_file()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (store, _provider) = open_staged(directory.path()).await?;
+    let token = CancellationToken::new();
+    assert!(store.spill_io.read().await.is_none());
+    spill_fixture(&store, &token).await?;
+    // The probe sees a spill file while an object is spilled.
+    assert!(store.spill_io.read().await.is_some());
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    let result = store
+        .flush_before_publish(PublicationScope::Everything, &mut work)
+        .await;
+    work.receipt(result)?;
+    assert_eq!(store.index().spilled_objects, 0);
+    assert!(store.spill_io.read().await.is_none());
     Ok(())
 }

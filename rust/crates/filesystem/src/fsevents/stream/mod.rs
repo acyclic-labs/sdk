@@ -5,35 +5,25 @@ pub(crate) trait StreamTerminal: Send + Sync {
     fn stream_stopped(&self);
 }
 
-/// One running `FSEvents` stream over some paths, delivering file events as
-/// they happen on its own serial queue. Dropping it stops it, after any
-/// batch in delivery.
+/// One registration of some roots on the process's shared `FSEvents` hub,
+/// delivering file events beneath them on the hub's serial queue. Dropping
+/// it unregisters it, after any batch in delivery.
 pub(crate) struct EventStream {
-    api: &'static Api,
-    pub(super) stream: FsEventStreamRef,
-    pub(super) queue: DispatchQueue,
-    context: *const StreamContext,
+    hub: &'static Hub,
+    pub(super) registration: Option<Arc<Registration>>,
     terminal: Option<Arc<dyn StreamTerminal>>,
-    started: bool,
-    scheduled: bool,
     owned_bytes: u64,
     ownership: crate::demand::SourcePayloadOwnership,
     cleanup: (u64, u64),
     pub(super) birth: Option<crate::NativeMaterializationWork>,
 }
 
-// SAFETY: FSEvents streams and dispatch queues may be stopped and released
-// from another thread; exclusive custody serializes every teardown.
-unsafe impl Send for EventStream {}
-// SAFETY: shared references do not mutate the native resource custody.
-unsafe impl Sync for EventStream {}
-
 impl EventStream {
     /// Initializes process-global framework services outside finite source work.
     pub(crate) fn initialize_services() -> notify::Result<()> {
         let cancellation = crate::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Api::get(&mut work).map(|_| ()).map_err(notify_error)
+        Hub::get(&mut work).map(|_| ()).map_err(notify_error)
     }
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &mut self,
@@ -63,7 +53,7 @@ impl EventStream {
     }
 
     pub(crate) fn is_stopped(&self) -> bool {
-        self.stream.is_null() && self.queue.is_null()
+        self.registration.is_none()
     }
 
     #[cfg(test)]
@@ -75,13 +65,12 @@ impl EventStream {
         self.terminal = Some(terminal);
     }
 
+    /// Unregistering, then the queue barrier after which no batch runs.
     pub(super) fn cleanup_work(&self) -> WorkCounters {
+        let registered = u64::from(self.registration.is_some());
         WorkCounters {
-            backend_write_operations: u64::from(!self.stream.is_null())
-                + u64::from(self.started)
-                + u64::from(self.scheduled)
-                + u64::from(!self.queue.is_null()),
-            backend_read_operations: u64::from(!self.queue.is_null()),
+            backend_write_operations: registered,
+            backend_read_operations: registered,
             ..WorkCounters::default()
         }
     }
@@ -122,58 +111,26 @@ impl EventStream {
     }
 
     /// Finishes every admitted native operation, even after cancellation or
-    /// a recording error. Invalidation removes the producer before the serial
-    /// queue barrier establishes that its last callback has returned.
+    /// a recording error. Unregistering removes the routes before the serial
+    /// queue barrier establishes that the handler's last batch has returned.
     pub(crate) fn cleanup_admitted<W: SourceDemandReadWork>(
         &mut self,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        let mut result = Ok(());
-        if self.started {
-            // SAFETY: stop is valid only after the actual successful start.
-            unsafe { (self.api.stream_stop)(self.stream) };
-            self.started = false;
-            result = result.and(self.record_cleanup(work, 0, 1));
+        let Some(registration) = self.registration.take() else {
+            return Ok(());
+        };
+        self.hub.unregister(&registration);
+        let mut result = self.record_cleanup(work, 0, 1);
+        if on_queue() {
+            return result.and(self.defer_terminal(registration, work));
         }
-        if self.scheduled {
-            // SAFETY: this actual stream was scheduled on its live queue.
-            unsafe { (self.api.stream_invalidate)(self.stream) };
-            self.scheduled = false;
-            result = result.and(self.record_cleanup(work, 0, 1));
-        }
-        if !self.stream.is_null() && ACTIVE_STREAM.with(|active| active.get() == self.stream) {
-            return result.and(self.defer_terminal(work));
-        }
-        if !self.queue.is_null() {
-            // SAFETY: this original serial queue is live. No callback-owned
-            // state mutex is held; the barrier waits for its pending callbacks.
-            unsafe { dispatch_sync_f(self.queue, std::ptr::null_mut(), drain) };
-            result = result.and(self.record_cleanup(work, 1, 0));
-        }
-        result = result.and(self.release_drained_handles(work));
+        self.hub.drain();
+        result = result.and(self.record_cleanup(work, 1, 0));
+        drop(registration);
         result = result.and(self.retire_drained_custody());
         if let Some(terminal) = self.terminal.take() {
             terminal.stream_stopped();
-        }
-        result
-    }
-
-    fn release_drained_handles<W: SourceDemandReadWork>(
-        &mut self,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        let mut result = Ok(());
-        if !self.stream.is_null() {
-            // SAFETY: invalidated and drained; release also frees the context.
-            unsafe { (self.api.stream_release)(self.stream) };
-            self.stream = std::ptr::null_mut();
-            result = result.and(self.record_cleanup(work, 0, 1));
-        }
-        if !self.queue.is_null() {
-            // SAFETY: no live stream or callback needs this queue reference.
-            unsafe { dispatch_release(self.queue) };
-            self.queue = std::ptr::null_mut();
-            result = result.and(self.record_cleanup(work, 0, 1));
         }
         result
     }
@@ -198,55 +155,54 @@ impl EventStream {
         result
     }
 
-    fn defer_terminal<W: SourceDemandReadWork>(&mut self, work: &mut W) -> Result<(), DemandError> {
-        let context = self.context;
-        let queue = self.queue;
-        let api = self.api;
-        // SAFETY: this is the currently executing callback's live original
-        // Arc context. Its serial queue is the slot's sole writer/consumer.
-        let slot = unsafe { &mut *(*context).terminal.get() };
+    fn defer_terminal<W: SourceDemandReadWork>(
+        &mut self,
+        registration: Arc<Registration>,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        let hub = self.hub;
+        // SAFETY: this runs on the hub's serial queue, the slot's sole
+        // writer/consumer.
+        let slot = unsafe { &mut *registration.terminal.get() };
         assert!(
             slot.is_none(),
-            "one original stream schedules one terminal suffix"
+            "one registration schedules one terminal suffix"
         );
         let recorded = self.record_cleanup(work, 0, 1);
-        // SAFETY: the stream still owns its raw Arc reference. This allocation-
-        // free clone keeps the context alive through native release in the thunk.
-        unsafe { Arc::increment_strong_count(context) };
         *slot = Some(std::mem::replace(
             self,
             Self {
-                api,
-                stream: std::ptr::null_mut(),
-                queue: std::ptr::null_mut(),
-                context: std::ptr::null(),
+                hub,
+                registration: None,
                 terminal: None,
-                started: false,
-                scheduled: false,
                 owned_bytes: 0,
                 ownership: Default::default(),
                 cleanup: (0, 0),
                 birth: None,
             },
         ));
-        // SAFETY: original serial queue + admitted scheduling stage. The same
-        // queue consumes this sole raw Arc reference after prior callbacks drain.
-        unsafe { dispatch_async_f(queue, context.cast_mut().cast(), terminal_suffix) };
+        // SAFETY: the same serial queue consumes this sole raw Arc reference
+        // after the batch in delivery returns.
+        unsafe {
+            dispatch_async_f(
+                hub.queue(),
+                Arc::into_raw(registration).cast_mut().cast(),
+                terminal_suffix,
+            );
+        }
         recorded
     }
 
     pub(super) fn finish_deferred<W: SourceDemandReadWork>(
         mut self,
-        context: Arc<StreamContext>,
+        registration: Arc<Registration>,
         work: &mut W,
     ) {
         let terminal = self.terminal.take();
-        let result = self.release_drained_handles(work);
-        // The stream's native release consumed its original context reference;
-        // our queued reference is last, so handler payloads physically drop now.
-        drop(context);
-        let result = result.and(self.retire_drained_custody());
-        if let Err(error) = result {
+        // The routes and the batch are gone; this is the last reference, so
+        // handler payloads physically drop now.
+        drop(registration);
+        if let Err(error) = self.retire_drained_custody() {
             work.with_original_leaf(|work| work.record_native_io_failure(error));
         }
         if let Some(terminal) = terminal {
@@ -258,7 +214,7 @@ impl EventStream {
 
 impl Drop for EventStream {
     fn drop(&mut self) {
-        if self.stream.is_null() && self.queue.is_null() {
+        if self.registration.is_none() {
             return;
         }
         if let Some(birth) = self.birth.clone() {

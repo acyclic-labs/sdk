@@ -17,7 +17,7 @@ fn race<const REQUIRE: bool>() {
         })))?;
         let (file, durability) = {
             let journal = stream.inner.journal.lock().unwrap();
-            (journal.file.clone(), journal.limits.durability)
+            (journal.file.lease()?, journal.limits.durability)
         };
         let flusher = loom::thread::spawn({
             let stream = stream.clone();

@@ -326,6 +326,7 @@ async fn native_access_projection_start_paths_admit_before_host_effects()
                 volume_id: source.volume_id()?,
                 destination: destination.clone(),
                 writable,
+                shared: false,
             };
             let result = if prepared {
                 crate::prepare_native_mount_start(&work)?.start(

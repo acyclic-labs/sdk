@@ -6,6 +6,81 @@ mod publication;
 mod renames;
 
 #[test]
+fn capture_install_uses_exact_candidate_conflicts_instead_of_global_cache_stamps()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = sources(
+        FilesystemProfile::Portable,
+        ConsistencyMode::Pinned,
+        MountPublication::Manual,
+    )?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let paths = ["concurrent", "captured"].map(native_test_path);
+    let first = source.create_file(&paths[0], metadata(), None, &work)?;
+    let second = source.create_file(&paths[1], metadata(), None, &work)?;
+    let handles = [source.open_file(&paths[0])?, source.open_file(&paths[1])?];
+    source.runtime.wait(|| async {
+        let first_candidate =
+            staged_write(&source.checkout, first.node.file_id, b"concurrent", &work).await?;
+        let capture =
+            staged_write(&source.checkout, second.node.file_id, b"captured", &work).await?;
+        source
+            .checkout
+            .install_change(
+                first_candidate,
+                ViewChange::Node(first.node.file_id),
+                &work,
+                source.cancellation(),
+                None,
+            )
+            .await?;
+        assert_ne!(source.checkout.ledger.stamp(), capture.stamp);
+        let mut carrier = NativeDemandCarrier::Native(&work);
+        let (path, _allocation) = source.namespace_path(&paths[1], &mut carrier)?;
+        assert!(
+            source
+                .install_capture(
+                    capture,
+                    InstallScope::Paths(std::slice::from_ref(&path)),
+                    &mut carrier,
+                    work.cancellation(),
+                )
+                .await?,
+            "an unrelated native callback must not poison quiescent capture"
+        );
+
+        // Exact overlapping mutations still refuse adoption; no newer native
+        // content may be overwritten merely because a cache stamp is ignored.
+        let winner = staged_write(&source.checkout, second.node.file_id, b"winner", &work).await?;
+        let conflicting =
+            staged_write(&source.checkout, second.node.file_id, b"loser!", &work).await?;
+        source
+            .checkout
+            .install_change(
+                winner,
+                ViewChange::Node(second.node.file_id),
+                &work,
+                source.cancellation(),
+                None,
+            )
+            .await?;
+        assert!(
+            !source
+                .install_capture(
+                    conflicting,
+                    InstallScope::Paths(std::slice::from_ref(&path)),
+                    &mut carrier,
+                    work.cancellation(),
+                )
+                .await?
+        );
+        Ok(())
+    })?;
+    assert_eq!(handles[0].read_up_to(0, 64)?.as_ref(), b"concurrent");
+    assert_eq!(handles[1].read_up_to(0, 64)?.as_ref(), b"winnered");
+    Ok(())
+}
+
+#[test]
 fn file_mutation_admission_denies_unfunded_registry_growth()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(

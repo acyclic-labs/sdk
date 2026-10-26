@@ -133,7 +133,7 @@ fn published(root: &Path, owner: &mut std::process::Child) -> u32 {
 }
 
 /// An exit watch on one process, independent of its parentage.
-struct Watch {
+pub(super) struct Watch {
     #[cfg(unix)]
     fd: std::os::fd::OwnedFd,
     #[cfg(windows)]
@@ -145,7 +145,7 @@ struct Watch {
 impl Watch {
     /// None when no such process exists any more.
     #[cfg(unix)]
-    fn new(pid: u32) -> Option<Self> {
+    pub(super) fn new(pid: u32) -> Option<Self> {
         use std::os::fd::FromRawFd as _;
         // SAFETY: pidfd_open takes a PID and zero flags.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -165,7 +165,7 @@ impl Watch {
     }
 
     #[cfg(windows)]
-    fn new(pid: u32) -> Option<Self> {
+    pub(super) fn new(pid: u32) -> Option<Self> {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
         };
@@ -181,7 +181,7 @@ impl Watch {
     }
 
     /// Whether the process has exited, without waiting.
-    fn exited(&self) -> bool {
+    pub(super) fn exited(&self) -> bool {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd as _;
@@ -518,6 +518,56 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
             0
         );
     }
+}
+
+/// An idle custody holds no descriptor, so an idle owner costs none; a
+/// running tree's record holds the directory only while the tree runs.
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+#[test]
+fn an_idle_custody_holds_no_descriptor() {
+    use crate::testing::descriptors_naming;
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let custody = ProcessCustody::acquire(&processes).expect("custody");
+    assert_eq!(descriptors_naming(&processes).expect("descriptors"), 0);
+    let mut command = crate::shell_command("sleep 30", Some("sh"));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    // Negative control: the count sees the descriptor a running tree holds.
+    assert_eq!(descriptors_naming(&processes).expect("descriptors"), 1);
+    tree.terminate(None).expect("terminate");
+    drop(tree);
+    assert_eq!(descriptors_naming(&processes).expect("descriptors"), 0);
+}
+
+/// A custody never records a tree in a directory put in place of the one it
+/// fenced: that directory's records were never fenced.
+#[cfg(unix)]
+#[test]
+fn a_replaced_custody_directory_refuses_to_record() {
+    let root = tempfile::tempdir().expect("root");
+    let processes = root.path().join("processes");
+    let custody = ProcessCustody::open(&processes).expect("custody");
+    let mut command = crate::shell_command("exit 0", Some("sh"));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Control: the fenced directory records the tree.
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    tree.wait(Duration::from_secs(30)).expect("wait");
+    tree.terminate(None).expect("terminate");
+    fs::rename(&processes, root.path().join("fenced")).expect("move aside");
+    fs::create_dir(&processes).expect("replace");
+    let mut command = crate::shell_command("exit 0", Some("sh"));
+    let refused = ProcessTree::spawn_in_custody(&mut command, &custody)
+        .err()
+        .expect("a replaced directory recorded a tree");
+    assert!(refused.to_string().contains("replaced"), "{refused}");
+    assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
 }
 
 fn tree_pid(tree: &ProcessTree) -> u32 {

@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn file_control(
     work: &crate::NativeMaterializationWork,
 ) -> Result<crate::NativeAllocation, LocalCoreStateStoreError> {
-    shared_control::<File>(work)
+    shared_control::<acyclic_native_runtime::CachedFile>(work)
 }
 
 pub(super) fn shared_control<T>(
@@ -149,7 +149,9 @@ fn flush_through(
     let file = Arc::clone(&log.file);
     let covered = (log.epoch, log.length);
     drop(slot);
-    let synced = acyclic_native_runtime::flush_file_data(&file);
+    let synced = file.lease_metered(
+        root._allocation.as_ref().map(|allocation| allocation.work().runtime_meter()).as_deref(),
+    ).and_then(|lease| lease.flush(acyclic_native_runtime::flush_file_data));
     let recorded = credit
         .as_ref()
         .map(|credit| {

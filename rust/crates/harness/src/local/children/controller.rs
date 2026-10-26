@@ -24,6 +24,21 @@ mod results;
 mod stopping;
 
 impl LocalHarness {
+    // A settled child holds no native view. Its published status is durable,
+    // so a refused retirement keeps the view for the next settlement instead
+    // of failing the turn that already settled.
+    async fn retire_child_view(&self, child: TaskId) {
+        #[cfg(test)]
+        if crate::native_environment::variable(super::RETAIN_CHILD_VIEWS).is_some() {
+            return;
+        }
+        if let Some(workspace) = &self.workspace
+            && let Err(error) = workspace.settle_child(child).await
+        {
+            tracing::warn!(?error, ?child, "settled child view retirement deferred");
+        }
+    }
+
     // The child owns admission, execution and recovery state. Keep construction
     // of that future out of both parent coordination poll frames.
     #[inline(never)]
@@ -92,14 +107,14 @@ impl LocalHarness {
             }
             let child = self.admit_child_task(files.as_ref(), &request).await?;
             let parsed = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?;
-            let mut model = self.model.clone();
+            let mut model = self.agent()?.0.clone();
             if let Some(name) = parsed.model {
                 model.name = name;
                 model.validate()?;
             }
             let commands = self.runtime.commands().with_model(
                 &model,
-                self.provider.clone(),
+                self.agent()?.1.clone(),
                 &self.compaction,
                 None,
             )?;
@@ -169,6 +184,7 @@ impl LocalHarness {
                     )
                     .await?
                     {
+                        self.retire_child_view(child).await;
                         return Ok((reference, generation.position));
                     }
                     continue;
@@ -272,6 +288,7 @@ impl LocalHarness {
                     )
                     .await?
                     {
+                        self.retire_child_view(child).await;
                         return Ok((reference, generation.position));
                     }
                     continue;
@@ -358,10 +375,13 @@ impl LocalHarness {
                     };
                     stopping::drain(advance, controls, &cancellation).await?;
                 }
-                let (processed, results) = self
-                    .child_processed(child, journal.as_ref(), &reference, &values)
-                    .await?;
-                for file in results {
+                let processed = loop {
+                    let (processed, result) = self
+                        .child_processed(child, journal.as_ref(), &reference, &values)
+                        .await?;
+                    let Some(file) = result else {
+                        break processed;
+                    };
                     loop {
                         if values.get(&file.key) == Some(&file) {
                             break;
@@ -369,6 +389,14 @@ impl LocalHarness {
                         match files.inner.append(generation, &file).await {
                             Ok(next) => {
                                 generation = next;
+                                let FileKey::Child {
+                                    file: ChildFile::Result(turn),
+                                    ..
+                                } = &file.key
+                                else {
+                                    unreachable!("child projection only publishes answers");
+                                };
+                                result_slot::evict(&mut values, &reference, *turn);
                                 values.insert(file.key.clone(), file.clone());
                                 break;
                             }
@@ -385,7 +413,7 @@ impl LocalHarness {
                             Err(error) => return Err(storage(error)),
                         }
                     }
-                }
+                };
                 let state = desired(&reference, &values)?;
                 if state == ChildState::Running
                     && processed
@@ -429,6 +457,7 @@ impl LocalHarness {
                 )
                 .await?
                 {
+                    self.retire_child_view(child).await;
                     return Ok((reference, generation.position));
                 }
             }
@@ -579,16 +608,20 @@ fn needs_work_count(
 fn release_completed(
     position: u64,
     active: &mut BTreeSet<Component>,
-    completions: &mut BTreeMap<Component, u64>,
+    completions: &mut BTreeSet<(u64, Component)>,
 ) -> BTreeSet<Component> {
-    let ready: BTreeSet<_> = completions
-        .iter()
-        .filter(|(_, accepted)| **accepted <= position)
-        .map(|(reference, _)| reference.clone())
-        .collect();
-    for reference in &ready {
-        completions.remove(reference);
-        active.remove(reference);
+    let mut ready = BTreeSet::new();
+    while let Some((accepted, _)) = completions.first() {
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("child-completion-examined", 1u64));
+        if *accepted > position {
+            break;
+        }
+        let Some((_, reference)) = completions.pop_first() else {
+            unreachable!("the exclusively borrowed set contains its observed completion");
+        };
+        active.remove(&reference);
+        ready.insert(reference);
     }
     ready
 }

@@ -39,7 +39,7 @@ pub(super) fn write_entry(
     }
     let (target, extended) = symlink_extended(&target.bytes)
         .ok_or_else(|| format!("link at {path:?} is unrepresentable"))?;
-    let relative = HSTRING::from(host.as_os_str());
+    let relative = projection.runtime.projfs_name(&host);
     let size = u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX);
     // SAFETY: the name, placeholder and link target outlive these
     let result = unsafe {
@@ -149,7 +149,7 @@ pub(super) fn release_file(
         }
         Err(error) => return Err(format!("removing {path:?}: {error}")),
     }
-    clear_tombstone(projection, path, &HSTRING::from(host.as_os_str()))
+    clear_tombstone(projection, path, &projection.runtime.projfs_name(&host))
 }
 
 pub(super) fn release_link(
@@ -158,7 +158,7 @@ pub(super) fn release_link(
     digest: u64,
 ) -> Result<Release, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
-    let relative = HSTRING::from(host.as_os_str());
+    let relative = projection.runtime.projfs_name(&host);
     match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
         Ok(()) => return Ok(Release::Done),
         Err(error) if error.code() == HR_SHARING_VIOLATION => return Ok(Release::Busy),
@@ -291,7 +291,7 @@ pub(super) fn write_ordinary(
     let direct = projection.starting && replacing.is_none();
     let mut staging = lock_recover(&runtime.staging);
     if !direct && staging.is_none() {
-        *staging = Some(staging_directory(&runtime.root, work).map_err(failed)?);
+        *staging = Some(staging_directory(&runtime.staging_anchor, work).map_err(failed)?);
     }
     let temporary = if direct {
         name.to_owned()

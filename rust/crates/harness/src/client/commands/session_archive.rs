@@ -305,7 +305,11 @@ impl std::io::Write for Output {
     }
 }
 
-pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) -> Result<Vec<u8>> {
+pub(in crate::client::commands) fn output_bytes(
+    sequence: u64,
+    result: &Result<Value>,
+    maximum: u64,
+) -> Result<Vec<u8>> {
     use serde::{Serializer as _, ser::SerializeMap as _};
     let mut output = Output {
         bytes: Vec::new(),

@@ -10,7 +10,8 @@ pub struct NativeDemandSource {
 
 struct NativeDemandInner {
     path: PathBuf,
-    root: HostRoot,
+    /// Held only while in use, so an idle source holds no descriptor.
+    root: CachedRoot,
     /// Whether host I/O beneath the root may block a native callback
     inline: bool,
     identity: [u8; 16],
@@ -156,6 +157,7 @@ impl NativeDemandSource {
                                 identity: *crate::identity::fresh_uuid().as_bytes(),
                                 epoch: 0,
                             });
+                            let root = CachedRoot::new(root, &path, &mut context)?;
                             context.check()?;
                             Ok(Self {
                                 excluded: Arc::new(ExcludedPaths {
@@ -363,9 +365,17 @@ impl NativeDemandSource {
     ) -> Result<Option<HostStat>, DemandError> {
         let (relative, allocation) = self.relative(path, context)?;
         #[cfg(unix)]
-        let result = self.inner.root.stat(&relative, context);
+        let result = self
+            .inner
+            .root
+            .held(context)
+            .and_then(|root| root.stat(&relative, context));
         #[cfg(windows)]
-        let result = self.inner.root.stat(&relative, context);
+        let result = self
+            .inner
+            .root
+            .held(context)
+            .and_then(|root| root.stat(&relative, context));
         drop(relative);
         context.release(allocation)?;
         match result {

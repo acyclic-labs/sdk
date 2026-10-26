@@ -24,8 +24,7 @@ fn stopping_retires_handles_and_preserves_admitted_cleanup()
             None,
             &mut start,
         )?;
-        assert!(!stream.stream.is_null());
-        assert!(!stream.queue.is_null());
+        assert!(stream.registration.is_some());
         assert!(stream.logical_owned_bytes() > 0);
         assert_eq!(start.live_allocation_bytes(), 0);
         let cancellation = crate::CancellationToken::new();
@@ -43,8 +42,7 @@ fn stopping_retires_handles_and_preserves_admitted_cleanup()
         } else {
             stream.stop_with_work(&mut stop)?;
         }
-        assert!(stream.stream.is_null());
-        assert!(stream.queue.is_null());
+        assert!(stream.registration.is_none());
         assert!(stream.is_stopped());
         assert_eq!(stream.logical_owned_bytes(), 0);
         stop.work.verify(budget)?;

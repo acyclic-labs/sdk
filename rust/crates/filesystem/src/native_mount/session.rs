@@ -459,6 +459,12 @@ impl NativeMountSession {
         &mut self,
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        if self.request.shared {
+            // A shared view owns a namespace lease, not a mount destination.
+            // Its driver retires that lease; only the shared instance may
+            // clean up the physical root and release its destination fence.
+            return Ok(());
+        }
         if let Some(guard) = self.destination_guard.as_mut() {
             return guard.prepare_destination_cleanup(&self.request.destination, work);
         }

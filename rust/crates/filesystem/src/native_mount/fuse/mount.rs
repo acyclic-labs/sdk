@@ -4,7 +4,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     os::{
-        fd::{AsRawFd, OwnedFd},
+        fd::{AsRawFd, BorrowedFd, OwnedFd},
         unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixStream},
     },
     path::Path,
@@ -125,7 +125,7 @@ impl Mount {
         Ok(())
     }
 
-    pub(super) fn stop(&mut self, path: &CStr, device: Option<&OwnedFd>) -> io::Result<()> {
+    pub(super) fn stop(&mut self, path: &CStr, device: Option<BorrowedFd<'_>>) -> io::Result<()> {
         if let Some(child) = self.helper.as_mut() {
             if child.try_wait()?.is_none() {
                 child.kill()?;
@@ -191,18 +191,18 @@ impl Mount {
 
     // Only a device acknowledgment can finish an accepted unmount. A refused
     // request remains mounted and permits another explicitly admitted attempt.
-    pub(super) fn device_detached(&mut self, device: &OwnedFd) -> io::Result<bool> {
+    pub(super) fn device_detached(&mut self, device: BorrowedFd<'_>) -> io::Result<bool> {
         self.poll_detachment(device, 0)
     }
 
-    pub(super) fn wait_device_detached(&mut self, device: &OwnedFd) -> io::Result<bool> {
+    pub(super) fn wait_device_detached(&mut self, device: BorrowedFd<'_>) -> io::Result<bool> {
         // Unmount can return before the last kernel reference releases the
         // connection. Wait for its acknowledgment instead of treating a probe
         // in that interval as a failed retirement.
         self.poll_detachment(device, -1)
     }
 
-    fn poll_detachment(&mut self, device: &OwnedFd, timeout: i32) -> io::Result<bool> {
+    fn poll_detachment(&mut self, device: BorrowedFd<'_>, timeout: i32) -> io::Result<bool> {
         loop {
             match self.query_detachment(device, timeout) {
                 // A signal has not completed the admitted observation. Resume
@@ -213,7 +213,7 @@ impl Mount {
         }
     }
 
-    fn query_detachment(&mut self, device: &OwnedFd, timeout: i32) -> io::Result<bool> {
+    fn query_detachment(&mut self, device: BorrowedFd<'_>, timeout: i32) -> io::Result<bool> {
         #[cfg(test)]
         if let Some(poll) = self.detachment_poll.as_mut() {
             return poll(timeout);

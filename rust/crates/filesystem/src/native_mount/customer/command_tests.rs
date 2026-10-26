@@ -114,3 +114,79 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
     assert_eq!(retained_trace, ["sync", "advance"]);
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn shared_command_completion_and_abandon_retire_only_their_view()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "shared-command",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
+    workspace.write_text("/result.txt", "original").await?;
+    let root = tempfile::tempdir()?;
+    let admission = Arc::new(crate::hold_root(root.path())?);
+    let options = MountOptions::read_write()
+        .publication(MountPublication::Manual)
+        .view_root(admission);
+    let retained = workspace.mount_view(options.clone()).await?;
+    let completed = workspace.mount_view(options.clone()).await?;
+    assert_eq!(retained.path().parent(), completed.path().parent());
+    std::fs::write(retained.path().join("still-live.txt"), b"retained")?;
+    std::fs::write(completed.path().join("result.txt"), b"captured")?;
+    {
+        let mut owner = completed
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = owner.as_mut().ok_or("missing native session")?;
+        assert!(session.destination_guard.is_none());
+        // Both dispatch layers accept cleanup without claiming physical-root
+        // custody. Only retirement of this lease may remove its namespace.
+        let driver = session.driver.as_mut().ok_or("missing native driver")?;
+        driver.prepare_destination_cleanup(completed.path(), &work)?;
+        assert!(completed.path().exists());
+    }
+    completed.complete_command(true).await?;
+    assert!(!completed.path().exists());
+    assert_eq!(
+        workspace
+            .read("/result.txt", 64, &work, &cancellation)
+            .await?
+            .as_ref(),
+        b"captured"
+    );
+    assert_eq!(
+        std::fs::read(retained.path().join("still-live.txt"))?,
+        b"retained"
+    );
+
+    let abandoned = workspace.mount_view(options).await?;
+    assert_eq!(retained.path().parent(), abandoned.path().parent());
+    std::fs::write(abandoned.path().join("result.txt"), b"unverified")?;
+    abandoned.abandon_command()?;
+    assert!(!abandoned.path().exists());
+    assert_eq!(
+        workspace
+            .read("/result.txt", 64, &work, &cancellation)
+            .await?
+            .as_ref(),
+        b"captured"
+    );
+    assert_eq!(
+        std::fs::read(retained.path().join("still-live.txt"))?,
+        b"retained"
+    );
+    retained.abandon_command()?;
+    assert!(!retained.path().exists());
+    Ok(())
+}

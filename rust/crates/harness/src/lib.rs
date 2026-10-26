@@ -50,3 +50,16 @@ pub use wasm::BrowserContentReader;
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{LocalHarness, LocalHarnessConfig};
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub mod host_hooks;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use local::host_workspace;

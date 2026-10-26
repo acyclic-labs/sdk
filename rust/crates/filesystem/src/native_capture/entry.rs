@@ -16,6 +16,21 @@ pub struct HeldRoot {
 }
 
 impl HeldRoot {
+    /// Removes a leaf relative to this held directory without following links.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn remove_file(&self, leaf: &Path) -> Result<(), DemandError> {
+        self.root
+            .remove_record_file(leaf, &mut crate::native_host::ordinary_work())
+    }
+
+    /// Publishes complete immutable bytes without replacing a name or following
+    /// links. Replacing this root's path cannot redirect the publication.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn publish_immutable(&self, leaf: &Path, bytes: &[u8]) -> Result<(), DemandError> {
+        self.root
+            .publish_immutable(leaf, bytes, &mut crate::native_host::ordinary_work())
+    }
+
     /// Opens an existing descendant directory without following links or
     /// reopening this root by its original name.
     pub fn open_directory(&self, relative: &Path) -> Result<Self, DemandError> {

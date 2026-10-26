@@ -36,7 +36,7 @@ def finish(process):
 
 class MountOwnership(unittest.TestCase):
     def test_installed_pi_directories_remain_inside_acceptance_lease(self):
-        module = HERE.parent.parent / "plugin/tests/hosts/fixture-directory.mjs"
+        module = HERE / "fixture-directory.mjs"
         for prefix in [".pi-native-recursive-", ".pi-native-cuts-"]:
             for mode in ["exit", "wait"]:
                 with self.subTest(prefix=prefix, mode=mode), tempfile.TemporaryDirectory() as root:

@@ -37,8 +37,8 @@ message AppendRecord {
   repeated Attribute attributes = 3;
 }
 
-// A provider-authored change list, identified by the immutable attribute
-// acyclic.record = changes/v1. Its sorted unique entry keys must equal Record.keys.
+// A provider-authored change list, identified by acyclic.record = changes/v2. Its
+// value is the compact changes/v2 encoding of this shape, which stores each key once.
 // Follow projects entries through the effective predicate before delivery.
 // Context contains only shared publication identity, never paths or content.
 message ChangeRecord {

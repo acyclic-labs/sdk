@@ -165,7 +165,7 @@ pub(super) fn name(value: &str) -> MountPath {
 }
 
 pub(super) fn empty_projection_state() -> crate::native_mount::fuse::ProjectionState {
-    crate::native_mount::fuse::ProjectionState::new(true, 0, 0)
+    crate::native_mount::fuse::ProjectionState::new(true, 0, 0, 0)
 }
 
 #[test]

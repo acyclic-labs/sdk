@@ -5,11 +5,8 @@ use futures::{StreamExt, stream::BoxStream};
 /// Bounded JSONL stdin, independently scheduled from replay/follow.
 pub fn stdin_jsonl() -> BoxStream<'static, Result<String>> {
     Box::pin(
-        tokio_util::codec::FramedRead::new(
-            tokio::io::stdin(),
-            tokio_util::codec::LinesCodec::new_with_max_length(65_536),
-        )
-        .map(|line| line.map_err(|error| Error::Invalid(error.to_string()))),
+        acyclic_native_runtime::lines::AsyncLines::new(tokio::io::stdin(), 65_536)
+            .map(|line| line.map_err(|error| Error::Invalid(error.to_string()))),
     )
 }
 

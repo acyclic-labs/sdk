@@ -51,7 +51,7 @@ pub fn check(data: &[u8]) -> Result<()> {
         commit_id: acyclic_stream::CommitId::from_bytes([1; 32]),
         committed_at_micros: 0,
     };
-    if let Ok(Some(file)) = FileValue::from_record(&record) {
+    for file in FileValue::from_record(&record).unwrap_or_default() {
         let json = serde_json::to_vec(&file).unwrap();
         assert_eq!(serde_json::from_slice::<FileValue>(&json).unwrap(), file);
     }

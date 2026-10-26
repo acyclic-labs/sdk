@@ -5,6 +5,125 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 use std::sync::Arc;
 
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn publication_uses_the_original_native_commit_and_deadline()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use crate::store::operations::native_only_provider_tests::NativeOnly;
+    use acyclic_stream::{CommitRequest, IdempotencyKey, StreamProvider as _};
+
+    for deadline in [None, Some(0)] {
+        let provider = Arc::new(MemoryStream::default());
+        let volume = TaskVolume::open(
+            provider.clone(),
+            StreamPath::new("native-only-task-commit")?,
+        )
+        .await?;
+        let before = volume.head().await?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let prepared = volume
+            .prepare_append(
+                before,
+                &Write::new(FileKey::Goal, b"owned publication".to_vec()),
+                Vec::new(),
+                false,
+                Some(&work),
+            )
+            .await?
+            .expect("new goal");
+        let native = Arc::new(NativeOnly::new(provider));
+        // Move every field: a partially moved, shadowed volume would retain its
+        // provider until this scope ends, including the committed record's custody.
+        let TaskVolume {
+            provider: original_provider,
+            path,
+            index,
+        } = volume;
+        drop(original_provider);
+        let volume = TaskVolume {
+            provider: native.clone(),
+            path,
+            index,
+        };
+        let result = volume
+            .commit_append(before, prepared, deadline, Some(&work))
+            .await;
+        assert!(
+            !native.ordinary_called(),
+            "original work must reach native_commit"
+        );
+        if deadline.is_some() {
+            let error = result.expect_err("the same native dispatch must enforce the deadline");
+            assert_eq!(volume.generation(&*volume.index.lock().await), before);
+            // A native failure owns its admitted diagnostic custody. Retiring
+            // the volume cannot release storage still owned by that error.
+            drop(error);
+        } else {
+            assert_eq!(result?.position, before.position + 1);
+            let index = volume.index.lock().await;
+            assert!(
+                index
+                    .files
+                    .get(&FileKey::Goal)
+                    .unwrap()
+                    .file
+                    .bytes
+                    .matches_meter(&work.runtime_meter())
+            );
+        }
+        // The former direct commit path fails against this very provider.
+        assert!(
+            native
+                .commit(CommitRequest {
+                    conditions: Vec::new(),
+                    mutations: Vec::new(),
+                    idempotency_key: IdempotencyKey::new("ordinary-commit-negative")?,
+                })
+                .await
+                .is_err()
+        );
+        assert!(native.ordinary_called());
+        drop(volume);
+        drop(native);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "deadline {deadline:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn native_json_denial_precedes_serialization() {
+    struct Probe<'a>(&'a std::sync::atomic::AtomicUsize);
+    impl Serialize for Probe<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            serializer.serialize_str("mailbox body")
+        }
+    }
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    budget.bytes_encoded = 0;
+    let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+    let baseline = work.live_allocation_bytes();
+    assert!(encode_json(&Probe(&attempts), Some(&work)).is_err());
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    // The former direct serializer executes despite the exhausted native ledger.
+    assert!(serde_json::to_vec(&Probe(&attempts)).is_ok());
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // Attribution survives both the persisted segment and public file codecs.

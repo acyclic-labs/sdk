@@ -22,6 +22,8 @@ pub enum Fault {
     IgnoreDeadline,
     /// Stop output on an unrelated task-file writer's generation advance.
     StopAfterGenerationConflict,
+    /// Stop output when an unrelated coordinator event fails its owner condition.
+    StopAfterFenceConflict,
     /// Return from child control before its live effect future is drained.
     DropActiveChild,
     /// Admit child preparation before its staged inputs are durable.

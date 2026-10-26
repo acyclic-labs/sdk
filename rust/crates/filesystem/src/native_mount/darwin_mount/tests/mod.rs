@@ -592,6 +592,7 @@ fn live_mount() -> Result<
             volume_id: source.volume_id()?,
             destination: temporary.path().to_path_buf(),
             writable: true,
+            shared: false,
         },
         Arc::clone(&source) as Arc<dyn MountFilesystem>,
     )?;

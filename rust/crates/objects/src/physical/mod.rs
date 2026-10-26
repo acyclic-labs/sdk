@@ -22,10 +22,10 @@ pub(crate) const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
 pub(crate) const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// One store's directory and a shared read handle on its journal, so a read of a journal-resident body does not reopen the journal (a costly open on Windows).
+/// One store's directory and a shared read handle on its journal, so a read of a journal-resident body does not reopen the journal (a costly open on Windows) while the store is in use; idle, the handle holds no descriptor.
 pub(crate) struct LocalRoot {
     pub(crate) path: PathBuf,
-    journal: RwLock<Option<File>>,
+    journal: RwLock<Option<acyclic_native_runtime::CachedFile>>,
 
     #[cfg(test)]
     read_gate: Option<JournalReadGate>,
@@ -105,20 +105,24 @@ impl LocalRoot {
             .map_err(|_| Error::from(Unavailable))?
             .as_ref()
         {
-            return read_journal_body(journal, offset, expected_digest, expected_length);
+            let journal = journal.lease().map_err(|_| Error::from(Unavailable))?;
+            return read_journal_body(journal.file(), offset, expected_digest, expected_length);
         }
         let mut journal = self.journal.write().map_err(|_| Error::from(Unavailable))?;
         if journal.is_none() {
+            let path = self.path.join(JOURNAL_FILE);
+            let file = File::open(&path).map_err(|_| Error::from(Unavailable))?;
             *journal = Some(
-                File::open(self.path.join(JOURNAL_FILE)).map_err(|_| Error::from(Unavailable))?,
+                acyclic_native_runtime::CachedFile::new(file, &path, false, false)
+                    .map_err(|_| Error::from(Unavailable))?,
             );
         }
-        read_journal_body(
-            journal.as_ref().ok_or(Error::from(Unavailable))?,
-            offset,
-            expected_digest,
-            expected_length,
-        )
+        let journal = journal
+            .as_ref()
+            .ok_or(Error::from(Unavailable))?
+            .lease()
+            .map_err(|_| Error::from(Unavailable))?;
+        read_journal_body(journal.file(), offset, expected_digest, expected_length)
     }
 }
 

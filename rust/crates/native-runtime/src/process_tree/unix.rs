@@ -141,8 +141,13 @@ pub(super) fn read_pipe(
     }
 }
 
+/// Unix stdin writes are plain nonblocking writes; they own no state.
+#[derive(Default)]
+pub(super) struct Writer;
+
 pub(super) fn write_pipe(
     pipe: &mut (impl Write + Pipe),
+    _writer: &mut Writer,
     bytes: &[u8],
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<(Option<usize>, io::Result<()>)> {
@@ -258,6 +263,7 @@ pub(super) fn spawn_controlled(
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
     command.process_group(0);
+    let events = super::events::Events::start()?;
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         let child = command.spawn()?;
         // A Unix Child ID originated as pid_t at this same SDK boundary.
@@ -274,6 +280,11 @@ pub(super) fn spawn_controlled(
             spawn_resources: SpawnResources::default(),
             prepared_spawn: None,
             custody: None,
+            #[cfg(target_os = "linux")]
+            exit_fd: None,
+            writer: Writer,
+            queued_stdin: None,
+            _events: events,
         });
         Ok(())
     })
@@ -339,6 +350,7 @@ pub(super) fn spawn_closed_with_arguments(
     meter: &dyn crate::NativeReadMeter,
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
+    let events = super::events::Events::start()?;
     let attr_cleanup = meter.reserve_cleanup_write()?;
     let actions_cleanup = match meter.reserve_cleanup_write() {
         Ok(cleanup) => cleanup,
@@ -355,7 +367,7 @@ pub(super) fn spawn_closed_with_arguments(
     };
     let spawned = objects
         .initialize(meter)
-        .and_then(|()| objects.spawn(program, arguments, environment, meter, custody));
+        .and_then(|()| objects.spawn(program, arguments, environment, meter, custody, events));
     // Retire objects in reverse construction order. Both actual
     // destroys run even after cancellation or another cleanup failure.
     let (actions_result, actions) = retire(
@@ -387,6 +399,11 @@ pub(super) fn spawn_closed_with_arguments(
             spawn_resources: SpawnResources::default(),
             prepared_spawn: None,
             custody: None,
+            #[cfg(target_os = "linux")]
+            exit_fd: None,
+            writer: Writer,
+            queued_stdin: None,
+            _events: events,
         });
         owner.spawn_resources = retained;
     }
@@ -466,6 +483,7 @@ impl SpawnObjects {
         environment: Option<*mut *mut libc::c_char>,
         meter: &dyn crate::NativeReadMeter,
         custody: &mut Option<super::ProcessTree>,
+        events: super::events::Events,
     ) -> io::Result<()> {
         let mut pid = 0;
         loop {
@@ -500,6 +518,11 @@ impl SpawnObjects {
                             spawn_resources: SpawnResources::default(),
                             prepared_spawn: None,
                             custody: None,
+                            #[cfg(target_os = "linux")]
+                            exit_fd: None,
+                            writer: Writer,
+                            queued_stdin: None,
+                            _events: events,
                         });
                     }
                     spawn_status(status)
@@ -535,6 +558,30 @@ fn retire<T>(
 }
 
 impl Guard {
+    pub(super) const fn needs_kill(&self) -> bool {
+        self.active
+    }
+
+    /// One process-group kill; no enumeration or allocation is needed to
+    /// notify a custodied warden that its program must be drained.
+    pub(super) fn kill(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        // SAFETY: the owned, unreaped leader reserves this exact group ID.
+        if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
+            self.active = false;
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            self.active = false;
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
     fn group_gone(
         &self,
         error: &io::Error,
@@ -585,14 +632,7 @@ impl Guard {
         }
         let signal =
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: a negative, nonzero pid addresses exactly this owned
-                // process group; SIGKILL requires no shared memory or signal data.
-                if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
-                    self.active = false;
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
-                }
+                self.kill()
             });
         let Err(error) = signal else {
             return Ok(());
@@ -605,6 +645,8 @@ impl Guard {
         }
     }
 }
+
+pub(super) const RETIREMENT_WRITES: u64 = 1;
 
 #[cfg(target_vendor = "apple")]
 #[path = "apple_group_wait.rs"]

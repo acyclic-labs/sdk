@@ -130,11 +130,13 @@ impl FsEventsWatcher {
             return Ok(());
         }
         let (handler, recursive) = (Arc::clone(&self.handler), self.recursive.clone());
+        // The hub routes by the canonical paths that `FSEvents` reports.
+        let roots = recursive.keys().cloned().collect::<Vec<_>>();
         let cancellation = crate::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         self.stream = Some(
             EventStream::start(
-                &self.paths,
+                &roots,
                 Arc::new(move |events: EventBatch<'_>| {
                     for (path, flags) in events.iter() {
                         let watched = recursive.iter().any(|(root, recursive)| {

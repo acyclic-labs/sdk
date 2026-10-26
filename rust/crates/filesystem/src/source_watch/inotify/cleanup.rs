@@ -257,6 +257,13 @@ impl Shared {
             });
             result = result.and(self.record_cleanup(WRITE, work).and(withdrawn));
         }
+        // A cached root holds no descriptor: releasing it is no I/O.
+        drop(
+            self.cached_root
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
         let descriptor = self.root.swap(-1, Ordering::AcqRel);
         if descriptor >= 0 {
             let closed = close(descriptor);

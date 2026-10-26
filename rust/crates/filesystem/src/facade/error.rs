@@ -48,10 +48,6 @@ pub enum FsError {
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
     LocalRoot(std::io::Error),
-    /// The private spill file for pre-publication staging could not be created.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-    #[error("local staging spill file setup failed: {0}")]
-    LocalStaging(std::io::Error),
     /// A live process-local engine already owns this root with different limits.
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem root is already open with different options")]

@@ -3,6 +3,7 @@ use super::*;
 impl<S> StagedObjects<S> {
     pub(super) async fn spill_locked(
         &self,
+        spill: &mut Option<NativeFile>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         work.accounting()
@@ -65,7 +66,8 @@ impl<S> StagedObjects<S> {
                     buffer_allocation.expect("native spill buffer is funded"),
                     native,
                 )?;
-                self.spill
+                self.spill_file(spill)
+                    .await?
                     .control_async(
                         move |file, meter| {
                             acyclic_native_runtime::write_all_at(
@@ -93,13 +95,16 @@ impl<S> StagedObjects<S> {
                     peak_allocation_bytes: spilled,
                     ..WorkCounters::UNCHARGED
                 };
-                let result = self
-                    .spill
-                    .write_all_batch_async(vec![OwnedWrite {
-                        offset,
-                        bytes: bytes::Bytes::from(buffer),
-                    }])
-                    .await;
+                let result = match self.spill_file(spill).await {
+                    Ok(file) => {
+                        file.write_all_batch_async(vec![OwnedWrite {
+                            offset,
+                            bytes: bytes::Bytes::from(buffer),
+                        }])
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
                 work.accounting()
                     .record_completed(delta)
                     .map_err(crate::async_storage::object_error)?;
@@ -110,6 +115,10 @@ impl<S> StagedObjects<S> {
         .await;
         if result.is_err() {
             let mut index = self.index_mut();
+            if index.spilled_objects == 0 {
+                // A refused first spill leaves no file behind.
+                *spill = None;
+            }
             for (id, _) in &victims {
                 if let Some(Staged::Resident { order, .. }) = index.objects.get(id) {
                     let order = *order;
@@ -128,8 +137,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         &self,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let _spill_file = self.spill_io.write().await;
-        self.spill_locked(work).await?;
+        let mut spill = self.spill_io.write().await;
+        self.spill_locked(&mut spill, work).await?;
         let (_target_allocation, targets) = {
             let index = self.index();
             if index.spill_end <= MAXIMUM_SPILL_BYTES {
@@ -171,12 +180,13 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         let unswept = self.collection.unswept().await;
         if work.is_native() {
-            self.drain_locked(&unswept, &targets, work).await?;
+            self.drain_locked(&mut spill, &unswept, &targets, work)
+                .await?;
         } else {
             let cancellation = CancellationToken::new();
             let mut housekeeping = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let _ = self
-                .drain_locked(&unswept, &targets, &mut housekeeping)
+                .drain_locked(&mut spill, &unswept, &targets, &mut housekeeping)
                 .await;
         }
         Ok(())

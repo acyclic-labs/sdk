@@ -77,7 +77,7 @@ fn append_json(request: &crate::AppendRequest) -> Result<Value> {
 fn append_record_json(record: &crate::AppendRecord) -> Value {
     json!({
         "value": STANDARD.encode(&record.value),
-        "keys": record.headers.keys().iter().map(|key| STANDARD.encode(key)).collect::<Vec<_>>(),
+        "keys": crate::changes::wire_keys(&record.headers).iter().map(|key| STANDARD.encode(key)).collect::<Vec<_>>(),
         "attributes": record.headers.attributes().iter().map(|attribute| json!({
             "name": attribute.name,
             "value": STANDARD.encode(attribute.value),

@@ -281,9 +281,10 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     .with_object_limit(maximum_object_bytes)?,
                 object_cache,
             )?;
-            crate::staged_objects::StagedObjects::open(objects, root.clone())
-                .await
-                .map_err(FsError::LocalStaging)
+            Ok::<_, FsError>(crate::staged_objects::StagedObjects::open(
+                objects,
+                root.clone(),
+            ))
         };
         let (stream, objects) = futures::future::join(open_stream, open_objects).await;
         let (stream, objects) = (stream?, objects?);

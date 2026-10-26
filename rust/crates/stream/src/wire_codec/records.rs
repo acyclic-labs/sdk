@@ -28,13 +28,15 @@ pub fn record_wire(value: Record) -> wire::Record {
 }
 
 fn headers(
+    value: &[u8],
     keys: Vec<Bytes>,
     attributes: Vec<wire::Attribute>,
 ) -> Result<crate::RecordHeaders, StreamError> {
     if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
         return Err(StreamError::LimitExceeded);
     }
-    crate::RecordHeaders::new(
+    crate::changes::record_headers(
+        value,
         keys.into_iter().map(Into::into).collect(),
         attributes
             .into_iter()
@@ -48,8 +50,7 @@ fn headers(
 
 fn headers_wire(headers: &crate::RecordHeaders) -> (Vec<Bytes>, Vec<wire::Attribute>) {
     (
-        headers
-            .keys()
+        crate::changes::wire_keys(headers)
             .iter()
             .cloned()
             .map(Bytes::from_owner)
@@ -67,14 +68,14 @@ fn headers_wire(headers: &crate::RecordHeaders) -> (Vec<Bytes>, Vec<wire::Attrib
 
 /// Validates the value and indexed headers from every append or transaction path.
 pub fn append_record(value: wire::AppendRecord) -> Result<crate::AppendRecord, StreamError> {
+    let headers = headers(&value.value, value.keys, value.attributes)?;
     let record = crate::AppendRecord {
         value: value.value.into(),
-        headers: headers(value.keys, value.attributes)?,
+        headers,
     };
     if record.payload_bytes() > crate::MAX_RECORD_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    crate::changes::validate(&record.value, &record.headers)?;
     Ok(record)
 }
 

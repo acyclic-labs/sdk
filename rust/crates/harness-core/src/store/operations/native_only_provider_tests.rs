@@ -12,9 +12,17 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-struct NativeOnly<P>(Arc<P>, AtomicBool);
+pub(crate) struct NativeOnly<P>(Arc<P>, AtomicBool);
 
 impl<P> NativeOnly<P> {
+    pub(crate) fn new(provider: Arc<P>) -> Self {
+        Self(provider, AtomicBool::new(false))
+    }
+
+    pub(crate) fn ordinary_called(&self) -> bool {
+        self.1.load(Ordering::Relaxed)
+    }
+
     fn ordinary_error(&self) -> StreamError {
         self.1.store(true, Ordering::Relaxed);
         StreamError::Unsupported

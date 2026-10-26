@@ -5,7 +5,7 @@ impl Journal {
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
     ) -> Result<Self, LocalStreamError> {
-        let lock = lock_root(root, limits)?;
+        let claim = lock_root(root, limits)?;
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
                 blocking_send(
@@ -20,17 +20,22 @@ impl Journal {
             None => 0,
         };
         let path = root.join(JOURNAL_FILE);
-        let file = Arc::new(
+        // Idle, the journal holds no descriptor: the process reopens it
+        // when next used.
+        let file = acyclic_native_runtime::CachedFile::new(
             OpenOptions::new()
                 .create(true)
                 .truncate(false)
                 .read(true)
                 .write(true)
                 .open(&path)?,
-        );
+            &path,
+            true,
+            true,
+        )?;
         let mut journal = Self {
             _ownership_anchor: None,
-            _lock: lock,
+            claim,
             file,
             epoch,
             operations: 0,
@@ -47,12 +52,15 @@ impl Journal {
         };
         let header_bytes =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
-        let length = journal.file.metadata()?.len();
+        // Recovery reads by position, so it holds one descriptor throughout.
+        let lease = journal.file.lease()?;
+        let length = lease.file().metadata()?.len();
         let mut header = vec![0_u8; HEADER_BYTES];
         let found = if length < header_bytes {
             None
         } else {
-            (&*journal.file)
+            lease
+                .file()
                 .read_exact(&mut header)
                 .map_err(|_| LocalStreamError::Corrupt)?;
             Some(decode_header(&header, limits))
@@ -62,9 +70,9 @@ impl Journal {
             // than a valid header never acknowledged one: its creation or
             // restart was torn, and it starts again.
             None => {
-                (&*journal.file).seek(SeekFrom::Start(0))?;
+                lease.file().seek(SeekFrom::Start(0))?;
                 let mut partial = Vec::new();
-                (&*journal.file).read_to_end(&mut partial)?;
+                lease.file().read_to_end(&mut partial)?;
                 if !encode_header(limits, epoch)?.starts_with(&partial) {
                     return Err(LocalStreamError::Corrupt);
                 }
@@ -87,31 +95,42 @@ impl Journal {
             }
             _ => return Err(LocalStreamError::Corrupt),
         }
-        journal.replay(length, recovered, span)?;
+        journal.replay(lease.file(), length, recovered, span)?;
         if !validate_recovery(recovered)? {
             return Ok(journal);
         }
-        if let Some(frame_start) = journal.torn_tail {
-            match acyclic_native_runtime::recover_log_tail(
-                &journal.file,
-                frame_start,
-                maximum_frame_bytes(),
-                native_durability(limits.durability),
-                frame_is_valid,
-            )? {
+        journal.repair(&lease)?;
+        Ok(journal)
+    }
+
+    /// Cuts a torn final frame from a replayed journal, and makes every
+    /// replayed frame durable: a crashed process may have written frames it
+    /// never flushed, and they are made durable before anything observes
+    /// them.
+    fn repair(&self, lease: &acyclic_native_runtime::FileLease) -> Result<(), LocalStreamError> {
+        let durability = self.limits.durability;
+        if let Some(frame_start) = self.torn_tail {
+            match lease.write(|file| {
+                acyclic_native_runtime::recover_log_tail(
+                    file,
+                    frame_start,
+                    maximum_frame_bytes(),
+                    native_durability(durability),
+                    frame_is_valid,
+                )
+            })? {
                 acyclic_native_runtime::LogTail::Torn => {}
                 acyclic_native_runtime::LogTail::Corrupt => return Err(LocalStreamError::Corrupt),
             }
         }
-        // Frames a crashed process wrote but never flushed are replayed, so
-        // they are made durable before anything can observe them.
-        sync_file_data(&journal.file, limits.durability)?;
-        Ok(journal)
+        lease.flush(|file| sync_file_data(file, durability))?;
+        Ok(())
     }
 
     /// Hands every whole frame of a journal `length` long to `recovered`,
     fn replay(
         &mut self,
+        file: &File,
         length: u64,
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
@@ -123,7 +142,7 @@ impl Journal {
         let total_length = length;
         while valid_length < total_length {
             let frame_start = valid_length;
-            let Some(frame) = read_frame(&self.file, total_length - frame_start)? else {
+            let Some(frame) = read_frame(file, total_length - frame_start)? else {
                 // Repair is deferred until semantic replay has accepted every prefix frame.
                 self.torn_tail = Some(frame_start);
                 break;
@@ -154,7 +173,6 @@ impl Journal {
         if valid_length > limits.journal_bytes {
             return Err(LocalStreamError::InvalidLimits);
         }
-        (&*self.file).seek(SeekFrom::End(0))?;
         span.record("frames", operations);
         span.record("bytes", valid_length);
         self.operations = operations;
@@ -168,15 +186,19 @@ impl Journal {
         epoch: u64,
         work: Option<&Arc<crate::memory::Work>>,
     ) -> Result<(), LocalStreamError> {
-        acyclic_native_runtime::truncate_file(&self.file, 0)?;
-        (&*self.file).seek(SeekFrom::Start(0))?;
-        acyclic_native_runtime::write_file_all(
-            &mut &*self.file,
-            &encode_header(self.limits, epoch)?,
-        )?;
+        let header = encode_header(self.limits, epoch)?;
+        let lease = self.file.lease()?;
+        lease.write(|file| {
+            acyclic_native_runtime::truncate_file(file, 0)?;
+            acyclic_native_runtime::write_file_all(
+                &mut acyclic_native_runtime::WriteAt::new(file, 0),
+                &header,
+            )
+        })?;
+        let durability = self.limits.durability;
         match work {
-            Some(work) => work.sync(|| sync_file(&self.file, self.limits.durability))?,
-            None => sync_file(&self.file, self.limits.durability)?,
+            Some(work) => lease.flush(|file| work.sync(|| sync_file(file, durability)))?,
+            None => lease.flush(|file| sync_file(file, durability))?,
         }
         self.epoch = epoch;
         self.operations = 0;
@@ -247,7 +269,10 @@ impl Journal {
         frame: &mut PreparedFrame,
         required: bool,
     ) -> Result<(), LocalStreamError> {
-        frame.write(&mut &*self.file)?;
+        let offset = self.bytes;
+        self.file.lease()?.write(|file| {
+            Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
+        })??;
         tracing::trace!(
             bytes = frame.encoded.len() as u64,
             required,

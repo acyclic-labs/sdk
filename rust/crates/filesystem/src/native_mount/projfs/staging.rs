@@ -228,7 +228,7 @@ pub(super) fn delete_unowned(
     path: &MountPath,
 ) -> Result<Release, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
-    let relative = HSTRING::from(host.as_os_str());
+    let relative = projection.runtime.projfs_name(&host);
     match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
         Ok(()) => Ok(Release::Done),
         Err(error) if error.code() == HR_SHARING_VIOLATION => Ok(Release::Busy),

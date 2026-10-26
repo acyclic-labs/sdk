@@ -83,7 +83,7 @@ pub(in crate::native_mount::fuse) fn fixture()
         directory(FileId::new()),
         None,
         false,
-        0,
+        (0, 0),
         0,
         &work,
     )

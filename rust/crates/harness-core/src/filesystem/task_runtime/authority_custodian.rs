@@ -24,6 +24,36 @@ where
     /// Derives source authority from the current retained task and lease. No
     /// caller-supplied capabilities or agent identity enter the signing boundary.
     pub async fn fork_source_scope(&self, task: TaskId, fence: LeaseFence) -> Result<Scope> {
+        self.derive_fork_source_scope(task, fence, None).await
+    }
+
+    /// Authorizes a workspace fork for an exact registered descendant task.
+    /// Native hosts need task-spawn authority, without harness-tool authority.
+    pub async fn fork_source_scope_for_task<I: 'static, Output: 'static>(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        definition: &crate::runtime::TaskDefinition<I, Output>,
+    ) -> Result<Scope> {
+        let identity = definition.identity();
+        let registered = self
+            .harness
+            .task::<I, Output>(&format!("{}@{}", identity.name, identity.version))?;
+        if registered.identity() != identity {
+            return Err(Error::Unauthorized(
+                "fork descendant differs from its registered definition".into(),
+            ));
+        }
+        self.derive_fork_source_scope(task, fence, Some(identity))
+            .await
+    }
+
+    async fn derive_fork_source_scope(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        descendant: Option<&crate::registry::ComponentIdentity>,
+    ) -> Result<Scope> {
         let issuer = self
             .authority_custodian
             .as_ref()
@@ -37,7 +67,9 @@ where
         {
             return Err(Error::Unauthorized("source workload has expired".into()));
         }
-        if !scope.grants().contains("tool:call:spawn") {
+        if let Some(identity) = descendant {
+            crate::runtime::require_descendant_grant(scope.grants(), identity)?;
+        } else if !scope.grants().contains("tool:call:spawn") {
             return Err(Error::Unauthorized(
                 "source task lacks spawn authority".into(),
             ));

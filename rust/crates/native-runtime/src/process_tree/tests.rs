@@ -350,6 +350,7 @@ fn process_tree_helper() {
                 let _ = grandchild.wait();
             }
         }
+        "stderr-bulk" => stderr_bulk_helper(),
         "flood" => loop {
             std::io::stdout()
                 .write_all(&[b'o'; 8192])
@@ -398,7 +399,7 @@ fn process_tree_helper() {
             }
             std::process::exit(0);
         }
-        "stdin-stall" | "stdin-handshake" | "stdin-cancel" => stdin_helper(&mode, &root),
+        "stdin-stall" | "stdin-handshake" | "stdin-cancel" | "stdin-save" => stdin_helper(&mode, &root),
         "stream-notify" => stream_notify_helper(&root),
         "exit-code" => std::process::exit(7),
         _ => assert_eq!(mode, "known helper mode"),
@@ -425,6 +426,18 @@ fn stream_notify_helper(root: &std::path::Path) {
     std::process::exit(0);
 }
 
+fn stderr_bulk_helper() -> ! {
+    for _ in 0..32 {
+        std::io::stderr()
+            .write_all(&[b'e'; 8192])
+            .expect("stderr bulk");
+    }
+    std::io::stderr()
+        .write_all(b"stderr-tail-marker")
+        .expect("stderr tail");
+    std::process::exit(7);
+}
+
 fn stdin_helper(mode: &str, root: &std::path::Path) {
     match mode {
         "stdin-cancel" => {
@@ -442,6 +455,20 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
             loop {
                 thread::park();
             }
+        }
+        "stdin-save" => {
+            let mut input = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut input)
+                .expect("prompt EOF");
+            crate::private_file::publish(
+                &root.join("stdin-captured"),
+                &root.join("stdin-captured.next"),
+                crate::RenameMode::NoReplace,
+                |file| file.write_all(&input),
+                |_| Ok(()),
+            )
+            .expect("atomically captured prompt");
         }
         "stdin-stall" => {
             std::io::stdout()
@@ -715,6 +742,131 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     assert_eq!(failure.error.kind(), std::io::ErrorKind::Interrupted);
     assert!(failure.stdout.ends_with(b"stdin-partial-marker"));
     assert!(failure.cleanup_completed && tree.is_reaped());
+}
+
+#[test]
+fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut command = command("stdin-save", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn prompt reader");
+    let input: Vec<u8> = (0..BULK_BYTES)
+        .map(|n| u8::try_from(n % 251).unwrap())
+        .collect();
+    tree.queue_stdin(input.clone()).expect("queue prompt");
+    assert!(
+        tree.take_stdin().is_none(),
+        "queued pipe cannot be transferred"
+    );
+    assert_eq!(
+        tree.queue_stdin(vec![b'x']).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    while !tree.pump_stdin().expect("nonblocking prompt progress") {
+        thread::yield_now();
+    }
+    tree.require_stdin_complete().expect("prompt delivered");
+    ready(temporary.path(), "stdin-captured", || {
+        tree_exited(&mut tree)
+    });
+    assert_eq!(
+        fs::read(temporary.path().join("stdin-captured")).unwrap(),
+        input
+    );
+    tree.terminate(None).expect("reap prompt reader");
+}
+
+#[test]
+fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut command = command("stdin-stall", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
+    ready(temporary.path(), "stdin-stall-ready", || {
+        tree_exited(&mut tree)
+    });
+    tree.queue_stdin(vec![b'x'; BULK_BYTES])
+        .expect("queue blocked prompt");
+    assert!(!tree.pump_stdin().expect("one bounded nonblocking write"));
+    assert_eq!(
+        tree.require_stdin_complete().unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    let failure = tree
+        .wait_with_output(
+            Duration::from_secs(5),
+            4096,
+            None,
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            None,
+            None,
+            None,
+        )
+        .expect_err("capture cannot replace a queued-input owner");
+    assert_eq!(failure.error.kind(), io::ErrorKind::AlreadyExists);
+    assert!(!failure.cleanup_completed && !tree.is_reaped());
+    tree.terminate(None)
+        .expect("the queued owner cancels and reaps");
+    assert!(tree.is_reaped());
+}
+
+#[test]
+fn queued_stdin_refuses_a_second_capture_before_any_capture_turn() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut command = command("stdin-stall", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn queued owner");
+    tree.queue_stdin(vec![b'x'; BULK_BYTES])
+        .expect("queue prompt");
+    let result = super::pump::Pump::new(
+        &mut tree,
+        Duration::from_secs(5).into(),
+        4096,
+        None,
+        None,
+        [Vec::new(), Vec::new()],
+    );
+    let Err(failure) = result else {
+        panic!("capture replaced the queued owner")
+    };
+    assert_eq!(failure.error.kind(), io::ErrorKind::AlreadyExists);
+    tree.terminate(None).expect("reap queued owner");
+}
+
+#[test]
+fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
+    for required in [true, false] {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("exit-code", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn early exit");
+        while !tree_exited(&mut tree) {
+            thread::yield_now();
+        }
+        let input = vec![b'x'; BULK_BYTES];
+        tree.queue_stdin(input.clone()).expect("queue prompt");
+        if !required {
+            // Actual optional capture semantics are the negative control:
+            // permitting partial delivery must not settle a host prompt.
+            tree.queued_stdin = Some(
+                super::PendingStdin::owned(crate::OwnedCaptureInput::Literal(input))
+                    .expect("optional input control"),
+            );
+        }
+        let result = loop {
+            match tree.pump_stdin() {
+                Ok(false) => thread::yield_now(),
+                result => break result,
+            }
+        };
+        if required {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        } else {
+            assert!(result.expect("optional capture accepts the same closed peer"));
+        }
+        tree.terminate(None).expect("reap closed reader");
+    }
 }
 
 #[test]
@@ -1191,4 +1343,111 @@ fn exit_observation_retains_group_leader_until_cleanup() {
         Some(libc::SIGKILL)
     );
     tree.terminate(None).expect("reap signal exit");
+}
+
+#[cfg(all(feature = "test-support", unix))]
+mod seeded_capture {
+    use super::ProcessTree;
+    use crate::testing::Schedule;
+    use crate::{CaptureHandler, CaptureSchedule, ProcessInput, ProcessOutput};
+    use std::{io, process::Stdio, time::Duration};
+
+    struct Collect(Vec<u8>);
+
+    impl CaptureHandler for Collect {
+        fn check(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput> {
+            if let ProcessOutput::Stdout(bytes) = chunk {
+                self.0.extend_from_slice(bytes);
+            }
+            Ok(ProcessInput::default())
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Observed {
+        trace: Vec<String>,
+        boundaries: Vec<&'static str>,
+        polls: Vec<(u64, &'static str)>,
+        stdout: Vec<u8>,
+    }
+
+    /// Captures `script` in a seeded scope; `scheduled` forces the turns
+    /// the scope would otherwise see as one physical submission.
+    fn seeded(script: &str, scheduled: bool) -> io::Result<Observed> {
+        let mut command = crate::shell_command(script, Some("sh"));
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let tree = ProcessTree::spawn(&mut command)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (schedule, mut boundaries) = Schedule::seeded(71);
+            let capture = CaptureSchedule::new(Duration::from_secs(30));
+            let collect = Collect(Vec::new());
+            let operation = async move {
+                if scheduled {
+                    tree.capture_scheduled(capture, 64, None, collect).await
+                } else {
+                    tree.capture(capture, 64, None, collect).await
+                }
+            };
+            let mut operation = Box::pin(schedule.scope(operation));
+            let mut phases = Vec::new();
+            let outcome = loop {
+                tokio::select! {
+                    biased;
+                    boundary = boundaries.recv() => {
+                        let boundary = boundary.expect("lost process boundary");
+                        phases.push(boundary.name);
+                        boundary.release();
+                    },
+                    outcome = &mut operation => break outcome?,
+                }
+            };
+            schedule.drained().await;
+            let output = outcome.result.map_err(|failure| failure.error)?;
+            assert!(output.status.success());
+            assert_eq!(output.stdout, outcome.handler.0);
+            Ok(Observed {
+                trace: schedule.trace(),
+                boundaries: phases,
+                polls: schedule.polls(),
+                stdout: output.stdout,
+            })
+        })
+    }
+
+    fn one_submission(observed: &Observed) -> bool {
+        observed
+            .trace
+            .iter()
+            .filter(|event| event.starts_with("native:"))
+            .count()
+            == 1
+    }
+
+    #[test]
+    fn seeded_capture_is_one_submission_however_output_arrives() -> io::Result<()> {
+        let steady = seeded("printf dst", false)?;
+        assert_eq!(steady.stdout, b"dst");
+        assert!(one_submission(&steady), "{steady:?}");
+        // The same output split across readiness events, so a turn at a time
+        // takes at least as many turns. The seeded schedule must not see it.
+        let split = seeded("printf d; sleep 0.05; printf st", false)?;
+        assert_eq!(steady, split, "OS readiness reached the seeded schedule");
+        // Negative control: scheduling the same capture a turn at a time
+        // exposes its turns, which the oracle rejects.
+        let scheduled = seeded("printf dst", true)?;
+        assert_eq!(scheduled.stdout, b"dst");
+        assert!(!one_submission(&scheduled), "{scheduled:?}");
+        Ok(())
+    }
 }

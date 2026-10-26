@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::shared::outcome::CallbackFailure;
 
 // SAFETY: the projection loop drains before its owner stops the SDK context.
 unsafe impl Send for SendContext {}
@@ -27,6 +28,9 @@ pub(in crate::native_mount) struct ProjFsSession {
     pub(in crate::native_mount) capture_failure: Option<NativeMountError>,
     pub(in crate::native_mount) capture_attempted: bool,
     pub(super) projection_cleanup: Option<super::cleanup::ProjectionCleanup>,
+    /// This view's place in a shared instance; a shared view owns no
+    /// virtualization root, callback pool or projector thread.
+    pub(super) shared: Option<super::shared::SharedProjFsView>,
 }
 
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
@@ -40,7 +44,8 @@ impl ProjFsSession {
         entry: &crate::native_host::HostListedEntry,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, crate::NativeTreeMaterializationError> {
-        let (Some(runtime), Some(stat)) = (&self.runtime, &entry.stat) else {
+        // A shared view stages beside its instance's root, not its own.
+        let (Some(runtime), Some(stat), None) = (&self.runtime, &entry.stat, &self.shared) else {
             return Ok(false);
         };
         let _custody = work.claim(
@@ -82,23 +87,26 @@ impl ProjFsSession {
             return Err(NativeMountError::ControlPending);
         }
         let policy_lease = source.projection_policy_lease(request.writable, work)?;
-        let original_work = source.native_original_work()?;
-        let callback_guard = source.native_callback_guard();
-        if callback_guard.is_some() && original_work.is_none()
-            || original_work
-                .as_ref()
-                .is_some_and(|original| !same_work(original, work))
-        {
-            return Err(NativeMountError::Lifecycle(
-                "source invocation differs from startup",
-            ));
-        }
+        let (original_work, callback_guard) =
+            crate::native_mount::shared::metering::install(source.as_ref(), work)?;
         let physical = work.allocation_work();
         let stop = physical
             .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
         let worker_close = physical
             .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
-        let (root, mut allocation) = work.path(&request.destination, None)?;
+        // A shared view is a directory of the shared instance at its
+        // parent; it takes no destination fence, the instance owns the root.
+        let mut shared = if request.shared {
+            Some(super::shared::SharedProjFsView::create(
+                &request.destination,
+            )?)
+        } else {
+            None
+        };
+        let destination = shared
+            .as_ref()
+            .map_or(request.destination.as_path(), |view| view.directory());
+        let (root, mut allocation) = work.path(destination, None)?;
         let bytes = size_of::<Runtime>()
             + size_of::<Projector>()
             + size_of::<Mutex<PostOperationFailures>>()
@@ -107,14 +115,21 @@ impl ProjFsSession {
         let mut state_allocation = work.claim(bytes as u64, 4, crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut state_allocation)?;
         let metadata_root = HostRoot::open(&root, &mut { work })?;
-        let warm = retirement.as_ref().and_then(|packet| packet.warm_namespace);
-        if warm.is_none() {
+        let warm = retirement
+            .as_ref()
+            .and_then(|packet| packet.warm_namespace)
+            .filter(|_| shared.is_none());
+        if warm.is_none() && shared.is_none() {
             reject_stale_projection(&root)?;
             reject_nested_projection(&root, work)?;
         }
         if warm.is_some_and(|warm| warm.root_identity != metadata_root.identity()) {
             return Err(NativeMountError::InvalidDestination);
         }
+        let (prefix, staging_anchor) = shared.as_ref().map_or_else(
+            || (Vec::new(), root.clone()),
+            |view| (view.prefix(), view.staging_anchor()),
+        );
         let runtime = Arc::new(Runtime {
             _policy_lease: policy_lease,
             source,
@@ -123,6 +138,8 @@ impl ProjFsSession {
             original_work: Mutex::new(original_work),
             callback_guard,
             root,
+            prefix,
+            staging_anchor,
             metadata_root,
             staging: Mutex::new(None),
             creating_name: RwLock::new((MountPath::root(), None)),
@@ -149,13 +166,20 @@ impl ProjFsSession {
             capture_failure: None,
             capture_attempted: false,
             projection_cleanup: None,
+            shared: shared.take(),
         });
-        runtime.projector.attach(Arc::clone(&runtime))?;
-        session.controller = Some(Arc::clone(&runtime.projector));
+        if session.shared.is_none() {
+            runtime.projector.attach(Arc::clone(&runtime))?;
+            session.controller = Some(Arc::clone(&runtime.projector));
+        }
         let observer: Arc<dyn ViewObserver> = runtime.projector.clone();
         runtime
             .source
             .observe_view_with_meter(Arc::downgrade(&observer), work)?;
+        if session.shared.is_some() {
+            session.retirement = retirement.take();
+            return session.activate_shared(&runtime, work);
+        }
         if let Some(packet) = retirement.as_mut() {
             prepare(packet)?;
             packet
@@ -170,6 +194,34 @@ impl ProjFsSession {
         }
         session.retirement = retirement.take();
         session.activate(request, &runtime, work, warm)
+    }
+
+    /// Lists the view in its shared instance and materializes its root.
+    fn activate_shared(
+        &mut self,
+        runtime: &Arc<Runtime>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let view = self
+            .shared
+            .as_mut()
+            .ok_or(NativeMountError::ControlPending)?;
+        let context = view.context()?;
+        view.list(runtime)?;
+        self.context = Some(context);
+        runtime
+            .projector
+            .materialize(
+                Projection {
+                    runtime: runtime.as_ref(),
+                    work,
+                    context,
+                    starting: true,
+                },
+                MountPath::root(),
+            )
+            .map_err(NativeMountError::Driver)?;
+        runtime.projector.settle()
     }
 
     fn activate(
@@ -195,8 +247,11 @@ impl ProjFsSession {
             NotificationBitMask: open_notifications(request.writable),
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
+        // ProjFS otherwise sizes each instance's pool by the host's cores.
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
+            PoolThreadCount: crate::native_mount::CALLBACK_THREADS,
+            ConcurrentThreadCount: crate::native_mount::CALLBACK_THREADS,
             ..Default::default()
         };
         options.NotificationMappings = &raw mut mapping;
@@ -281,6 +336,14 @@ impl ProjFsSession {
             }
             return Ok(());
         };
+        if let Some(view) = self.shared.as_mut() {
+            // Unlisting drains the view's admitted callbacks and detaching
+            // waits for its running pass: nothing reaches it afterwards.
+            runtime.callbacks.close_admission();
+            lock_recover(&runtime.projector.state).stopping = true;
+            runtime.projector.changed.notify_all();
+            view.quiesce();
+        }
         runtime.callbacks.drain();
         if runtime.writable && self.context.is_some() && !self.capture_attempted {
             self.capture_failure = self.flush_callbacks(&self.original_stop_work).err();
@@ -306,8 +369,11 @@ impl ProjFsSession {
                 crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
                 None,
             )?;
-            // SAFETY: the projection loop has drained; SDK stop drains every callback.
-            unsafe { PrjStopVirtualizing(context) };
+            // A shared view's instance stops with its last view.
+            if self.shared.is_none() {
+                // SAFETY: the projection loop has drained; SDK stop drains every callback.
+                unsafe { PrjStopVirtualizing(context) };
+            }
             self.context = None;
             runtime.callbacks.drain();
         }
@@ -338,6 +404,21 @@ impl ProjFsSession {
         });
         self.runtime = None;
         drop(runtime);
+        if let Some(mut view) = self.shared.take() {
+            let outcome = self
+                .namespace_outcome
+                .as_mut()
+                .ok_or(NativeMountError::ControlPending)?;
+            // Never delete data whose publication or capture failed: the
+            // directory stays, served by no view, and the outcome keeps the
+            // cause.
+            let preserve = outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some();
+            if let Err(error) = view.finish(preserve) {
+                outcome.cleanup_failure.get_or_insert(error);
+            }
+            // The last view's drop stops the instance.
+            drop(view);
+        }
         if let Some(cleanup) = self.projection_cleanup.as_mut() {
             if self.namespace_outcome.as_ref().is_some_and(|outcome| {
                 outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some()
@@ -375,7 +456,7 @@ impl ProjFsSession {
         work: &crate::NativeMaterializationWork,
     ) -> Result<NativeMountWorkScope, NativeMountError> {
         let (runtime, _) = self.live()?;
-        NativeMountWorkScope::enter(Arc::clone(runtime), work)
+        NativeMountWorkScope::new(runtime, work)
     }
 
     pub(in crate::native_mount) fn prepare_destination_cleanup(
@@ -383,6 +464,10 @@ impl ProjFsSession {
         destination: &std::path::Path,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        // A shared view holds no fence; its retirement deletes its directory.
+        if self.shared.is_some() {
+            return Ok(());
+        }
         self.retirement
             .as_mut()
             .and_then(|packet| packet.destination_guard.as_mut())
@@ -412,6 +497,11 @@ impl ProjFsSession {
             .native_original_work()?
             .ok_or(NativeMountError::ControlPending)?;
         self.flush_callbacks(&work)?;
+        if self.shared.is_some() {
+            // The view's retirement deletes its whole directory, live in its
+            // instance; there is no root tag of its own to remove.
+            return Ok(());
+        }
         self.projection_cleanup = Some(super::cleanup::prepare_projection_cleanup(
             &runtime.root,
             runtime.metadata_root.identity(),
@@ -628,12 +718,13 @@ impl ProjFsSession {
         if relative.as_os_str().is_empty() {
             return Ok(());
         }
+        let name = runtime.projfs_name(&relative);
         let relative = HSTRING::from(relative.as_os_str());
         let mount_path = path_from(PCWSTR::from_raw(relative.as_ptr())).ok_or_else(|| {
             NativeMountError::Driver("invalidation path is not a mount path".to_owned())
         })?;
-        // SAFETY: the relative UTF-16 name remains live for this synchronous
-        match unsafe { PrjDeleteFile(context, &relative, Some(PRJ_UPDATE_ALLOW_READ_ONLY), None) } {
+        // SAFETY: the UTF-16 name remains live for this synchronous call.
+        match unsafe { PrjDeleteFile(context, &name, Some(PRJ_UPDATE_ALLOW_READ_ONLY), None) } {
             Err(error)
                 if ![
                     HR_FILE_NOT_FOUND,
@@ -684,40 +775,43 @@ impl ProjFsSession {
     }
 }
 
-pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
-    match error.semantic_error() {
-        MountSourceError::AccessDenied => HRESULT::from_win32(5),
-        MountSourceError::ReadOnly => HRESULT::from_win32(19),
-        MountSourceError::NotFound => HR_FILE_NOT_FOUND,
-        MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
-        // The statuses NTFS gives a rename across kinds or over a
-        // directory that is not empty.
-        MountSourceError::NotDirectory => HR_DIRECTORY,
-        MountSourceError::IsDirectory => HR_ACCESS_DENIED,
-        MountSourceError::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
-        MountSourceError::Invalid(_) => HR_INVALID_DATA,
-        MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Stale
-        | MountSourceError::Cancelled
-        | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
-            HR_FILE_INVALID
-        }
-        MountSourceError::Io(error, _) => HRESULT::from_win32(u32::from_ne_bytes(
-            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
-        )),
-        _ => HR_IO_DEVICE,
-    }
+pub(in crate::native_mount) fn source_hresult(error: &MountSourceError) -> HRESULT {
+    CallbackFailure::of_source(error).hresult()
 }
 
-pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
-    match error {
-        NativeMountError::Source(error) => source_hresult(error),
-        NativeMountError::Io(error) => HRESULT::from_win32(u32::from_ne_bytes(
-            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
-        )),
-        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
-            HR_FILE_INVALID
+pub(in crate::native_mount) fn native_hresult(error: &NativeMountError) -> HRESULT {
+    CallbackFailure::of(error).hresult()
+}
+
+/// ERROR_WRITE_PROTECT.
+const HR_WRITE_PROTECT: HRESULT = HRESULT(0x8007_0013_u32.cast_signed());
+/// ERROR_OPERATION_ABORTED.
+const HR_OPERATION_ABORTED: HRESULT = HRESULT(0x8007_03e3_u32.cast_signed());
+/// ERROR_NOT_ENOUGH_MEMORY.
+const HR_NOT_ENOUGH_MEMORY: HRESULT = HRESULT(0x8007_0008_u32.cast_signed());
+/// ERROR_FILE_TOO_LARGE.
+const HR_FILE_TOO_LARGE: HRESULT = HRESULT(0x8007_00df_u32.cast_signed());
+
+impl CallbackFailure {
+    /// The status ProjFS answers: NTFS's own for the same failure.
+    pub(crate) fn hresult(self) -> HRESULT {
+        match self {
+            Self::NotFound => HR_FILE_NOT_FOUND,
+            Self::AlreadyExists => HR_ALREADY_EXISTS,
+            // The statuses NTFS gives a rename across kinds or over a
+            // directory that is not empty.
+            Self::NotDirectory => HR_DIRECTORY,
+            Self::IsDirectory | Self::Denied => HR_ACCESS_DENIED,
+            Self::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
+            Self::Invalid => HR_INVALID_DATA,
+            Self::Unsupported => HR_NOT_SUPPORTED,
+            Self::OutOfMemory => HR_NOT_ENOUGH_MEMORY,
+            Self::TooLarge => HR_FILE_TOO_LARGE,
+            Self::Cancelled => HR_OPERATION_ABORTED,
+            Self::Stale => HR_FILE_INVALID,
+            Self::ReadOnly => HR_WRITE_PROTECT,
+            Self::Os(code) => HRESULT::from_win32(code.cast_unsigned()),
+            Self::Io => HR_IO_DEVICE,
         }
-        _ => HR_IO_DEVICE,
     }
 }

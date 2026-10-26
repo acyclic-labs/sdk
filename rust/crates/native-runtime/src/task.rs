@@ -10,6 +10,55 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
+/// Runtime for a single coordination owner. Native I/O has its own shared,
+/// fixed pools; incidental blocking persistence must not add threads as the
+/// number of admitted tasks grows. Awaited work never holds this sole worker
+/// across an asynchronous continuation.
+pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+}
+
+/// The caller's task submission context, retained across a native worker turn.
+/// Entering it submits through the ordinary owned-task API and immediately
+/// leaves it; native IO callbacks still run outside the asynchronous runtime.
+pub struct TaskSpawner {
+    runtime: tokio::runtime::Handle,
+    #[cfg(feature = "test-support")]
+    context: Option<crate::testing::Context>,
+}
+
+impl TaskSpawner {
+    /// Captures the current runtime and original simulation task, if any.
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            runtime: tokio::runtime::Handle::current(),
+            #[cfg(feature = "test-support")]
+            context: crate::testing::Context::current(),
+        }
+    }
+
+    /// Transfers a native owner's future directly to the original task scope.
+    pub fn spawn<F>(&self, future: F) -> TaskHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let _runtime = self.runtime.enter();
+        #[cfg(feature = "test-support")]
+        {
+            crate::testing::spawn_in_context(self.context.clone(), future)
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            spawn(future)
+        }
+    }
+}
+
 /// Maps a Tokio join failure onto the shared task error contract.
 pub(crate) fn join_error(cause: tokio::task::JoinError) -> std::io::Error {
     if cause.is_cancelled() {
@@ -89,6 +138,57 @@ mod native {
 mod tests {
     #[cfg(feature = "test-support")]
     use std::time::Duration;
+
+    #[test]
+    fn coordination_blocking_pool_stays_flat_with_more_tasks() {
+        fn identities(runtime: &tokio::runtime::Runtime, tasks: usize, starters: usize) -> usize {
+            let (send, receive) = std::sync::mpsc::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let wait = std::sync::Arc::new(std::sync::Mutex::new(wait));
+            let mut jobs = Vec::new();
+            // The first worker is physically occupied before further jobs are
+            // submitted. An expanding pool has to start another worker; a
+            // fixed owner queues them without allocating another thread.
+            for index in 0..tasks {
+                let send = send.clone();
+                let wait = std::sync::Arc::clone(&wait);
+                jobs.push(runtime.spawn_blocking(move || {
+                    let identity = std::thread::current().id();
+                    send.send(identity).unwrap();
+                    wait.lock().unwrap().recv().unwrap();
+                    identity
+                }));
+                if index == 0 {
+                    receive.recv().unwrap();
+                }
+            }
+            // The expanding-pool control must physically start a second
+            // worker before the first is released, rather than depending on
+            // which worker wins the runnable queue after release.
+            for _ in 1..starters {
+                receive.recv().unwrap();
+            }
+            for _ in 0..tasks {
+                release.send(()).unwrap();
+            }
+            runtime.block_on(async {
+                let mut identities = std::collections::HashSet::new();
+                for job in jobs {
+                    identities.insert(job.await.unwrap());
+                }
+                identities.len()
+            })
+        }
+        let runtime = super::coordination_runtime().unwrap();
+        assert_eq!(identities(&runtime, 4, 1), 1);
+        assert_eq!(identities(&runtime, 8, 1), 1);
+        // Actual previous owner construction: Tokio's default blocking pool.
+        let expanding = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(identities(&expanding, 8, 2) > 1);
+    }
 
     // Outside a simulation, blocking work must stay visible to a paused Tokio
     // clock: virtual time may not auto-advance past an unfinished closure.

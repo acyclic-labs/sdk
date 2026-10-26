@@ -324,6 +324,34 @@ where
         .map(Some)
     }
 
+    /// A shared coordinator tail can advance without changing this task's cut.
+    #[inline(never)]
+    fn settle_owned_append<'a>(
+        &'a self,
+        admission: &'a WorkflowAdmission,
+        record: &'a WorkflowRecord,
+        expected_revision: u64,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<()>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let (revision, existing) =
+                self.verified_history(admission, record, false, io)?.await?;
+            if let Some(existing) = existing {
+                if existing != *record {
+                    return Err(Error::Conflict("workflow operation identity reused".into()));
+                }
+                self.verify_command_payloads(&existing, io)?.await?;
+                return Ok(Some(()));
+            }
+            if revision == expected_revision {
+                return Ok(None);
+            }
+            Err(Error::Conflict(
+                "workflow checkpoint or ownership changed".into(),
+            ))
+        })
+    }
+
     pub(crate) async fn commit_with_io(
         &self,
         expected_revision: u64,
@@ -427,18 +455,36 @@ where
                     ));
                 }
             }
-            let appended = self
-                .append_reference(
-                    &self.path,
-                    idempotency_key.as_str(),
-                    expected_revision,
-                    record.operation_id,
-                    &reference,
-                    io,
-                )?
-                .await;
-            if let Some(reconciliation) = self.resolve_commit_append(appended, record, io)? {
-                reconciliation.await?;
+            loop {
+                let appended = self
+                    .append_reference(
+                        &self.path,
+                        idempotency_key.as_str(),
+                        expected_revision,
+                        record.operation_id,
+                        &reference,
+                        io,
+                    )?
+                    .await;
+                match appended {
+                    Ok(false) if self.owner.is_some() => {
+                        if self
+                            .settle_owned_append(&admission, record, expected_revision, io)?
+                            .await?
+                            .is_none()
+                        {
+                            continue;
+                        }
+                    }
+                    appended => {
+                        if let Some(reconciliation) =
+                            self.resolve_commit_append(appended, record, io)?
+                        {
+                            reconciliation.await?;
+                        }
+                    }
+                }
+                break;
             }
             Ok(())
         })

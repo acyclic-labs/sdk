@@ -76,13 +76,14 @@ pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Re
     // Keeps the initializer, and so the entry, in every linked executable
     // that can start a custodian.
     std::hint::black_box(&ENTRY);
-    let mut custodian = Command::new(std::env::current_exe()?)
-        .env(SWITCH, "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+    let mut custodian = super::spawner::spawn(
+        Command::new(std::env::current_exe()?)
+            .env(SWITCH, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW),
+    )?;
     let handed = hand_over(&mut custodian, job).and_then(|endpoint| {
         record.name_custodian(&identity(custodian.as_raw_handle().cast())?)?;
         Ok(endpoint)

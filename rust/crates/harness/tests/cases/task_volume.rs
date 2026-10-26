@@ -333,11 +333,11 @@ async fn request_file_writes_are_idempotent_and_immutable() -> Result {
         })
         .await?;
     assert!(
-        Write::from_record(&inbox.next().await.ok_or("missing inbox declaration")??)?.is_none()
+        Write::from_record(&inbox.next().await.ok_or("missing inbox declaration")??)?.is_empty()
     );
     assert_eq!(
         Write::from_record(&inbox.next().await.ok_or("missing inbox request")??)?,
-        Some(write(".tasks/t/requests/r.json", "run")?)
+        vec![write(".tasks/t/requests/r.json", "run")?]
     );
     Ok(())
 }

@@ -1,9 +1,12 @@
 //! Model-visible identity tools over newline-delimited stdio JSON-RPC.
 
 use super::*;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+#[cfg(test)]
+use tokio::io::AsyncBufReadExt as _;
+use tokio::io::AsyncWriteExt as _;
 
 const PROTOCOL: &str = "2025-11-25";
+const FRAME_LIMIT: usize = 1024 * 1024;
 
 struct Server {
     identity: Identity,
@@ -203,21 +206,13 @@ pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
     transport(server, tokio::io::stdin(), tokio::io::stdout()).await
 }
 
-async fn read_frame(
-    input: &mut (impl tokio::io::AsyncBufRead + Unpin),
-    line: &mut Vec<u8>,
-) -> io::Result<Option<Vec<u8>>> {
-    // Keep partial bytes across select cancellation and bound each frame before parsing.
-    let count = tokio::io::AsyncReadExt::take(input, (1024 * 1024 + 1 - line.len()) as u64)
-        .read_until(b'\n', line)
-        .await?;
-    if line.len() > 1024 * 1024 {
-        return Err(io::Error::other("MCP frame exceeds 1 MiB"));
+fn frame_error(error: acyclic_native_runtime::lines::LineError) -> io::Error {
+    match error {
+        acyclic_native_runtime::lines::LineError::MaxLineLengthExceeded => {
+            io::Error::other("MCP frame exceeds 1 MiB")
+        }
+        acyclic_native_runtime::lines::LineError::Io(error) => error,
     }
-    if count == 0 && line.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(std::mem::take(line)))
 }
 
 fn queue_response(
@@ -274,8 +269,8 @@ async fn transport_inner(
     input: &mut (dyn tokio::io::AsyncRead + Unpin + Send),
     mut output: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
 ) -> Result<(), io::Error> {
-    let mut input = tokio::io::BufReader::new(input);
-    let mut line = Vec::new();
+    // Preserve the transport's one-MiB frame budget including its delimiter.
+    let mut input = acyclic_native_runtime::lines::AsyncLines::new(input, FRAME_LIMIT - 1);
     let mut responses = std::collections::VecDeque::new();
     let mut written = 0;
     loop {
@@ -283,7 +278,7 @@ async fn transport_inner(
             tokio::select! {
                 biased;
                 result = write_response(&mut output, &mut responses, &mut written), if !responses.is_empty() => { result?; }
-                frame = read_frame(&mut input, &mut line) => break frame?,
+                frame = input.next_line() => break frame.map_err(frame_error)?,
             }
         };
         let Some(frame) = frame else {
@@ -292,7 +287,7 @@ async fn transport_inner(
             }
             return Ok(());
         };
-        let Ok(request) = serde_json::from_slice::<Value>(&frame) else {
+        let Ok(request) = serde_json::from_str::<Value>(&frame) else {
             queue_response(
                 &mut responses,
                 &rpc_error(&Value::Null, -32700, "Parse error"),
@@ -333,11 +328,11 @@ async fn transport_inner(
                 result = write_response(&mut output, &mut responses, &mut written), if !responses.is_empty() => {
                     result?;
                 }
-                frame = read_frame(&mut input, &mut line) => {
-                    let Some(frame) = frame? else {
+                frame = input.next_line() => {
+                    let Some(frame) = frame.map_err(frame_error)? else {
                         return Ok(true);
                     };
-                    if active_frame(&request, &frame, &mut responses, &mut cancelled)? {
+                    if active_frame(&request, frame.as_bytes(), &mut responses, &mut cancelled)? {
                         if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
                         if !finish_on_cancel { break; }
                     }
@@ -802,11 +797,13 @@ mod tests {
             let before = buffer.filled().len();
             let result = std::pin::Pin::new(&mut self.input).poll_read(context, buffer);
             let read = buffer.filled().len() - before;
+            // The bounded codec rejects once the delimiter budget is filled;
+            // waiting for another byte would wait beyond the reader's cut.
             if self
                 .count
                 .fetch_add(read, std::sync::atomic::Ordering::Relaxed)
                 + read
-                > 1024 * 1024
+                >= FRAME_LIMIT
             {
                 self.failed.notify_one();
             }
@@ -1130,7 +1127,7 @@ mod tests {
                 if fault == "oversized" {
                     count.store(0, Ordering::Relaxed);
                     client
-                        .write_all(&vec![b'x'; 1024 * 1024 + 1])
+                        .write_all(&vec![b'x'; FRAME_LIMIT + 1])
                         .await
                         .expect("oversized frame");
                 } else {

@@ -1,96 +1,49 @@
 //! The native producer writes directly into paid storage, without a temporary
-//! protobuf tree or a second copy of each indexed key.
+//! protobuf tree. Its headers' keys live in one paid buffer of their own.
 use super::*;
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use std::{io, sync::Arc};
 
-fn field_len(bytes: &[u8]) -> usize {
-    if bytes.is_empty() {
-        0
-    } else {
-        1 + prost::encoding::encoded_len_varint(bytes.len() as u64) + bytes.len()
-    }
-}
-
-fn entry_len(entry: &ChangeEntryRef<'_>) -> usize {
-    field_len(entry.key) + field_len(entry.operation.as_bytes()) + field_len(entry.metadata)
-}
-
-fn field(buffer: &mut Vec<u8>, tag: u8, bytes: &[u8]) -> (usize, usize) {
-    if bytes.is_empty() {
-        return (buffer.len(), buffer.len());
-    }
-    buffer.push(tag);
-    prost::encoding::encode_varint(bytes.len() as u64, buffer);
-    let start = buffer.len();
-    buffer.extend_from_slice(bytes);
-    (start, buffer.len())
-}
-
-fn encoded_len(context: &[u8], entries: &[ChangeEntryRef<'_>]) -> Result<usize, StreamError> {
-    if entries.is_empty()
-        || entries.len() > crate::MAX_RECORD_KEYS
-        || entries.iter().any(|entry| {
-            entry.key.len() > crate::MAX_RECORD_KEY_BYTES
-                || entry.operation.is_empty()
-                || entry.operation.chars().any(char::is_control)
-                || entry.metadata.len() > crate::MAX_RECORD_BYTES
-                || entry.operation.len() > crate::MAX_RECORD_BYTES
-        })
-        || entries
-            .windows(2)
-            .any(|pair| matches!(pair, [left, right] if left.key >= right.key))
-        || context.len() > crate::MAX_RECORD_BYTES
-    {
-        return Err(StreamError::InvalidArgument);
-    }
-    let mut total = field_len(context);
-    let mut headers = ATTRIBUTE.len() + FORMAT.len();
-    for entry in entries {
-        let length = entry_len(entry);
-        total += 1 + prost::encoding::encoded_len_varint(length as u64) + length;
-        headers += entry.key.len();
-    }
-    if total + headers > crate::MAX_RECORD_BYTES {
-        return Err(StreamError::LimitExceeded);
-    }
-    Ok(total)
-}
-
 impl AppendRecord {
     /// Encodes provider-authored changes under the caller's original native
-    /// meter. The value owns the key bytes; headers retain checked views into
-    /// that same owner. All physical capacity is admitted before allocation.
+    /// meter. All physical capacity is admitted before allocation.
     pub fn changes_native(
         context: &[u8],
         entries: &[ChangeEntryRef<'_>],
         meter: &Arc<dyn NativeReadMeter>,
     ) -> io::Result<Result<Self, StreamError>> {
-        let length = match encoded_len(context, entries) {
+        let length = match changes_encoded_len(context, entries) {
             Ok(length) => length,
             Err(error) => return Ok(Err(error)),
         };
+        let key_bytes = entries.iter().map(|entry| entry.key.len()).sum::<usize>();
         meter.check()?;
-        meter.admit_codec(length as u64, length as u64, 0)?;
+        meter.admit_codec(length as u64, (length + key_bytes) as u64, 0)?;
         let mut allocation = ReadAllocation::new(meter, 0)?;
         let mut buffer = crate::native::vector(length, meter, &mut allocation)?;
+        encode_into(&mut buffer, context, entries);
+        let mut key_allocation = ReadAllocation::new(meter, 0)?;
+        let mut key_buffer = crate::native::vector(key_bytes, meter, &mut key_allocation)?;
         let mut ranges = [(0, 0); crate::MAX_RECORD_KEYS];
-        field(&mut buffer, 10, context);
         for (entry, range) in entries.iter().zip(&mut ranges) {
-            buffer.push(18);
-            prost::encoding::encode_varint(entry_len(entry) as u64, &mut buffer);
-            *range = field(&mut buffer, 10, entry.key);
-            field(&mut buffer, 18, entry.operation.as_bytes());
-            field(&mut buffer, 26, entry.metadata);
+            let start = key_buffer.len();
+            key_buffer.extend_from_slice(entry.key);
+            *range = (start, key_buffer.len());
         }
-        meter.record_codec(length as u64, length as u64, 0)?;
+        meter.record_codec(length as u64, (length + key_bytes) as u64, 0)?;
         let mut allocation = Some(allocation);
         let value =
             crate::OwnedBytes::from_vec_with_guard_in_place(&mut buffer, &mut allocation, meter)?;
+        let mut key_allocation = Some(key_allocation);
+        let key_owner = crate::OwnedBytes::from_vec_with_guard_in_place(
+            &mut key_buffer,
+            &mut key_allocation,
+            meter,
+        )?;
         let mut allocation = ReadAllocation::new(meter, 0)?;
         let mut keys = crate::native::vector(entries.len(), meter, &mut allocation)?;
         for (start, end) in ranges.iter().take(entries.len()) {
-            keys.push(value.slice(*start..*end));
+            keys.push(key_owner.slice(*start..*end));
         }
         let mut attributes = crate::native::vector(1, meter, &mut allocation)?;
         let mut name = crate::native::vector(ATTRIBUTE.len(), meter, &mut allocation)?;
@@ -138,15 +91,15 @@ mod tests {
         let meter = observed.original();
         let record = AppendRecord::changes_native(b"generation", &entries(), &meter)??;
         let expected = AppendRecord::changes(
-            bytes::Bytes::from_static(b"generation"),
-            entries()
+            b"generation",
+            &entries()
                 .iter()
                 .map(|entry| wire::ChangeEntry {
                     key: entry.key.into(),
                     operation: entry.operation.into(),
                     metadata: entry.metadata.into(),
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
             vec![],
         )?;
         assert_eq!(record, expected);

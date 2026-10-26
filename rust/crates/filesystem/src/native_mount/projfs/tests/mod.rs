@@ -17,3 +17,4 @@ mod notifications;
 mod projection;
 pub(super) mod read_bindings;
 mod recovery;
+mod shared;

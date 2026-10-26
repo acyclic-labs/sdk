@@ -149,21 +149,15 @@ impl FollowFilter {
             return Ok(None);
         }
         if crate::changes::marked(&record.headers) {
-            let mut changes = crate::changes::decode(&record.value, &record.headers)?;
-            changes
-                .entries
-                .retain(|entry| self.matches_entry(&entry.key, &record.headers));
-            if changes.entries.len() != record.headers.keys().len() {
-                record.headers = RecordHeaders::new(
-                    changes
-                        .entries
-                        .iter()
-                        .map(|entry| entry.key.clone().into())
-                        .collect(),
-                    record.headers.attributes().to_vec(),
-                )?;
-                record.value = changes.encode_to_vec().into();
+            let headers = record.headers.clone();
+            let body = crate::AppendRecord {
+                value: record.value,
+                headers: record.headers,
             }
+            .retain_changes(|key| self.matches_entry(key, &headers))?
+            .ok_or(StreamError::InvalidArgument)?;
+            record.value = body.value;
+            record.headers = body.headers;
         }
         Ok(Some(record))
     }

@@ -54,30 +54,21 @@ pub(crate) fn sync_publication(
 }
 
 pub(crate) fn write_publication(
-    file: &mut File,
+    file: &File,
     offset: u64,
     bytes: &[u8],
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
+    // By position, never by the descriptor's: a journal's descriptor may be
+    // reopened between writes, with its position lost.
     if let Some((meter, _)) = &publication.native {
         acyclic_native_runtime::write_all_at(file, offset, bytes, Some((meter.as_ref(), false)))?;
-        let end = offset
-            .checked_add(bytes.len() as u64)
-            .ok_or_else(|| std::io::Error::other("publication offset overflow"))?;
-        loop {
-            meter.check()?;
-            meter.admit_write(0)?;
-            match file.seek(std::io::SeekFrom::Start(end)) {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => {
-                    result?;
-                    break;
-                }
-            }
-        }
         meter.check()?;
     } else {
-        acyclic_native_runtime::write_file_all(file, bytes)?;
+        acyclic_native_runtime::write_file_all(
+            &mut acyclic_native_runtime::WriteAt::new(file, offset),
+            bytes,
+        )?;
     }
     Ok(())
 }

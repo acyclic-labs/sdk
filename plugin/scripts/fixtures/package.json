@@ -1,0 +1,11 @@
+{
+  "name": "acyclic-installer-qualification",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned package managers for actual native package installation tests",
+  "dependencies": {
+    "bun": "1.4.4",
+    "npm": "12.2.1",
+    "pnpm": "12.15.0"
+  }
+}

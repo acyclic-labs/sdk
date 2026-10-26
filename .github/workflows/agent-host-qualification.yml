@@ -13,7 +13,7 @@ concurrency:
   group: agent-host-${{ github.ref }}
 
 jobs:
-  # Both hosts drive the same acyclic build on each platform, so one job per
+  # All hosts drive the same acyclic build on each platform, so one job per
   # platform compiles the scenario once and runs it for each host in turn.
   qualify:
     strategy:
@@ -86,7 +86,7 @@ jobs:
 
       - name: Install Linux native-mount prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev bubblewrap socat
 
       - name: Enable Windows ProjFS
         if: runner.os == 'Windows'
@@ -141,60 +141,51 @@ jobs:
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agent-host-target" >> "$GITHUB_ENV"
           echo "ACYCLIC_E2E_RECEIPT_DIR=$RUNNER_TEMP/agent-host-receipts" >> "$GITHUB_ENV"
 
-      - name: Build host scenario
+      # The hosts own their loops and tools. The retained scenarios exercise
+      # shared workspace/session APIs; there is no plugin runtime or NAPI host.
+      - name: Build shared host scenarios
         shell: bash
-        run: |
-          cargo test -p acyclic-plugin --test e2e --no-run --locked
+        run: cargo test --locked -p acyclic-plugin -p acyclic-harness --all-features --lib --bins --no-run
 
-      - name: Run Pi installed diagnostics and native context qualification
+      - name: Run plugin unit tests
         shell: bash
-        run: |
-          suffix=""
-          if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
-          export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix"
-          cd plugin/tests/hosts
-          bun run test:native-service-readiness
-          bun run test:pi-context
-          bun run test:pi-context-mail
-          bun run test:pi-bootstrap
-          bun run test:pi-session
-          bun run test:pi-installation
-          bun run test:pi-service
-          bun run test:pi-native-recursive
-          bun run test:pi-context-fresh
-          bun run test:pi-context-pages
-          bun run test:pi-builtin-paths
+        run: cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
 
-      - name: Run codex scenario
+      - name: Run shared native host lifecycle
         shell: bash
-        env:
-          ACYCLIC_E2E_CODEX: ${{ steps.codex.outputs.binary }}
-          ACYCLIC_E2E_HOST_PACKAGE: ${{ steps.codex.outputs.package }}
-          ACYCLIC_E2E_HOST_PACKAGE_VERSION: ${{ steps.codex.outputs.package_version }}
-          ACYCLIC_E2E_HOST_PACKAGE_INTEGRITY: ${{ steps.codex.outputs.package_integrity }}
-          ACYCLIC_E2E_HOST_PLATFORM_PACKAGE: ${{ steps.codex.outputs.platform_package }}
-          ACYCLIC_E2E_HOST_PLATFORM_VERSION: ${{ steps.codex.outputs.platform_version }}
-          ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.codex.outputs.platform_integrity }}
-          ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.codex.outputs.lock_sha256 }}
         run: |
-          cargo test -p acyclic-plugin --test e2e \
-            actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
+          cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
 
-      - name: Run claude scenario
-        if: success() || failure()
+      - name: Run shared fork and merge recovery
         shell: bash
-        env:
-          ACYCLIC_E2E_CLAUDE: ${{ steps.claude.outputs.binary }}
-          ACYCLIC_E2E_HOST_PACKAGE: ${{ steps.claude.outputs.package }}
-          ACYCLIC_E2E_HOST_PACKAGE_VERSION: ${{ steps.claude.outputs.package_version }}
-          ACYCLIC_E2E_HOST_PACKAGE_INTEGRITY: ${{ steps.claude.outputs.package_integrity }}
-          ACYCLIC_E2E_HOST_PLATFORM_PACKAGE: ${{ steps.claude.outputs.platform_package }}
-          ACYCLIC_E2E_HOST_PLATFORM_VERSION: ${{ steps.claude.outputs.platform_version }}
-          ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.claude.outputs.platform_integrity }}
-          ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.claude.outputs.lock_sha256 }}
         run: |
-          cargo test -p acyclic-plugin --test e2e \
-            actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
+          cargo test --locked -p acyclic-harness --all-features --lib local::tests::merge_recovery:: -- --test-threads=4
+
+      - name: Run host manifest and shim contracts
+        shell: bash
+        run: bun run --cwd plugin/tests/hosts test:shim
+
+      - name: Build normal host executables
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$ACYCLIC_E2E_RECEIPT_DIR"
+          cargo build --locked -p acyclic-plugin -p graphcoder --bins --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl"
+
+      - name: Run scripted native sessions in the Codex sandbox
+        if: runner.os == 'Linux'
+        shell: bash
+        run: node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/managed" "${{ steps.codex.outputs.binary }}" managed
+
+      - name: Build shared resource instrumentation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo build --locked -p acyclic-plugin -p graphcoder --bins --features graphcoder/test-support --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl"
+
+      - name: Run shared mount scale through every host adapter
+        if: runner.os == 'Linux'
+        shell: bash
+        run: node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/scale" "${{ steps.codex.outputs.binary }}" scale
 
       - name: Retain qualification receipts
         if: always()

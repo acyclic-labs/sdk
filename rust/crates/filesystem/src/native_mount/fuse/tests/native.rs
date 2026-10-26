@@ -297,7 +297,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
         root,
         source.view_stamp_with_meter(&original)?,
         true,
-        0,
+        (0, 0),
         0,
         &original,
     )?;
@@ -346,7 +346,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     let prefix = failure.1;
     assert_eq!(
         core.finish::<Option<MountLookup>>(Err(failure)),
-        Err(libc::ESTALE)
+        Err(libc::ECANCELED)
     );
     assert!(core.handler_failed.load(Ordering::Acquire));
     let retained = core
@@ -369,6 +369,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
     let (source, around) = shared_sources(posix_config())?;
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(
@@ -390,6 +391,7 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
             volume_id,
             destination: destination.path().to_path_buf(),
             writable: true,
+            shared: false,
         },
         Arc::new(source),
         &work,
@@ -532,6 +534,7 @@ pub(super) fn mount(
             volume_id,
             destination: destination.to_path_buf(),
             writable: true,
+            shared: false,
         },
         source,
     )
@@ -588,6 +591,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
             startup_source_watch: None,
         }),
         failure: None,
+        shared: None,
         _allocation: control_allocation,
     }));
     let job_allocation = original.claim(

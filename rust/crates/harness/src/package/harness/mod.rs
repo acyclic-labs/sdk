@@ -43,11 +43,45 @@ impl HarnessCode {
 
     /// Builds every stock handler and its typed admission schema together.
     pub fn new() -> Result<Self> {
+        Self::build(false)
+    }
+
+    /// Uses the same compiled actor bundle for passive native-host coordination.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) fn native_host() -> Result<Self> {
+        Self::build(true)
+    }
+
+    fn build(native: bool) -> Result<Self> {
         let stock = Arc::new(StockTurnMachine::new());
         let child = Arc::new(ChildAgentMachine::new());
         let fork = Arc::new(ForkPreparationMachine::new());
         let direct = Arc::new(command_machine::DirectTool::new());
         let mut tasks = TaskRegistry::default();
+        #[cfg(all(
+            feature = "filesystem-local",
+            feature = "native-execution",
+            not(target_arch = "wasm32")
+        ))]
+        if native {
+            let host = crate::local::host_task::NativeHostTask::new();
+            tasks.register(host.definition()?)?;
+            tasks.register(fork.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?)?;
+            return Ok(Self {
+                tasks,
+                machines: vec![host, fork],
+            });
+        }
+        #[cfg(not(all(
+            feature = "filesystem-local",
+            feature = "native-execution",
+            not(target_arch = "wasm32")
+        )))]
+        if native {
+            return Err(crate::Error::Unsupported(
+                "native hosts require native-execution".into(),
+            ));
+        }
         tasks.register(stock.definition()?)?;
         tasks.register(child.definition()?)?;
         tasks.register(fork.definition::<

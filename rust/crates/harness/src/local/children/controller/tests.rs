@@ -55,12 +55,12 @@ fn stop_handoffs(task: TaskId, ignore_stop_at_release: bool, assert_property: bo
             values.insert(value.key.clone(), value);
         }
         let mut active = BTreeSet::from([reference.clone()]);
-        let mut completions = BTreeMap::new();
+        let mut completions = BTreeSet::new();
         let (mut position, mut stopping, mut scheduled) = (9, false, 0);
         for event in order {
             match event {
                 0 => {
-                    completions.insert(reference.clone(), 10);
+                    completions.insert((10, reference.clone()));
                 }
                 1 => {
                     position = 10;
@@ -179,13 +179,13 @@ proptest! {
             }).unwrap());
             values.insert(result.key.clone(), result);
             let mut active = BTreeSet::from([reference.clone()]);
-            let mut completions = BTreeMap::new();
+            let mut completions = BTreeSet::new();
             let mut position = 9;
             let mut scheduled = 0;
             let mut followed = 0;
             for step in 0..3 {
                 let input_changed = if step == callback_at {
-                    completions.insert(reference.clone(), 10);
+                    completions.insert((10, reference.clone()));
                     false
                 } else {
                     followed += 1;
@@ -232,3 +232,63 @@ mod errors;
 
 #[cfg(unix)]
 mod turn_failure;
+
+fn completion_work_bound(scan_unrelated: bool) {
+    let reference = |n: u64| Component::new(format!("worker-{n:06}")).unwrap();
+    let mut completions = (0..100_000)
+        .map(|n| (n + 100, reference(n)))
+        .collect::<BTreeSet<_>>();
+    let mut active = completions
+        .iter()
+        .map(|(_, reference)| reference.clone())
+        .collect::<BTreeSet<_>>();
+    let (ready, trace) = acyclic_test_support::differential::observe::<_, _, (&str, u64)>(
+        || (),
+        |_| {
+            if scan_unrelated {
+                // Restore the old per-record full completion scan.
+                let ready = completions
+                    .iter()
+                    .filter(|(accepted, _)| {
+                        acyclic_test_support::differential::record((
+                            "child-completion-examined",
+                            1u64,
+                        ));
+                        *accepted <= 102
+                    })
+                    .map(|(_, reference)| reference.clone())
+                    .collect::<BTreeSet<_>>();
+                for reference in &ready {
+                    active.remove(reference);
+                }
+                completions.retain(|(accepted, _)| *accepted > 102);
+                ready
+            } else {
+                release_completed(102, &mut active, &mut completions)
+            }
+        },
+    );
+    assert_eq!(ready, (0..3).map(reference).collect());
+    assert_eq!(active.len(), 99_997);
+    assert_eq!(completions.len(), 99_997);
+    let examined: u64 = trace
+        .iter()
+        .filter(|(name, _)| *name == "child-completion-examined")
+        .map(|(_, work)| work)
+        .sum();
+    assert!(
+        examined <= 4,
+        "completion release visited unrelated children"
+    );
+}
+
+#[test]
+fn completion_release_visits_only_the_observed_prefix_with_one_hundred_thousand_children() {
+    completion_work_bound(false);
+}
+
+#[test]
+#[should_panic(expected = "completion release visited unrelated children")]
+fn negative_control_scanning_all_completions_exceeds_the_transition_work_bound() {
+    completion_work_bound(true);
+}

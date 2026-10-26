@@ -3,6 +3,9 @@ mod cancellation;
 mod child;
 pub use cancellation::{cancellation_key, is_cancellation};
 mod child_queries;
+pub use child_queries::{ChildObservation, ChildResultWindow};
+mod child_turn;
+pub use child_turn::{ChildTurn, ChildTurnClaim, ChildTurnPublication};
 mod child_result;
 #[doc(hidden)]
 pub use child::child_scope;
@@ -59,8 +62,8 @@ pub use source::FileQuerySource;
 use crate::NativeWork;
 use crate::sync::Mutex;
 use acyclic_stream::{
-    AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,
+    AppendRequest, CommitCondition, CommitId, CommitOutcome, OwnedBytes, ReadRequest, StreamError,
+    StreamPath, StreamProvider,
 };
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -68,6 +71,17 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 type NativeWork<'a> = Option<&'a ()>;
+
+// The single publication builder consumes either one file or one atomic mailbox
+// pair. Typed files are inline; only the shared commit builder allocates vectors.
+struct PreparedAppend {
+    conditions: Vec<CommitCondition>,
+    fence: CommitCondition,
+    record: OwnedBytes,
+    files: segment::Files,
+    next: u64,
+    key: [u8; 32],
+}
 
 #[cfg(feature = "test-support")]
 type FileIndex = crate::test_support::TaskVolumeFiles<StoredFile>;
@@ -87,7 +101,6 @@ pub enum Error {
     #[error("task-volume access denied")]
     Unauthorized,
     /// Authorization, work or storage failure accessing volume files.
-    #[cfg(feature = "filesystem")]
     #[error(transparent)]
     FileRead(#[from] crate::Error),
     /// Underlying durable storage failure.
@@ -176,17 +189,17 @@ impl FileValue {
     }
 
     /// Decodes a platform inbox/event record for an actor handler. The initial
-    /// schema/volume declaration has no file event and returns `None`.
-    pub fn from_record(record: &acyclic_stream::Record) -> Result<Option<Self>> {
+    /// schema/volume declaration has no file event and returns no files.
+    pub fn from_record(record: &acyclic_stream::Record) -> Result<Vec<Self>> {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
             if !matches!(header.schema, 2 | 3 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
-            Ok(None)
+            Ok(Vec::new())
         } else {
-            segment::decode(&record.value).map(Some)
+            Ok(segment::decode_files(&record.value)?.into_iter().collect())
         }
     }
 
@@ -269,7 +282,9 @@ struct Index {
     commands: command_query::Commands,
     views: recent::Views,
     approvals: approval_query::Pending,
+    child_requests: std::collections::BTreeSet<Component>,
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
+    child_claims: BTreeMap<crate::OperationId, ChildTurnClaim>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -488,13 +503,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         create_only: bool,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
-        let Some((request, files, next)) = self
+        let Some(prepared) = self
             .prepare_append(expected, write, conditions, create_only, work)
             .await?
         else {
             return Ok(expected);
         };
-        self.commit_append(expected, request, files, next, deadline_unix_millis)
+        self.commit_append(expected, prepared, deadline_unix_millis, work)
             .await
     }
 
@@ -502,10 +517,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self,
         expected: Generation,
         write: &Write,
-        mut conditions: Vec<CommitCondition>,
+        conditions: Vec<CommitCondition>,
         create_only: bool,
         work: NativeWork<'_>,
-    ) -> Result<Option<(CommitRequest, FileValue, u64)>> {
+    ) -> Result<Option<PreparedAppend>> {
         self.refresh().await?;
         let index = self.index.lock().await;
         if expected != self.generation(&index) {
@@ -528,9 +543,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .ok_or(Error::LimitExceeded)?;
         let (segment, files) = segment::encode(write, work)?;
         #[cfg(acyclic_harness_loom)]
-        if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
+        let conditions = if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions)
+        {
+            let mut conditions = conditions;
             conditions.clear();
-        }
+            conditions
+        } else {
+            conditions
+        };
         let fence = CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
@@ -545,30 +565,26 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else {
             fence
         };
-        conditions.push(fence);
-        let request = CommitRequest {
+        let prepared = PreparedAppend {
             conditions,
-            mutations: vec![CommitMutation::Append {
-                path: self.path.clone(),
-                records: vec![segment.into()],
-            }],
-            idempotency_key: IdempotencyKey::new(
-                crate::identity::fresh_uuid().as_bytes().to_vec(),
-            )?,
+            fence,
+            record: segment,
+            files: segment::Files::one(files),
+            next,
+            key: *blake3::hash(crate::identity::fresh_uuid().as_bytes()).as_bytes(),
         };
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
-        Ok(Some((request, files, next)))
+        Ok(Some(prepared))
     }
 
     async fn commit_append(
         &self,
         expected: Generation,
-        request: CommitRequest,
-        files: FileValue,
-        next: u64,
+        prepared: PreparedAppend,
         deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
     ) -> Result<Generation> {
         #[cfg(acyclic_harness_loom)]
         let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
@@ -579,11 +595,38 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         };
         #[cfg(acyclic_harness_loom)]
         model_checking::publication_ready().await;
-        let outcome = if let Some(deadline) = deadline_unix_millis {
-            self.provider.commit_before(request, deadline).await?
-        } else {
-            self.provider.commit(request).await?
-        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = work
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut observer = io.as_ref().map(crate::executor::PreparationIo::history_io);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut history = observer
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let mut history: Option<&mut dyn crate::store::history::HistoryIo> = None;
+        let _ = work;
+        let PreparedAppend {
+            conditions,
+            fence,
+            record,
+            files,
+            next,
+            key,
+        } = prepared;
+        let (key, retained) = crate::distributed::digest_key(&key, &mut history)?;
+        let mut request = crate::distributed::commit_request(key, retained, &mut history);
+        for condition in conditions {
+            crate::distributed::add_condition(&mut request, condition)?;
+        }
+        crate::distributed::add_condition(&mut request, fence)?;
+        crate::distributed::add_record(&mut request, self.path.clone(), record)?;
+        let (outcome, retained) =
+            crate::distributed::commit(request, &self.provider, None, None, deadline_unix_millis)
+                .await?;
+        let _received = crate::wire_codec::CodecQuota::from_retained(&mut history, retained);
         match outcome {
             CommitOutcome::Committed(envelope) => {
                 let mut index = self.index.lock().await;
@@ -592,7 +635,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 let unchanged = unchanged
                     || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
                 if unchanged {
-                    apply(&mut index, files, next);
+                    for file in files {
+                        apply(&mut index, file, next);
+                    }
                     index.next = next;
                     index.commit = envelope.commit_id;
                 }
@@ -751,6 +796,30 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 // The only mutation of the file index; derived views and command indexes
 // fold the same replacement, never a separately maintained copy of it.
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    if let FileKey::Child {
+        reference,
+        file: ChildFile::Request,
+    } = &file.key
+    {
+        index.child_requests.insert(reference.clone());
+    }
+    if let FileKey::Child {
+        reference,
+        file: ChildFile::Delivered,
+    } = &file.key
+        && let Some(operation) = file.publication
+        && let Ok((task, turn)) = serde_json::from_slice::<(crate::TaskId, u64)>(&file.bytes)
+    {
+        index
+            .child_claims
+            .entry(operation)
+            .or_insert_with(|| ChildTurnClaim {
+                reference: reference.clone(),
+                task,
+                turn,
+                operation,
+            });
+    }
     if let FileKey::Child {
         reference,
         file: ChildFile::Request | ChildFile::Inbox(_),

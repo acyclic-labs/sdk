@@ -105,8 +105,7 @@ fn run(
                 let store = StagedObjects::open(
                     Observed(old.inner, extra, std::sync::atomic::AtomicU64::new(0)),
                     directory.path().to_path_buf(),
-                )
-                .await?;
+                );
                 let token = CancellationToken::new();
                 let mut writes = Vec::new();
                 for index in 0..count {

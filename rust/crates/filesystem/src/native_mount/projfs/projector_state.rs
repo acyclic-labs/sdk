@@ -7,6 +7,43 @@ pub(super) struct Materialized {
 
 pub(super) const MATERIALIZE_WORKERS: usize = 8;
 
+/// Helper threads one materialization may add, from one process-wide pool:
+/// however many views materialize at once, they add at most
+/// `MATERIALIZE_WORKERS - 1` threads between them.
+static MATERIALIZE_HELPERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(MATERIALIZE_WORKERS - 1);
+
+pub(super) struct MaterializeHelpers(usize);
+
+impl MaterializeHelpers {
+    pub(super) fn acquire(wanted: usize) -> Self {
+        use std::sync::atomic::Ordering;
+        let mut available = MATERIALIZE_HELPERS.load(Ordering::Relaxed);
+        loop {
+            let taken = available.min(wanted);
+            match MATERIALIZE_HELPERS.compare_exchange_weak(
+                available,
+                available - taken,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Self(taken),
+                Err(current) => available = current,
+            }
+        }
+    }
+
+    pub(super) const fn count(&self) -> usize {
+        self.0
+    }
+}
+
+impl Drop for MaterializeHelpers {
+    fn drop(&mut self) {
+        MATERIALIZE_HELPERS.fetch_add(self.0, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 // SAFETY: the shared runtime synchronizes mutations and retains the SDK context.
 unsafe impl Sync for Projection<'_> {}
 
@@ -91,6 +128,19 @@ pub(super) struct Projector {
     pub(super) worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     pub(super) lifecycle: Mutex<ProjectorLifecycle>,
     pub(super) lifecycle_changed: Condvar,
+    /// Set once for a view of a shared instance: its runner is the
+    /// instance's projector service instead of a thread of its own.
+    pub(super) service: std::sync::OnceLock<super::service::ServiceHook>,
+}
+
+/// What a view's projector needs next.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Readiness {
+    Stopped,
+    Idle,
+    /// Only held entries remain: retry after [`HELD_RETRY`].
+    Delayed,
+    Ready,
 }
 
 #[derive(Default)]
@@ -124,6 +174,18 @@ pub(super) struct ProjectorState {
 }
 
 impl ProjectorState {
+    pub(super) fn readiness(&self) -> Readiness {
+        if self.stopping {
+            Readiness::Stopped
+        } else if self.processed < self.notified || self.retry || !self.stale.is_empty() {
+            Readiness::Ready
+        } else if self.pending.is_empty() {
+            Readiness::Idle
+        } else {
+            Readiness::Delayed
+        }
+    }
+
     pub(super) fn record_attempt(
         &mut self,
         path: &MountPath,
@@ -151,7 +213,7 @@ impl ViewObserver for Projector {
     fn view_changed(&self, position: ViewStamp, _origin: ViewOrigin) {
         let mut state = lock_recover(&self.state);
         state.notified = state.notified.max(Some(position));
-        self.changed.notify_all();
+        self.wake();
     }
 }
 

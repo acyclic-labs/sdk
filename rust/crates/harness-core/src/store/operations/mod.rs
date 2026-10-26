@@ -30,7 +30,7 @@ mod lookup;
 pub(crate) use lookup::*;
 #[cfg(test)]
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-mod native_only_provider_tests;
+pub(crate) mod native_only_provider_tests;
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_publication_custody_tests;

@@ -8,10 +8,7 @@ impl HostRoot {
     ) -> Result<HostRoot, DemandError> {
         let directory = self.open_dir_held(name, work)?;
         let identity = directory_identity(&directory, work)?;
-        Ok(HostRoot {
-            directory,
-            identity,
-        })
+        Ok(HostRoot::from_parts(directory, identity))
     }
     pub(crate) fn remove<W: SourceDemandReadWork>(
         &self,

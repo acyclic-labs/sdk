@@ -475,6 +475,80 @@ impl MountFilesystem for GatedSource {
     }
 }
 
+/// This process's resident bytes.
+fn resident_bytes() -> Result<u64, Box<dyn std::error::Error>> {
+    let status = std::fs::read_to_string("/proc/self/status")?;
+    let line = status.lines().find_map(|line| line.strip_prefix("VmRSS:"));
+    let kib: u64 = line
+        .ok_or("VmRSS")?
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()?;
+    Ok(kib * 1024)
+}
+
+/// Mounts, uses and unmounts one session after another in this process,
+/// printing how much resident memory sessions after the first left behind.
+#[test]
+#[ignore = "run by linux_sessions_keep_no_read_buffers_resident"]
+fn linux_session_cycles() -> Result<(), Box<dyn std::error::Error>> {
+    let cycle = || -> Result<(), Box<dyn std::error::Error>> {
+        let (inner, _) = shared_sources(posix_config())?;
+        let volume_id = inner.volume_id()?;
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(Arc::new(inner), volume_id, temporary.path())?;
+        std::fs::write(temporary.path().join("file"), vec![1; 1 << 20])?;
+        assert_eq!(std::fs::read(temporary.path().join("file"))?.len(), 1 << 20);
+        assert!(session.stop()?);
+        Ok(())
+    };
+    cycle()?;
+    let before = resident_bytes()?;
+    for _ in 0..4 {
+        cycle()?;
+    }
+    println!("retained {}", resident_bytes()?.saturating_sub(before));
+    Ok(())
+}
+
+/// Sessions return their read buffers when they end, so a process that
+/// mounts views one after another keeps none resident. The negative control
+/// leaves glibc's threshold adaptive: once the first session's buffers are
+/// freed, later sessions' buffers come from the heap, zeroed and kept.
+#[test]
+#[ignore = "requires a live Linux FUSE mount"]
+fn linux_sessions_keep_no_read_buffers_resident() -> Result<(), Box<dyn std::error::Error>> {
+    let retained = |dynamic: bool| -> Result<u64, Box<dyn std::error::Error>> {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.args([
+            "--ignored",
+            "--exact",
+            "native_mount::fuse::tests::mount::linux_session_cycles",
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        if dynamic {
+            command.env(super::super::session::DYNAMIC_THRESHOLD, "1");
+        } else {
+            command.env_remove(super::super::session::DYNAMIC_THRESHOLD);
+        }
+        let output = command.output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        // The harness prints the test's name on the same line.
+        let line = stdout.lines().find_map(|line| line.split_once("retained "));
+        Ok(line.ok_or("no measurement")?.1.trim().parse()?)
+    };
+    // One callback thread's buffer: the bound sits below a single one.
+    let buffer = 16 << 20;
+    let fixed = retained(false)?;
+    assert!(fixed < buffer, "sessions kept {fixed} bytes resident");
+    let adaptive = retained(true)?;
+    assert!(adaptive >= buffer, "the control kept only {adaptive} bytes");
+    Ok(())
+}
+
 pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send + 'static) -> bool {
     let (done, finished) = sync_channel(1);
     std::thread::spawn(move || {

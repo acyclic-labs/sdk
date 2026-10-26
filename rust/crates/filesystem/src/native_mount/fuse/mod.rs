@@ -77,6 +77,9 @@ fn pause_test_write() {
 }
 
 const ROOT_INODE: u64 = 1;
+/// Inodes per view of a shared instance. A view's inodes are
+/// `serial * VIEW_INODE_SPAN + 1 ..`, so the high bits name the view.
+const VIEW_INODE_SPAN: u64 = 1 << 32;
 static ROOT_PATH: MountPath = MountPath::root();
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY: usize = 1024;
@@ -153,6 +156,8 @@ macro_rules! respond {
 }
 
 mod callbacks;
+mod shared;
+mod shared_instance;
 
 fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
     if size == 0 {

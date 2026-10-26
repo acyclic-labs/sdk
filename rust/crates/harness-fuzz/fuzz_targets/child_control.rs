@@ -48,7 +48,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         commit_id: acyclic_stream::CommitId::from_bytes([0; 32]),
         committed_at_micros: 0,
     };
-    if let Ok(Some(file)) = FileValue::from_record(&record) {
+    for file in FileValue::from_record(&record).unwrap_or_default() {
         let encoded = serde_json::to_vec(&file).unwrap();
         assert_eq!(serde_json::from_slice::<FileValue>(&encoded).unwrap(), file);
     }

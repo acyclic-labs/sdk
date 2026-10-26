@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     client::{CommandResolution, CommandTool},
     model::Model,
+    runtime::TaskStateProvider,
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
 use acyclic_test_support::differential;
@@ -68,6 +69,82 @@ fn no_view_work(trace: &[(&str, u64)], assert_property: bool) {
             "controller reopened an unused child workspace: {trace:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn admitted_child_observation_is_read_only_and_rejects_unknown_or_foreign_owners() {
+    let (_directory, harness, request) = fixture().await;
+    let parent = request.requester().unwrap();
+    let reference = crate::task_volume::Component::new("delegate").unwrap();
+    let before = harness.task_files.inner.head().await.unwrap();
+    let (observed, admission_reads) =
+        crate::test_support::admission_work::measure(harness.observe_admitted_child(
+            &harness.task_files,
+            &reference,
+            parent,
+            crate::task_volume::ChildResultWindow::After(0),
+            1,
+        ))
+        .await;
+    let (task, first) = observed.unwrap();
+    assert_eq!(
+        admission_reads, 1,
+        "GraphCoder child observation reread its parent admission"
+    );
+    assert_eq!(first.results.len(), 1);
+    assert_eq!(first.generation, before);
+    let (same, second) = harness
+        .observe_admitted_child(
+            &harness.task_files,
+            &reference,
+            parent,
+            crate::task_volume::ChildResultWindow::After(1),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(same, task);
+    assert!(second.results.is_empty());
+    assert_eq!(second.generation, before);
+    assert!(matches!(
+        harness
+            .observe_admitted_child(
+                &harness.task_files,
+                &reference,
+                TaskId::new(),
+                crate::task_volume::ChildResultWindow::After(0),
+                1
+            )
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    let unknown = crate::task_volume::Component::new("unknown").unwrap();
+    assert!(matches!(
+        harness
+            .observe_admitted_child(
+                &harness.task_files,
+                &unknown,
+                parent,
+                crate::task_volume::ChildResultWindow::After(0),
+                1
+            )
+            .await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(
+        harness
+            .observe_admitted_child(
+                &harness.task_files,
+                &reference,
+                parent,
+                crate::task_volume::ChildResultWindow::After(0),
+                0
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(harness.task_files.inner.head().await.unwrap(), before);
+    harness.disconnect().await.unwrap();
 }
 
 #[test]

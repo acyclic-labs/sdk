@@ -1,102 +1,36 @@
-//! The mount point is harness state, never a user change: Git ignores it
-//! through the repository's own `info/exclude`, not the user's `.gitignore`.
-use std::path::{Path, PathBuf};
+//! Volume setup uses the owner's single held Git metadata publisher.
+use super::*;
 
-const MARKER: &str = "# acyclic harness volume mount point";
-
-/// The `info/exclude` that governs `root`, and `root` relative to the
-/// working tree's top, or `None` outside a Git working tree.
-fn governing(root: &Path) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
-    let mut top = root;
-    loop {
-        let dot_git = top.join(".git");
-        let git_dir = match std::fs::symlink_metadata(&dot_git) {
-            Ok(entry) if entry.is_dir() => dot_git,
-            Ok(entry) if entry.is_file() => {
-                // A linked worktree or submodule: `gitdir: <path>`.
-                let text = std::fs::read_to_string(&dot_git)?;
-                let Some(path) = text.trim_end().strip_prefix("gitdir: ") else {
-                    return Ok(None);
-                };
-                top.join(path)
-            }
-            Ok(_) => return Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let Some(parent) = top.parent() else {
-                    return Ok(None);
-                };
-                top = parent;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        // Exclusions live in the common directory shared by all worktrees.
-        let common = match std::fs::read_to_string(git_dir.join("commondir")) {
-            Ok(path) => git_dir.join(path.trim_end()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => git_dir,
-            Err(error) => return Err(error),
-        };
-        let relative = root
-            .strip_prefix(top)
-            .unwrap_or(Path::new(""))
-            .to_path_buf();
-        return Ok(Some((common.join("info").join("exclude"), relative)));
+pub(super) fn exclude_mount_paths(root: &acyclic_fs::HeldRoot, paths: &[&Path]) -> Result<()> {
+    if let Some(exclusion) = crate::local::owner::exclusion::Exclusion::capture_paths(root, paths)?
+    {
+        exclusion.publish()?;
     }
+    Ok(())
 }
-
-mod pattern;
-
-pub(super) fn exclude_mount_paths(root: &Path, paths: &[PathBuf]) -> std::io::Result<()> {
-    let Some((exclude, relative)) = governing(root)? else {
-        return Ok(());
-    };
-    let patterns = paths
-        .iter()
-        .map(|path| {
-            let path = path.strip_prefix(root).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "mount exclusion lies outside the checkout",
-                )
-            })?;
-            pattern::pattern(&relative.join(path))
-        })
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let existing = match std::fs::read(&exclude) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    let mut appended = String::new();
-    for pattern in patterns {
-        if !pattern::contains(&existing, &pattern) {
-            appended.push_str(MARKER);
-            appended.push('\n');
-            appended.push_str(&pattern);
-            appended.push('\n');
-        }
-    }
-    if appended.is_empty() {
-        return Ok(());
-    }
-    if let Some(parent) = exclude.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if !existing.is_empty() && !existing.ends_with(b"\n") {
-        appended.insert(0, '\n');
-    }
-    use std::io::Write as _;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&exclude)?
-        .write_all(appended.as_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::path::PathBuf;
+
+    // Exercise the common held-metadata implementation with native paths.
+    fn exclude_mount_paths(root: &Path, paths: &[PathBuf]) -> std::io::Result<()> {
+        let held = acyclic_fs::hold_root(root).map_err(std::io::Error::other)?;
+        let relative = paths
+            .iter()
+            .map(|path| path.strip_prefix(root))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(std::io::Error::other)?;
+        super::exclude_mount_paths(&held, &relative).map_err(|error| {
+            let kind = if matches!(error, crate::Error::Unsupported(_)) {
+                std::io::ErrorKind::Unsupported
+            } else {
+                std::io::ErrorKind::Other
+            };
+            std::io::Error::new(kind, error)
+        })
+    }
 
     /// Darwin's "illegal byte sequence", which APFS returns for a name it
     /// cannot store.
@@ -136,8 +70,8 @@ mod tests {
             text,
             concat!(
                 "user-pattern\n",
-                "# acyclic harness volume mount point\n/.volumes/scratch\n",
-                "# acyclic harness volume mount point\n/sub\\ dir/.volumes/scratch\n",
+                "# acyclic harness checkout incarnation\n/.volumes/scratch\n",
+                "# acyclic harness checkout incarnation\n/sub\\ dir/.volumes/scratch\n",
             )
         );
         assert!(!repository.join(".gitignore").exists());
@@ -254,7 +188,7 @@ mod tests {
             // The former UTF-8 read rejects the same input before any mount.
             prop_assert!(std::fs::read_to_string(&exclude).is_err());
             let mount = repository.join(".volumes/scratch");
-            exclude_mount_paths(repository, &[mount.clone()]).unwrap();
+            exclude_mount_paths(repository, std::slice::from_ref(&mount)).unwrap();
             let updated = std::fs::read(&exclude).unwrap();
             prop_assert!(updated.starts_with(&original));
             if crlf { prop_assert_eq!(&updated, &original); }
@@ -300,7 +234,7 @@ mod tests {
             std::fs::remove_dir(&mount).unwrap();
             prop_assert!(!ignored(repository, &authored));
             // Reinstating the broad rule must fail the sibling oracle.
-            let broad = pattern::pattern(&root.strip_prefix(repository).unwrap().join(".volumes")).unwrap();
+            let broad = String::from_utf8(crate::local::owner::exclusion::pattern(&root.strip_prefix(repository).unwrap().join(".volumes")).unwrap()).unwrap();
             std::fs::write(repository.join(".git/info/exclude"), format!("{broad}\n")).unwrap();
             prop_assert!(ignored(repository, &authored));
         }
@@ -352,8 +286,11 @@ mod tests {
             Err(error) if error.raw_os_error() == Some(EILSEQ) => return,
             Err(error) => panic!("{}: {error}", root.display()),
         }
-        let error = exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "user-pattern\n");
+        exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap();
+        assert!(
+            std::fs::read(&exclude)
+                .unwrap()
+                .starts_with(b"user-pattern\n")
+        );
     }
 }

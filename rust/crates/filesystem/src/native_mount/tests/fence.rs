@@ -59,6 +59,7 @@ fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error
         volume_id: VolumeId::new(),
         destination: root.path().to_path_buf(),
         writable: true,
+        shared: false,
     };
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
@@ -322,6 +323,8 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
                     "native_mount::tests::destination_reclaim_child_waits_for_external_release",
                     "--nocapture",
                 ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
                 .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination)
                 .env("ACYCLIC_FS_RECLAIM_CHILD_READY", &ready)
                 .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release),
@@ -343,9 +346,25 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     }
     std::fs::write(&release, b"release")?;
     for child in &mut children {
-        let status = child.wait(Duration::from_secs(5))?;
-        if !status.success() {
-            return Err(format!("reclaim child failed: {status}").into());
+        // Each subprocess owns its libtest protocol. Keep that output inside
+        // its process scope rather than interleaving summaries with ours.
+        let output = child.wait_with_output(
+            Duration::from_secs(5),
+            16 * 1024,
+            None,
+            || Ok(()),
+            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+            None,
+            None,
+        )?;
+        if !output.status.success() {
+            return Err(format!(
+                "reclaim child failed: {}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
         }
     }
     children.clear();

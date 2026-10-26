@@ -9,7 +9,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let _spill_file = self.spill_io.write().await;
+        let mut spill = self.spill_io.write().await;
         let (objects, proven_at) = match scope {
             PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
             PublicationScope::Everything => (&[][..], self.collection.sweeps()),
@@ -55,12 +55,14 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             }
             (allocation, targets)
         };
-        self.drain_locked(&unswept, &targets, work).await?;
+        self.drain_locked(&mut spill, &unswept, &targets, work)
+            .await?;
         Ok(unswept.into_hold())
     }
 
     pub(super) async fn drain_locked(
         &self,
+        spill: &mut Option<NativeFile>,
         unswept: &crate::collection::Unswept,
         targets: &[ObjectId],
         work: &mut AuthorityWork<'_>,
@@ -151,7 +153,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         ..WorkCounters::UNCHARGED
                     })?;
                     let bytes = staged_native_read(
-                        &self.spill,
+                        spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
                         offset,
                         usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?,
                         native,
@@ -190,7 +192,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     })
                     .map_err(crate::async_storage::object_error)?;
                 writes.extend(
-                    self.read_spilled(&spilled)
+                    read_spilled(spill.as_ref().ok_or(ObjectStoreError::Corrupt)?, &spilled)
                         .await?
                         .into_iter()
                         .map(|object| {
@@ -209,24 +211,30 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 index.acknowledge(write.object_id);
             }
         }
-        let truncate = {
+        let (empty, truncate) = {
             let index = self.index();
-            index.spilled_objects == 0 && index.spill_end != 0
+            (
+                index.spilled_objects == 0,
+                index.spilled_objects == 0 && index.spill_end != 0,
+            )
         };
-        if truncate {
+        if let Some(file) = spill.as_ref().filter(|_| truncate) {
             if let Some(native) = work.original {
-                self.spill
-                    .set_len_async(0, Some(native.runtime_meter()))
+                file.set_len_async(0, Some(native.runtime_meter()))
                     .map_err(|e| native.runtime_error(e))?
                     .await
                     .map_err(|e| native.runtime_error(e))?;
             } else {
-                self.spill
-                    .set_len_async(0, None)
+                file.set_len_async(0, None)
                     .expect("unmetered unit construction cannot fail")
                     .await?;
             }
             self.index_mut().spill_end = 0;
+        }
+        if empty {
+            // Nothing is spilled: the unlinked file closes, holding no
+            // descriptor until the next spill creates another.
+            *spill = None;
         }
         Ok(())
     }

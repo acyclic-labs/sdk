@@ -10,8 +10,6 @@ impl Delivery {
         let (budget, cancellation) = work.with_original_leaf(controls);
         let ownership = SourcePayloadOwnership::new(work)?;
         Ok(Self {
-            #[cfg(windows)]
-            read_authority: None,
             sink,
             exact: AtomicBool::new(true),
             budget,
@@ -61,10 +59,6 @@ impl Delivery {
     }
 
     pub(super) fn callback_work(&self) -> CallbackWork {
-        #[cfg(windows)]
-        if let Some(source) = &self.read_authority {
-            return source.callback_work();
-        }
         match &self.original {
             Some(original) => {
                 CallbackWork::Original(crate::NativeMaterializationWork::clone(original))

@@ -196,7 +196,7 @@ impl LocalHarness {
             #[cfg(any(test, feature = "native-execution"))]
             workspace: self.workspace.clone(),
             #[cfg(any(test, feature = "native-execution"))]
-            settings: Arc::clone(&self.settings),
+            settings: Arc::clone(self.settings()?),
         })
     }
 }
