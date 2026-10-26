@@ -313,17 +313,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
         )
         .await?;
     }
-    seed.commit(
-        OperationId::new(),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
-        B,
-        &cancel,
-        allow::<FsError>,
-    )
-    .await?;
+    commit(&mut seed, &cancel).await?;
     let mut local = open_checkout(&volume, writable_manual(), &cancel).await?;
     let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
     local
@@ -351,18 +341,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
             )
             .await?;
     }
-    remote
-        .commit(
-            OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            allow::<FsError>,
-        )
-        .await?;
+    commit(&mut remote, &cancel).await?;
     *unreadable.lock().map_err(|_| "fixture lock poisoned")? = Some(ObjectKind::Blob);
     // Negative control: the production full classifier must fetch the observed
     // byte range even though the intervening change touches another file.
@@ -384,18 +363,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
     let rebased = local.rebase_head(8, B, &cancel).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     *unreadable.lock().map_err(|_| "fixture lock poisoned")? = None;
-    local
-        .commit(
-            OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            allow::<FsError>,
-        )
-        .await?;
+    commit(&mut local, &cancel).await?;
     for value in ["local", "remote"] {
         assert_eq!(
             local

@@ -43,7 +43,10 @@ pub(super) async fn create(
         .value)
 }
 
-pub(super) async fn commit(checkout: &mut TestCheckout, cancel: &CancellationToken) -> TestResult {
+pub(super) async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    checkout: &mut Checkout<A, O>,
+    cancel: &CancellationToken,
+) -> TestResult {
     checkout
         .commit(
             OperationId::new(),

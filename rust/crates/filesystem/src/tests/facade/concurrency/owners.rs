@@ -313,17 +313,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
         )
         .await?;
     }
-    seed.commit(
-        OperationId::new(),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
-        B,
-        &cancel,
-        allow::<FsError>,
-    )
-    .await?;
+    commit(&mut seed, &cancel).await?;
     let second = Fs::new(
         ForeignOwner {
             inner: authority,
