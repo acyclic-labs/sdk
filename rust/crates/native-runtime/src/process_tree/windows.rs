@@ -1,7 +1,7 @@
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::io::FromRawHandle as _;
+use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
 #[cfg(test)]
 use std::process::Child;

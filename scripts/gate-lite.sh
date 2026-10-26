@@ -4,11 +4,16 @@ set -u
 exec 2>&1
 started=$SECONDS
 args=()
+windows_required=0
 if [ "$(tr -d '\r' < .gate-scope-mode)" = full ]; then
   args=(--workspace)
   fmt_args=(--all)
+  windows_required=1
 else
-  while IFS= read -r p; do [ -z "$p" ] || args+=(-p "$p"); done < <(cat .gate-tests-packages .gate-clippy-packages | tr -d '\r' | sort -u)
+  while IFS= read -r p; do
+    [ -z "$p" ] || args+=(-p "$p")
+    if [ "$p" = acyclic-native-runtime ]; then windows_required=1; fi
+  done < <(cat .gate-tests-packages .gate-clippy-packages | tr -d '\r' | sort -u)
   fmt_args=("${args[@]}")
 fi
 echo "GATE_LITE_START scope=$(tr -d '\r' < .gate-scope-mode) crates=$((${#args[@]} / 2))"
@@ -35,6 +40,14 @@ if [ "$rc" != 0 ]; then
   printf 'GATE_LITE_COMPILE_FAILED rc=%s; recovery: cargo check --locked --all-features --bins --tests --message-format=short' "$rc"
   printf ' %q' "${args[@]}"
   printf '\n'
+fi
+if [ "$rc" = 0 ] && [ "$windows_required" = 1 ]; then
+  echo 'GATE_LITE_WINDOWS_START target=x86_64-pc-windows-msvc package=acyclic-native-runtime features=all targets=all'
+  python3 scripts/with-xwin-cache.py --workers 1 -- \
+    cargo xwin check --locked --offline --target x86_64-pc-windows-msvc \
+      -p acyclic-native-runtime --all-features --all-targets --message-format=short
+  rc=$?
+  echo "GATE_LITE_WINDOWS_DONE rc=$rc"
 fi
 echo "GATE_LITE_WALL seconds=$((SECONDS-started)) rc=$rc"
 echo "GATE_DONE rc=$rc"
