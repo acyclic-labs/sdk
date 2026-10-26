@@ -11,14 +11,7 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
             .value;
     assert_eq!(volume.id(), VolumeId::from_bytes([117; 16]));
     assert_eq!(volume.config(), config());
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_tracking(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout = open_checkout(&volume, writable_tracking(), &cancellation).await?;
     let source = path("source-path")?;
     let destination = path("destination-path")?;
     let source_id = (checkout.create(
