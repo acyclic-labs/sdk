@@ -5,10 +5,10 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
     if input.len() <= 65_536 {
-        let accepted = acyclic_harness::filesystem::verify_native_preparation_journal(
-            input,
-            |decode| acyclic_test_support::measure(decode).bytes_max as u64,
-        );
+        let accepted =
+            acyclic_harness::filesystem::verify_native_preparation_journal(input, |decode| {
+                acyclic_test_support::measure(decode).bytes_max as u64
+            });
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
             &acyclic_fs::CancellationToken::new(),
