@@ -405,7 +405,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     epoch,
                     trigger: trigger.clone(),
                     now_unix_ms: now,
-                    record,
+                    record: record.clone(),
                 },
                 state.checkpoint(),
             );
@@ -431,6 +431,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     &snapshot,
                     epoch,
                     &trigger,
+                    record.as_ref(),
                     transition,
                     key(&snapshot, "publish")?,
                 )

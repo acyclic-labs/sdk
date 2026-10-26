@@ -8,7 +8,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentState, Error, IntentId, MAX_OPEN_CHILDREN, Out, SpawnVolumes, VolumeBinding,
+        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, MAX_OPEN_CHILDREN,
+        Out, SpawnVolumes, VolumeBinding,
     },
     conversation::{ContentAccess, ContentPublisher, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     core::AuthorityRoot,
@@ -21,7 +22,9 @@ use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
     StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
 };
-use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, OwnedBytes, StreamError};
+use acyclic_stream::{
+    BoxProviderFuture, CommitOutcome, CommitRequest, OwnedBytes, Record, StreamError,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -347,29 +350,39 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Opens a possibly untrusted spawn request: the parent is the actor's own
-    /// committed agent, its bindings are the committed ones, and every child
+    /// committed agent (its last checkpoint, or before one its committed
+    /// `ForkAdopted`), its bindings are the committed ones, and every child
     /// and volume is re-derived from them by the same [`children`] as `bind`.
+    /// The handler's checkpoint is never trusted for them.
     fn open(
         &self,
         actor: &ActorReference,
         previous: Option<&Checkpoint>,
+        delivered: Option<&Record>,
         next: &Checkpoint,
         participant: &Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
         let requested = requested(participant)?;
         let next = crate::agent::checkpoint_state(next).map_err(guest)?;
-        let parent = match previous {
-            Some(previous) => {
-                let previous = crate::agent::checkpoint_state(previous).map_err(guest)?;
-                if previous.path != next.path || previous.volumes != next.volumes {
-                    return Err(guest(
-                        "spawn parent bindings differ from its committed state",
-                    ));
+        let parent = match (previous, delivered) {
+            (Some(previous), _) => crate::agent::checkpoint_state(previous).map_err(guest)?,
+            (None, Some(record)) => match InboxRecord::decode(&record.value).map_err(guest)? {
+                InboxRecord::ForkAdopted(adopted) => {
+                    let path = match &adopted.parent {
+                        Some(parent) => parent.child(&adopted.agent).map_err(guest)?,
+                        None => AgentPath::root(&adopted.agent),
+                    };
+                    AgentState::adopted(path, &adopted)
                 }
-                previous
-            }
-            None => next,
+                _ => return Err(guest("first agent input is not ForkAdopted")),
+            },
+            (None, None) => return Err(guest("spawn has no committed parent")),
         };
+        if parent.path != next.path || parent.volumes != next.volumes {
+            return Err(guest(
+                "spawn parent bindings differ from its committed state",
+            ));
+        }
         if parent.path.id().as_str() != actor.id() {
             return Err(guest("spawn parent is not the publishing actor"));
         }

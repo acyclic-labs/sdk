@@ -105,11 +105,25 @@ async fn atomic_history<P: StreamProvider + ?Sized>(
         value
     };
     store
-        .publish(&before, 1, &record(0), make_transition(), key("commit")?)
+        .publish(
+            &before,
+            1,
+            &record(0),
+            None,
+            make_transition(),
+            key("commit")?,
+        )
         .await?;
     // Lose the acknowledgement, then replay the exact request. No duplicate effects.
     store
-        .publish(&before, 1, &record(0), make_transition(), key("commit")?)
+        .publish(
+            &before,
+            1,
+            &record(0),
+            None,
+            make_transition(),
+            key("commit")?,
+        )
         .await?;
     let after = store.load(&address).await?;
     let state = after.state().ok_or("missing state")?;
@@ -153,6 +167,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
             &first,
             1,
             &record(0),
+            None,
             transition(
                 1,
                 AlarmChange::Set {
@@ -173,6 +188,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
                     &current,
                     1,
                     &record(1),
+                    None,
                     transition(2, AlarmChange::Clear),
                     key("old-owner")?
                 )
@@ -188,6 +204,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
                     &old,
                     1,
                     &record(1),
+                    None,
                     transition(2, AlarmChange::Clear),
                     key("old-cut")?
                 )
@@ -201,6 +218,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
             &current,
             2,
             &record(1),
+            None,
             transition(
                 2,
                 AlarmChange::Set {
@@ -221,6 +239,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
                         generation: 1,
                         now_unix_ms: 30
                     },
+                    None,
                     transition(3, AlarmChange::Keep),
                     key("old-alarm")?
                 )
@@ -246,6 +265,7 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
                     &paused,
                     2,
                     &record(2),
+                    None,
                     transition(3, AlarmChange::Clear),
                     key("paused")?
                 )
@@ -261,6 +281,7 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
                     replaced,
                     2,
                     &record(2),
+                    None,
                     transition(3, AlarmChange::Clear),
                     key("inflight")?
                 )
@@ -279,6 +300,7 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
                 generation: 2,
                 now_unix_ms: 20,
             },
+            None,
             transition(3, AlarmChange::Keep),
             key("fire")?,
         )
@@ -302,6 +324,7 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
                         generation: 2,
                         now_unix_ms: 30
                     },
+                    None,
                     transition(4, AlarmChange::Keep),
                     key("cleared")?
                 )
@@ -386,7 +409,7 @@ proptest! {
                 let alarm = match action % 3 { 0 => AlarmChange::Keep, 1 => AlarmChange::Clear, _ => AlarmChange::Set { deadline_unix_ms: u64::from(action) + 1 } };
                 match alarm { AlarmChange::Keep => {}, AlarmChange::Clear => { generation += 1; deadline = None; }, AlarmChange::Set { deadline_unix_ms } => { generation += 1; deadline = Some(deadline_unix_ms); } }
                 let snapshot = store.load(&address).await?;
-                store.publish(&snapshot, 1, &record(u64::try_from(index)?), transition(action, alarm), key(&format!("history-{index}"))?).await?;
+                store.publish(&snapshot, 1, &record(u64::try_from(index)?), None, transition(action, alarm), key(&format!("history-{index}"))?).await?;
                 let after = store.load(&address).await?;
                 let state = after.state().ok_or("missing state")?;
                 assert_eq!(state.alarm().generation(), generation);

@@ -315,12 +315,12 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
         match shape {
             Shape::Atomic => {
                 let _crash = store
-                    .publish(&snapshot, 1, &trigger, transition, key("publish")?)
+                    .publish(&snapshot, 1, &trigger, None, transition, key("publish")?)
                     .await;
             }
             Shape::Split => {
                 let request = store
-                    .prepare_publish(&snapshot, 1, &trigger, transition, key("state")?)?
+                    .prepare_publish(&snapshot, 1, &trigger, None, transition, key("state")?)?
                     .into_request()?;
                 let own = |path: &StreamPath| path == &snapshot.path;
                 let (state_conditions, effect_conditions): (Vec<_>, Vec<_>) = request

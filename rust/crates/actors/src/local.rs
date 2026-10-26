@@ -10,7 +10,7 @@ use crate::guest::{
 };
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    ReadRequest, StreamError, StreamPath, StreamProvider,
+    ReadRequest, Record, StreamError, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -446,15 +446,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
+    /// `delivered` is the committed record `trigger` names, as the host read it.
     pub async fn publish(
         &self,
         previous: &Snapshot,
         epoch: u64,
         trigger: &Trigger,
+        delivered: Option<&Record>,
         transition: Transition,
         key: IdempotencyKey,
     ) -> Result<(), Error> {
-        self.submit(self.prepare_publish(previous, epoch, trigger, transition, key)?)
+        self.submit(self.prepare_publish(previous, epoch, trigger, delivered, transition, key)?)
             .await
     }
 
@@ -464,9 +466,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         previous: &Snapshot,
         epoch: u64,
         trigger: &Trigger,
+        delivered: Option<&Record>,
         transition: Transition,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
+        let named = match trigger {
+            Trigger::Record { sequence, .. } => Some(*sequence),
+            Trigger::Alarm { .. } => None,
+        };
+        if let Some(record) = delivered
+            && named != Some(record.sequence)
+        {
+            return Err(Error::Invalid("delivered record differs from its trigger"));
+        }
         let state = next(owned(previous, epoch)?, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
@@ -481,6 +493,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .open(
                         &self.actor(&previous.path)?,
                         previous.state.as_ref().and_then(State::checkpoint),
+                        delivered,
                         &transition.checkpoint,
                         participant,
                     )?,

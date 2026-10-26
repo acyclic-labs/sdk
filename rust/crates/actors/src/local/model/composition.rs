@@ -84,7 +84,14 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
             sequence: 0,
         };
         let result = store
-            .publish(&snapshot, 1, &trigger, transition(false)?, key("refused")?)
+            .publish(
+                &snapshot,
+                1,
+                &trigger,
+                None,
+                transition(false)?,
+                key("refused")?,
+            )
             .await;
         assert!(
             refusal_was_settled(&result, &counts, &refusal),
@@ -108,6 +115,7 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
                 &snapshot,
                 1,
                 &trigger,
+                None,
                 transition(false)?,
                 key("after-refusal")?,
             )
@@ -145,6 +153,7 @@ async fn negative_control_all_errors_unknown_fails_the_refusal_oracle() -> Resul
             subscription: "inbox".into(),
             sequence: 0,
         },
+        None,
         transition(false)?,
         key("negative-refusal")?,
     )?;
@@ -196,6 +205,7 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
                 subscription: "inbox".into(),
                 sequence: 0,
             },
+            None,
             transition(false)?,
             key("lost-then-refused")?,
         )
@@ -228,6 +238,7 @@ impl Composer for Participants {
         &self,
         _: &ActorReference,
         _: Option<&Checkpoint>,
+        _: Option<&acyclic_stream::Record>,
         _: &Checkpoint,
         participant: &crate::guest::Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
@@ -304,6 +315,7 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
                 subscription: "inbox".into(),
                 sequence: 0,
             },
+            None,
             transition(false)?,
             key("joined-publication")?,
         )
@@ -351,6 +363,7 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
                 subscription: "inbox".into(),
                 sequence: 0,
             },
+            None,
             transition(true)?,
             key("broken-participant")?,
         )
@@ -403,6 +416,7 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
                 subscription: "inbox".into(),
                 sequence: 0,
             },
+            None,
             transition(false)?,
             key("rejected-participant")?,
         )

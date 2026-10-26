@@ -113,11 +113,15 @@ pub struct Participant {
 /// terminal settlement.
 pub trait Composer: acyclic_stream::ProviderPlatform + 'static {
     /// Validate `participant` for `actor`'s transition from the committed
-    /// `previous` checkpoint to `next`, and open its custody.
+    /// `previous` checkpoint to `next`, and open its custody. `delivered` is
+    /// the committed record the host delivered (never the handler's copy):
+    /// before the first checkpoint it is the only committed account of the
+    /// actor's creation.
     fn open(
         &self,
         actor: &ActorReference,
         previous: Option<&Checkpoint>,
+        delivered: Option<&Record>,
         next: &Checkpoint,
         participant: &Participant,
     ) -> Result<Box<dyn Composition>, GuestError>;
