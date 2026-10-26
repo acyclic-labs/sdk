@@ -162,7 +162,7 @@ impl CheckoutTools {
             } = command;
             let result = serialized(&self.state, async |mut state| {
                 let owner = context.task();
-                let workspace = self.selected_workspace(&mut state, owner).await?;
+                let workspace = self.workspace.selected_workspace(&mut state, owner).await?;
                 let view = state
                     .active
                     .as_ref()

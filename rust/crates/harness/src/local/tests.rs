@@ -26,6 +26,36 @@ fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
+fn checkout_config(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (Model, Arc<dyn ModelProvider>),
+) -> Result<LocalHarnessConfig> {
+    // These scripts exercise filesystem commands, not summary-model requests.
+    Ok(crate::test_support::local_harness_config(workspace, model)?
+        .compaction(crate::context::CompactionPolicy::Disabled))
+}
+
+mod checked_commands {
+    use crate::{
+        model::{ModelEvent, ToolCall},
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+
+    /// One scripted command call on the named shell tool.
+    pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                format!("checkout-{index}"),
+                name.into(),
+                serde_json::json!({"command": command}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    }
+}
+
 fn capacity() -> ModelContextCapacity {
     ModelContextCapacity {
         context_tokens: 32_768,
