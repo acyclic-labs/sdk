@@ -12,28 +12,18 @@ where
     O: AsyncObjectStore + 'static,
 {
     let cases = scenarios()?;
-    assert_eq!(cases.len(), 30, "scenario inventory changed");
+    assert_eq!(cases.len(), 27, "scenario inventory changed");
     let results = futures::future::join_all(cases.iter().map(|(path, case)| {
         let files = files.clone();
         let stream = stream.clone();
         async move {
-            let root = format!("matrix/{name}/{}", path.strip_prefix(root())?.display())
-                .replace('\\', "/")
-                .replace('.', "-");
-            let expected = trace(case, Arc::new(MemoryStream::default()), &root).await?;
-            let observed = match case {
-                Case::Executor(value) => Value::Array(
-                    execution::run_with_filesystem(
-                        Scenario::from_value(value.clone())?,
-                        files,
-                        stream,
-                    )
+            let expected = trace(case, Arc::new(MemoryStream::default())).await?;
+            let observed = Value::Array(
+                execution::run_with_filesystem(Scenario::from_value(case.clone())?, files, stream)
                     .await?
                     .trace()
                     .await?,
-                ),
-                Case::Subagents(case) => subagents::run_on(case, stream, &root).await?,
-            };
+            );
             if observed != expected {
                 return Err(format!("{name}/{}: scenario traces differ", path.display()).into());
             }

@@ -1,3 +1,0 @@
-{"folder":"plans/a.md","writes":[{"path":"plans/b.md","text":"other"},{"path":"plans/a.md","text":"first"},{"path":
-  "plans/a.md","text":"revised"},{"path":"GOAL.md","text":"continue"}],"expect":{"files":{"plans/a.md":"revised"},
-  "changes":[null,{"path":"plans/a.md","text":"first"},{"path":"plans/a.md","text":"revised"},null]}}

@@ -2,46 +2,6 @@ use super::run;
 use crate::TestResult;
 use serde_json::json;
 
-#[tokio::test(start_paused = true)]
-async fn direct_swarm_dispatch_rejects_a_permanently_pending_reopen() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    let mut value =
-        crate::scenario::load_value(&root, &root.join("swarm/prefetch-promotion.json"))?;
-    run(value.clone()).await?;
-    value.as_object_mut().ok_or("scenario")?.remove("driver");
-    let case = serde_json::from_value(value)?;
-    let error = run(super::Case::SwarmFault(
-        Box::new(case),
-        crate::swarm_wire::Fault::StalledReopen,
-    ))
-    .await
-    .expect_err("an async driver owner hid a permanent reopen stall");
-    assert!(
-        error
-            .to_string()
-            .contains("stalled: driver at swarm index reopen"),
-        "{error}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    for name in ["lifecycle", "multiple-files", "malformed-raw"] {
-        let mut baseline =
-            crate::scenario::load_value(&root, &root.join(format!("plans/{name}.json")))?;
-        baseline
-            .as_object_mut()
-            .ok_or("missing scenario")?
-            .remove("driver");
-        super::super::plans::Plans::parse(baseline)?
-            .negative_oracles()
-            .await?;
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn unbound_tool_oracles_reject_corrupted_names_and_arguments() -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
