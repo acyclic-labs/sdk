@@ -1,8 +1,8 @@
 #!/bin/bash
 # Main checks every published consumer; PRs check their affected consumers.
-# Feature selection is shared with Linux, including each single feature.
+# Feature selection is shared with Linux: each crate once, with --all-features.
 set -euo pipefail
-args=(--windows-msvc --each-feature)
+args=(--windows-msvc)
 case "${1:-full}" in
   full) ;;
   affected)
@@ -25,7 +25,7 @@ elif [ -n "${GATE_FEATURE_TARGET_DIR:-}" ] && [ -f scripts/gate-target-cache.py 
 else
   export GATE_FEATURE_TARGET_DIR=${GATE_FEATURE_TARGET_DIR:-/mnt/bb/targets/sdk/gate-windows-features}
 fi
-echo "GATE_WINDOWS_FEATURES_START scope=${1:-full} target=x86_64-pc-windows-msvc libraries+all-targets each-feature"
+echo "GATE_WINDOWS_FEATURES_START scope=${1:-full} target=x86_64-pc-windows-msvc libraries+all-targets all-features"
 rc=0
 python3 scripts/with-xwin-cache.py --workers "${GATE_FEATURE_WORKERS:-6}" -- \
   bash scripts/gate-feature-matrix.sh "${args[@]}" || rc=$?

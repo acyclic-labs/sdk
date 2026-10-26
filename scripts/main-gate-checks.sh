@@ -11,10 +11,12 @@ if [ -f scripts/gate-target-cache.py ]; then
   gate_output=$(python3 scripts/gate-target-cache.py output) || exit 2
 fi
 printf 'GATE_OUTPUT_DIRECTORY %s\n' "$gate_output"
-each=(); harness=(); cargo_args=()
+harness=(); cargo_args=()
 while (($#)); do
   case "$1" in
-    --each-feature) each=(--each-feature); shift;;
+    # Older coordinators request each single feature; the gate checks each
+    # crate once with --all-features (2026-10-26 bb2 compute policy).
+    --each-feature) shift;;
     # Older coordinators supply the harness closure. It cannot narrow main.
     -p|--package) [ "$#" -ge 2 ] || { echo 'error: missing legacy package argument'; exit 2; }; shift 2;;
     --package=*|-p?*) shift;;
@@ -55,7 +57,7 @@ fi
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going --workspace --all-targets --all-features --message-format=short \
     -- --cap-lints warn > "$gate_output/.gate-clippy.out" 2>&1; echo $? > "$gate_output/.gate-clippy.rc" ) &
 clippy=$!
-( bash scripts/gate-feature-matrix.sh "${each[@]}" > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
+( bash scripts/gate-feature-matrix.sh > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
 features=$!
 # Invocation-owned runtime paths are not compiler inputs. Start compiler-only
 # phases with the original caller environment so exclusive output allocation

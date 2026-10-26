@@ -23,7 +23,7 @@ test("Windows gate preserves affected scopes and propagates cross-check failures
       const result = invoke("affected", status);
       assert.equal(result.status, status, result.stdout + result.stderr);
       const args = readFileSync(join(cwd, "args"), "utf8").trim().split("\n");
-      assert.deepEqual(args.slice(-5), ["--windows-msvc", "--each-feature", "--package=acyclic-fs", "--package=acyclic-native-runtime", "--package=acyclic-stream"]);
+      assert.deepEqual(args.slice(-6), ["bash", "scripts/gate-feature-matrix.sh", "--windows-msvc", "--package=acyclic-fs", "--package=acyclic-native-runtime", "--package=acyclic-stream"]);
       assert.match(result.stdout, new RegExp(`GATE_WINDOWS_FEATURES rc=${status}`));
       assert.equal(readFileSync(join(cwd, "target"), "utf8").trim(), join(cwd, "job-target"));
     }

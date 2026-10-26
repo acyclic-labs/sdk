@@ -15,15 +15,13 @@ const packages = [item('acyclic-public', { publish: null }), item('acyclic-harne
   item('acyclic-fuzz', { kind: 'bin', fuzz: true }), item('registry-library')];
 const metadata = { workspace_members: packages.slice(0, -1).map(entry => entry.id), packages };
 
-test('all public and internal library surfaces generate code separately in both feature selections', () => {
+test('all public and internal library surfaces generate code separately with --all-features', () => {
   const selected = consumers(metadata);
   assert.deepEqual(selected.map(entry => entry.name),
     ['acyclic-harness-adapter', 'acyclic-harness-conformance', 'acyclic-public', 'registry-tool']);
   for (const entry of selected) {
-    const base = ['build', '--locked', '--package', entry.name];
-    assert.deepEqual(commands(entry), entry.metadata.acyclic['consumer-examples'] ? [
-      base, [...base, '--examples'], [...base, '--all-features'], [...base, '--all-features', '--examples'],
-    ] : [base, [...base, '--all-features']]);
+    const base = ['build', '--locked', '--package', entry.name, '--all-features'];
+    assert.deepEqual(commands(entry), entry.metadata.acyclic['consumer-examples'] ? [base, [...base, '--examples']] : [base]);
   }
   const required = item('required-consumer', { examples: true });
   assert.throws(() => commands({ ...required, targets: [{ kind: ['lib'] }] }), /unconditional executable/);
@@ -71,7 +69,8 @@ else if(args[0]==='build' && args.includes('acyclic-harness-conformance') && pro
       assert.equal(result.status, expected, result.stdout + result.stderr);
       const builds = readFileSync(join(cwd, 'calls'), 'utf8').split('\n').filter(Boolean)
         .map(line => JSON.parse(line)).filter(args => args[0] === 'build');
-      assert.equal(builds.length, negative ? 0 : affected ? 4 : 10);
+      assert.equal(builds.length, negative ? 0 : affected ? 2 : 5);
+      if (!negative) assert.match(result.stdout, /consumer builds wall: seconds=[\d.]+ workers=1/);
       if (affected) assert.ok(builds.every(args => args.includes('acyclic-harness-conformance')));
       if (reject && !negative) assert.match(result.stderr, /queries overflow the depth limit/);
       if (!negative) assert.match(result.stdout, /consumer builds: \d+\/\d+ sets ok/);

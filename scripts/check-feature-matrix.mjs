@@ -39,18 +39,20 @@ export function enabled(item, features) {
 }
 
 /** The Cargo argument sets for one package from its `cargo metadata` entry.
- *  Sets that enable exactly the same features and optional dependencies (a
- *  lone feature that is the whole default set, defaults that are every
- *  feature, no defaults at all) compile the same code, so each is checked
- *  once. */
-export function featureSets(item, eachFeature = true) {
+ *  The gate checks each crate once, alone, with --all-features (2026-10-26
+ *  bb2 compute policy). Only the explicit full matrix (eachFeature) adds the
+ *  no-default, default and single-feature selections; sets that enable exactly
+ *  the same features and optional dependencies compile the same code, so each
+ *  is checked once. */
+export function featureSets(item, eachFeature = false) {
+  if (!eachFeature) return [["check", "--locked", "--manifest-path", item.manifest_path, "--lib", "--all-features"]];
   const own = Object.keys(item.features).filter(name => name !== "default").sort();
   const defaults = Object.hasOwn(item.features, "default") ? ["default"] : [];
   const sets = [
     [["--no-default-features"], []],
     [[], defaults],
     [["--all-features"], Object.keys(item.features)],
-    ...(eachFeature ? own : []).map(feature => [["--no-default-features", "--features", feature], [feature]]),
+    ...own.map(feature => [["--no-default-features", "--features", feature], [feature]]),
   ];
   const checked = new Set();
   return sets
@@ -65,8 +67,16 @@ export function featureSets(item, eachFeature = true) {
 // or feature is added, or when PR and main use different matrix sizes. Absolute
 // manifest paths differ between checkouts and must not be part of the key.
 export function featureWorker(name, args, workers) {
-  const key = [name, ...args.slice(5)].join("\0");
+  return selectionWorker(name, args.slice(5), workers);
+}
+// One (package, feature flags) -> worker map, shared with consumer codegen so a
+// selection's check and build reuse the same worker target.
+export function selectionWorker(name, flags, workers) {
+  const key = [name, ...flags].join("\0");
   return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
+}
+export function workerEnv(index, env = process.env) {
+  return index === 0 ? { ...env } : { ...env, CARGO_TARGET_DIR: `${env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
 }
 
 // Keep the consumer library isolated from test dependencies, then compile
@@ -90,7 +100,7 @@ async function main() {
   if (!Number.isSafeInteger(workers) || workers < 1) throw new Error("WORKERS must be a positive integer");
   // Every publishable local crate, in publication order (the publish check
   // already proves the order lists each exactly once).
-  const eachFeature = windows || args.includes("--each-feature");
+  const eachFeature = args.includes("--each-feature");
   const items = [...metadata().values()];
   const sets = items.filter(item => !selected.length || selected.includes(item.name)).flatMap(item => featureSets(item, eachFeature)
     .map(args => ({ name: item.name, args })));
@@ -103,8 +113,7 @@ async function main() {
   const queues = Array.from({ length: workers }, () => []);
   for (const { name, args } of sets) queues[featureWorker(name, args, workers)].push(args);
   async function worker(index) {
-    const env = index === 0 ? { ...process.env }
-      : { ...process.env, CARGO_TARGET_DIR: `${process.env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
+    const env = workerEnv(index);
     if (windows) {
       if (!process.env.GATE_XWIN_CACHE_ROOT) throw new Error("Windows matrix requires with-xwin-cache.py");
       env.XWIN_CACHE_DIR = join(process.env.GATE_XWIN_CACHE_ROOT, `worker-${index}`);
