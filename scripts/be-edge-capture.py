@@ -81,6 +81,7 @@ def main():
                         "features": {"tools": True, "images": False}}}},
                 "options": {"temperature": 0, "seed": 1, "chat_template_kwargs": {"enable_thinking": False}},
                 "usage": usage["text"], "tool_usage": [usage["tool"], usage["result"]],
+                "context_input": cases["context"]["messages"][0]["content"],
                 "rate_source": "real nginx limit_req configured at 1 request/minute, limit_req_status 429"}
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
