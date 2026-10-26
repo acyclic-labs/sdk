@@ -8,15 +8,15 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     let producer_dir = root.join(format!(".docs-producer/{directory}"));
     fs::create_dir_all(producer_dir.join("registry-archives")).unwrap();
     let dependency = Fixture::new();
-    fs::write(dependency.0.join("Cargo.toml"), "[package]\nname='docs-retained-dependency'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[features]\nnative=[]\n").unwrap();
-    fs::write(dependency.0.join("src/lib.rs"), "/// Verified archived API marker.\npub struct ArchiveMarker;\n#[cfg(feature=\"native\")] pub fn value() -> u8 { 37 }\n").unwrap();
+    fs::write(dependency.path().join("Cargo.toml"), "[package]\nname='docs-retained-dependency'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[features]\nnative=[]\n").unwrap();
+    fs::write(dependency.path().join("src/lib.rs"), "/// Verified archived API marker.\npub struct ArchiveMarker;\n#[cfg(feature=\"native\")] pub fn value() -> u8 { 37 }\n").unwrap();
     fs::write(
-        dependency.0.join("README.md"),
+        dependency.path().join("README.md"),
         "# Actual archived dependency\n",
     )
     .unwrap();
     fs::write(
-        dependency.0.join("descriptor.bin"),
+        dependency.path().join("descriptor.bin"),
         b"original binary descriptor",
     )
     .unwrap();
@@ -30,15 +30,15 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
                 "--no-verify",
                 "--manifest-path",
             ])
-            .arg(dependency.0.join("Cargo.toml"))
+            .arg(dependency.path().join("Cargo.toml"))
             .arg("--target-dir")
-            .arg(dependency.0.join("target")),
+            .arg(dependency.path().join("target")),
     )
     .unwrap();
     let archive = producer_dir.join("registry-archives/docs-retained-dependency-0.1.0.crate");
     fs::copy(
         dependency
-            .0
+            .path()
             .join("target/package/docs-retained-dependency-0.1.0.crate"),
         &archive,
     )
@@ -74,7 +74,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     #[cfg(unix)]
     {
         let foreign = Fixture::new();
-        let foreign = foreign.0.canonicalize().unwrap();
+        let foreign = foreign.path().canonicalize().unwrap();
         fs::write(foreign.join("sentinel"), b"unchanged").unwrap();
         let before = fs::read_dir(&foreign)
             .unwrap()
@@ -288,7 +288,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     )
     .is_err());
     let relocated = Fixture::new();
-    let relocated_root = relocated.0.canonicalize().unwrap();
+    let relocated_root = relocated.path().canonicalize().unwrap();
     for path in files.keys() {
         crate::write_immutable(
             &relocated_root.join(path),
@@ -433,7 +433,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     // owner must fail the actual metadata selection check.
     let unused = Fixture::new();
     fs::write(
-        unused.0.join("Cargo.toml"),
+        unused.path().join("Cargo.toml"),
         "[package]\nname='docs-unused-dependency'\nversion='0.1.0'\nedition='2021'\n[workspace]\n",
     )
     .unwrap();
@@ -446,15 +446,15 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
                 "--no-verify",
                 "--manifest-path",
             ])
-            .arg(unused.0.join("Cargo.toml"))
+            .arg(unused.path().join("Cargo.toml"))
             .arg("--target-dir")
-            .arg(unused.0.join("target")),
+            .arg(unused.path().join("target")),
     )
     .unwrap();
     let unused_archive = producer_dir.join("registry-archives/docs-unused-dependency-0.1.0.crate");
     fs::copy(
         unused
-            .0
+            .path()
             .join("target/package/docs-unused-dependency-0.1.0.crate"),
         &unused_archive,
     )
@@ -505,7 +505,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     resealed.lock_sha256 = crate::sha256_file(&producer_dir.join("Cargo.lock")).unwrap();
     let replay_files = verify_producer_resolution(&root, directory, &resealed).unwrap();
     let replay = Fixture::new();
-    let replay_root = replay.0.canonicalize().unwrap();
+    let replay_root = replay.path().canonicalize().unwrap();
     for path in replay_files.keys() {
         let destination = replay_root.join(path);
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
@@ -535,11 +535,11 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         .contains("Cargo did not select captured dependency root"));
     let foreign = Fixture::new();
     fs::write(
-        foreign.0.join("Cargo.toml"),
+        foreign.path().join("Cargo.toml"),
         "[package]\nname='docs-foreign-dependency'\nversion='0.1.0'\nedition='2021'\n[workspace]\n",
     )
     .unwrap();
-    let path = serde_json::to_string(foreign.0.to_str().unwrap()).unwrap();
+    let path = serde_json::to_string(foreign.path().to_str().unwrap()).unwrap();
     fs::write(
         root.join("Cargo.toml"),
         original_manifest.replace(

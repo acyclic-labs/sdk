@@ -95,15 +95,15 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         2
     );
     let relocated = Fixture::new();
-    let relocated_producer = relocated.0.join(&prefix);
+    let relocated_producer = relocated.path().join(&prefix);
     fs::create_dir_all(&relocated_producer).unwrap();
     fs::copy(&external_lock, relocated_producer.join("Cargo.lock")).unwrap();
     fs::write(relocated_producer.join("config.toml"), &config).unwrap();
     assert_eq!(
-        verify_producer_resolution(&relocated.0, directory, &producer).unwrap(),
+        verify_producer_resolution(relocated.path(), directory, &producer).unwrap(),
         verify_producer_resolution(fixture.path(), directory, &producer).unwrap()
     );
-    fs::write(relocated.0.join("Cargo.lock"), &original).unwrap();
+    fs::write(relocated.path().join("Cargo.lock"), &original).unwrap();
     let relocated_config = relocated_producer.join("config.toml");
     let relocated_context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
         cargo_path: Some(&cargo),
@@ -112,7 +112,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         )),
     };
     let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata(
-        relocated.0.join("Cargo.toml"),
+        relocated.path().join("Cargo.toml"),
         relocated_context,
     )
     .unwrap();
@@ -140,7 +140,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     };
     for (root, metadata, context) in [
         (fixture.path(), &metadata, context),
-        (&relocated.0, &relocated_metadata, relocated_context),
+        (relocated.path(), &relocated_metadata, relocated_context),
     ] {
         sdk_docs::rustdoc_profiles::execute_profile(
             root.join("Cargo.toml"),
@@ -155,7 +155,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         .unwrap();
         assert_eq!(fs::read(root.join("Cargo.lock")).unwrap(), original);
     }
-    assert_eq!(fs::read(relocated.0.join("Cargo.lock")).unwrap(), original);
+    assert_eq!(fs::read(relocated.path().join("Cargo.lock")).unwrap(), original);
     let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
     let imported_lock = fixture.path().join(directory).join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
