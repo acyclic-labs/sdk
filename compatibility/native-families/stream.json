@@ -25,6 +25,7 @@
     "rust/crates/auth",
     "rust/crates/contract-derive",
     "rust/crates/differential",
+    "rust/crates/host-platform",
     "rust/crates/native-runtime",
     "rust/crates/proto-codegen",
     "rust/crates/stream",
