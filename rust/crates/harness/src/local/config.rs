@@ -277,7 +277,7 @@ impl LocalHarnessConfig {
         self.approval_models.insert(selection.into(), model);
         self
     }
-    /// Applies `preset`'s tool selection and approval policy. Its model is
+    /// Applies `preset`'s tool selection, step limit and approval policy. Its model is
     /// resolved by the caller's provider registry and bound with [`Self::new`].
     /// Web tools need the `search-http` feature.
     #[must_use]
@@ -286,6 +286,9 @@ impl LocalHarnessConfig {
         #[cfg(feature = "search-http")]
         {
             self.web_tools = preset.web_tools || self.search_provider.is_some();
+        }
+        if let Some(steps) = preset.max_steps {
+            self.limits.model_steps = steps;
         }
         self.approval_policy = preset.approval_policy.clone();
         self

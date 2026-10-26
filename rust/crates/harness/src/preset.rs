@@ -4,7 +4,8 @@
 use crate::approvals::ApprovalPolicy;
 use serde::{Deserialize, Serialize};
 
-/// The defaults an agent runs with: its model, tool selection and approvals.
+/// The defaults an agent runs with: its model, tool selection, step limit
+/// and approvals.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preset {
@@ -16,6 +17,8 @@ pub struct Preset {
     /// Whether credential-free web retrieval is enabled; search also needs a
     /// configured provider.
     pub web_tools: bool,
+    /// Model and tool steps per turn; `None` keeps the harness limit.
+    pub max_steps: Option<usize>,
     /// Ordered approval chain bound to every enabled tool.
     pub approval_policy: ApprovalPolicy,
 }
@@ -29,6 +32,7 @@ impl Preset {
             model: None,
             default_tools: true,
             web_tools: true,
+            max_steps: None,
             approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         }
     }
