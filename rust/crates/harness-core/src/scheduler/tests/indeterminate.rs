@@ -67,7 +67,7 @@ fn indeterminate_wire_status_never_copies_diagnostic_strings() -> Result<()> {
     let after = fixture()?;
     let (_, [baseline, actual]) = acyclic_test_support::differential(
         || copying_status(&before),
-        || crate::wire_api::operation_status(&after),
+        || crate::scheduler::operation_status(&after),
     );
     let avoids_copies = |work: acyclic_test_support::AllocationInfo| {
         work.count_total + 3 == baseline.count_total
@@ -126,7 +126,7 @@ proptest! {
                 },
             };
             prop_assert_eq!(outcome.logical_owned_bytes().unwrap(), owned);
-            let wire = crate::wire_api::operation_status(state);
+            let wire = crate::scheduler::operation_status(state);
             let caller_error = cause.clone().into_error(id(2));
             prop_assert_eq!(wire.error.unwrap(), crate::wire_codec::encode_error(&caller_error));
             prop_assert!(caller_error.leaves_effect_uncertain());

@@ -182,6 +182,33 @@ impl LocalHarness {
         agents.send(root, &from, &message).await
     }
 
+    /// The configured approval policy, staged once on the root's private
+    /// volume: the root agent's tools run under it.
+    async fn root_policy(
+        &self,
+        root: &crate::agent::AgentId,
+    ) -> Result<crate::conversation::FileRef> {
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.policy.v1");
+        hasher.update(root.as_str().as_bytes());
+        let mut bytes = [0; 16];
+        hasher.finalize_xof().fill(&mut bytes);
+        let operation = OperationId::from_bytes(bytes);
+        let policy = crate::contract::canonical_json_bytes(&self.approval_policy)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(self
+            .input_publisher_with_limit(self.limits.file_bytes)?
+            .stage_once(
+                operation,
+                &format!("inputs/{operation}.json"),
+                &policy,
+                "application/json",
+                "policy",
+                ContentAccess::default(),
+            )?
+            .await?
+            .0)
+    }
+
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
         let authority = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
@@ -228,6 +255,7 @@ impl LocalHarness {
             name: name.to_owned(),
             volume: volume.clone(),
         };
+        let policy = self.root_policy(&id).await?;
         let root = agents
             .create(
                 &IntentId::try_from("root").map_err(storage)?,
@@ -242,7 +270,7 @@ impl LocalHarness {
                         bind("scratch", &self.scratch),
                     ],
                     brief: None,
-                    policy: None,
+                    policy: Some(policy),
                 },
             )
             .await

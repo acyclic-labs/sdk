@@ -11,6 +11,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 mod validation;
+mod wire_status;
 
 pub use declarations::{
     DurableOwner, EntrypointRef, LeaseFence, OperationSpec, Orchestration, ParentLink, Reservation,
@@ -23,6 +24,7 @@ pub use orchestration::{
 };
 pub use state::{OperationPhase, OperationState, WorkflowSuspension};
 pub(crate) use validation::require_execution_owner;
+pub(crate) use wire_status::operation_status;
 
 use crate::store::HistoryIo;
 use crate::wire::ErrorCode::{Conflict, Invalid, NotFound, Unauthorized, Unsupported};

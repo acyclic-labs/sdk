@@ -254,8 +254,6 @@ impl Fixture {
             root_authority: None,
             agent_stream: None,
             agents: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "grpc")]
-            session: tokio::sync::OnceCell::new(),
             project: self.volumes[if matches!(self.scenario, Scenario::EffectAndContinuation) {
                 1
             } else {

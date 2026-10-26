@@ -408,8 +408,6 @@ impl Opening {
             root_authority: Some(issuer.clone()),
             agent_stream: Some(volume_stream),
             agents: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "grpc")]
-            session: tokio::sync::OnceCell::new(),
             task_files,
             project: owner.project.clone(),
             scratch,

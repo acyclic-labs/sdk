@@ -21,37 +21,20 @@ clap.workspace = true
 dirs.workspace = true
 futures.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "signal"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "signal", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-harness-mock-model = { path = "../../../../harness-mock-model" }
-acyclic-harness = { path = "../../..", features = ["test-support"] }
-serde.workspace = true
-serde_json.workspace = true
-proptest.workspace = true
 acyclic-test-support = { path = "../../../../test-support" }
-alacritty_terminal = "0.26"
+axum.workspace = true
+serde_json.workspace = true
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["net"] }
 
 [[test]]
 name = "cli"
 path = "tests/cli.rs"
-
-[[test]]
-name = "tui"
-path = "tests/tui.rs"
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-rustix-openpty = "0.2"
-
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2.175"
-rustix = { workspace = true, features = ["fs"] }
-
-[dev-dependencies.axum]
-workspace = true
-
-[dev-dependencies.tempfile]
-version = "3.27.0"

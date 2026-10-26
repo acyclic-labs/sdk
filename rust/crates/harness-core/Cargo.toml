@@ -142,7 +142,6 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support"] }
 rcgen = "0.14.10"
-tonic.workspace = true
 serde-saphyr = { version = "=1.3.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.8.1"
 tracing-subscriber.workspace = true

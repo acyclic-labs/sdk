@@ -1,12 +1,6 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
 mod runtime_signing;
-// Streams sessions exist on gRPC hosts and in the browser.
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-mod stream_session;
 mod verified_scope;
 mod workload;
 pub(crate) use verified_scope::VerifiedScope;

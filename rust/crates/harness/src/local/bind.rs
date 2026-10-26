@@ -222,8 +222,6 @@ impl BoundComposition {
             root_authority: None,
             agent_stream: None,
             agents: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "grpc")]
-            session: tokio::sync::OnceCell::new(),
             task_files,
             project: volume.clone(),
             scratch: volume.clone(),

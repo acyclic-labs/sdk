@@ -9,7 +9,7 @@ pub enum InputFormat {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Coding agent over the harness client")]
+#[command(version, about = "Coding agent on the local harness's agents")]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root"])]
@@ -37,12 +37,10 @@ pub struct Args {
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
-    /// Resume/replay this submission instead of allocating a new launch identity.
+    /// Message identity: rerunning an operation replays its settled answers
+    /// instead of sending its prompts again.
     #[arg(long)]
     pub operation: Option<String>,
-    /// Reopen the last interactive conversation, including after a normal quit.
-    #[arg(long, conflicts_with_all = ["prompt", "input_format"])]
-    pub resume: bool,
     #[arg(long)]
     pub inline: bool,
 }
@@ -82,12 +80,6 @@ mod tests {
 
     #[test]
     fn headless_modes_use_explicit_jsonl_identity_and_reject_mixed_formats() {
-        assert!(
-            Args::try_parse_from(["graphcoder", "--resume"])
-                .unwrap()
-                .resume
-        );
-        assert!(Args::try_parse_from(["graphcoder", "--resume", "-p", "hello"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
         assert!(Args::try_parse_from(["graphcoder", "--search-config", "search.json"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
@@ -117,7 +109,13 @@ mod tests {
 
     #[test]
     fn removed_host_and_fixture_entrypoints_cannot_be_selected() {
-        for option in ["--session", "--prepare-scenario", "--fixture", "--headless"] {
+        for option in [
+            "--session",
+            "--prepare-scenario",
+            "--fixture",
+            "--headless",
+            "--resume",
+        ] {
             assert!(
                 Args::try_parse_from(["graphcoder", option, "unused"]).is_err(),
                 "{option}"

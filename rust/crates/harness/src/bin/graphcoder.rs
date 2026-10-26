@@ -1,14 +1,19 @@
-//! Argv, the harness client, and shared TUI composition.
+//! Argv and the local harness: the conversation is the harness's root agent,
+//! driven headless (`-p`, JSONL) or through the terminal view.
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
+#[path = "graphcoder/agent.rs"]
+mod agent;
 #[path = "graphcoder/args.rs"]
 mod args;
+#[path = "graphcoder/headless.rs"]
+mod headless;
 #[path = "graphcoder/view.rs"]
 mod view;
 
 use acyclic_harness::{
-    OperationId, client,
+    OperationId,
     local::{LocalHarness, LocalHarnessConfig},
 };
 use acyclic_harness_providers::{Credentials, Registry};
@@ -27,6 +32,14 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    // Harness diagnostics (agent turn failures among them) go to stderr when
+    // `GRAPHCODER_LOG` names a filter, e.g. `warn`.
+    if let Ok(filter) = std::env::var("GRAPHCODER_LOG") {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
     let result = acyclic_native_runtime::coordination_runtime()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
@@ -102,8 +115,7 @@ async fn open(
         .settings(settings)
         .web_tools()
         .approval_policy(policy);
-    let code = acyclic_harness::package::harness::HarnessCode::new()?;
-    Ok(Arc::new(phase(|| code.open_local(config)).await?))
+    Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
 }
 
 // Own native phase futures separately from the CLI orchestration frame.
@@ -131,11 +143,6 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .await?;
         return Ok(0);
     }
-    let operation = args
-        .operation
-        .as_deref()
-        .map(OperationId::parse)
-        .transpose()?;
     let credentials = args
         .credentials
         .as_deref()
@@ -143,41 +150,23 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or_default();
     let local = phase(|| open(&args, credentials)).await?;
-    let operation = if args.resume {
-        phase(|| client::resume_local_identity(&local, operation)).await?
-    } else {
-        client::local_identity(operation)
-    };
-    let command = args
-        .prompt
-        .as_deref()
-        .map(|prompt| client::prepare_local_prompt(operation, prompt))
-        .transpose()?;
-    if args.prompt.is_none()
+    let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
-        && !acyclic_harness::tui::term::Environment::capture().is_dumb()
-    {
-        phase(|| client::select_local_identity(&local, operation)).await?;
-        let result = phase(|| {
-            client::with_local_commands(
-                local.clone(),
-                operation,
-                view::run(local.clone(), operation, args.inline),
-            )
-        })
-        .await;
-        phase(|| client::disconnect_local(local)).await?;
-        return Ok(result?.exit_code());
-    }
-    let (mut connection, target) = phase(|| client::connect_local(local, operation)).await?;
+        && !acyclic_harness::tui::term::Environment::capture().is_dumb();
+    let conversation = phase(|| agent::Conversation::open(local)).await?;
+    let operation = args
+        .operation
+        .clone()
+        .unwrap_or_else(|| OperationId::new().to_string());
     let mut output = std::io::stdout().lock();
-    let outcome = if let Some(command) = command {
-        phase(|| client::run_headless(&mut connection, command, target, &mut output)).await
-    } else {
-        phase(|| client::run_jsonl(&mut connection, target, client::stdin_jsonl(), &mut output))
-            .await
-    };
-    Ok(phase(|| connection.finish(outcome)).await?.exit_code())
+    if let Some(prompt) = &args.prompt {
+        return phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await;
+    }
+    if !interactive {
+        return phase(|| headless::jsonl(&conversation, &operation, &mut output)).await;
+    }
+    drop(output);
+    phase(|| view::run(conversation, args.inline)).await
 }
 
 // Drop the workspace owner while the runtime is still available so its native
@@ -195,7 +184,3 @@ async fn workspace_shutdown() -> std::io::Result<()> {
     #[cfg(not(unix))]
     tokio::signal::ctrl_c().await
 }
-
-#[cfg(test)]
-#[path = "graphcoder/tests.rs"]
-mod tests;

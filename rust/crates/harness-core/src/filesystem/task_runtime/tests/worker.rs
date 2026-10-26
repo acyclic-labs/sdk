@@ -107,7 +107,7 @@ async fn command_cause_path() -> Result<()> {
         );
         let state = fixture.scheduler_state(task).await?;
         assert_eq!(
-            crate::wire_api::operation_status(&state).error,
+            crate::scheduler::operation_status(&state).error,
             Some(crate::wire_codec::encode_error(
                 &cause.clone().into_error(operation_id)
             )),

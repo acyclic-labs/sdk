@@ -50,7 +50,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self,
         operation: OperationId,
     ) -> Result<BoxProviderStream<'static, Result<wire::OperationStatus>>> {
-        let initial = crate::wire_api::operation_status(
+        let initial = crate::scheduler::operation_status(
             self.scheduler
                 .operation(operation)
                 .ok_or_else(|| Error::NotFound("operation".into()))?,
@@ -89,7 +89,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                         .ok_or_else(|| Error::NotFound("operation".into()))?;
                     if state.revision != revision {
                         revision = state.revision;
-                        let status = crate::wire_api::operation_status(state);
+                        let status = crate::scheduler::operation_status(state);
                         return Ok(Some((status, (coordinator, source, None, revision))));
                     }
                 }
