@@ -4,16 +4,16 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::too_many_lines,
-    reason = "test fixtures #[macro_use]
+    reason = "test fixtures use explicit fatal assertions for impossible setup failures"
+)]
+
+#[macro_use]
 #[path = "support/unbounded.rs"]
 mod unbounded;
 
 #[macro_use]
 #[path = "support/provider_receipt.rs"]
 mod provider_receipt;
-
-use explicit fatal assertions for impossible setup failures"
-)]
 
 use acyclic_fs::{
     AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, AuthorityId,
