@@ -14,6 +14,10 @@ cleanup() {
             echo "STEP_FAILED dex-stop; recovery: docker stop $container" >&2
             result=1
         fi
+        if ! docker rm "$container" >/dev/null; then
+            echo "STEP_FAILED dex-remove; recovery: docker rm $container" >&2
+            result=1
+        fi
     fi
     exit "$result"
 }
@@ -33,6 +37,7 @@ oauth2:
   grantTypes: [password]
 staticClients:
 - id: conformance-turns
+  name: Conformance
   secret: conformance-public-test-secret
   redirectURIs: [http://127.0.0.1:15482/unused]
 enablePasswordDB: true
@@ -44,12 +49,18 @@ staticPasswords:
 expiry:
   idTokens: 5m
 DEX
-container=$(docker run --detach --rm --network host -v "$root/config.yaml:/etc/dex/config.yaml:ro" "$image" dex serve /etc/dex/config.yaml)
+chmod 644 "$root/config.yaml" # Public test inputs; Dex runs as uid 1001.
+container=$(docker run --detach --network host -v "$root/config.yaml:/etc/dex/config.yaml:ro" "$image" dex serve /etc/dex/config.yaml)
 for attempt in $(seq 1 45); do
     if curl --silent --fail http://127.0.0.1:15482/dex/.well-known/openid-configuration >/dev/null; then break; fi
+    if [ "$(docker inspect --format '{{.State.Running}}' "$container")" != true ]; then break; fi
     sleep 1
 done
-curl --silent --fail http://127.0.0.1:15482/dex/.well-known/openid-configuration >/dev/null
+if ! curl --silent --fail http://127.0.0.1:15482/dex/.well-known/openid-configuration >/dev/null; then
+    docker logs "$container" >&2 || echo "STEP_FAILED dex-logs; recovery: docker logs $container" >&2
+    echo "STEP_FAILED dex-readiness; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc.sh" >&2
+    exit 1
+fi
 docker inspect --format '{{.Image}}' "$container" > "$root/captures/image.txt"
 python3 scripts/be-edge-oidc-capture.py "$root/captures"
 mkdir -p rust/crates/conformance/fixtures/identity/dex
