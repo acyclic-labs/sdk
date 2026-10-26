@@ -66,21 +66,33 @@ pub async fn settle(
     goal: &dyn TurnGoal,
 ) -> Result<Option<Out>, Error> {
     let failed = |error| Error::Turn(Box::new(error));
-    let Some(view) = goal.read().await.map_err(failed)? else {
-        return Ok(None);
-    };
-    if view.status != GoalStatus::Active {
+    // Goals continue root agents; a child reports to its parent when its
+    // brief is done, whatever its forked scratch holds.
+    if agent.parent.is_some() {
         return Ok(None);
     }
     let policy = goal.policy();
     let (run, count) = position(agent, input, turn);
-    if count >= policy.max_continuations {
-        let contents = policy.blocked(&view);
-        goal.rewrite(&view, &contents, &format!("goal-block:{turn}"))
+    let view = loop {
+        let Some(view) = goal.read().await.map_err(failed)? else {
+            return Ok(None);
+        };
+        if view.status != GoalStatus::Active {
+            return Ok(None);
+        }
+        if count < policy.max_continuations {
+            break view;
+        }
+        // A concurrent edit wins the conditioned rewrite: decide again on it.
+        match goal
+            .rewrite(&view, &policy.blocked(&view), &format!("goal-block:{turn}"))
             .await
-            .map_err(failed)?;
-        return Ok(None);
-    }
+        {
+            Ok(()) => return Ok(None),
+            Err(crate::Error::Conflict(_)) => continue,
+            Err(error) => return Err(failed(error)),
+        }
+    };
     let id = IntentId::try_from(format!("{GOAL_INTENT}{run}:{}", count + 1))?;
     Ok(Some(Out::Send {
         to: agent.path.clone(),

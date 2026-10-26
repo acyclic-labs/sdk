@@ -88,6 +88,9 @@ where
             {
                 Ok(file) => file,
                 Err(Error::NotFound(_)) => return Ok(None),
+                // An unusable goal (over the byte bound, or malformed) is no
+                // goal: the turn settles as without one.
+                Err(error) if error.code() == crate::wire::ErrorCode::Invalid => return Ok(None),
                 Err(error) => return Err(error),
             };
             // A malformed goal is no goal: the turn settles as without one.
