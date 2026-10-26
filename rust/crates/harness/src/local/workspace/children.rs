@@ -53,7 +53,8 @@ impl LocalWorkspace {
 
     /// The lazy view of spawned project `project`, first binding its
     /// prepared fork to the spawn's creating generation (step two) if no
-    /// open has yet; idempotent, and O(1) once bound.
+    /// open has yet, and registering it in the workspace graph; idempotent
+    /// and O(1).
     pub(in crate::local) async fn spawned_project_view(&self, project: &VolumeRef) -> Result<View> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let name = project.storage_name(&mut None)?;
@@ -70,16 +71,9 @@ impl LocalWorkspace {
             .await
             .map_err(storage)?
             .ok_or_else(|| Error::NotFound("spawned project has no prepared fork".into()))?;
-        let Some(origin) = state
+        let origin = state
             .fork_origin
-            .filter(|origin| origin.phase == acyclic_fs::LazyForkPhase::Prepared)
-        else {
-            return self
-                .view()
-                .open_related(child, &mut accounting)
-                .await
-                .map_err(storage);
-        };
+            .ok_or_else(|| Error::Conflict("spawned project has no fork origin".into()))?;
         let parent = state
             .parent_workspace_id
             .ok_or_else(|| Error::Conflict("spawned project fork has no parent".into()))?;
@@ -111,16 +105,26 @@ impl LocalWorkspace {
             .value
             .ok_or_else(|| Error::Conflict("spawned project has no creating generation".into()))?
             .id();
-        let (view, _) = source
-            .bind_prepared_fork(
-                origin.snapshot,
-                child,
-                original,
-                origin.operation_id,
-                &mut accounting,
-            )
-            .await
-            .map_err(storage)?;
+        // Binding and registration are each idempotent; an open after a
+        // stop between them completes both.
+        let view = if origin.phase == acyclic_fs::LazyForkPhase::Prepared {
+            source
+                .bind_prepared_fork(
+                    origin.snapshot,
+                    child,
+                    original,
+                    origin.operation_id,
+                    &mut accounting,
+                )
+                .await
+                .map_err(storage)?
+                .0
+        } else {
+            self.view()
+                .open_related(child, &mut accounting)
+                .await
+                .map_err(storage)?
+        };
         acyclic_fs::WorkspaceGraph::new(self.store.clone())
             .register_existing_child_at_generation(
                 source.workspace(),

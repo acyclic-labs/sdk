@@ -290,7 +290,12 @@ impl HostWorkspaceOwner {
             if let Some(view) = self.views.get(agent) {
                 return view.verify().await;
             }
-            let (state, session) = self.native.session(agent).await?;
+            let (mut state, mut session) = self.native.session(agent).await?;
+            if state.parent.is_some() && session.reference.is_none() {
+                // The spawn committed but the child never ran its brief.
+                self.native.resume(agent).await?;
+                (state, session) = self.native.session(agent).await?;
+            }
             let workspace = if let Some(parent) = &state.parent {
                 self.attach(parent).await?;
                 let reference = session.reference.as_deref().ok_or_else(|| {

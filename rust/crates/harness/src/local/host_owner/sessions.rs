@@ -65,6 +65,7 @@ impl HostWorkspaceOwner {
         let child = agents::child(parent, reference)?;
         if let SessionAction::Spawn { prompt } = &action {
             prompt_bound(prompt)?;
+            host_workspace::child_reference(reference)?;
             let (state, _) = self.native.session(parent).await?;
             if !state.open_children.contains(&child) {
                 // Host-authored parent work is the child's starting point;

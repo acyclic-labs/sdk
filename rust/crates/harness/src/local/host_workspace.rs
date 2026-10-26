@@ -14,6 +14,14 @@ pub(super) mod tests;
 
 pub use super::workspace::HOST_VIEW_ROOT;
 
+/// Checks that `reference` names an `agents/<reference>` mount; a spawn
+/// checks it before committing the child.
+pub(super) fn child_reference(reference: &str) -> Result<()> {
+    crate::task_volume::Component::new(reference)
+        .map(drop)
+        .map_err(storage)
+}
+
 /// A native-host agent's workspace, with no execution authority of its own.
 pub struct HostWorkspace {
     workspace: Arc<LocalWorkspace>,
@@ -272,7 +280,7 @@ impl HostWorkspace {
             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
             mounts
         };
-        crate::task_volume::Component::new(reference).map_err(storage)?;
+        child_reference(reference)?;
         acyclic_fs::GitCompatRepository::new(
             selected.workspace().id(),
             self.workspace.store.clone(),

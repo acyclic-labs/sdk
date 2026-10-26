@@ -686,7 +686,10 @@ impl NativeAgents {
         .await
     }
 
+    /// Delivers `record` and runs `agent`'s turn on it; a turn that rejects
+    /// the record (a full queue, a stale claim) fails the request.
     async fn deliver(&self, agent: &AgentPath, record: InboxRecord) -> Result<()> {
+        let before = self.state(agent).await?.conversation_tail;
         match self
             .host
             .send(agent, &Sender::Host { host: HOST.into() }, &record)
@@ -698,6 +701,21 @@ impl NativeAgents {
             }
             crate::agent::Delivered::Committed { .. } => {}
         }
+        self.resume(agent).await?;
+        let tail = self.state(agent).await?.conversation_tail;
+        if tail > before
+            && let Some((_, entry)) = self.driver.entries(agent, tail - 1, 1).await?.pop()
+            && entry.agent == *agent
+            && let Record::Rejected { reason } = entry.record
+        {
+            return Err(Error::Conflict(reason));
+        }
+        Ok(())
+    }
+
+    /// Runs `agent`'s outstanding turns, such as a spawned child's first
+    /// turn on its brief that a stopped owner never ran.
+    pub(super) async fn resume(&self, agent: &AgentPath) -> Result<()> {
         self.wake(agent)?;
         self.drain().await
     }
