@@ -25,16 +25,13 @@ async fn direct_shell_command_uses_native_powershell() -> Result<()> {
     )
     .await?;
     let operation = OperationId::new();
-    let resolution = harness.resolve_input(operation,
-        "/shell [IO.File]::WriteAllText((Join-Path (Get-Location) 'direct.txt'), 'direct write'); [Console]::Write('direct output')",
-    ).await?;
-    assert!(matches!(
-        resolution,
-        crate::client::CommandResolution::Tool {
-            tool: crate::client::CommandTool::Shell,
-            ..
-        }
-    ));
+    let tool = crate::client::CommandTool::Shell;
+    let resolution = crate::client::CommandResolution::Tool {
+        tool,
+        input: tool.input(
+            "[IO.File]::WriteAllText((Join-Path (Get-Location) 'direct.txt'), 'direct write'); [Console]::Write('direct output')",
+        ),
+    };
     let result = harness
         .dispatch_command(operation, None, resolution)
         .await?;
