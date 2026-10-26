@@ -117,8 +117,13 @@ impl RecordPaths<'_> {
             return Ok(());
         };
         let work = allocation.work();
-        let file =
-            materialization_open_options(from, &crate::native_host::NativeOpenOptions::Read, work)?;
+        let parent = RecordDirectory::open(from, work, None)?;
+        let file = materialization_open_at(
+            parent.get(),
+            from,
+            &crate::native_host::NativeOpenOptions::Read,
+            work,
+        )?;
         let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
         let mut source = MaterializationReader {
             file: &file,
@@ -126,7 +131,8 @@ impl RecordPaths<'_> {
             remaining_file_bytes: length,
             original_length: length,
         };
-        let file = materialization_open_options(
+        let file = materialization_open_at(
+            parent.get(),
             to,
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
