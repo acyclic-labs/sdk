@@ -432,36 +432,6 @@ pub struct ProjectionKey {
     pub signature: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectedItem {
-    pub key: ProjectionKey,
-    pub profile: ProfileId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AvailableItem {
-    pub key: ProjectionKey,
-    pub profiles: BTreeSet<ProfileId>,
-}
-
-/// Merge profile projections without collapsing overloads that have different
-/// signatures.
-pub fn merge_projection(
-    projections: impl IntoIterator<Item = ProjectedItem>,
-) -> Vec<AvailableItem> {
-    let mut merged = BTreeMap::<ProjectionKey, BTreeSet<ProfileId>>::new();
-    for projection in projections {
-        merged
-            .entry(projection.key)
-            .or_default()
-            .insert(projection.profile);
-    }
-    merged
-        .into_iter()
-        .map(|(key, profiles)| AvailableItem { key, profiles })
-        .collect()
-}
-
 /// Stable sidecar schema for target/feature availability projected onto the
 /// existing docs item IDs. The docs catalog remains authoritative for item
 /// content; this sidecar only records where each exact signature was emitted.

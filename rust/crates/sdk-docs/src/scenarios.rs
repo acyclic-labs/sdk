@@ -442,21 +442,6 @@ mod render;
 use render::digest_bytes;
 pub use render::render_typescript;
 
-/// Return the repository-relative paths that must be present in the fixed
-/// generator source closure for these scenarios.
-pub fn source_paths(root: &Path, sources: &[ScenarioSource]) -> Result<Vec<PathBuf>, Error> {
-    let mut paths = std::collections::BTreeSet::new();
-    for source in sources {
-        for path in &source.source_files {
-            let relative = path.strip_prefix(root).map_err(|_| {
-                Error::Invalid(format!("scenario source escapes root: {}", path.display()))
-            })?;
-            paths.insert(relative.to_owned());
-        }
-    }
-    Ok(paths.into_iter().collect())
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Io(String),
