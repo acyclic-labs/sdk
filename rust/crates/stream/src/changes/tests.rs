@@ -2,7 +2,7 @@ use super::*;
 use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt;
 
-fn filter() -> FollowFilter {
+pub(super) fn filter() -> FollowFilter {
     use acyclic_auth::{contract::*, testing as signed};
     let token = signed::root(|block| {
         block.caveats.push(Caveat {
@@ -20,7 +20,7 @@ fn filter() -> FollowFilter {
     FollowFilter::authorized(Default::default(), &capability).unwrap()
 }
 
-fn changes() -> AppendRecord {
+pub(super) fn changes() -> AppendRecord {
     AppendRecord::changes(
         b"publication-identity",
         &["b", "z"]

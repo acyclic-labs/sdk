@@ -126,6 +126,9 @@ impl FollowFilter {
 
     /// Returns whether opaque record headers satisfy the full intersection.
     pub fn matches(&self, headers: &RecordHeaders) -> bool {
+        if crate::changes::unknown(headers) {
+            return false;
+        }
         if crate::changes::marked(headers) {
             return headers
                 .keys()
@@ -145,6 +148,7 @@ impl FollowFilter {
     /// Projects typed provider changes before delivery. Opaque values retain
     /// the stronger rule that every key must satisfy every authority ceiling.
     pub fn project(&self, mut record: crate::Record) -> Result<Option<crate::Record>, StreamError> {
+        crate::changes::validate(&record.value, &record.headers)?;
         if !self.matches(&record.headers) {
             return Ok(None);
         }
