@@ -270,6 +270,17 @@ async fn one_composition_cannot_create_a_volume_twice() -> Result<(), Box<dyn Er
         format!("{error:?}").contains("names one authority twice"),
         "{error:?}"
     );
+    // Negative control for partial preparation: the first fork's two
+    // creations were already in the commit when the second failed. They are
+    // gone, so the caller's commit is exactly its own again and still usable.
+    assert_eq!(commit.request().conditions.len(), 1);
+    assert_eq!(commit.request().mutations.len(), 2);
+    assert!(commit.authorities().is_empty());
+    unbounded!(fs, prepare_fork_many(&forks(&source)?, &mut commit))?;
+    let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
+        return Err("the rolled-back commit did not commit".into());
+    };
+    assert!(unbounded!(fs, open_workspace("child-project")).is_ok());
     Ok(())
 }
 
@@ -367,5 +378,83 @@ async fn long_placement_roots_keep_retry_keys_within_the_limit() -> Result<(), B
     workspace.write_text("/owner", "long").await?;
     let workspace = unbounded!(fs, open_workspace("long-root"))?;
     assert_eq!(unbounded!(workspace, read("/owner", 8))?.as_ref(), b"long");
+    Ok(())
+}
+
+/// Negative control for change-stream placement: the same workspace name
+/// created in caller-built commits under two roots on one provider. Both
+/// creations once named `.acyclic/fs/<volume>` absent, so the second failed
+/// its condition; the change stream now carries the placement id.
+#[tokio::test]
+async fn distinct_placements_keep_separate_change_streams() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let initialization = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    for (root, key, operation) in [
+        ("tenant-a/volumes", &b"shared-a"[..], 0xd1),
+        ("tenant-b/volumes", &b"shared-b"[..], 0xd2),
+    ] {
+        let fs = placed_at(&stream, root)?;
+        let creations = [CreateSpec {
+            name: name("shared")?,
+            initialization,
+            creation: IdempotencyKey::from_bytes([operation; 16])
+                .operation_id()
+                .into(),
+        }];
+        let mut commit = FilesystemCommit::new(CommitRequest {
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(key))?,
+        });
+        unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
+        let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
+            return Err(format!("creation under {root} collided with another placement").into());
+        };
+        assert!(unbounded!(fs, open_workspace("shared")).is_ok());
+    }
+    Ok(())
+}
+
+/// Negative control for settlement: the caller's provider committed the
+/// request, then the cached-head refresh failed (here, cancelled while
+/// taking the actor lease). That error once replaced the receipt; the receipt
+/// now survives and the next open re-reads the durable head.
+#[tokio::test]
+async fn a_failed_cache_refresh_keeps_the_committed_receipt() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let fs = placed(&stream)?;
+    let source = parent(&fs, &stream).await?;
+    let commit = compose(&fs, &source, true).await?;
+    let acyclic_stream::CommitOutcome::Committed(envelope) =
+        stream.commit(commit.request().clone()).await?
+    else {
+        return Err("the caller's submission did not commit".into());
+    };
+    let committed = envelope.commit_id;
+    let store = StreamAuthorityStore::with_placement(
+        Arc::clone(&stream),
+        AuthorityPlacement::new(VOLUMES)?,
+    );
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let FilesystemCommitOutcome::Committed(settled) = store
+        .settle(
+            commit,
+            acyclic_stream::CommitOutcome::Committed(envelope),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled),
+        )
+        .await?
+    else {
+        return Err("a committed outcome settled as something else".into());
+    };
+    assert_eq!(settled.commit_id, committed);
+    let project = unbounded!(fs, open_workspace("child-project"))?;
+    assert_eq!(
+        unbounded!(project, read("/plan.md", 16))?.as_ref(),
+        b"ship it"
+    );
     Ok(())
 }

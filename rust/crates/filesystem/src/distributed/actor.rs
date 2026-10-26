@@ -262,7 +262,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 }
                 Some(_) => {}
                 None => {
-                    let path = super::changes::changes_path(volume, work)?;
+                    let path = super::changes::changes_path(&self.placement, volume, work)?;
                     let tail = match self.tail(path, work).await {
                         Ok(tail) => tail,
                         Err(error) if authority_missing(&error) => 0,
@@ -384,7 +384,7 @@ impl Projection {
                 .ok_or(crate::WorkError::Overflow)?;
         }
         if let Some((volume, tail)) = &mut self.changes {
-            let changes = super::changes::changes_path(*volume, work)?;
+            let changes = super::changes::changes_path(placement, *volume, work)?;
             if let Some((start, rows)) = view.staged(&changes, work)? {
                 *tail = start
                     .checked_add(crate::foundation::usize_to_u64(rows.len()))

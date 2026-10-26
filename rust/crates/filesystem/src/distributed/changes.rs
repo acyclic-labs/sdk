@@ -4,19 +4,14 @@ use crate::{PublicationChanges, VolumeConfig};
 use acyclic_stream::{AppendRecord, ChangeEntryRef, RecordHeaders};
 
 pub(super) fn changes_path(
+    placement: &AuthorityPlacement,
     volume: crate::VolumeId,
     work: &mut AuthorityWork<'_>,
 ) -> Result<StreamPath, AuthorityStoreError> {
-    let mut text = [0; 44];
-    text.get_mut(..12)
-        .ok_or(crate::WorkError::Overflow)?
-        .copy_from_slice(b".acyclic/fs/");
-    hex::encode_to_slice(
-        volume.into_bytes(),
-        text.get_mut(12..).ok_or(crate::WorkError::Overflow)?,
-    )
-    .map_err(|_| crate::WorkError::Overflow)?;
-    let text = std::str::from_utf8(&text).map_err(|_| crate::WorkError::Overflow)?;
+    let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
+    let text =
+        crate::publication_changes::changes_path_text(placement.actor_scope(), volume, &mut text)
+            .ok_or(crate::WorkError::Overflow)?;
     work.own_path(text)
 }
 
@@ -172,7 +167,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             ));
         }
         Ok((
-            changes_path(seal.volume(), work)?,
+            changes_path(&self.placement, seal.volume(), work)?,
             records(seal, sequence, work)?,
         ))
     }

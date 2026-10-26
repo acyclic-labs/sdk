@@ -84,15 +84,46 @@ impl FilesystemCommit {
         self.holds.push(hold);
     }
 
-    fn claim(&mut self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
+    fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
         if self.authorities.contains(&authority) {
             return Err(AuthorityStoreError::RejectedStatic(
                 "a composed commit names one authority twice",
             ));
         }
-        self.authorities.push(authority);
         Ok(())
     }
+
+    /// Marks the commit's current contents, so a multi-part preparation can
+    /// undo every part it added when a later part fails.
+    pub(crate) fn mark(&self) -> CommitMark {
+        CommitMark {
+            conditions: self.request.conditions.len(),
+            mutations: self.request.mutations.len(),
+            authorities: self.authorities.len(),
+            contributions: self.contributions.len(),
+            holds: self.holds.len(),
+        }
+    }
+
+    /// Drops everything added after `mark`. Dropped contributions never
+    /// complete, so their actors keep their heads.
+    pub(crate) fn rollback(&mut self, mark: CommitMark) {
+        self.request.conditions.truncate(mark.conditions);
+        self.request.mutations.truncate(mark.mutations);
+        self.authorities.truncate(mark.authorities);
+        self.contributions.truncate(mark.contributions);
+        self.holds.truncate(mark.holds);
+    }
+}
+
+/// A position in a [`FilesystemCommit`] that a failed preparation rolls back to.
+#[derive(Clone, Copy)]
+pub(crate) struct CommitMark {
+    conditions: usize,
+    mutations: usize,
+    authorities: usize,
+    contributions: usize,
+    holds: usize,
 }
 
 /// Upper bound on the conditions, and separately the mutations, that one
@@ -128,22 +159,33 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         source: Option<(StreamPath, u64, GenerationId)>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
-        commit.claim(authority)?;
-        // One creation adds at most this many conditions and mutations: four
-        // absent streams, records, epoch, gate, lineage and namespace changes.
-        grow(&mut commit.request.conditions, CREATION_ENTRIES, work)?;
-        grow(&mut commit.request.mutations, CREATION_ENTRIES, work)?;
+        commit.ensure_unclaimed(authority)?;
+        // The creation is built in its own request and joins the caller's only
+        // once every entry is prepared: a failed preparation leaves the
+        // commit exactly as it was, with no publishable fragment. One creation
+        // adds at most this many conditions and mutations: four absent
+        // streams, records, epoch, gate, lineage and namespace changes.
+        let mut part = CommitRequest {
+            conditions: work.vec(CREATION_ENTRIES)?,
+            mutations: work.vec(CREATION_ENTRIES)?,
+            idempotency_key: commit.request.idempotency_key.clone(),
+        };
         let actor = self.actor(authority, work)?;
         let journal = actor.lease(work).await?;
         let revision = actor.begin(journal)?;
         let projection = self.creation_request(
-            &mut commit.request,
+            &mut part,
             authority,
             Epoch::GENESIS,
             Some(proposed),
             source,
             work,
         )?;
+        grow(&mut commit.request.conditions, part.conditions.len(), work)?;
+        grow(&mut commit.request.mutations, part.mutations.len(), work)?;
+        commit.request.conditions.append(&mut part.conditions);
+        commit.request.mutations.append(&mut part.mutations);
+        commit.authorities.push(authority);
         commit.contributions.push(Contribution {
             actor,
             revision,
@@ -245,9 +287,19 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     projection,
                 } in contributions
                 {
-                    actor
+                    // Every mutation is already durable: the receipt is the
+                    // result. Refreshing the cached head is best-effort. A
+                    // failure leaves the journal Vacant from `begin`, so the
+                    // next lease re-reads the durable head instead of trusting
+                    // a stale one.
+                    let completed = actor
                         .complete(revision, projection.seal(envelope.commit_id), work)
-                        .await?;
+                        .await;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Err(error) = &completed {
+                        tracing::warn!(?error, "composed commit cache refresh failed");
+                    }
+                    drop(completed);
                 }
                 drop(holds);
                 Ok(FilesystemCommitOutcome::Committed(envelope))

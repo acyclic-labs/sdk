@@ -328,3 +328,26 @@ fn merge_backend(
     }
     Ok(())
 }
+
+/// Longest change-stream path: `.acyclic/fs/<placement-id>/<volume>`.
+pub(crate) const CHANGES_PATH_LEN: usize = 77;
+
+/// The one change-stream path rule, shared by its writer and every reader.
+/// `scope` is the authority placement's actor scope: the default placement
+/// (all zero) keeps `.acyclic/fs/<volume>`, and any other inserts its fixed
+/// 16-byte id so separate placements on one provider never share a stream.
+pub(crate) fn changes_path_text(
+    scope: [u8; 16],
+    volume: VolumeId,
+    text: &mut [u8; CHANGES_PATH_LEN],
+) -> Option<&str> {
+    text.get_mut(..12)?.copy_from_slice(b".acyclic/fs/");
+    let mut end = 12;
+    if scope != [0; 16] {
+        hex::encode_to_slice(scope, text.get_mut(end..end + 32)?).ok()?;
+        *text.get_mut(end + 32)? = b'/';
+        end += 33;
+    }
+    hex::encode_to_slice(volume.into_bytes(), text.get_mut(end..end + 32)?).ok()?;
+    std::str::from_utf8(text.get(..end + 32)?).ok()
+}

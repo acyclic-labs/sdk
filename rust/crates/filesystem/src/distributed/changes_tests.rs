@@ -183,7 +183,11 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
         .value;
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let authority = AuthorityId::from_bytes(workspace.id().into_bytes());
-    let path = changes_path(workspace.id().volume_id(), &mut work)?;
+    let path = changes_path(
+        &AuthorityPlacement::default(),
+        workspace.id().volume_id(),
+        &mut work,
+    )?;
     assert_eq!(streams.tail(path.clone()).await?, 1);
     let initial = streams
         .read(ReadRequest {
@@ -344,7 +348,7 @@ async fn creation_rejects_missing_and_foreign_namespace_seals_without_side_effec
             );
             assert!(matches!(store.head(retention, &mut work).await,
                 Err(error) if authority_missing(&error)));
-            let path = changes_path(foreign.volume_id, &mut work)?;
+            let path = changes_path(&AuthorityPlacement::default(), foreign.volume_id, &mut work)?;
             assert!(matches!(
                 streams.tail(path).await,
                 Err(acyclic_stream::StreamError::NotFound)
@@ -513,7 +517,11 @@ async fn local_change_records_survive_reopen_with_their_authority_commit() -> Te
         .await?;
     let streams = fs.authority().provider();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let path = changes_path(workspace.id().volume_id(), &mut work)?;
+    let path = changes_path(
+        &AuthorityPlacement::default(),
+        workspace.id().volume_id(),
+        &mut work,
+    )?;
     let tail = streams.tail(path.clone()).await?;
     let before: Vec<_> = streams
         .read(ReadRequest {
@@ -582,7 +590,11 @@ async fn append_rejects_unsealed_publications_before_changing_either_stream() ->
         .head_payload(authority, STREAM_RECORD_LIMIT, &mut work)
         .await?;
     let payload = payload.ok_or("publication payload missing")?;
-    let path = changes_path(workspace.id().volume_id(), &mut work)?;
+    let path = changes_path(
+        &AuthorityPlacement::default(),
+        workspace.id().volume_id(),
+        &mut work,
+    )?;
     let tail = streams.tail(path.clone()).await?;
     for native in [false, true] {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)

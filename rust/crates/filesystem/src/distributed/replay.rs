@@ -18,7 +18,11 @@ fn fence_attempt_key(
     work.charge(copying)?;
     // Each admitted actor transition is one fencing attempt. Independent
     // writers cannot reuse another writer's historical successful CAS.
-    work.key(scope, b"fence\0", &[&identity, &owner, &revision.to_le_bytes()])
+    work.key(
+        scope,
+        b"fence\0",
+        &[&identity, &owner, &revision.to_le_bytes()],
+    )
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

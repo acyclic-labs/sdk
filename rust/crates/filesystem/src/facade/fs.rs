@@ -70,6 +70,15 @@ impl<A, O> Fs<A, O> {
     {
         self.inner.authority.operation_claims()
     }
+    /// Placement scope of this filesystem's authority streams; it also names
+    /// their change streams.
+    pub(crate) fn authority_actor_scope(&self) -> [u8; 16]
+    where
+        A: AsyncAuthorityStore,
+    {
+        self.inner.authority.actor_scope()
+    }
+
     pub(crate) fn has_process_policy_owner(&self) -> bool
     where
         A: AsyncAuthorityStore,

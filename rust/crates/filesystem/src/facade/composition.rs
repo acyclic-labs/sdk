@@ -41,6 +41,10 @@ where
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Vec<crate::WorkspaceId>>, WorkspaceError> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        // All-or-none: a failed part removes every entry, contribution and
+        // hold this call added, so the caller's commit never carries a
+        // partial creation it could still submit.
+        let mark = commit.mark();
         let result = async {
             let accounting = &mut accounting;
             let mut created = Vec::with_capacity(forks.len());
@@ -53,6 +57,9 @@ where
             Ok(created)
         }
         .await;
+        if result.is_err() {
+            commit.rollback(mark);
+        }
         measured(result, &accounting)
     }
 
@@ -124,6 +131,10 @@ where
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Vec<crate::WorkspaceId>>, WorkspaceError> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        // All-or-none: a failed part removes every entry, contribution and
+        // hold this call added, so the caller's commit never carries a
+        // partial creation it could still submit.
+        let mark = commit.mark();
         let result = async {
             let accounting = &mut accounting;
             let mut created = Vec::with_capacity(creations.len());
@@ -136,6 +147,9 @@ where
             Ok(created)
         }
         .await;
+        if result.is_err() {
+            commit.rollback(mark);
+        }
         measured(result, &accounting)
     }
 

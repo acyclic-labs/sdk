@@ -131,10 +131,16 @@ where
                 let _ = deadline_tx.send(trie.valid_until());
                 *opened.trie.lock().map_err(|_| StreamError::AccessDenied)? = Some(trie.clone());
                 opened.validate()?;
-                let path = StreamPath::new(format!(
-                    ".acyclic/fs/{}",
-                    hex::encode(volume_id.into_bytes())
-                ))?;
+                let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
+                let path = StreamPath::new(
+                    crate::publication_changes::changes_path_text(
+                        fs.authority_actor_scope(),
+                        volume_id,
+                        &mut text,
+                    )
+                    .ok_or(StreamError::AccessDenied)?
+                    .to_owned(),
+                )?;
                 let filter = request
                     .authorization
                     .filter_paths(&resource(volume_id, "")?, &request.filter)?;
