@@ -49,6 +49,8 @@ thread_local! {
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: discard the volume component of a strong witness.
     pub(super) static DISCARD_VOLUME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Observe a contending real owner lock without blocking this test thread.
+    static TRY_OWNER_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -386,6 +388,32 @@ impl Owner {
     }
 
     fn load(path: &Path) -> Result<Self> {
+        // The lock's stable inode survives replacing owner.json. Hold it from
+        // before reading a legacy seed until publication or custody rollback,
+        // so another reader cannot publish a key this reader still owns.
+        let lock_path = path.with_extension("lock");
+        let file = acyclic_native_runtime::private_file::open_or_create(&lock_path)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
+                _ => storage(error),
+            })?;
+        let acquire: fn(
+            fs::File,
+            acyclic_native_runtime::FileLockMode,
+        ) -> std::io::Result<acyclic_native_runtime::FileLock> =
+            acyclic_native_runtime::FileLock::acquire;
+        #[cfg(test)]
+        let acquire = if TRY_OWNER_LOCK.get() {
+            acyclic_native_runtime::FileLock::try_acquire
+        } else {
+            acquire
+        };
+        let _publication = acquire(file, acyclic_native_runtime::FileLockMode::Exclusive)
+            .map_err(storage)?;
+        Self::load_record(path)
+    }
+
+    fn load_record(path: &Path) -> Result<Self> {
         use acyclic_native_runtime::{owner_record, private_file};
         let record = private_file::read_for_upgrade_with(path, 65_536, |file, length| {
             let mut bytes = owner_record::SecretBytes(Vec::with_capacity(
