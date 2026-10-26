@@ -18,7 +18,9 @@ live server (with an actual rate limiter and captured deterministic replay):
 pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BE_EDGE_RUN_SUITE=1 bash scripts/be-edge-local.sh
 ```
 
-The ephemeral containers stop when the command exits. The public model download
+Both servers bind only to `127.0.0.1`, on ports 15480 (llama.cpp) and 15481
+(nginx). A lane-local lock prevents overlapping runs. The ephemeral containers
+stop when the command exits. The public model download
 persists under `/mnt/bb/lane-scratch/be-edge/models`. The conformance run excludes
 container startup/model download time.
 The recorded full suite took 2 ms in replay and 850 ms live on bb2, with exact

@@ -4,6 +4,25 @@ set -euo pipefail
 trap 'rc=$?; echo "STEP_FAILED be-edge-local line=$LINENO rc=$rc; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-local.sh" >&2' ERR
 root=/mnt/bb/lane-scratch/be-edge
 mkdir -p "$root/models" "$root/captures"
+exec 9>"$root/emulators.lock"
+flock -n 9
+container=
+limiter=
+cleanup() {
+    local result=$? id
+    for id in "$limiter" "$container"; do
+        if [ -n "$id" ]; then
+            if ! docker stop "$id" >/dev/null; then
+                echo "STEP_FAILED emulator-stop; recovery: docker stop $id" >&2
+                result=1
+            fi
+        fi
+    done
+    exit "$result"
+}
+trap cleanup EXIT
+port=15480
+rateport=15481
 image=ghcr.io/ggml-org/llama.cpp:server
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     timeout 180 docker pull "$image"
@@ -16,13 +35,10 @@ if [ ! -s "$model" ]; then
     mv "$model.part" "$model"
 fi
 # An isolated container lives only for this invocation; the public models cache persists.
-container=$(docker run --detach --rm -p 127.0.0.1::8080 -p 127.0.0.1::8081 \
+container=$(docker run --detach --rm --network host \
     -v "$root/models:/models:ro" "$image" \
-    -m /models/Qwen3-0.6B-Q4_0.gguf --host 0.0.0.0 --port 8080 \
+    -m /models/Qwen3-0.6B-Q4_0.gguf --host 127.0.0.1 --port "$port" \
     --alias conformance-tiny -c 2048 -t 2 --jinja --reasoning-budget 0 --api-key conformance-public-test-key)
-limiter=
-trap 'if [ -n "$limiter" ]; then docker stop "$limiter" >/dev/null; fi; docker stop "$container" >/dev/null' EXIT
-port=$(docker port "$container" 8080/tcp | sed 's/.*://')
 endpoint="http://127.0.0.1:$port"
 for attempt in $(seq 1 45); do
     if curl --silent --fail "$endpoint/health" >/dev/null; then break; fi
@@ -35,17 +51,16 @@ events {}
 http {
     limit_req_zone $binary_remote_addr zone=inference:1m rate=1r/m;
     server {
-        listen 8081;
+        listen 127.0.0.1:15481;
         location / {
             limit_req zone=inference;
             limit_req_status 429;
-            proxy_pass http://127.0.0.1:8080/health;
+            proxy_pass http://127.0.0.1:15480/health;
         }
     }
 }
 NGINX
-limiter=$(docker run --detach --rm --network "container:$container" -v "$root/nginx.conf:/etc/nginx/nginx.conf:ro" nginx:stable-alpine)
-rateport=$(docker port "$container" 8081/tcp | sed 's/.*://')
+limiter=$(docker run --detach --rm --network host -v "$root/nginx.conf:/etc/nginx/nginx.conf:ro" nginx:stable-alpine)
 for attempt in $(seq 1 20); do
     if curl --silent --output /dev/null "http://127.0.0.1:$rateport/"; then break; fi
     sleep 1
