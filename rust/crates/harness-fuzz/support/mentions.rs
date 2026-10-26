@@ -1,7 +1,7 @@
 //! Independent conversion reference and observations shared by fuzzing/tests.
 use acyclic_harness::{
     Error, Result,
-    client::CommandResolution,
+    command_request::CommandResolution,
     conversation::FileRef,
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };

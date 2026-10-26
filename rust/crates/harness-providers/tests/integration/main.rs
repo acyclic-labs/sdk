@@ -1,14 +1,6 @@
 //! Harness composition with real model provider adapters.
 #![cfg(not(target_arch = "wasm32"))]
-use acyclic_harness::{
-    Result,
-    client::{CommandCatalog, CommandResolution},
-};
-use client_files::Fixture;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-#[path = "../../../harness/tests/support/client_files.rs"]
-mod client_files;
-mod client_mention_provider;
 #[path = "../../../harness/tests/support/expected_outcome.rs"]
 mod expected_outcome;
 #[path = "../../../harness/tests/e2e/local_workspace.rs"]
@@ -16,7 +8,6 @@ mod local_workspace;
 #[path = "../../../harness/tests/support/scenario_matchers.rs"]
 mod matchers;
 mod mcp_identity;
-mod native_hook_http;
 #[path = "../../../harness/tests/support/ordered_matcher.rs"]
 mod ordered_matcher;
 #[path = "../../../harness/tests/support/progress_guard.rs"]
