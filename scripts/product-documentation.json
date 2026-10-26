@@ -1,4 +1,7 @@
 [
+  "docs/backends/browser-agent-host.md",
+  "docs/backends/local-agent-host.md",
+  "rust/crates/conformance/agent-host/README.md",
   "docs/buildbox-install.md",
   "docs/gate-feature-cache.md",
   "plugin/scripts/fixtures/PROVENANCE.md",
