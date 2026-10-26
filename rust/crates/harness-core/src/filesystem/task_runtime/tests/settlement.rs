@@ -1,6 +1,68 @@
 use super::*;
 
 #[tokio::test]
+async fn native_context_owner_rechecks_task_runtime_fence_ledger_and_revocation() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let runtime = fixture.runtime(Some(&io)).await?;
+    let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
+    runtime
+        .task_host()
+        .start_task(&lease, &mut Some(&mut io.history_io()))
+        .await?;
+    let context = runtime
+        .task_context_for_original_owner_with_native_work(task, &fence, true, &work)
+        .await?;
+    runtime
+        .context_owner_observed(task, &fence, context.as_ref(), Some(&io))
+        .await?;
+    let mut foreign_fence = fence.clone();
+    foreign_fence.reservation_id.push('x');
+    for (task, fence) in [
+        (TaskId::from_bytes([1; 16]), &fence),
+        (task, &foreign_fence),
+    ] {
+        let error = runtime
+            .context_owner_observed(task, fence, context.as_ref(), Some(&io))
+            .await
+            .expect_err("retained owner must reject a foreign task or fence");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    }
+    let other_runtime = fixture.runtime(None).await?;
+    let error = other_runtime
+        .context_owner_observed(task, &fence, context.as_ref(), Some(&io))
+        .await
+        .expect_err("retained owner must reject a replaced runtime");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    let foreign_work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign_io = PreparationIo::from_native_work(&foreign_work)?;
+    let error = runtime
+        .context_owner_observed(task, &fence, context.as_ref(), Some(&foreign_io))
+        .await
+        .expect_err("retained owner must reject a foreign ledger");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    fixture.issuer.revoke_workload(&fixture.signed)?;
+    let error = runtime
+        .context_owner_observed(task, &fence, context.as_ref(), Some(&io))
+        .await
+        .expect_err("retained owner must recheck live revocation");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+    drop(custody);
+    Ok(())
+}
+
+#[tokio::test]
 async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() -> Result<()> {
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime(None).await?;
@@ -231,11 +293,22 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
     assert!(custody.work().shares_ledger(&work));
-    let before = work.receipt();
     drop(runtime);
-    let reopened = fixture.runtime(Some(&io)).await?;
+    // Restart and each subsequent worker turn have their own original-budget
+    // invocation window. Their retained lease and custody keep the same ledger.
+    let recovery_work = work.invocation_window()?;
+    assert_eq!(recovery_work.budget(), super::native_mail::BUDGET);
+    let recovery_io = PreparationIo::from_native_work(&recovery_work)?;
+    let reopened = fixture.runtime(Some(&recovery_io)).await?;
     let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 1_000, &work)
+        .reconcile_task_with_native_work(
+            lease,
+            custody,
+            &reopened.commands(),
+            1,
+            1_000,
+            &recovery_work,
+        )
         .await?;
     let lease = match attempt {
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { lease }) => {
@@ -254,8 +327,17 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     assert!(state.outcome.is_none());
     assert_eq!(state.reservation, Some(original.reservation.clone()));
     fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
+    let settlement_work = work.invocation_window()?;
+    assert_eq!(settlement_work.budget(), super::native_mail::BUDGET);
     let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 1_000, &work)
+        .reconcile_task_with_native_work(
+            lease,
+            custody,
+            &reopened.commands(),
+            1,
+            1_000,
+            &settlement_work,
+        )
         .await?;
     if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
         return Err(error);
@@ -264,7 +346,8 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task)
     );
     assert!(custody.work().shares_ledger(&work));
-    assert!(work.receipt().backend_read_operations > before.backend_read_operations);
+    assert!(recovery_work.receipt().backend_read_operations > 0);
+    assert!(settlement_work.receipt().backend_read_operations > 0);
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);

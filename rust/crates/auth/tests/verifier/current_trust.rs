@@ -55,8 +55,8 @@ fn compact_trust_matches_full_authentication_for_every_snapshot_change() -> Test
         let [first, last] = ids.as_slice() else {
             return Err("fixture must authenticate exactly two blocks".into());
         };
-        let evidence = verify::verify(&wire, &signed::Snapshot::default(), signed::NOW)?
-            .into_trust_evidence()?;
+        let evidence =
+            verify::verify(&wire, &signed::Snapshot::default(), signed::NOW)?.trust_evidence()?;
         for (ancestor, (key, parent, next_seed)) in
             [("ancestor", [121; 32], 4), ("key", [122; 32], 5)]
                 .into_iter()
@@ -122,17 +122,22 @@ fn compact_trust_storage_counts_actual_allocations_and_every_owned_buffer() -> T
         let storage = capability.trust_evidence_storage()?;
         let mut converted = None;
         let allocation = acyclic_test_support::measure(|| {
-            converted = Some(capability.into_trust_evidence());
+            converted = Some(capability.trust_evidence());
         });
         let evidence = converted.ok_or("conversion did not run")??;
         assert_eq!(
-            allocation.count_total, 3,
+            allocation.count_total,
+            storage.allocation_bytes().count() as u64,
             "conversion added unplanned allocations"
         );
         assert_eq!(
             allocation.bytes_total,
-            storage.allocation_bytes.into_iter().sum::<u64>()
+            storage.allocation_bytes().sum::<u64>()
         );
+        // The former three-vector preflight omits copied certificate names
+        // and issuer storage when the authenticated capability has an owner.
+        assert!(allocation.count_total > 3);
+        assert!(allocation.bytes_total > storage.allocation_bytes().take(3).sum::<u64>());
         let reported_owned = evidence.owned_bytes()?;
         let cloned = evidence.clone();
         for evidence in [evidence, cloned] {

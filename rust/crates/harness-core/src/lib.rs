@@ -194,3 +194,6 @@ pub use process_error::ProcessError;
 /// Cargo-provided build metadata, isolated from ambient user environment discovery.
 #[doc(hidden)]
 pub mod build_metadata;
+
+/// File-driven, composable approval policy data and the tool admission gate.
+pub mod approvals;

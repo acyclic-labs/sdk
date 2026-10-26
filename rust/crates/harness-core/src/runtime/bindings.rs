@@ -180,6 +180,11 @@ impl Bindings {
     ) -> Result<()> {
         for (invalid, code, reason) in [
             (
+                self.tools.requires_approval_policy() && self.policy.is_none(),
+                crate::wire::ErrorCode::Invalid,
+                "default tools require an explicit approval policy binding",
+            ),
+            (
                 self.fork_preparer.is_some()
                     && !self.scope.grants().contains(capability::FORK_PUBLISH),
                 crate::wire::ErrorCode::Unauthorized,

@@ -40,8 +40,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     "approval request exceeds client file bound".into(),
                 ));
             }
-            let request: files::FileApproval =
-                serde_json::from_slice(&file.bytes).map_err(codec)?;
+            let request = files::FileApproval::decode(file)?;
             if request.task != task || request.key()? != file.key {
                 return Err(Error::Invalid(
                     "approval request path differs from its task".into(),
@@ -52,8 +51,12 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "n" | "no" => false,
                 _ => return Err(Error::Invalid("approval requires yes or no".into())),
             };
-            self.volume
-                .decide_approval(&request, files::Component::new("user")?, approved)
+            self.approvals
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Unauthorized("client has no authenticated approval connection".into())
+                })?
+                .decide(file, approved)
                 .await?;
             return Ok(Some(request.binding()?.operation_id));
         }
@@ -67,7 +70,7 @@ mod tests {
     use acyclic_stream::{MemoryStream, StreamPath};
 
     #[tokio::test]
-    async fn clients_publish_exact_decisions_without_submitting_a_prompt() -> Result<()> {
+    async fn clients_without_an_authenticated_connection_cannot_publish_decisions() -> Result<()> {
         for approved in [false, true] {
             let volume = Arc::new(
                 files::TaskVolume::open(
@@ -90,62 +93,27 @@ mod tests {
             let mut observed = volume.observe(pending.clone(), None, 1).await?;
             assert!(observed.snapshot.take().unwrap().files.is_empty());
             use futures::StreamExt as _;
-            for _ in 0..129 {
-                let old = files::FileApproval {
-                    task,
-                    id: crate::InteractionId::new(),
-                    request: crate::interaction::Interaction::Approval {
-                        prompt: "prior approval".into(),
-                        operation_id: OperationId::new(),
-                        action_digest: [3; 32],
-                    },
-                };
-                volume
-                    .append(
-                        volume.head().await?,
-                        &files::FileValue::new(
-                            old.key()?,
-                            serde_json::to_vec(&old).map_err(codec)?,
-                        ),
-                    )
-                    .await?;
-                let opened = observed.changes.next().await.unwrap()?;
-                assert_eq!(opened.file.unwrap().key, old.key()?);
-                assert_eq!(volume.snapshot(&pending, 1).await?.files.len(), 1);
-                volume
-                    .decide_approval(&old, component("user")?, true)
-                    .await?;
-                let closed = observed.changes.next().await.unwrap()?;
-                assert_eq!(closed.removed, vec![old.key()?]);
-                assert!(volume.snapshot(&pending, 1).await?.files.is_empty());
-                assert_eq!(volume.snapshot(&old.query()?, 2).await?.files.len(), 2);
-            }
-            // Negative control: selecting settled history with the old bound fails.
-            assert!(
-                volume
-                    .snapshot(&files::Query::Approvals(component(task.to_string())?), 128)
-                    .await
-                    .is_err()
-            );
             let operation_id = OperationId::new();
-            let request = files::FileApproval {
-                task,
-                id: crate::InteractionId::new(),
-                request: crate::interaction::Interaction::Approval {
+            let request_key = files::FileKey::Task {
+                task: component(task.to_string())?,
+                file: files::TaskFile::ApprovalRequest(component(
+                    crate::InteractionId::new().to_string(),
+                )?),
+            };
+            let request_file = files::FileValue::new(
+                request_key,
+                serde_json::to_vec(&crate::interaction::Interaction::Approval {
                     prompt: "approve action".into(),
                     operation_id,
                     action_digest: [7; 32],
-                },
-            };
-            volume
-                .append(
-                    volume.head().await?,
-                    &files::FileValue::new(
-                        request.key()?,
-                        serde_json::to_vec(&request).map_err(codec)?,
-                    ),
-                )
-                .await?;
+                    subject: crate::interaction::ApprovalSubject::Opaque {},
+                })
+                .map_err(codec)?,
+            );
+            let request = files::FileApproval::decode(&request_file)?;
+            volume.append(volume.head().await?, &request_file).await?;
+            let opened = observed.changes.next().await.unwrap()?;
+            assert_eq!(opened.file.unwrap().key, request.key()?);
             struct NoReads;
             impl ContentResidencyVerifier for NoReads {}
             client.catalog.themes.push("y".into());
@@ -218,22 +186,16 @@ mod tests {
             // Negative control: unrecognized input and presentation commands
             // cannot silently approve the pending action.
             assert_eq!(volume.snapshot(&query, 4).await?.files.len(), 1);
-            assert_eq!(
+            // A raw volume handle is not an authenticated human connection.
+            // The former writer accepted this same yes/no input and persisted a verdict.
+            assert!(matches!(
                 client
                     .submit(if approved { "y" } else { "n" }, &NoReads)
-                    .await?,
-                operation_id
-            );
-            assert!(volume.snapshot(&pending, 1).await?.files.is_empty());
-            let saved = volume.snapshot(&query, 4).await?;
-            assert_eq!(saved.files.len(), 2);
-            assert!(saved.files.iter().any(|file| request.decision(&file.key, &file.bytes).unwrap() == Some(approved)));
-            assert!(
-                volume
-                    .decide_approval(&request, component("user")?, !approved)
-                    .await
-                    .is_err()
-            );
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert_eq!(volume.snapshot(&query, 4).await?.files.len(), 1);
+            assert_eq!(volume.snapshot(&pending, 1).await?.files.len(), 1);
             assert!(
                 client.pending.is_empty(),
                 "approval response became a model prompt"

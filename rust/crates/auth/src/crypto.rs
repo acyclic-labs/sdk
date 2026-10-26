@@ -12,6 +12,16 @@ pub fn authentication_eq(left: &[u8], right: &[u8]) -> bool {
     bool::from(left.ct_eq(right))
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static SIGNATURE_VERIFICATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn signature_verifications() -> u64 {
+    SIGNATURE_VERIFICATIONS.with(std::cell::Cell::get)
+}
+
 /// Content-addressed block revocation identity.
 pub type BlockId = [u8; 32];
 
@@ -73,6 +83,8 @@ pub fn verify_signature(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), VerifyError> {
+    #[cfg(test)]
+    SIGNATURE_VERIFICATIONS.with(|count| count.set(count.get() + 1));
     let signature = Signature::from_slice(signature).map_err(|_| VerifyError::Signature)?;
     #[cfg(any(test, feature = "test-support"))]
     acyclic_differential::record(SignatureVerification);

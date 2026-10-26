@@ -64,7 +64,7 @@ async fn fixture(
         65_536,
     )
     .await?;
-    let journal = journal.with_task_files(Some(Arc::new(files)));
+    let journal = journal.with_task_files(Arc::new(files))?;
     journal
         .append(
             operation,

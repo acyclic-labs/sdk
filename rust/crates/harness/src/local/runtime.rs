@@ -8,6 +8,7 @@ pub(super) struct Configuration<'a> {
     pub stream: Arc<LocalStream>,
     pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityRoot,
+    pub approval_issuer: &'a AuthorityRoot,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,
     pub project: &'a VolumeRef,
@@ -21,6 +22,7 @@ pub(super) struct Configuration<'a> {
     pub session_limits: SessionLimits,
     pub concurrency: usize,
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    pub approval_policy: &'a crate::approvals::ApprovalPolicy,
 }
 
 pub(super) async fn open(
@@ -46,6 +48,22 @@ pub(super) async fn open(
         .await?,
     );
     let task_files = Arc::new(projection_files.reopen_erased().await?);
+    let approval_verifier = config.approval_issuer.verifier(&mut None)?;
+    super::approvals::bind_owner(&config.stream, config.approval_issuer, config.agent).await?;
+    let approval_scope = config.approval_issuer.bootstrap_scope(
+        "approval-owner",
+        &Capabilities::new([
+            "interaction:open".to_owned(),
+            config
+                .journal
+                .capability(VolumeOperation::Read, &mut None)?,
+            config
+                .journal
+                .capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(config.agent),
+        &mut None,
+    )?;
     let creation = Arc::new(FilesystemResourceCreationProvider::new(
         config.files.clone(),
         config.issuer,
@@ -67,7 +85,7 @@ pub(super) async fn open(
         config.concurrency,
         config.limits.file_bytes,
         config.clock.clone(),
-        None,
+        Some(Arc::new(config.approval_policy.bind()?)),
         &[creation],
         &crate::durable_tool::ResumableToolRegistry::default(),
         None,
@@ -75,7 +93,14 @@ pub(super) async fn open(
     .await?
     .with_authority_custodian(config.issuer)?
     .with_output_volume(config.project, None)?
-    .with_task_files(task_files.clone())?;
+    .with_task_files(task_files.clone())?
+    .with_interaction_owner(
+        approval_verifier,
+        crate::core::SchemaRegistry::new(),
+        approval_scope,
+        config.journal.clone(),
+    )?
+    .with_approval_authority(config.approval_issuer)?;
     runtime.bind_task_files(Some(projection_files.clone()));
     #[cfg(any(test, feature = "native-execution"))]
     let runtime = match config.workspace {
@@ -113,6 +138,7 @@ fn scopes(
     let mut grants = vec![
         "model:generate".to_owned(),
         crate::contract::capability::INTERACTION_ROUTE.to_owned(),
+        "interaction:open".to_owned(),
         "operation:declare".to_owned(),
         "conversation:bind".to_owned(),
         "conversation:append".to_owned(),

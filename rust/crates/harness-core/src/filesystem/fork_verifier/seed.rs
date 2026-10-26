@@ -74,13 +74,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         self.allocation(seed, &seed.child_private_volume, io)
             .await?;
-        if binding.verifier.audience() == &seed.parent
+        if binding.authority.verifier().audience() == &seed.parent
             && file.volume() == &seed.child_private_volume
         {
             return Ok(());
         }
         binding.require_native_work(work)?;
-        require_file_read(&binding.scope, file, io)
+        require_file_read(binding.authority.scope(), file, io)
     }
 
     async fn allocation(

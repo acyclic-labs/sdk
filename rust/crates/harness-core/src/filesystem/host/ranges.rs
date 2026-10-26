@@ -65,7 +65,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Err(error) => return Err(error),
             };
         let original = if let Some(metadata) = metadata {
-            let staged: FileRef = io.decode_json(&metadata)?;
+            let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume()
                 || staged.path() != reference.path()
                 || staged.descriptor() != reference.descriptor()

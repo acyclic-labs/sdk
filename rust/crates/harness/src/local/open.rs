@@ -43,6 +43,24 @@ impl Opening {
         config: LocalHarnessConfig,
     ) -> Result<Self> {
         validate_configuration(&config)?;
+        if config.approval_issuer.is_some() {
+            return Err(Error::Invalid(
+                "approval_authority belongs to an embedded runtime binding".into(),
+            ));
+        }
+        config.approval_policy.bind()?;
+        for approver in &config.approval_policy.approvers {
+            if let crate::approvals::Approver::Llm { model, .. } = approver {
+                config
+                    .approval_models
+                    .get(model)
+                    .ok_or_else(|| {
+                        Error::Invalid(format!("approver model {model} is not independently bound"))
+                    })?
+                    .0
+                    .validate()?;
+            }
+        }
         let mut config = config.prepare_state()?;
         let state_location = config.state_location()?;
         let passive = config.model.is_none();
@@ -339,6 +357,17 @@ impl Opening {
             .map_err(storage)?,
         );
         let verifier = issuer.verifier(&mut None)?;
+        let approval_issuer = AuthorityRoot::bootstrap(
+            "acyclic.local.approvals",
+            owner
+                .key_ref
+                .as_ref()
+                .ok_or_else(|| Error::Unauthorized("local owner has no signing custody".into()))?,
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: owner.task.to_string(),
+            },
+        )?;
         let (runtime, signed, task_files) = runtime::open(
             &self.code,
             runtime::Configuration {
@@ -349,6 +378,7 @@ impl Opening {
                 stream,
                 task_volume: &task_volume,
                 issuer: &issuer,
+                approval_issuer: &approval_issuer,
                 verifier: &verifier,
                 agent: owner.agent,
                 project: &owner.project,
@@ -362,6 +392,7 @@ impl Opening {
                 session_limits: self.config.session_limits,
                 concurrency: self.config.concurrency,
                 clock: Arc::clone(&self.config.clock),
+                approval_policy: &self.config.approval_policy,
             },
         )
         .await?;
@@ -379,6 +410,8 @@ impl Opening {
             journal,
             verifier,
             signed,
+            approval_policy: self.config.approval_policy,
+            approval_models: self.config.approval_models,
             agent: self.config.model,
             context_manifest: self.config.context_manifest,
             active_directory: self.config.active_directory,

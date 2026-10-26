@@ -8,15 +8,13 @@ use crate::{
         ratatui::{Terminal, backend::TestBackend, style::Modifier},
     },
 };
-use futures::FutureExt as _;
-
 #[tokio::test]
 async fn canonical_chunks_render_before_completion_and_cancel_settles() -> Result<()> {
     streaming(true).await
 }
 
 #[tokio::test]
-async fn negative_control_missing_runtime_binding_has_no_intermediate_frame() -> Result<()> {
+async fn negative_control_missing_runtime_binding_rejects_before_model_dispatch() -> Result<()> {
     streaming(false).await
 }
 
@@ -65,11 +63,11 @@ async fn streaming(bound: bool) -> Result<()> {
     {
         let run = crate::package::harness::execute_request(&mut owner, &local, &request);
         futures::pin_mut!(run);
-        tokio::select! {
-            result = &mut run => panic!("turn ended before streaming: {result:?}"),
-            result = boundary => result.expect("model dispatch"),
-        }
         if bound {
+            tokio::select! {
+                result = &mut run => panic!("turn ended before streaming: {result:?}"),
+                result = boundary => result.expect("model dispatch"),
+            }
             // Snapshot acquisition can await a publication still owned by run.
             // Drive the owner throughout presentation, as with_local_commands
             // does, rather than only while waiting for the next file change.
@@ -170,7 +168,11 @@ async fn streaming(bound: bool) -> Result<()> {
                 "cancelled"
             );
         } else {
-            assert!(run.as_mut().now_or_never().is_none());
+            assert!(matches!(
+                run.await,
+                Err(Error::TaskFailed { message, .. })
+                    if message == "invalid request: task interaction owner requires private task files"
+            ));
             let snapshot = local.task_files().snapshot(&Query::Tasks, 4096).await?;
             assert!(!snapshot.files.iter().any(|file| matches!(
                 file.key,
@@ -181,7 +183,7 @@ async fn streaming(bound: bool) -> Result<()> {
             )));
         }
     }
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests().len(), usize::from(bound));
     drop(views);
     drop(owner);
     drop(ui);

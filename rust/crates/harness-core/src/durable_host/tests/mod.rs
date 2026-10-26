@@ -29,6 +29,9 @@ mod interleaved;
 mod journal;
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
+mod journal_authority;
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod mail;
 #[cfg(test)]
 #[cfg(feature = "filesystem")]

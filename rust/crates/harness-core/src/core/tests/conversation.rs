@@ -4,7 +4,12 @@ use super::*;
 fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     use crate::interaction::{ApprovalBinding, Interaction, InteractionKind};
     let mut reducer = reducer_fixture();
-    let request = Interaction::approval("approve exact effect".into(), operation(12), [3; 32])?;
+    let request = Interaction::approval(
+        "approve exact effect".into(),
+        operation(12),
+        [3; 32],
+        crate::interaction::ApprovalSubject::Opaque {},
+    )?;
     let bytes = serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let ticket = InteractionTicket {
         id: uuid::Uuid::from_bytes([5; 16]),
@@ -23,11 +28,17 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
         ticket: (ticket.clone()).into(),
     };
     apply(&mut reducer, 20, open)?;
-    let resolution = InteractionResolution {
+    let bare = InteractionResolution {
         id: ticket.id,
         expected_version: 2,
         outcome: InteractionOutcome::Approved {},
         detail: None,
+    };
+    // An approval verdict without its decision file is never admissible.
+    assert!(bare.validate(&ticket).is_err());
+    let resolution = InteractionResolution {
+        detail: Some(request_file(b"{}")?),
+        ..bare
     };
     let ungranted = Action::ResolveInteraction {
         resolution: (resolution.clone()).into(),
@@ -54,7 +65,8 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
         outcome: InteractionOutcome::Indeterminate {
             operation_id: operation(30),
         },
-        ..resolution.clone()
+        detail: None,
+        ..resolution
     };
     assert!(reducer.plan(&resolve(24, 2, unknown.clone())?).is_err());
     unknown.outcome = InteractionOutcome::Indeterminate {

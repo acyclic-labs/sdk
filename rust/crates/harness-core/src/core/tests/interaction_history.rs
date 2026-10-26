@@ -26,7 +26,13 @@ struct History {
 
 impl History {
     fn new(index: u8) -> Self {
-        let request = Interaction::approval("approve".into(), operation(12), [3; 32]).unwrap();
+        let request = Interaction::approval(
+            "approve".into(),
+            operation(12),
+            [3; 32],
+            crate::interaction::ApprovalSubject::Opaque {},
+        )
+        .unwrap();
         let bytes = serde_json::to_vec(&request).unwrap();
         let mut id = [5; 16];
         id[0] = index;
@@ -146,7 +152,7 @@ impl History {
                 },
                 _ => unreachable!("bounded outcome input"),
             },
-            detail: None,
+            detail: (outcome < 2).then(|| request_file(b"{}").expect("decision file")),
         };
         if allowed {
             self.expected.push((id, resolution.clone()));
@@ -157,6 +163,7 @@ impl History {
         }
         if fault == Fault::ForeignPending {
             submitted.outcome = InteractionOutcome::Indeterminate { operation_id: id };
+            submitted.detail = None;
         }
         if fault == Fault::Reopen {
             self.reducer

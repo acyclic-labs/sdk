@@ -67,7 +67,7 @@ fn compare(ids: &[u16], directories: usize, input: &[Option<FileKind>]) -> TestC
             let result = if old {
                 original(&paths, directories, &mut kinds, &mut accounting)
             } else {
-                classify_batch_paths(&paths, directories, &mut kinds, &mut accounting)
+                classify_batch_paths(&paths, directories, &mut kinds, &mut accounting, false)
             };
             result.map(|()| kinds).map_err(|error| format!("{error:?}"))
         },
@@ -110,7 +110,7 @@ fn measurement(
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut result = Ok(());
     let allocations = acyclic_test_support::measure(|| {
-        result = classify_batch_paths(&paths, 0, &mut kinds, &mut accounting);
+        result = classify_batch_paths(&paths, 0, &mut kinds, &mut accounting, false);
         if result.is_ok() && repeat_scans {
             // Real add-back: all n*(n-1)/2 old comparisons, no extra allocation
             // or semantic change that could mask the work observation.

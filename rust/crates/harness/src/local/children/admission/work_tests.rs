@@ -61,6 +61,34 @@ fn workspace_work(trace: &[(&str, u64)]) -> [u64; 2] {
     })
 }
 
+#[tokio::test]
+async fn child_admission_is_indirect_before_controller_poll() -> Result<()> {
+    let (_directory, harness, request) = fixture().await;
+    let former = harness.admit_child_task_body(&harness.task_files, &request);
+    let former_bytes = std::mem::size_of_val(&former);
+    drop(former);
+    let admitted = harness.admit_child_task(&harness.task_files, &request);
+    let admitted_bytes = std::mem::size_of_val(&admitted);
+    eprintln!("child admission: body={former_bytes}, controller={admitted_bytes}");
+    assert_eq!(
+        admitted_bytes,
+        std::mem::size_of::<BoxProviderFuture<'_, Result<TaskId>>>()
+    );
+    assert!(
+        former_bytes > 4096,
+        "negative control must embed the original large state machine"
+    );
+    let child = admitted.await?;
+    assert_eq!(
+        harness
+            .admit_child_task_body(&harness.task_files, &request)
+            .await?,
+        child,
+        "the boundary preserves live admission and replay"
+    );
+    Ok(())
+}
+
 fn no_view_work(trace: &[(&str, u64)], assert_property: bool) {
     if assert_property {
         assert_eq!(

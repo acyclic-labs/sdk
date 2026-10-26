@@ -1,6 +1,11 @@
 use super::*;
 use crate::hooks::{HookEvent, HookInput, HookOutput, HookSite};
 
+pub(super) enum HookApprovalStop {
+    Progress(ExecutionProgress<()>),
+    Refused(crate::InteractionRejection, String),
+}
+
 impl StockExecution<'_> {
     pub(super) fn append_hook_context(
         &self,
@@ -80,7 +85,7 @@ impl StockExecution<'_> {
         let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
             Error::Unsupported("tool hook workspace execution is not bound".into())
         })?;
-        let phase = phase_operation(invocation.operation_id, event);
+        let phase = crate::hooks::effects::phase_operation(invocation.operation_id, event);
         let context =
             crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id, None)?;
         match executor
@@ -110,7 +115,7 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         prompt: String,
         started: bool,
-    ) -> Result<Option<ExecutionProgress<()>>> {
+    ) -> Result<Option<HookApprovalStop>> {
         let hooks =
             self.stock.hooks.as_ref().ok_or_else(|| {
                 Error::Invalid("hook approval has no pinned configuration".into())
@@ -119,11 +124,7 @@ impl StockExecution<'_> {
             TaskId::from_bytes(operation.into_bytes()),
             |(_, task, _)| *task,
         );
-        let identity = ComponentIdentity {
-            name: "hooks.pre-tool".into(),
-            version: "1".into(),
-            digest: hooks.manifest,
-        };
+        let identity = crate::hooks::effects::approval_identity(hooks.manifest);
         let ((approval, request), _hold) = tool_approval_request(
             task,
             &identity,
@@ -131,9 +132,28 @@ impl StockExecution<'_> {
             invocation,
             (prompt, None),
             None,
+            crate::interaction::ApprovalRoute::Human,
         )?;
-        self.settle_approval(journal, operation, approval, &request, invocation, started)
-            .await
+        let progress = self
+            .settle_approval(journal, operation, approval, &request, invocation, started)
+            .await?;
+        match progress {
+            // A pre-tool guard refuses this call. Cancellation still stops the
+            // turn, and settle_approval preserves uncertainty after dispatch.
+            Some(ExecutionProgress::Rejected(reason))
+                if reason != crate::InteractionRejection::Cancelled =>
+            {
+                let Interaction::Approval { prompt, .. } = request else {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Conflict,
+                        "hook approval has no approval request",
+                    ));
+                };
+                Ok(Some(HookApprovalStop::Refused(reason, prompt)))
+            }
+            progress => Ok(progress.map(HookApprovalStop::Progress)),
+        }
     }
 }
 
@@ -236,16 +256,6 @@ fn step_operation(operation: OperationId, step: u32) -> OperationId {
     hasher.update(b"harness:stop-hook:v1\0");
     hasher.update(&operation.into_bytes());
     hasher.update(&step.to_le_bytes());
-    let mut id = [0; 16];
-    id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(id)
-}
-
-pub(crate) fn phase_operation(tool: OperationId, event: HookEvent) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"harness:tool-hook:v1\0");
-    hasher.update(&tool.into_bytes());
-    hasher.update(event.name().as_bytes());
     let mut id = [0; 16];
     id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
     OperationId::from_bytes(id)

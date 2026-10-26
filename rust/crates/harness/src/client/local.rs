@@ -88,6 +88,7 @@ pub async fn local_ui(
             .await?;
     }
     files.bind_composer(local.composer_resolver()?);
+    files.bind_local_approvals(local)?;
     Ok(files)
 }
 

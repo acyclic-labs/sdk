@@ -143,7 +143,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             "wake-suspend",
             SchedulerEvent::WorkflowSuspended {
                 operation_id: task,
-                fence,
+                fence: fence.clone(),
                 workflow_revision: 1,
                 waiting_command: Some(selected),
             },
@@ -164,7 +164,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                     1,
                     input.clone(),
                     IdempotencyKey::new("wrong-selected-wake")?,
-                    Some(OperationId::from_bytes([53; 16])),
+                    Some((OperationId::from_bytes([53; 16]), &fence)),
                     &mut None
                 )
                 .await
@@ -204,7 +204,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                 1,
                 input.clone(),
                 IdempotencyKey::new("selected-wake")?,
-                Some(selected),
+                Some((selected, &fence)),
                 &mut resume_work
             ),
             disturbance
@@ -219,7 +219,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                 1,
                 input.clone(),
                 IdempotencyKey::new("selected-wake")?,
-                Some(selected),
+                Some((selected, &fence)),
                 &mut None,
             )
             .await;
@@ -241,7 +241,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                         1,
                         input.clone(),
                         IdempotencyKey::new("selected-wake")?,
-                        Some(selected),
+                        Some((selected, &fence)),
                         &mut None
                     )
                     .await?
@@ -256,7 +256,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                         1,
                         input.clone(),
                         IdempotencyKey::new("another-wake")?,
-                        Some(selected),
+                        Some((selected, &fence)),
                         &mut None
                     )
                     .await
@@ -264,14 +264,14 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             );
             let lease = start(&mut first, &worker, "second-wait-start").await?;
             assert_eq!(lease.operation.operation_id, task);
-            let fence = LeaseFence::from(&lease.reservation);
-            let next = OperationId::from_bytes([55; 16]);
+            let second_fence = LeaseFence::from(&lease.reservation);
+            let next = selected;
             publish(
                 &mut first,
                 "second-wait-suspend",
                 SchedulerEvent::WorkflowSuspended {
                     operation_id: task,
-                    fence,
+                    fence: second_fence.clone(),
                     workflow_revision: 1,
                     waiting_command: Some(next),
                 },
@@ -287,8 +287,26 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                         1,
                         input.clone(),
                         IdempotencyKey::new("selected-wake")?,
-                        Some(selected),
+                        Some((selected, &fence)),
                         &mut None
+                    )
+                    .await
+                    .is_err()
+            );
+            // A fresh retry key cannot let a stale observer wake a later
+            // suspension of the same command and workflow revision.
+            assert!(
+                first
+                    .resume_workflow(
+                        &owner,
+                        &signed,
+                        &verifier,
+                        task,
+                        1,
+                        input.clone(),
+                        IdempotencyKey::new("stale-lease-new-key")?,
+                        Some((selected, &fence)),
+                        &mut None,
                     )
                     .await
                     .is_err()
@@ -303,7 +321,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                         1,
                         input.clone(),
                         IdempotencyKey::new("second-selected-wake")?,
-                        Some(next),
+                        Some((next, &second_fence)),
                         &mut None
                     )
                     .await?
@@ -327,7 +345,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                         1,
                         input,
                         IdempotencyKey::new("second-selected-wake")?,
-                        Some(next),
+                        Some((next, &second_fence)),
                         &mut None
                     )
                     .await

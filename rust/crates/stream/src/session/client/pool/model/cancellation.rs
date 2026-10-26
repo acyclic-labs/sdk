@@ -26,6 +26,8 @@ pub fn verify_cancel_before_open(broken: bool) {
             let (ready, _opened) = oneshot::channel();
             opening
                 .send(Command::Open(Box::new(OpenCommand {
+                    filter: None,
+                    credential: 0,
                     id: 5,
                     attempt_epoch: 0,
                     acknowledge: false,

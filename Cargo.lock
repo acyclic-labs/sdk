@@ -3031,6 +3031,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures",
+ "harness-mock-model",
  "libc",
  "proptest",
  "rustix 1.1.5",

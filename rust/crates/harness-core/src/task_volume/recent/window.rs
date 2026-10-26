@@ -1,10 +1,20 @@
 //! Metadata-only display window: one insert, remove and eviction path, no payload custody.
-use super::super::{Change, FileKey, FileValue};
+use super::super::{Change, FileKey, FileValue, TaskFile};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Display kinds 0..=8 are bounded separately; the last slot holds unclassified files.
-const SLOTS: usize = 10;
+/// Display kinds 0..=7 are bounded separately; approvals stay in their active index.
+const SLOTS: usize = 9;
 const UNCLASSIFIED: usize = SLOTS - 1;
+
+fn pending_approval(key: &FileKey) -> bool {
+    matches!(
+        key,
+        FileKey::Task {
+            file: TaskFile::ApprovalRequest(_) | TaskFile::ApprovalReview { .. },
+            ..
+        }
+    )
+}
 
 struct Entry {
     order: u64,
@@ -26,6 +36,14 @@ pub(super) struct Window {
 }
 
 impl Window {
+    pub(super) fn keys(&self) -> impl Iterator<Item = &FileKey> {
+        self.entries.keys()
+    }
+
+    pub(super) fn within_limits(&self) -> bool {
+        self.entries.len() <= self.maximum_files && self.bytes <= self.maximum_bytes
+    }
+
     /// Selects the snapshot's window in place; later duplicates replace earlier ones.
     pub(super) fn new(
         files: &mut Vec<FileValue>,
@@ -44,7 +62,7 @@ impl Window {
         };
         let mut evicted = Vec::new();
         for (order, file) in files.iter().enumerate() {
-            if file.bytes.len() <= maximum_bytes {
+            if file.bytes.len() <= maximum_bytes || pending_approval(&file.key) {
                 window.put(file, order as u64, &mut evicted);
             }
         }
@@ -95,7 +113,7 @@ impl Window {
     fn put(&mut self, file: &FileValue, order: u64, removed: &mut Vec<FileKey>) {
         let previous = self.take(&file.key);
         let bytes = file.bytes.len();
-        if bytes > self.maximum_bytes {
+        if bytes > self.maximum_bytes && !pending_approval(&file.key) {
             if let Some((key, generation)) = previous
                 && generation < self.generation
             {
@@ -153,7 +171,12 @@ impl Window {
     /// Removes the oldest (order, key) among the slots; false when they are empty.
     fn evict(&mut self, slots: std::ops::Range<usize>, removed: &mut Vec<FileKey>) -> bool {
         let Some(((_, key), _)) = slots
-            .filter_map(|slot| self.ordered[slot].first().map(|oldest| (oldest, slot)))
+            .filter_map(|slot| {
+                self.ordered[slot]
+                    .iter()
+                    .find(|(_, key)| !pending_approval(key))
+                    .map(|oldest| (oldest, slot))
+            })
             .min()
         else {
             return false;

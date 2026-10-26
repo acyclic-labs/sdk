@@ -319,17 +319,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut work).await?;
-        let declared_agent = coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation,
-                &mut work,
-            )?
-            .spec
-            .owner_scope
-            .agent();
+        let authority = coordinator.authenticate_journal(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation,
+            &mut work,
+        )?;
+        let declared_agent = authority.declared_agent();
         drop(coordinator);
         if admission.parent.is_none() && declared_agent != self.owner_scope.agent() {
             return Err(Error::Unauthorized(
@@ -423,6 +420,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.admissions.remember(&admission);
         let owner = TaskJournalOwner {
             host: self.clone(),
+            authority,
             fence,
             workflow,
             admission,

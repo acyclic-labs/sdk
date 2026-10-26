@@ -75,6 +75,7 @@ pub async fn assert_canonical_tool_consumers(call: &crate::model::ToolCall) -> c
         &invocation,
         ("canonical guard".into(), None),
         None,
+        crate::interaction::ApprovalRoute::Policy,
     )?;
     let crate::interaction::Interaction::Approval {
         operation_id,

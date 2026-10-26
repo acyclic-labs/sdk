@@ -46,7 +46,8 @@ fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> 
 
 fn disposable(key: &FileKey) -> bool {
     matches!(key, FileKey::Task { file, .. }
-        if !matches!(file, TaskFile::ExecutionResult(_) | TaskFile::ExecutionClaim(_)))
+        if !matches!(file, TaskFile::ExecutionResult(_) | TaskFile::ExecutionClaim(_)
+            | TaskFile::ApprovalRequest(_) | TaskFile::ApprovalReview { .. }))
 }
 
 impl FileViews {
@@ -215,7 +216,20 @@ impl FileViews {
     fn validate_change(&self, change: &Change) -> Result<()> {
         // TaskVolume appends one immutable event. A different source's atomic
         // file replacements/removals must not be silently reduced as that event.
-        if !change.files.is_empty() || !change.removed.is_empty() {
+        if !change.files.is_empty()
+            || (!change.removed.is_empty()
+                && (!self.window
+                    || change.removed.iter().any(|key| {
+                        !matches!(
+                            key,
+                            FileKey::Task {
+                                file: TaskFile::ApprovalRequest(_)
+                                    | TaskFile::ApprovalReview { .. },
+                                ..
+                            }
+                        )
+                    })))
+        {
             return Err(Error::InvalidSegment);
         }
         let next = &change.cursor;
@@ -281,6 +295,13 @@ impl Prepared {
         let mut bytes = view.bytes;
         let mut segments = view.segments;
         let mut next_count = count;
+        for key in &change.removed {
+            if let Some(head) = files.get(key) {
+                bytes -= head.length;
+                segments -= head.segments.len();
+                next_count -= 1;
+            }
+        }
         let mut length = 0;
         if let Some(file) = change.file.as_ref() {
             let sequence = logical.as_ref().and_then(|(_, sequence)| *sequence);
@@ -316,7 +337,7 @@ impl Prepared {
                 .map_or(0, |head| head.length)
                 .checked_add(file.bytes.len() as u64)
                 .ok_or(Error::LimitExceeded)?;
-            next_count = count
+            next_count = next_count
                 .checked_add(usize::from(before.is_none()))
                 .ok_or(Error::LimitExceeded)?;
         }
@@ -467,6 +488,9 @@ impl Prepared {
                 entry.remove();
                 view.disposable.remove(&key);
             }
+        }
+        for key in &change.removed {
+            view.files.remove(key);
         }
         view.task_bytes = task_bytes;
         view.task_segments = task_segments;

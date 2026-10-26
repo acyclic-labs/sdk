@@ -797,6 +797,48 @@ async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<(
     Ok(())
 }
 
+// Internal authority model for the public publication boundary. Authenticated
+// request/decision files are exercised by the journal suite.
+struct PublicationDecision {
+    interaction: acyclic_harness_core::InteractionId,
+    operation: acyclic_harness_core::OperationId,
+    digest: [u8; 32],
+    approved: bool,
+}
+impl acyclic_harness_core::tool::ToolApprovalVerifier for PublicationDecision {
+    fn verify<'a>(
+        &'a self,
+        _: acyclic_harness_core::InteractionId,
+        _: acyclic_harness_core::OperationId,
+        _: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(std::future::ready(Err(
+            acyclic_harness_core::Error::Unsupported(
+                "selected approval requires original native work".into(),
+            ),
+        )))
+    }
+    fn verify_with_native_work<'a>(
+        &'a self,
+        interaction: acyclic_harness_core::InteractionId,
+        operation: acyclic_harness_core::OperationId,
+        digest: [u8; 32],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'a, ()>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+            if self.approved
+                && self.interaction == interaction
+                && self.operation == operation
+                && self.digest == digest
+            {
+                Ok(())
+            } else {
+                Err(Error::Unauthorized("denied or foreign publication".into()))
+            }
+        })
+    }
+}
+
 #[tokio::test]
 async fn publication_identity_change_after_guard_preserves_conflict_code() -> Result<()> {
     use acyclic_fs::{
@@ -807,12 +849,17 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
         .map_err(|(cause, _)| cause)?;
     let generation = main.workspace().head(&work, &stop).await?;
+    write_text(
+        &main,
+        "/guard-probe",
+        b"must not reach the replaced checkout",
+    )
+    .await?;
+    let candidate = main.workspace().head(&work, &stop).await?;
     let identity = work.root_identity(&root)?;
+    let operation = OperationId::new();
     let publication = acyclic_harness_core::filesystem::CheckoutPublication::new(
-        &root,
-        identity,
-        OperationId::new(),
-        &work,
+        &root, identity, operation, &work,
     )?;
     let options = MaterializeOptions {
         destination: publication.directory().join("target"),
@@ -821,17 +868,51 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         maximum_extent_spans: 32,
         transfer_bytes: 4096,
     };
+    let paths = ["guard-probe".to_owned()];
+    let prepared = publication
+        .prepare_selected(
+            &generation,
+            &candidate,
+            &store,
+            &options,
+            &work,
+            (&paths, ()),
+        )
+        .await?;
+    let approved = publication.approval_value(&generation, &candidate, &paths, &prepared, ())?;
+    let confirmation = approved.digest(&work)?;
+    let mut decision = PublicationDecision {
+        interaction: acyclic_harness_core::InteractionId::from_bytes([101; 16]),
+        operation: acyclic_harness_core::OperationId::from_bytes(operation.into_bytes()),
+        digest: confirmation,
+        approved: false,
+    };
+    assert!(
+        approved
+            .authorize(&decision, decision.interaction, &confirmation, &work)
+            .await
+            .is_err()
+    );
+    assert!(!root.join("guard-probe").exists());
+    decision.approved = true;
+    let approved = publication
+        .approval_value(&generation, &candidate, &paths, &prepared, ())?
+        .authorize(&decision, decision.interaction, &confirmation, &work)
+        .await?;
     let mut guards = 0;
-    let error = publication
-        .publish(&generation, &generation, &store, &options, &work, || {
+    let error = approved
+        .publish(&store, &options, || {
             guards += 1;
             let changed = std::fs::rename(&root, root.with_extension("original"))
                 .and_then(|()| std::fs::create_dir(&root));
-            std::future::ready(changed.map_err(acyclic_fs::NativeWorkspacePublicationError::from))
+            std::future::ready(changed.map_err(|cause| {
+                acyclic_harness_core::Error::from(NativeTreeMaterializationError::Io(cause))
+            }))
         })
         .await
         .expect_err("the checkout identity changed after authorization");
     assert_eq!(guards, 1);
+    assert!(!root.join("guard-probe").exists());
     assert_eq!(
         error.code(),
         acyclic_harness_core::wire::ErrorCode::Conflict

@@ -160,6 +160,11 @@ impl StockExecutor {
         scope: RuntimeScope,
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
+        if self.tools.requires_approval_policy() && policy.is_none() {
+            return Err(Error::Invalid(
+                "default tools require an approval policy binding".into(),
+            ));
+        }
         if let Some(policy) = &policy {
             validate_policy_identity(&policy.identity(), None)?;
         }

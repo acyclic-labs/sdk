@@ -30,6 +30,9 @@ pub struct Args {
     pub credentials: Option<PathBuf>,
     #[arg(long)]
     pub settings_root: Option<PathBuf>,
+    /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.
+    #[arg(long)]
+    pub approval_policy: Option<PathBuf>,
     #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]

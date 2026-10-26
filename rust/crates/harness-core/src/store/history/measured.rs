@@ -65,6 +65,12 @@ impl HistoryWork {
 }
 
 impl HistoryIo for HistoryWork {
+    fn take_owned_custody(
+        &mut self,
+        bytes: u64,
+    ) -> Result<Option<crate::filesystem::PreparationCustody>> {
+        self.io.take_owned_custody(bytes).map(Some)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
         self.io.original_native_work()

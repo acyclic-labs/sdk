@@ -36,8 +36,11 @@ pub struct Output {
 }
 
 /// Runs one git-facade command against the task-selected workspace.
-pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Output> {
-    run_with_guard(workspace, args, || std::future::ready(Ok(()))).await
+pub fn run(
+    workspace: Workspace<'_>,
+    args: &[String],
+) -> impl Future<Output = crate::Result<Output>> {
+    run_with_guard(workspace, args, || std::future::ready(Ok(())))
 }
 
 #[doc(hidden)]

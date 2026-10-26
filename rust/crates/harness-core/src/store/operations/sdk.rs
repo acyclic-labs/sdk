@@ -165,7 +165,7 @@ impl ObservedRecords {
     }
 }
 
-pub(crate) async fn read_records<P: StreamProvider>(
+pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     from: u64,

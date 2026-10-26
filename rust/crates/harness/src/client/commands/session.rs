@@ -38,6 +38,14 @@ mod state;
 mod view;
 use state::StateFile;
 
+pub(crate) trait ApprovalResponder: acyclic_stream::ProviderPlatform {
+    fn decide<'a>(
+        &'a self,
+        request: &'a files::FileValue,
+        approved: bool,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
+}
+
 pub(crate) trait ComposerResolver: acyclic_stream::ProviderPlatform {
     fn resolve<'a>(
         &'a self,
@@ -64,6 +72,7 @@ pub struct CommandSession<P: ?Sized> {
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
     composer: Option<Arc<dyn ComposerResolver>>,
+    approvals: Option<Arc<dyn ApprovalResponder>>,
     loaded_task: Option<Option<TaskId>>,
     observed_change: Option<bool>,
     #[cfg(test)]
@@ -98,6 +107,11 @@ fn ui(directory: &str, name: &str) -> Result<files::FileKey> {
 }
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) fn bind_local_approvals(&mut self, local: &crate::local::LocalHarness) -> Result<()> {
+        self.approvals = Some(Arc::new(local.human_approval_connection()?));
+        Ok(())
+    }
     #[cfg(all(
         feature = "filesystem-local",
         feature = "tui",
@@ -216,6 +230,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
             composer: None,
+            approvals: None,
             loaded_task: None,
             observed_change: None,
             #[cfg(test)]

@@ -12,12 +12,12 @@ pub(super) async fn compile<P: StreamProvider + 'static, O: AsyncObjectStore + '
     io: &PreparationIo,
 ) -> crate::Result<PathTrie> {
     let label = crate::core::filesystem_scope_label(
-        reader.scope.capabilities(),
+        reader.authority.scope().capabilities(),
         &mut Some(&mut io.history_io()),
     )?;
     let (view, holds, _) = access::access_view(
         workspace,
-        &reader.scope,
+        reader.authority.scope(),
         None,
         access::capability_payload(label, crate::conversation::VolumeOperation::Read, io)?,
         None,

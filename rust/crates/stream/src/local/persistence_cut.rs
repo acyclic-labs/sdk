@@ -67,7 +67,9 @@ impl LocalStream {
             assert!(journal.is_ok(), "journal lock poisoned");
             if let Ok(mut journal) = journal {
                 assert!(
-                    journal.synced >= journal.appended,
+                    journal
+                        .flushed_sequence
+                        .is_some_and(|cut| cut >= journal.appended),
                     "a frame written before the cut is not flushed"
                 );
                 journal.flushed = journal.bytes;

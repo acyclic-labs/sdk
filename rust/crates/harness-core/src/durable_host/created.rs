@@ -472,7 +472,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    pub(super) async fn authenticated_scope(
+    pub(crate) async fn authenticated_scope(
         &self,
         admission: &TaskAdmissionRecord,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,

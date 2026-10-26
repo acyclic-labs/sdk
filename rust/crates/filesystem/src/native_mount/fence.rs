@@ -60,6 +60,8 @@ fn registry_is_within(
 #[derive(Debug)]
 pub(super) struct MountDestinationGuard {
     pub(super) file: Option<MountLockFile>,
+    #[cfg(target_os = "macos")]
+    preserve_entry: bool,
     pub(super) lock_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
@@ -525,6 +527,8 @@ impl MountDestinationGuard {
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,
+            #[cfg(target_os = "macos")]
+            preserve_entry: false,
         };
         if matches!(acquisition, FenceAcquisition::Mount) {
             lock_mount_file_with_work(
@@ -572,7 +576,25 @@ impl MountDestinationGuard {
             cleanup_name: None,
             birth_cleanup: None,
             destination_cleanup: None,
+            #[cfg(target_os = "macos")]
+            preserve_entry: false,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn from_locked_existing(file: MountLockFile, lock_path: PathBuf) -> Self {
+        Self {
+            file: Some(file),
+            lock_path,
+            parent_directory: None,
+            fence_name: None,
+            registry_file: None,
+            cleanup_name: None,
+            birth_cleanup: None,
+            destination_cleanup: None,
+            #[cfg(target_os = "macos")]
+            preserve_entry: true,
+        }
     }
 
     pub(super) fn paths_for_canonical(
@@ -688,6 +710,17 @@ impl MountDestinationGuard {
         NativeMountError: From<W::Error>,
     {
         if self.file.is_none() {
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        if self.preserve_entry {
+            work.attempt_io(
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                || {
+                    self.file.take();
+                    Ok(())
+                },
+            )?;
             return Ok(());
         }
         let opened_directory;

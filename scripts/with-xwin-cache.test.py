@@ -1,6 +1,9 @@
 import importlib.util
+import inspect
+import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 import json
@@ -155,6 +158,38 @@ print(json.dumps({'child':'exact JSON'}))
             (seed / "xwin" / "sdk" / "alias").symlink_to(outside)
             with self.assertRaisesRegex(RuntimeError, "SDK alias escapes"):
                 cache.snapshot(seed, root / "worker")
+
+    def test_seed_preparation_keeps_payload_stdout_machine_readable(self):
+        source = inspect.getsource(cache.snapshot)
+        former = source.replace("stdout=sys.stderr, ", "")
+        self.assertNotEqual(source, former)
+        namespace = dict(cache.__dict__)
+        exec(compile(former, "<former-sdk-stdout-control>", "exec"), namespace)
+        for factory, protected in [(cache.snapshot, True), (namespace["snapshot"], False)]:
+            with self.subTest(protected=protected), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                seed = self.seed(root)
+                with (root / "stdout").open("w+") as machine, (root / "stderr").open("w+") as diagnostics:
+                    def noisy_preparation(command, **kwargs):
+                        if command[:3] == ["cargo", "xwin", "cache"]:
+                            kwargs.setdefault("stdout", machine)
+                            return run([sys.executable, "-c", "print('SDK preparation status')"], **kwargs)
+                        return run(command, **kwargs)
+
+                    with patch.object(cache.subprocess, "run", noisy_preparation), patch.object(cache.sys, "stderr", diagnostics):
+                        factory(seed, root / "worker")
+                    run([sys.executable, "-c", "print('{\"reason\":\"compiler-artifact\"}')"], stdout=machine, check=True)
+                    machine.seek(0)
+                    output = machine.read()
+                    diagnostics.seek(0)
+                    status = diagnostics.read()
+                if protected:
+                    self.assertEqual(json.loads(output), {"reason": "compiler-artifact"})
+                    self.assertIn("SDK preparation status", status)
+                else:
+                    with self.assertRaises(json.JSONDecodeError):
+                        json.loads(output)
+                    self.assertIn("SDK preparation status", output)
 
 
 if __name__ == "__main__":

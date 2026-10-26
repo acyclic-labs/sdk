@@ -129,34 +129,44 @@ fn admitted_history_entry_points_authenticate_each_chain_once() -> Result<()> {
         effect_digest,
         &mut None,
     )?;
+    let fresh = || {
+        AuthorityVerifier::from_public(
+            copy.id.clone(),
+            copy.audience.clone(),
+            copy.public_workload_trust()?,
+            verifier.public_checkpoint_key(),
+        )
+    };
     for entry in [Entry::Record, Entry::Event, Entry::Live, Entry::Effect] {
-        let (verified, signatures) = acyclic_test_support::differential::observe(
-            || (),
-            |()| match entry {
-                Entry::Record => workload::verify_record(
-                    &verifier,
-                    &event.attestation,
-                    digest,
-                    Some(&event.scope),
-                    &["event:append"],
-                    &mut None,
-                )
-                .map(|_| ()),
-                Entry::Event => verifier.verify_event(&event, &mut None),
-                Entry::Live => workload::live_record(&verifier, &event, &mut None).map(|_| ()),
-                Entry::Effect => verifier.verify_effect(&observation, &mut None),
-            },
-        );
-        verified?;
-        let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
-        // Workload: Birth, certified key, two blocks and seal. Receipt:
-        // Birth, certified key, one block and seal. Scope inspection and
-        // current-trust rechecks never repeat those nine real signatures.
-        assert_eq!(
-            signatures.len(),
-            9,
-            "duplicate authentication through {entry:?}"
-        );
+        let check = |verifier: &AuthorityVerifier| match entry {
+            Entry::Record => workload::verify_record(
+                verifier,
+                &event.attestation,
+                digest,
+                Some(&event.scope),
+                &["event:append"],
+                &mut None,
+            )
+            .map(|_| ()),
+            Entry::Event => verifier.verify_event(&event, &mut None),
+            Entry::Live => workload::live_record(verifier, &event, &mut None).map(|_| ()),
+            Entry::Effect => verifier.verify_effect(&observation, &mut None),
+        };
+        let owner = fresh()?;
+        for (verifier, expected) in [(&owner, 9), (&owner, 0), (&fresh()?, 9)] {
+            let (verified, signatures) =
+                acyclic_test_support::differential::observe(|| (), |()| check(verifier));
+            verified?;
+            let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+            // A cold owner authenticates both chains once: five workload and
+            // four receipt signatures. Its exact immutable proof is then shared.
+            // A fresh owner executes the former repeated-authentication control.
+            assert_eq!(
+                signatures.len(),
+                expected,
+                "authentication ownership through {entry:?}"
+            );
+        }
     }
     Ok(())
 }

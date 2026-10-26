@@ -165,6 +165,46 @@ where
             self.host.verify_dispatch_owner(task, fence, None)?.await
         }
     }
+
+    /// Rechecks the live owner without reconstructing its immutable admission.
+    pub(super) async fn context_owner_observed(
+        &self,
+        task: TaskId,
+        fence: &LeaseFence,
+        context: &TaskContext,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| {
+                boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unsupported,
+                    "worker owner requires original native work",
+                )
+            })?;
+            let owner = context.journal_owner::<P>(fence, work)?;
+            if !owner.matches_task_binding(task, fence)
+                || !owner.original_host_binding_matches(self.host.as_ref())
+            {
+                return Err(boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "worker owner differs from original task or runtime",
+                ));
+            }
+            return owner
+                .verify(
+                    true,
+                    &mut history(Some(io))?
+                        .as_mut()
+                        .map(|work| work as &mut dyn crate::store::HistoryIo),
+                )
+                .await;
+        }
+        let _ = context;
+        self.owner_observed(task, fence, true, io).await
+    }
 }
 
 use crate::executor::stock_string_copy;

@@ -534,7 +534,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     fn delegated_reader(&self, scope: &Scope) -> Result<Arc<FilesystemContentVerifier<A, O>>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
-            self.content_verifier.verifier.as_ref(),
+            self.content_verifier.authority.verifier(),
             scope,
             self.maximum_file_bytes,
             None,
@@ -586,7 +586,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     /// Returns the trusted verifier without disclosing the signing key.
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
-        self.content_verifier.verifier.as_ref().clone()
+        self.content_verifier.authority.verifier().clone()
     }
 }
 

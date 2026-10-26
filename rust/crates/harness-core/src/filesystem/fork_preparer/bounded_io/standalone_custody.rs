@@ -50,6 +50,26 @@ impl StandaloneCustody {
         }
     }
 
+    pub(super) fn split_off(&self, bytes: u64) -> std::result::Result<Self, acyclic_fs::WorkError> {
+        // Moving custody changes owners, never the common live-byte count.
+        // Use the same lock as record/drop so a concurrent charge cannot be lost.
+        let state = self
+            .work
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1.as_ref().map_err(|error| *error)?;
+        let remaining = self
+            .bytes
+            .load(Ordering::Relaxed)
+            .checked_sub(bytes)
+            .ok_or(acyclic_fs::WorkError::Overflow)?;
+        self.bytes.store(remaining, Ordering::Relaxed);
+        Ok(Self {
+            work: Arc::clone(&self.work),
+            bytes: AtomicU64::new(bytes),
+        })
+    }
+
     // The shared ledger lock serializes every change, including failed claims.
     pub(super) fn record(
         &self,

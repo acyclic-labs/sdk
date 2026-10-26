@@ -124,18 +124,18 @@ impl AgentHarness {
                 parent.map_or(&self.scope, |(_, scope)| scope),
                 work,
             )?;
-            if parent.is_none() {
-                record.policy = self
-                    .policy_identity
-                    .as_ref()
-                    .map(|identity| {
-                        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                        let copied = task_copy_component(identity, &mut quota)?;
-                        quota.transfer();
-                        Ok::<_, Error>(copied)
-                    })
-                    .transpose()?;
-            }
+            // A child admitted by this harness retains the same owner policy.
+            // Its narrowed scope does not erase the admission's policy binding.
+            record.policy = self
+                .policy_identity
+                .as_ref()
+                .map(|identity| {
+                    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                    let copied = task_copy_component(identity, &mut quota)?;
+                    quota.transfer();
+                    Ok::<_, Error>(copied)
+                })
+                .transpose()?;
             let bytes = if native.is_some() {
                 (std::mem::size_of::<TaskAdmissionRecord>() as u64)
                     .checked_add(record.logical_owned_bytes()?)

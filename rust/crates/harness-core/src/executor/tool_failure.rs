@@ -85,6 +85,7 @@ impl ToolFailureCause {
         name: &str,
         reason: ToolFailureKind,
         error: &Error,
+        context: Option<&str>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         let class = ToolErrorClass::of(error);
@@ -96,6 +97,7 @@ impl ToolFailureCause {
                     reason,
                     class,
                     error,
+                    context,
                 })
             ),
             work,
@@ -138,6 +140,7 @@ struct RefusalText<'a> {
     reason: ToolFailureKind,
     class: ToolErrorClass,
     error: &'a Error,
+    context: Option<&'a str>,
 }
 
 impl fmt::Display for RefusalText<'_> {
@@ -147,7 +150,16 @@ impl fmt::Display for RefusalText<'_> {
             reason,
             class,
             error,
+            context,
         } = self;
+        if let Some(context) = context {
+            return write!(
+                formatter,
+                "tool `{name}` refused the call ({}): {context}: {}",
+                class.label(),
+                CauseText(error)
+            );
+        }
         match reason {
             ToolFailureKind::Unavailable => write!(
                 formatter,
@@ -156,13 +168,13 @@ impl fmt::Display for RefusalText<'_> {
             ToolFailureKind::InvalidInput => write!(
                 formatter,
                 "tool `{name}` rejected its arguments: {}",
-                CauseText(*error)
+                CauseText(error)
             ),
             _ => write!(
                 formatter,
                 "tool `{name}` refused the call ({}): {}",
                 class.label(),
-                CauseText(*error)
+                CauseText(error)
             ),
         }
     }
@@ -258,7 +270,9 @@ mod tests {
             // Unknown tool, schema-invalid arguments, policy denial: refused before dispatch.
             ToolFailureKind::Unavailable
             | ToolFailureKind::InvalidInput
-            | ToolFailureKind::Refused => ToolFailureCause::refusal(name, kind, error, &mut None),
+            | ToolFailureKind::Refused => {
+                ToolFailureCause::refusal(name, kind, error, None, &mut None)
+            }
             // Executor error, output contract, projection and publication after a start.
             ToolFailureKind::ExecutorRejected
             | ToolFailureKind::InvalidOutput
@@ -295,6 +309,7 @@ mod tests {
             variant in any::<u8>(),
             text in r"(\PC|[\n\t\x1b ]){0,400}",
             name in "[a-z_.@0-9]{1,300}",
+            approval_prompt in prop::option::of(r"(\PC|[\n\t\x1b ]){0,400}"),
         ) {
             let kind = KINDS[kind];
             let cause = entry(kind, &name, &error(variant, text)).unwrap();
@@ -305,6 +320,12 @@ mod tests {
             // The rendered text is exactly what the result admission contract accepts.
             let result = crate::model::ToolResultContent::Error { message: rendered };
             prop_assert!(result.validate_limits(crate::conversation::Limits::default(), &mut None).is_ok());
+            if let Some(prompt) = approval_prompt {
+                let denial = Error::InteractionRejected(crate::InteractionRejection::Denied);
+                let cause = ToolFailureCause::refusal(&name, ToolFailureKind::Refused, &denial, Some(&prompt), &mut None).unwrap();
+                prop_assert_eq!(cause.class, ToolErrorClass::Denied);
+                prop_assert!(cause.is_canonical(), "{cause:?}");
+            }
         }
     }
 

@@ -26,6 +26,7 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 mod admission;
+pub(crate) mod approvals;
 mod agents;
 mod bind;
 #[cfg(any(test, feature = "native-execution"))]
@@ -99,6 +100,8 @@ pub struct LocalHarness {
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
+    approval_policy: crate::approvals::ApprovalPolicy,
+    approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
     context_manifest: Option<crate::conversation::FileRef>,
@@ -135,6 +138,13 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    #[cfg(all(test, not(acyclic_loom)))]
+    pub(crate) fn test_coordinator(
+        &self,
+    ) -> &Arc<crate::durable_host::CoordinatorTaskHost<LocalStream>> {
+        self.runtime.task_host()
+    }
+
     fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {
             Error::Unsupported("native hosts own their agent loop and tool execution".into())

@@ -11,6 +11,55 @@ pub struct ChoiceOption {
     pub description: Option<String>,
 }
 
+/// The authority that must review this request. Guard requests require a human
+/// independently of the ordinary tool policy; the immutable request binds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRoute {
+    /// Traverse the configured rule, model, parent and human policy chain.
+    Policy,
+    /// A guard explicitly requested a human decision.
+    Human,
+}
+
+/// The exact action an approval decides, as its approver sees it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovalSubject {
+    /// One model tool call with its exact admitted arguments. The approval's
+    /// operation and digest bind this same invocation, and execution reopens the
+    /// request from the invocation it runs, so a differing request conflicts.
+    Tool {
+        /// Pinned review authority, independent of the tool's display text.
+        route: ApprovalRoute,
+        /// Model-visible tool name.
+        tool: String,
+        /// Provider call identity.
+        call_id: String,
+        /// Exact admitted arguments.
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
+        #[heap_layout(as = serde_json::Value)]
+        arguments: Value,
+    },
+    /// An action whose preimage stays private to its owner (credentials,
+    /// authorization URLs, sealed native requests). Only the digest is public.
+    Opaque {},
+    /// Read-only marker for requests saved before subjects were recorded.
+    /// It cannot be supplied as an explicit subject on the wire.
+    #[serde(skip_deserializing)]
+    Legacy {},
+}
+
+impl ApprovalSubject {
+    pub(crate) const fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy {})
+    }
+}
+
+fn legacy_approval_subject() -> ApprovalSubject {
+    ApprovalSubject::Legacy {}
+}
+
 /// Typed interaction request. Executors decide how and where it is presented.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -48,10 +97,52 @@ pub enum Interaction {
         operation_id: OperationId,
         /// Digest of the exact action being approved.
         action_digest: [u8; 32],
+        /// The exact action, so approvers decide what actually runs.
+        /// Missing subjects retain the original pre-upgrade request encoding.
+        #[serde(
+            default = "legacy_approval_subject",
+            skip_serializing_if = "ApprovalSubject::is_legacy"
+        )]
+        subject: ApprovalSubject,
     },
 }
 
 impl Interaction {
+    pub(crate) const fn is_legacy_approval(&self) -> bool {
+        matches!(
+            self,
+            Self::Approval {
+                subject: ApprovalSubject::Legacy {},
+                ..
+            }
+        )
+    }
+
+    /// A pre-subject request keeps its original bytes when its owner resumes
+    /// the same operation and action; supplied metadata never rewrites it.
+    pub(crate) fn matches_reopened(&self, request: &Self) -> bool {
+        self == request
+            || matches!(
+                (self, request),
+                (
+                    Self::Approval {
+                        prompt,
+                        operation_id,
+                        action_digest,
+                        subject: ApprovalSubject::Legacy {},
+                    },
+                    Self::Approval {
+                        prompt: other_prompt,
+                        operation_id: other_operation,
+                        action_digest: other_digest,
+                        ..
+                    }
+                ) if prompt == other_prompt
+                    && operation_id == other_operation
+                    && action_digest == other_digest
+            )
+    }
+
     /// Returns the stable request discriminator without serializing its body.
     #[must_use]
     pub const fn kind(&self) -> InteractionKind {
@@ -97,14 +188,22 @@ impl Interaction {
         prompt: String,
         operation_id: OperationId,
         action_digest: [u8; 32],
+        subject: ApprovalSubject,
     ) -> Result<Self> {
         let value = Self::Approval {
             prompt,
             operation_id,
             action_digest,
+            subject,
         };
         value.validate(&mut None)?;
         Ok(value)
+    }
+
+    /// Logical heap bytes this request retains, for native custody checks.
+    #[cfg(any(test, all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    pub(crate) fn owned_bytes(&self) -> Result<u64> {
+        interaction_request_owned_bytes(self, &None)
     }
 
     /// Validates the interaction before it is admitted.
@@ -180,11 +279,16 @@ impl Interaction {
             Self::Approval {
                 prompt,
                 action_digest,
+                subject,
                 ..
             } => {
                 nonempty(prompt, "approval prompt is empty", work)?;
                 if action_digest == &[0; 32] {
                     return Err(boundary(work, Invalid, "approval action digest is empty"));
+                }
+                if let ApprovalSubject::Tool { tool, call_id, .. } = subject {
+                    nonempty(tool, "approval tool name is empty", work)?;
+                    nonempty(call_id, "approval tool call identity is empty", work)?;
                 }
             }
         }

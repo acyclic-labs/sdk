@@ -555,6 +555,9 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     );
     let bundle = storage
         .builder()
+        .policy(Arc::new(crate::test_support::FixedToolPolicy::new(
+            crate::runtime::ToolPolicyDecision::Allow,
+        )?))
         .model(
             Model::new("test".into(), "file".into(), "1".into(), Value::Null)?,
             model.clone(),

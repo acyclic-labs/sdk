@@ -734,8 +734,8 @@ fn status_replacement_allocations_are_independent_of_retained_files() {
     assert_eq!(old, [[0, 0]; 2], "independent baseline");
 }
 
-/// The baseline stores exactly main's historical value layout, so its
-/// retained bytes cannot drift below the production index it is paired with.
+/// The independent baseline retains the historical fields. Native metadata
+/// custody adds one explicit counter to the production index, not the baseline.
 #[test]
 fn baseline_index_values_keep_the_historical_layout() {
     let file = FileValue::new(FileKey::parse("commands/catalog.json").unwrap(), Vec::new());
@@ -745,10 +745,10 @@ fn baseline_index_values_keep_the_historical_layout() {
     };
     let old::Stored { file: _, position } = &stored;
     assert_eq!(*position, 7);
-    assert_eq!(
-        std::mem::size_of::<old::Stored>(),
-        std::mem::size_of::<super::StoredFile>()
-    );
+    let historical_bytes = std::mem::size_of::<old::Stored>();
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let historical_bytes = historical_bytes + std::mem::size_of::<u64>();
+    assert_eq!(historical_bytes, std::mem::size_of::<super::StoredFile>());
     assert_eq!(
         std::mem::align_of::<old::Stored>(),
         std::mem::align_of::<super::StoredFile>()

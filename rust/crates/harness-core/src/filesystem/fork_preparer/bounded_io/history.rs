@@ -22,6 +22,9 @@ impl PreparationIo {
 }
 
 impl HistoryIo for &PreparationIo {
+    fn take_owned_custody(&mut self, bytes: u64) -> Result<Option<PreparationCustody>> {
+        PreparationIo::take_owned_custody(self, bytes).map(Some)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
         PreparationIo::original_native_work(self)

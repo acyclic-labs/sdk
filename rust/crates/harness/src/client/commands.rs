@@ -39,6 +39,8 @@ mod sources;
 pub use sources::CommandSources;
 mod syntax;
 pub use files::*;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub(crate) use session::ApprovalResponder;
 pub use session::CommandSession;
 
 /// Encode a bounded outcome for command files or a live query projection.

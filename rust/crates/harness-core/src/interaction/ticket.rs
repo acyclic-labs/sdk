@@ -153,15 +153,17 @@ impl InteractionTicket {
         )?;
         request.validate_response(&response.0, response.1.work())
     }
-    /// Checks the pinned approval explanation against the committed decision.
+    /// Checks the staged decision file against its committed resolution and
+    /// returns its principal's file digest. `principal` is the resolving scope
+    /// when the decision is being admitted.
     pub(crate) fn validate_decision_bytes(
         &self,
-        request: &Interaction,
-        outcome: &InteractionOutcome,
+        resolution: &InteractionResolution,
+        principal: Option<&str>,
         detail: &FileRef,
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<()> {
+    ) -> Result<[u8; 16]> {
         if self.kind != InteractionKind::Approval
             || detail.descriptor().media_type() != "application/json"
         {
@@ -173,29 +175,92 @@ impl InteractionTicket {
         }
         detail.validate(work)?;
         detail.descriptor().verify(bytes, work)?;
-        let mut response = decode_interaction_json::<InteractionResponse>(
+        let mut decision = decode_interaction_json::<ApprovalDecisionFile>(
+            bytes,
+            crate::executor::json::JsonValueSchema::None,
+            work,
+        )?;
+        self.decision_principal(resolution, principal, &decision.0, decision.1.work())
+    }
+
+    // Only the publication owner calls this after loading the original request
+    // and its authenticated committed resolution. Never use it for admission.
+    pub(crate) fn validate_published_decision_bytes(
+        &self,
+        resolution: &InteractionResolution,
+        detail: &FileRef,
+        bytes: &[u8],
+        legacy_request: bool,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<[u8; 16]> {
+        if !legacy_request {
+            return self.validate_decision_bytes(resolution, None, detail, bytes, work);
+        }
+        if self.kind != InteractionKind::Approval
+            || detail.descriptor().media_type() != "application/json"
+        {
+            return Err(boundary(work, Invalid, "approval decision artifact is invalid"));
+        }
+        detail.validate(work)?;
+        detail.descriptor().verify(bytes, work)?;
+        let mut decoded = decode_interaction_json::<PublishedApprovalDecision>(
             bytes,
             crate::executor::json::JsonValueSchema::InteractionResponse,
             work,
         )?;
-        request.validate_response(&response.0, response.1.work())?;
-        match (outcome, &response.0) {
-            (
-                InteractionOutcome::Approved {},
-                InteractionResponse::Approval { approved: true, .. },
-            )
-            | (
-                InteractionOutcome::Declined {},
-                InteractionResponse::Approval {
-                    approved: false, ..
-                },
-            ) => Ok(()),
+        match &decoded.0 {
+            PublishedApprovalDecision::Current(decision) => {
+                self.decision_principal(resolution, None, decision, decoded.1.work())
+            }
+            PublishedApprovalDecision::Legacy(InteractionResponse::Approval { approved, .. })
+                if matches!(resolution.outcome, InteractionOutcome::Approved {}) && *approved
+                    || matches!(resolution.outcome, InteractionOutcome::Declined {}) && !*approved =>
+            {
+                Ok(ApprovalDecisionFile::principal_digest(LEGACY_DECISION_PRINCIPAL))
+            }
             _ => Err(boundary(
-                response.1.work(),
+                decoded.1.work(),
                 Conflict,
                 "approval artifact disagrees with outcome",
             )),
         }
+    }
+
+    fn decision_principal(
+        &self,
+        resolution: &InteractionResolution,
+        principal: Option<&str>,
+        decision: &ApprovalDecisionFile,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<[u8; 16]> {
+        let approved = match resolution.outcome {
+            InteractionOutcome::Approved {} => true,
+            InteractionOutcome::Declined {} => false,
+            _ => {
+                return Err(boundary(
+                    work,
+                    Invalid,
+                    "only an approval verdict carries a decision file",
+                ));
+            }
+        };
+        if decision.validate().is_err()
+            || decision.approved() != approved
+            || !decision.binds(
+                self.request.descriptor().sha256(),
+                resolution.expected_version,
+            )
+            || principal.is_some_and(|principal| principal != decision.principal)
+        {
+            return Err(boundary(
+                work,
+                Conflict,
+                "approval artifact disagrees with outcome",
+            ));
+        }
+        Ok(ApprovalDecisionFile::principal_digest(
+            &decision.principal,
+        ))
     }
 }
 

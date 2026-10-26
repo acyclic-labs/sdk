@@ -15,22 +15,26 @@ pub enum JournalWrite {
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
     #[cfg(feature = "filesystem")]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The existing authority, lease and write-kind inputs authenticate one original journal condition."
-    )]
     pub(crate) async fn journal_condition(
         &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
+        authority: &JournalAuthority<P>,
         operation_id: OperationId,
         fence: &LeaseFence,
         write: JournalWrite,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
         self.refresh(work).await?;
-        let operation = self.observe_operation(owner, scope, verifier, operation_id, work)?;
+        authority.recheck(self, operation_id, work)?;
+        let operation = self
+            .scheduler
+            .operation(authority.operation())
+            .ok_or_else(|| {
+                guarded_boundary(
+                    work,
+                    wire::ErrorCode::NotFound,
+                    "journal declaration is absent",
+                )
+            })?;
         crate::scheduler::require_execution_owner(
             operation,
             fence,
@@ -262,7 +266,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         workflow_revision: u64,
         input: FileRef,
         idempotency_key: IdempotencyKey,
-        waiting_command: Option<OperationId>,
+        waiting_command: Option<(OperationId, &LeaseFence)>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         authorize_operation_scope(owner, scope, verifier, "operation:wake", work)?;

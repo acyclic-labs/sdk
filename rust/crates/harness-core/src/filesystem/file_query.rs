@@ -359,8 +359,8 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             .verify_creation(&self.volume, None, Some(io))
             .await?;
         ContentGrant::verify_directory_read(
-            &self.reader.verifier,
-            &self.reader.scope,
+            self.reader.authority.verifier(),
+            self.reader.authority.scope(),
             &self.volume,
             prefix,
             &mut Some(&mut io.history_io()),

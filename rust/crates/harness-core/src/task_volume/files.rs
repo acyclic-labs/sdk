@@ -10,6 +10,15 @@ use std::sync::Arc;
 
 #[cfg(feature = "filesystem")]
 mod created;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native;
+#[cfg(test)]
+#[cfg(all(
+    feature = "filesystem",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+mod native_tests;
 
 /// The caller's file writer and live queries for one private task volume.
 /// Execution and approval records can only be published by their internal owners.
@@ -18,6 +27,8 @@ pub struct TaskFiles<P: ?Sized> {
     pub inner: TaskVolume<P>,
     volume: VolumeRef,
     maximum_bytes: u64,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _native_custody: Option<Arc<acyclic_fs::NativeAllocation>>,
 }
 
 impl<P: StreamProvider + ?Sized> TaskFiles<P> {
@@ -62,6 +73,8 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
             inner,
             volume: volume.clone(),
             maximum_bytes,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_custody: None,
         })
     }
 
@@ -83,6 +96,29 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         }
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
         self.inner.append(expected, file).await
+    }
+
+    /// Publishes an owner-produced immutable file through the shared
+    /// generation-retry path. An identical accepted copy is success.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn publish_owned(
+        &self,
+        file: &FileValue,
+        work: crate::NativeWork<'_>,
+    ) -> super::Result<()> {
+        let generation = self.inner.head().await?;
+        super::publication::publish_with_work(&self.inner, generation, file, work).await?;
+        Ok(())
+    }
+
+    /// Publishes an owner-produced immutable file and proves it is durable.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn publish_durable(
+        &self,
+        file: &FileValue,
+        work: crate::NativeWork<'_>,
+    ) -> super::Result<super::DurableFile> {
+        super::publish_durable(&self.inner, file, work).await
     }
 
     #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
@@ -140,6 +176,8 @@ impl<P: StreamProvider + ?Sized> super::FileQuerySource for TaskFiles<P> {
             inner: self.inner.clone(),
             volume: self.volume.clone(),
             maximum_bytes: self.maximum_bytes,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_custody: self._native_custody.clone(),
         })
     }
 
@@ -168,6 +206,7 @@ impl<P: StreamProvider + 'static> TaskFiles<P> {
             inner: self.inner.reopen_erased().await?,
             volume: self.volume.clone(),
             maximum_bytes: self.maximum_bytes,
+            _native_custody: None,
         })
     }
 }
@@ -211,5 +250,7 @@ pub async fn model_files(
         inner: TaskVolume::open(provider, path).await.unwrap(),
         volume,
         maximum_bytes: 4096,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _native_custody: None,
     }
 }

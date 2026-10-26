@@ -345,7 +345,15 @@ async fn completion_order_detector_rejects_the_original_post_before_commit_path(
 
 #[tokio::test]
 async fn hook_approvals_use_the_existing_interaction_before_tool_admission() -> Result<()> {
-    for approved in [false, true] {
+    for decision in [
+        InteractionOutcome::Approved {},
+        InteractionOutcome::Declined {},
+        InteractionOutcome::Denied {},
+        InteractionOutcome::Expired {},
+        InteractionOutcome::Cancelled {},
+    ] {
+        let approved = matches!(decision, InteractionOutcome::Approved {});
+        let cancelled = matches!(decision, InteractionOutcome::Cancelled {});
         let (executor, provider, tool, hooks) =
             fixture(0, "Approve changed arguments".into(), 42, false, true).await?;
         for _ in 0..2 {
@@ -372,22 +380,61 @@ async fn hook_approvals_use_the_existing_interaction_before_tool_admission() -> 
             let mut requests = hooks.journal.2.lock().unwrap();
             assert_eq!(requests.len(), 1);
             let (_, outcome) = requests.values_mut().next().unwrap();
-            *outcome = Some(if approved {
-                InteractionOutcome::Approved {}
-            } else {
-                InteractionOutcome::Denied {}
-            });
+            *outcome = Some(decision);
         }
         let progress = executor
             .execute_progress(input(), hooks.journal.as_ref())
             .await?;
-        assert_eq!(matches!(progress, ExecutionProgress::Ready(_)), approved);
+        assert_eq!(matches!(progress, ExecutionProgress::Ready(_)), !cancelled);
         assert_eq!(
             matches!(progress, ExecutionProgress::Rejected(_)),
-            !approved
+            cancelled
         );
         assert_eq!(tool.0.load(Ordering::SeqCst), usize::from(approved));
-        assert_eq!(provider.requests().len(), if approved { 2 } else { 1 });
+        assert_eq!(provider.requests().len(), if cancelled { 1 } else { 2 });
+        assert_eq!(hooks.post.load(Ordering::SeqCst), usize::from(approved));
+        if !approved && !cancelled {
+            {
+                let records = hooks.journal.0.lock().unwrap();
+                assert!(
+                    !records
+                        .iter()
+                        .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+                );
+                let failures = records
+                    .iter()
+                    .filter_map(|record| match &record.event {
+                        ExecutionEvent::ToolFailed { reason, cause, .. } => Some((reason, cause)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(failures.len(), 1);
+                assert_eq!(*failures[0].0, ToolFailureKind::Refused);
+                assert_eq!(failures[0].1.class, ToolErrorClass::Denied);
+                assert!(failures[0].1.message.contains("Approve changed arguments"));
+            }
+            executor
+                .execute_progress(input(), hooks.journal.as_ref())
+                .await?;
+            assert_eq!(
+                provider.requests().len(),
+                2,
+                "replay must not ask the model again"
+            );
+            assert_eq!(hooks.pre.load(Ordering::SeqCst), 1);
+            assert_eq!(tool.0.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                hooks
+                    .journal
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+                    .count(),
+                1
+            );
+        }
     }
     let (executor, _, tool, hooks) =
         fixture(0, "deny takes precedence".into(), 42, true, true).await?;

@@ -9,7 +9,58 @@ use acyclic_auth::{
 use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 mod admission;
+mod retained;
+pub(crate) use admission::AuthenticatedRecord;
+pub(super) use admission::HistoricalOwner;
 pub(super) use admission::{live_record, record, verify_record};
+use retained::RetainedAuthentication;
+
+pub(super) struct AuthenticatedWorkload {
+    capability: std::sync::Arc<VerifiedCapability>,
+    attributes: RecordAttributes,
+    last: Claims,
+}
+
+#[derive(Default)]
+pub(super) struct WorkloadOwner {
+    latest: Option<RetainedAuthentication<AuthenticatedWorkload>>,
+    certificates: verify::CertificateVerifier,
+}
+
+fn authenticated(capability: VerifiedCapability) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
+    let (attributes, last) = admission::scope_facts(&capability, false)?;
+    Ok(std::sync::Arc::new(AuthenticatedWorkload {
+        capability: std::sync::Arc::new(capability),
+        attributes,
+        last,
+    }))
+}
+
+fn authenticate(
+    public: &runtime_signing::PublicAuthority,
+    trust: &dyn verify::Trust,
+    scope: &Scope,
+    timestamp: u64,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+    }
+    let mut retained = public.workload.lock().map_err(unauthorized)?;
+    if let Some(authenticated) = retained.latest.as_ref()
+        && let Some(proof) = authenticated.get(&scope.workload, work)?
+    {
+        return Ok(proof);
+    }
+    let authenticated = authenticated(
+        retained
+            .certificates
+            .verify(&scope.workload, trust, timestamp)
+            .map_err(unauthorized)?,
+    )?;
+    retained.latest = RetainedAuthentication::new(&scope.workload, authenticated.clone(), work)?;
+    Ok(authenticated)
+}
 
 const CLAIM: &str = "harness.scope.";
 const ACTION: &str = "harness/execute";
@@ -47,6 +98,14 @@ pub(super) struct RuntimeKeys {
     environment: SigningKey,
     account: SigningKey,
     runtime: SigningKey,
+    receipt: std::sync::Mutex<Option<ReceiptSigner>>,
+}
+
+struct ReceiptSigner {
+    account: String,
+    born: u64,
+    expires: u64,
+    signer: std::sync::Arc<CertifiedSigner>,
 }
 
 impl RuntimeKeys {
@@ -56,7 +115,32 @@ impl RuntimeKeys {
             environment: key("acyclic.harness.environment.v1"),
             account: key("acyclic.harness.account.v1"),
             runtime: key("acyclic.harness.runtime.v1"),
+            receipt: Default::default(),
         }
+    }
+
+    // Runtime time attestations share one restricted certificate. Each receipt
+    // binds its exact audience/payload/time; workloads never receive this signer.
+    fn receipt_signer(&self, id: &str, timestamp: u64) -> Result<std::sync::Arc<CertifiedSigner>> {
+        let mut retained = self.receipt.lock().map_err(unauthorized)?;
+        if let Some(receipt) = retained.as_ref()
+            && receipt.account == id
+            && receipt.born <= timestamp
+            && timestamp < receipt.expires
+        {
+            return Ok(receipt.signer.clone());
+        }
+        let expires = timestamp
+            .checked_add(CERTIFICATE_SECONDS)
+            .ok_or_else(|| unauthorized("clock overflow"))?;
+        let signer = std::sync::Arc::new(signer(id, self, timestamp, None, None)?);
+        *retained = Some(ReceiptSigner {
+            account: id.into(),
+            born: timestamp,
+            expires,
+            signer: signer.clone(),
+        });
+        Ok(signer)
     }
 }
 fn entropy() -> [u8; 32] {
@@ -101,6 +185,8 @@ fn grant(resource: &str) -> GrantSet {
     }
 }
 fn signature(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u8> {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(CertificateSignature);
     let mut message = domain.to_vec();
     message.extend_from_slice(&claims.encode_to_vec());
     signer.sign(&message).to_bytes().to_vec()
@@ -109,10 +195,16 @@ fn signer(
     id: &str,
     keys: &RuntimeKeys,
     timestamp: u64,
-    name: &str,
+    name: Option<&str>,
     parent: Option<&VerifiedCapability>,
 ) -> Result<CertifiedSigner> {
-    signer_with_grants(id, keys, timestamp, grant(name), parent)
+    signer_with_grants(
+        id,
+        keys,
+        timestamp,
+        name.map_or(GrantSet { grants: Vec::new() }, grant),
+        parent,
+    )
 }
 
 pub(super) fn signer_with_grants(
@@ -237,7 +329,7 @@ pub(super) fn issue(
         &issuer.id,
         &issuer.runtime.workload,
         timestamp,
-        &name,
+        Some(&name),
         parent,
     )?
     .mint(
@@ -296,17 +388,13 @@ pub(super) fn verify(
     scope: &Scope,
     timestamp: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<VerifiedCapability> {
+) -> Result<std::sync::Arc<VerifiedCapability>> {
     if scope.issuer != verifier.id {
         return Err(unauthorized("foreign issuer"));
     }
-    verify_trusted(
-        &*verifier.public.trust.read().map_err(unauthorized)?,
-        audience,
-        scope,
-        timestamp,
-        work,
-    )
+    let trust = verifier.public.trust.read().map_err(unauthorized)?;
+    let authenticated = authenticate(&verifier.public, &*trust, scope, timestamp, work)?;
+    authorize_scope(&*trust, audience, scope, timestamp, &authenticated, work)
 }
 pub(super) fn verify_trusted(
     trust: &dyn verify::Trust,
@@ -314,48 +402,41 @@ pub(super) fn verify_trusted(
     scope: &Scope,
     timestamp: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<VerifiedCapability> {
+) -> Result<std::sync::Arc<VerifiedCapability>> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+    }
+    let authenticated =
+        authenticated(verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?)?;
+    authorize_scope(trust, audience, scope, timestamp, &authenticated, work)
+}
+
+fn authorize_scope(
+    trust: &dyn verify::Trust,
+    audience: &Authority,
+    scope: &Scope,
+    timestamp: u64,
+    authenticated: &AuthenticatedWorkload,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::sync::Arc<VerifiedCapability>> {
     if let Some(io) = work.as_deref() {
         io.check_cancellation()?;
     }
-    let capability = verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?;
+    let capability = &authenticated.capability;
     if capability.account_id().map_err(unauthorized)? != scope.issuer {
         return Err(unauthorized("foreign account"));
     }
     let name = resource(audience)?;
-    let mut attributes = Vec::new();
-    let mut previous: Option<Claims> = None;
-    for (index, scoped) in capability.effective().pins().enumerate() {
-        let pin = scoped.pin();
-        if scoped.declaring_block() != index || pin.name != format!("{CLAIM}{index}") {
-            return Err(unauthorized("invalid scope ancestry"));
-        }
-        let PinValue::Literal(value) = &pin.value else {
-            return Err(unauthorized("nonliteral scope"));
-        };
-        let current: Claims = serde_json::from_slice(value).map_err(unauthorized)?;
-        if current.issuer != scope.issuer
-            || previous.as_ref().is_some_and(|parent| {
-                current.agent != parent.agent
-                    || !current.capabilities.is_subset_of(&parent.capabilities)
-                    || current.parent != capability.block_ids().get(index - 1).copied()
-            })
-        {
-            return Err(unauthorized("scope widens its ancestor"));
-        }
-        previous = Some(current);
-        attributes.push(Attribute {
-            name: pin.name.clone(),
-            value: value.clone(),
-        });
-    }
-    if attributes.len() != capability.block_ids().len()
-        || previous.as_ref() != Some(&Claims::from_scope(scope))
+    let last = &authenticated.last;
+    if last.id != scope.id
+        || last.capabilities != scope.capabilities
+        || last.agent != scope.agent
+        || last.issuer != scope.issuer
+        || last.parent != scope.parent_proof
         || capability.block_ids().last() != Some(scope.proof.as_ref())
     {
         return Err(unauthorized("scope does not match its authenticated tip"));
     }
-    let attributes = RecordAttributes::try_new(attributes).map_err(unauthorized)?;
     capability
         .authorize(
             trust,
@@ -368,7 +449,7 @@ pub(super) fn verify_trusted(
                 holder: Some(&scope.issuer),
                 now_unix_seconds: timestamp,
                 keys: &[],
-                attributes: &attributes,
+                attributes: &authenticated.attributes,
                 usage: &usage(),
                 cpu_millis: 0,
                 memory_bytes: 0,
@@ -376,8 +457,15 @@ pub(super) fn verify_trusted(
             PolicyDecision::Allow,
         )
         .map_err(unauthorized)?;
-    Ok(capability)
+    Ok(capability.clone())
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+struct CertificateSignature;
+
+#[cfg(test)]
+mod receipt_tests;

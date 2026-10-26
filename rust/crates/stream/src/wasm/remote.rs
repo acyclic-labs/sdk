@@ -119,6 +119,7 @@ impl StreamProvider for Remote {
                 self.request(wire::TailRequest {
                     path: path.to_string(),
                     accepted: false,
+                    durable_through: None,
                 })
                 .await?,
             )
@@ -136,6 +137,7 @@ impl StreamProvider for Remote {
         let body = wire::TailRequest {
             path: path.to_string(),
             accepted: true,
+            durable_through: None,
         };
         let result = self
             .service()
@@ -144,6 +146,27 @@ impl StreamProvider for Remote {
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
         wire_codec::watermarks_from_wire(result)
+    }
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        let result = self
+            .service()
+            .tail(
+                self.request(wire::TailRequest {
+                    path: path.to_string(),
+                    accepted: true,
+                    durable_through: Some(through),
+                })
+                .await?,
+            )
+            .await
+            .map_err(|e| wire_codec::status(&e))?
+            .into_inner();
+        let marks = wire_codec::watermarks_from_wire(result)?;
+        Ok(crate::DurableReceipt::covering(path, &marks, through))
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let body = wire::AppendRequest {

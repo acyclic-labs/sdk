@@ -305,7 +305,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
         event: SchedulerEvent,
         parent_fence: Option<&LeaseFence>,
-        waiting_command: Option<OperationId>,
+        waiting_command: Option<(OperationId, &LeaseFence)>,
         idle_execution: Option<(OperationId, u64)>,
         workflow_guard: Option<(&str, u64)>,
         verified_revision: Option<u64>,
@@ -567,11 +567,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     fn validate_command_wait(
         &self,
         event: &SchedulerEvent,
-        waiting: Option<OperationId>,
+        waiting: Option<(OperationId, &LeaseFence)>,
         replaying: bool,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let Some(waiting) = waiting else {
+        let Some((waiting, released)) = waiting else {
             return Ok(());
         };
         let SchedulerEvent::WorkflowResumed {
@@ -596,6 +596,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             || operation.workflow.as_ref().is_none_or(|slot| {
                 slot.revision != *workflow_revision
                     || slot.waiting_command != Some(waiting)
+                    || slot.released.as_ref() != Some(released)
                     || slot.input.as_ref() != replaying.then_some(input)
             })
         {

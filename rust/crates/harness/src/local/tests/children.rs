@@ -603,7 +603,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                     slot.revision,
                     hidden,
                     crate::IdempotencyKey::new("unreadable-wake")?,
-                    slot.waiting_command,
+                    slot.waiting_command.zip(slot.released.as_ref()),
                     &mut None,
                 )
                 .await,
@@ -624,7 +624,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                 slot.revision,
                 readable,
                 crate::IdempotencyKey::new("readable-wake")?,
-                slot.waiting_command,
+                slot.waiting_command.zip(slot.released.as_ref()),
                 &mut None,
             )
             .await?;

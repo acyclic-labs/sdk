@@ -63,6 +63,8 @@ pub(crate) mod follow_model;
 #[cfg(acyclic_loom)]
 pub(crate) mod query_model;
 #[cfg(acyclic_loom)]
+pub(crate) mod receipt_model;
+#[cfg(acyclic_loom)]
 pub(crate) mod replay_model;
 
 #[cfg(test)]
@@ -76,6 +78,8 @@ type JournalPersistBlocker = (
 );
 #[cfg(test)]
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
+#[cfg(test)]
+static JOURNAL_FLUSHED_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 // Lock order: journal -> test hook; release the hook before a device-gate wait.
 #[cfg(test)]
 static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);

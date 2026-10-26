@@ -1,4 +1,6 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+#[cfg(test)]
+mod approvals;
 mod catalog_compaction;
 mod final_message;
 mod goal_review;

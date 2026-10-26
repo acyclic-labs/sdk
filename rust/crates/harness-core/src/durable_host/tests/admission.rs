@@ -2,6 +2,36 @@ use super::*;
 use fixture::fixture;
 
 #[tokio::test]
+async fn approval_wait_observes_passive_cancellation_without_a_requested_flag() -> Result<()> {
+    use futures::StreamExt as _;
+    let f = fixture().await?;
+    let task = TaskId::from_bytes([41; 16]);
+    f.host.admit(f.admission(41, json!(0))).await?;
+    let (stopped, mut changes) = f.host.cancellation_follow(task).await?;
+    assert!(!stopped);
+    f.host.cancel(task).await?;
+    changes.next().await.expect("cancellation wake")?;
+    // Passive cancellation has no executor to notify: the terminal outcome,
+    // rather than cancellation_requested, is the authoritative stop signal.
+    let coordinator = f.host.coordinator.lock().await;
+    let state = coordinator.observe_operation(
+        &f.host.owner,
+        &f.host.owner_scope,
+        &f.host.verifier,
+        OperationId::from_bytes(task.into_bytes()),
+        &mut None,
+    )?;
+    assert!(
+        !state.cancellation_requested,
+        "negative control no longer reproduces the passive cut"
+    );
+    assert_eq!(state.phase, crate::scheduler::OperationPhase::Terminal);
+    drop(coordinator);
+    assert!(f.host.cancellation_follow(task).await?.0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn b01_registered_input_and_schema() -> Result<()> {
     let f = fixture().await?;
     let mut record = f.admission(1, json!("wrong type"));

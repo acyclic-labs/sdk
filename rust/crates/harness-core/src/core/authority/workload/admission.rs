@@ -1,6 +1,62 @@
 //! Sealed workload descendants plus independently authenticated runtime time.
 use super::*;
-use acyclic_auth::admission::RuntimeAdmission;
+use acyclic_auth::admission::{AuthenticatedAdmission, HistoryVerifier, RuntimeAdmission};
+use std::sync::Arc;
+
+#[derive(Default)]
+pub(in crate::core::authority) struct HistoricalOwner {
+    record: Option<RetainedAuthentication<AuthenticatedRecord>>,
+    verifier: HistoryVerifier,
+}
+
+/// One exact historical proof, retained by the public authority, never a decision.
+pub(crate) struct AuthenticatedRecord {
+    authenticated: AuthenticatedAdmission,
+    attributes: RecordAttributes,
+    last: Claims,
+}
+
+impl std::ops::Deref for AuthenticatedRecord {
+    type Target = VerifiedCapability;
+    fn deref(&self) -> &Self::Target {
+        self.authenticated.workload()
+    }
+}
+
+fn authenticate_record(
+    public: &runtime_signing::PublicAuthority,
+    trust: &dyn verify::Trust,
+    encoded: &[u8],
+    timestamp: u64,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Arc<AuthenticatedRecord>> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+    }
+    let mut retained = public.historical.lock().map_err(unauthorized)?;
+    if let Some(record) = retained.record.as_ref()
+        && let Some(proof) = record.get(encoded, work)?
+    {
+        return Ok(proof);
+    }
+    let envelope = AdmittedCapabilityProto::decode(encoded).map_err(unauthorized)?;
+    if envelope.encode_to_vec() != encoded {
+        return Err(unauthorized("noncanonical admission"));
+    }
+    let admitted: AdmittedCapability = envelope.try_into().map_err(unauthorized)?;
+    let authenticated = retained
+        .verifier
+        .authenticate(&admitted, trust, timestamp)
+        .map_err(unauthorized)?;
+    let (attributes, last) = scope_facts(authenticated.workload(), true)?;
+    let record = Arc::new(AuthenticatedRecord {
+        authenticated,
+        attributes,
+        last,
+    });
+    retained.record = RetainedAuthentication::new(encoded, record.clone(), work)?;
+    Ok(record)
+}
 
 pub(in crate::core::authority) fn record(
     runtime: &runtime_signing::RuntimeSigner,
@@ -12,10 +68,10 @@ pub(in crate::core::authority) fn record(
 ) -> Result<Vec<u8>> {
     let timestamp = now();
     let trust = runtime.public.trust.read().map_err(unauthorized)?;
-    let capability = verify_trusted(&*trust, audience, scope, timestamp, work)?;
-    let (attributes, _) = scope_facts(&capability, false)?;
+    let authenticated = authenticate(&runtime.public, &*trust, scope, timestamp, work)?;
+    let capability = authorize_scope(&*trust, audience, scope, timestamp, &authenticated, work)?;
     let name = resource(audience)?;
-    let signer = signer(id, &runtime.workload, timestamp, &name, None)?;
+    let signer = runtime.workload.receipt_signer(id, timestamp)?;
     let receipt = RuntimeAdmission::new(&signer, &*trust, timestamp)
         .record(
             &capability,
@@ -28,7 +84,7 @@ pub(in crate::core::authority) fn record(
                 holder: Some(id),
                 now_unix_seconds: timestamp,
                 keys: &[],
-                attributes: &attributes,
+                attributes: &authenticated.attributes,
                 usage: &usage(),
                 cpu_millis: 0,
                 memory_bytes: 0,
@@ -54,24 +110,13 @@ pub(in crate::core::authority) fn verify_record(
     expected: Option<&RecordedScope>,
     required: &[&str],
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<VerifiedCapability> {
-    if let Some(io) = work.as_deref() {
-        io.check_cancellation()?;
-    }
-    let envelope = AdmittedCapabilityProto::decode(encoded).map_err(unauthorized)?;
-    if envelope.encode_to_vec() != encoded {
-        return Err(unauthorized("noncanonical admission"));
-    }
-    let admitted: AdmittedCapability = envelope.try_into().map_err(unauthorized)?;
+) -> Result<Arc<AuthenticatedRecord>> {
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
-    let authenticated = admitted
-        .authenticate_history(&*trust, now())
-        .map_err(unauthorized)?;
-    let capability = authenticated.workload();
-    if capability.account_id().map_err(unauthorized)? != verifier.id {
+    let record = authenticate_record(&verifier.public, &*trust, encoded, now(), work)?;
+    if record.account_id().map_err(unauthorized)? != verifier.id {
         return Err(unauthorized("foreign admission account"));
     }
-    let (attributes, last) = scope_facts(capability, true)?;
+    let last = &record.last;
     if last.issuer != verifier.id
         || expected.is_some_and(|scope| {
             last.id != scope.id
@@ -88,8 +133,9 @@ pub(in crate::core::authority) fn verify_record(
         ));
     }
     let name = resource(&verifier.audience)?;
-    authenticated
-        .authorize_history(
+    record
+        .authenticated
+        .check_request(
             &*trust,
             &Request {
                 target: Target::Resource {
@@ -100,29 +146,30 @@ pub(in crate::core::authority) fn verify_record(
                 holder: Some(&verifier.id),
                 now_unix_seconds: now(),
                 keys: &[],
-                attributes: &attributes,
+                attributes: &record.attributes,
                 usage: &usage(),
                 cpu_millis: 0,
                 memory_bytes: 0,
             },
             payload,
         )
-        .map_err(unauthorized)
+        .map_err(unauthorized)?;
+    Ok(record)
 }
 
 pub(in crate::core::authority) fn live_record(
     verifier: &AuthorityVerifier,
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<VerifiedCapability> {
-    let capability = verifier.verify_event_capability(event, work)?;
+) -> Result<Arc<AuthenticatedRecord>> {
+    let capability = verifier.authenticated_event(event, work)?;
     capability
         .check(&*verifier.public.trust.read().map_err(unauthorized)?, now())
         .map_err(unauthorized)?;
     Ok(capability)
 }
 
-fn scope_facts(
+pub(super) fn scope_facts(
     capability: &VerifiedCapability,
     historical: bool,
 ) -> Result<(RecordAttributes, Claims)> {

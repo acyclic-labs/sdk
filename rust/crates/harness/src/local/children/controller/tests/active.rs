@@ -117,7 +117,9 @@ async fn exercise(control: Control) -> Result<()> {
         let (child, _) = harness
             .admit_child_request(files.as_ref(), &requests[0])
             .await?;
-        let (nested, context) = harness.child_files(child, files.as_ref()).await?;
+        // The tool approval suspends and releases the model dispatch lease.
+        // Observing its output must not retain that lease for a later write.
+        let nested = harness.runtime.approval_files(child).await?;
         // Observe actual shell output before sending a lifecycle intent. The
         // sleeping command is stopped by control; its duration is no oracle.
         let mut shell = nested
@@ -150,6 +152,10 @@ async fn exercise(control: Control) -> Result<()> {
                 .map_err(storage)?;
             started = change.file.iter().chain(&change.files).any(stdout);
         }
+        // Output proves that approval has resumed the command under its new
+        // lease. Claim write authority only for this running command interval.
+        let (owned, context) = harness.child_files(child, files.as_ref()).await?;
+        assert_eq!(owned.volume(), nested.volume());
         let grandchild = Component::new("grandchild").map_err(storage)?;
         let request = file(&grandchild, ChildFile::Request, b"nested work".to_vec());
         let generation = nested.inner.head().await.map_err(storage)?;

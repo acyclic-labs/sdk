@@ -63,7 +63,9 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub aggregate_commits: std::sync::atomic::AtomicUsize,
     pub stale_projection_head_tail: std::sync::atomic::AtomicU64,
     pub hide_aggregate_read: std::sync::atomic::AtomicBool,
+    pub owned_commit_pause: std::sync::Mutex<Option<CommitPause>>,
 }
+
 impl<P> LostSessionAck<P> {
     pub fn reset_io(&self) {
         use std::sync::atomic::Ordering;
@@ -161,6 +163,7 @@ impl<P> LostSessionAck<P> {
             aggregate_commits: Default::default(),
             stale_projection_head_tail: Default::default(),
             hide_aggregate_read: Default::default(),
+            owned_commit_pause: Default::default(),
         }
     }
 

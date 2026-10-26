@@ -305,12 +305,12 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         let io = PreparationIo::from_native_work(&work)?;
         let binding = native.native_binding.as_ref().unwrap();
         binding.require_native_work(&work)?;
-        super::content_verifier::require_file_read(&binding.scope, &first, &io)?;
+        super::content_verifier::require_file_read(binding.authority.scope(), &first, &io)?;
         let bytes = host.read_pinned_io(&first, 16, Some(&io)).await?;
         assert_eq!(bytes.as_ref(), b"one");
         drop(bytes);
         binding.require_native_work(&work)?;
-        super::content_verifier::require_file_read(&binding.scope, &second, &io)?;
+        super::content_verifier::require_file_read(binding.authority.scope(), &second, &io)?;
         let bytes = host.read_pinned_io(&second, 16, Some(&io)).await?;
         assert_eq!(bytes.as_ref(), b"two");
         drop(bytes);
@@ -340,7 +340,11 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         let denied_binding = denied.native_binding.as_ref().unwrap();
         denied_binding.require_native_work(&work)?;
         assert!(matches!(
-            super::content_verifier::require_file_read(&denied_binding.scope, &first, &io),
+            super::content_verifier::require_file_read(
+                denied_binding.authority.scope(),
+                &first,
+                &io
+            ),
             Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 ..

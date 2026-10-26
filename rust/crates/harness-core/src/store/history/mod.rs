@@ -258,6 +258,22 @@ pub trait HistoryIo: Send {
             custody: None,
         })
     }
+    /// Transfers retained output ownership, or declines retention on this observer.
+    #[cfg(feature = "filesystem")]
+    fn take_owned_custody(
+        &mut self,
+        bytes: u64,
+    ) -> Result<Option<crate::filesystem::PreparationCustody>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original_native_work().is_some() {
+            return self
+                .take_native_custody(bytes)
+                .map(crate::filesystem::PreparationCustody::Native)
+                .map(Some);
+        }
+        let _ = bytes;
+        Ok(None)
+    }
     /// Hashed bytes.
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()>;
     /// Admit acknowledgment.

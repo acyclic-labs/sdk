@@ -8,10 +8,23 @@ mod staging;
 
 #[cfg(test)]
 use acyclic_fs::facade::FsWork as _;
-use acyclic_stream::StreamProvider;
+use acyclic_stream::{BoxProviderFuture, StreamProvider};
 
 impl LocalHarness {
-    pub(in crate::local) async fn admit_child_task<P: StreamProvider + ?Sized>(
+    // Child admission owns the complete fork/preparation state machine. Build
+    // it in a separate frame which returns before the controller polls it.
+    // Otherwise each nested controller embeds and constructs that whole state
+    // on the native caller's stack, including in LTO product builds.
+    #[inline(never)]
+    pub(in crate::local) fn admit_child_task<'a, P: StreamProvider + ?Sized>(
+        &'a self,
+        files: &'a TaskFiles<P>,
+        file: &'a FileValue,
+    ) -> BoxProviderFuture<'a, Result<TaskId>> {
+        Box::pin(self.admit_child_task_body(files, file))
+    }
+
+    async fn admit_child_task_body<P: StreamProvider + ?Sized>(
         &self,
         files: &TaskFiles<P>,
         file: &FileValue,

@@ -26,7 +26,7 @@ use acyclic_harness::{
         NativeViewManifest, NativeViewOptions, NativeVolumeNamespace, NativeVolumeView,
         workspace_ref,
     },
-    interaction::{Interaction, InteractionResponse},
+    interaction::{ApprovalSubject, Interaction, InteractionResponse},
     mcp::{PROTOCOL_VERSION, stdio::McpStdioRequest},
     resources::ProviderRef,
     runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
@@ -542,6 +542,7 @@ where
                 "Run this exact example process".into(),
                 *command,
                 request.approval_digest(*task_id, *command, None)?,
+                ApprovalSubject::Opaque {},
             )?,
             None,
         )?

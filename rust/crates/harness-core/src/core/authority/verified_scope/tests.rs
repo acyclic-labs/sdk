@@ -160,7 +160,8 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
         )
         .is_err()
     );
-    assert_eq!(io.owned_bytes()?, 0, "failed grant leaked retained custody");
+    // The shared authority owns authentication; this attempt owns no grant.
+    assert_eq!(io.owned_bytes()?, 0);
     let grant = ContentGrant::verify(
         &verifier,
         &scope,
@@ -172,7 +173,17 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
     assert_eq!(
         io.owned_bytes()?,
         grant.logical_owned_bytes()?,
-        "grant omitted retained custody"
+        "grant custody was not separated from the authority"
+    );
+    let custody = io.guard_owned(grant.logical_owned_bytes()?)?;
+    drop((grant, custody));
+    assert_eq!(io.owned_bytes()?, 0);
+    assert!(io.remaining()?.peak_allocation_bytes < 1_000_000);
+    drop((verifier, issuer));
+    assert_eq!(
+        io.remaining()?.peak_allocation_bytes,
+        1_000_000,
+        "retired authority leaked wire custody"
     );
     Ok(())
 }
@@ -192,14 +203,19 @@ fn compact_evidence_funds_every_allocation_before_conversion() -> Result<()> {
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let io = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
     let before = io.remaining()?.allocation_operations;
+    let expected_allocations = capability
+        .trust_evidence_storage()
+        .map_err(workload::unauthorized)?
+        .allocation_bytes()
+        .count() as u64;
     {
         let mut observer = io.history_io();
         let mut work = Some(&mut observer as &mut dyn HistoryIo);
         let mut quota = CodecQuota::new(&mut work, 0)?;
-        let evidence = compact_evidence(capability, &mut quota)?;
+        let evidence = compact_evidence(&capability, &mut quota)?;
         assert_eq!(
             before - io.remaining()?.allocation_operations,
-            3,
+            expected_allocations,
             "evidence allocation operations were undercounted"
         );
         assert_eq!(
@@ -269,7 +285,7 @@ fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
 #[cfg(feature = "filesystem")]
 #[test]
 fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<()> {
-    let (_issuer, verifier, scope, volume) = fixture()?;
+    let (issuer, verifier, scope, volume) = fixture()?;
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let cancellation = acyclic_fs::CancellationToken::new();
     let probe = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
@@ -284,7 +300,16 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
     assert_eq!(probe.owned_bytes()?, grant.logical_owned_bytes()?);
     let required = budget.allocation_operations - probe.remaining()?.allocation_operations;
     assert!(required > 3, "grant did not reach the metadata copies");
+    let custody = probe.guard_owned(grant.logical_owned_bytes()?)?;
+    drop((grant, custody, verifier, issuer));
+    assert_eq!(
+        probe.remaining()?.peak_allocation_bytes,
+        budget.peak_allocation_bytes,
+        "retired grant and authority leaked custody"
+    );
     for operations in 0..required {
+        // Each attempt starts cold, including the authority's wire allocation.
+        let (issuer, verifier, scope, volume) = fixture()?;
         let mut limited = budget;
         limited.allocation_operations = operations;
         let io = crate::executor::PreparationIo::from_budget(limited, &cancellation)?;
@@ -301,10 +326,11 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
             "allocation failure was not exercised: {operations}"
         );
         drop(result);
+        drop((verifier, issuer));
         assert_eq!(
-            io.owned_bytes()?,
-            0,
-            "partial grant allocation leaked retained custody: operations={operations}"
+            io.remaining()?.peak_allocation_bytes,
+            budget.peak_allocation_bytes,
+            "partial grant or authority allocation leaked retained custody: operations={operations}"
         );
     }
     Ok(())

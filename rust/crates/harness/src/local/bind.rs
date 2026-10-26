@@ -11,7 +11,7 @@ impl LocalHarness {
         authority: (&AuthorityVerifier, &Scope),
         checkout: Option<&Path>,
     ) -> Result<Self> {
-        config.limits.validate(&mut None)?;
+        validate_binding(&config, &runtime)?;
         #[cfg(any(test, feature = "native-execution"))]
         if checkout.is_some() {
             config = config.prepare_state()?;
@@ -58,6 +58,7 @@ impl LocalHarness {
             verifier,
             signed,
             config.limits.file_bytes,
+            config.approval_issuer.take(),
         )
         .await?;
         #[cfg(any(test, feature = "native-execution"))]
@@ -228,6 +229,8 @@ impl BoundComposition {
             journal: volume,
             verifier,
             signed,
+            approval_policy: config.approval_policy,
+            approval_models: config.approval_models,
             agent: config.model,
             context_manifest: config.context_manifest,
             active_directory: config.active_directory,
@@ -277,6 +280,7 @@ async fn bind_task_files(
     verifier: &AuthorityVerifier,
     signed: &Scope,
     maximum: u64,
+    approval_issuer: Option<AuthorityRoot>,
 ) -> Result<(
     LocalTaskRuntime,
     Arc<crate::task_volume::TaskFiles<LocalStream>>,
@@ -287,6 +291,10 @@ async fn bind_task_files(
     let erased_files = Arc::new(task_files.reopen_erased().await?);
     let mut runtime = runtime.with_task_files(erased_files.clone())?;
     runtime.bind_task_files(Some(task_files.clone()));
+    let runtime = match approval_issuer {
+        Some(issuer) => runtime.with_approval_authority(&issuer)?,
+        None => runtime,
+    };
     Ok((runtime, task_files))
 }
 
@@ -313,4 +321,15 @@ async fn checkout_runtime(
     } else {
         runtime
     })
+}
+
+fn validate_binding(config: &LocalHarnessConfig, runtime: &LocalTaskRuntime) -> Result<()> {
+    use crate::runtime::ToolPolicy as _;
+    config.limits.validate(&mut None)?;
+    if runtime.approval_policy_identity() != Some(config.approval_policy.bind()?.identity()) {
+        return Err(Error::Conflict(
+            "bound runtime and local approval policy differ".into(),
+        ));
+    }
+    Ok(())
 }

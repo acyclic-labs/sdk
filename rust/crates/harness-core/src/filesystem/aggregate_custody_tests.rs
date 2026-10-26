@@ -199,7 +199,11 @@ async fn rejected_interaction_reads_release_partial_assembly_custody() -> Result
         let setup_io = ledger(native, budget, &cancellation)?;
         setup_io.retain_owned(17)?;
         let setup = budget.allocation_operations - setup_io.remaining()?.allocation_operations;
-        for cut in std::iter::once(None).chain((0..16).map(Some)) {
+        for (transaction, cut) in [false, true].into_iter().flat_map(|transaction| {
+            std::iter::once(None)
+                .chain((0..16).map(Some))
+                .map(move |cut| (transaction, cut))
+        }) {
             let mut limited = budget;
             if let Some(cut) = cut {
                 limited.allocation_operations = setup + cut;
@@ -207,12 +211,16 @@ async fn rejected_interaction_reads_release_partial_assembly_custody() -> Result
             let io = ledger(native, limited, &cancellation)?;
             io.retain_owned(17)?;
             let before = io.remaining()?.peak_allocation_bytes;
-            let result = host.read(id, Some(&io)).await;
+            let result = if transaction {
+                host.transaction(Some(&io)).await.map(drop)
+            } else {
+                host.read(id, Some(&io)).await.map(drop)
+            };
             assert!(result.is_err(), "unbound interaction read must fail");
             drop(result);
             let after = io.remaining()?.peak_allocation_bytes;
             if before != after {
-                leaks.push((native, cut, before, after));
+                leaks.push((native, transaction, cut, before, after));
             }
             io.release(17)?;
         }
@@ -359,17 +367,27 @@ async fn interaction_read_adapters_release_replayed_projection_custody() -> Resu
         match adapter {
             0 => assert!(host.read(id, Some(&io)).await?.is_none()),
             1 => assert!(host.read_request(id, Some(&io)).await?.is_none()),
-            2 => assert!(host.read_outcome(id, Some(&io)).await?.is_none()),
-            3 | 4 => assert!(
-                host.read_resolution_file(id, adapter == 4, Some(&io))
-                    .await?
-                    .is_none()
-            ),
-            _ => assert!(
-                host.verify_approval(id, OperationId::from_bytes([14; 16]), [15; 32], Some(&io))
-                    .await
-                    .is_err()
-            ),
+            _ => {
+                let transaction = host.transaction(Some(&io)).await?;
+                let aggregate = &transaction.aggregate.0;
+                match adapter {
+                    2 => assert!(host.read_outcome(aggregate, id, Some(&io))?.is_none()),
+                    3 | 4 => assert!(
+                        host.read_resolution_file(aggregate, id, adapter == 4, Some(&io))
+                            .await?
+                            .is_none()
+                    ),
+                    _ => assert!(
+                        host.read_for_publication(
+                            aggregate,
+                            id,
+                            Some((OperationId::from_bytes([14; 16]), [15; 32])),
+                            Some(&io),
+                        )
+                        .is_err()
+                    ),
+                }
+            }
         }
         assert_eq!(io.owned_bytes()?, 17, "adapter={adapter}");
         assert_eq!(

@@ -74,7 +74,22 @@ pub(in crate::filesystem) fn content_metadata_path_io(
     content_identity_path_io(path, absolute, ".system/harness-file-metadata/", io)
 }
 
-pub(in crate::filesystem) fn content_identity_path_io(
+/// Internal publications already have a path identity. Their canonical metadata
+/// is also their recovery receipt; only caller-selected upload keys need an index.
+pub(in crate::filesystem) fn content_receipt_path_io(
+    identity: &str,
+    internal: bool,
+    absolute: bool,
+    io: Option<&PreparationIo>,
+) -> Result<String> {
+    if internal {
+        content_metadata_path_io(identity, absolute, io)
+    } else {
+        content_identity_path_io(identity, absolute, ".system/harness-uploads/", io)
+    }
+}
+
+fn content_identity_path_io(
     path: &str,
     absolute: bool,
     prefix: &str,

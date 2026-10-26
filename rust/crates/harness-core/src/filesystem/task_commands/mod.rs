@@ -221,6 +221,14 @@ impl ModelBinding {
 }
 
 /// Stock command adapters over the runtime's existing executors and journal.
+///
+/// Native hosts dispatch pinned tools through [`TaskCommandHost`] with
+/// [`TOOL_TASK_COMMAND_KIND`] and [`ToolTaskCommand`], using the original issued
+/// task context, lease, retained command and work. This path binds the configured
+/// policy and its approval to the same journal that owns effect dispatch and
+/// replay. Register the selected tool and policy when composing the runtime;
+/// calling a workspace facade after a separate approval check cannot establish
+/// that recorded dispatch.
 pub struct FilesystemTaskCommands<'a, P, A: 'static, O: 'static> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
     model: Option<ModelBinding>,

@@ -98,17 +98,15 @@ pub(crate) async fn git_apply_patch(
 }
 
 /// Captures the lazy or exact tree required by the command.
-pub(crate) async fn git_workspace_tree(
+pub(crate) fn git_workspace_tree(
     workspace: View<'_>,
     argv: &[String],
     permit: Option<PublicationPermit>,
-) -> Result<GitTreeRef, Error> {
-    workspace
-        .tree(
-            git_requires_exact_workspace(argv),
-            permit.unwrap_or(PublicationPermit::Unrestricted),
-        )
-        .await
+) -> impl Future<Output = Result<GitTreeRef, Error>> {
+    workspace.tree(
+        git_requires_exact_workspace(argv),
+        permit.unwrap_or(PublicationPermit::Unrestricted),
+    )
 }
 
 /// Loads ignore and merge policies from the workspace.

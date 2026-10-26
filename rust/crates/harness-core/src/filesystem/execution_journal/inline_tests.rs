@@ -351,7 +351,7 @@ async fn owned_journal(
         65_536,
     )
     .await?;
-    let journal = journal.with_task_files(Some(Arc::new(files)));
+    let journal = journal.with_task_files(Arc::new(files))?;
     initialize(&journal, operation).await?;
     Ok((journal, fixture.issuer))
 }

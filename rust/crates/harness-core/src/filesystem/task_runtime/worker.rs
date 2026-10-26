@@ -215,19 +215,24 @@ where
         maximum_transitions: u32,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskWorkerAttempt, acyclic_fs::NativeAllocation)> {
-        if !work.shares_ledger(recovery_custody.work()) {
-            return Ok((
-                TaskWorkerAttempt::Unresolved {
-                    lease,
-                    error: Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "recovered lease custody differs from original work",
+        let io = match super::super::PreparationIo::from_native_custody_with_work(
+            recovery_custody,
+            work,
+        ) {
+            Ok(io) => io,
+            Err(recovery_custody) => {
+                return Ok((
+                    TaskWorkerAttempt::Unresolved {
+                        lease,
+                        error: Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "recovered lease custody differs from original work",
+                        },
                     },
-                },
-                recovery_custody,
-            ));
-        }
-        let io = super::super::PreparationIo::from_native_custody(recovery_custody);
+                    recovery_custody,
+                ));
+            }
+        };
         let value = self
             .resume_task(lease, commands, maximum_transitions, Some(&io))
             .await;

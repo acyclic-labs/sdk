@@ -290,6 +290,19 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
+        let mut coordinator = self.host.coordinator.lock().await;
+        self.condition_locked(&mut coordinator, write, work).await
+    }
+
+    /// The caller retains the coordinator through the conditional publication.
+    /// Checking a lease and then dropping its owner admits unrelated child
+    /// transitions between the check and commit, invalidating a live lease.
+    async fn condition_locked(
+        &self,
+        coordinator: &mut DistributedCoordinator<P>,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<acyclic_stream::CommitCondition> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut recheck = work
             .as_deref()
@@ -344,14 +357,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             {
                 return Err(Error::Indeterminate(self.operation_id()));
             }
-            self.host
-                .coordinator
-                .lock()
-                .await
+            coordinator
                 .journal_condition(
-                    &self.host.owner,
-                    &self.host.owner_scope,
-                    &self.host.verifier,
+                    &self.authority,
                     self.operation_id(),
                     &self.fence,
                     write,
@@ -482,7 +490,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
         phase: Option<&mut crate::distributed::CommitPhase>,
     ) -> Result<bool> {
-        let owner = self.condition(write, work).await?;
+        let mut coordinator = self.host.coordinator.lock().await;
+        let owner = self.condition_locked(&mut coordinator, write, work).await?;
         let acyclic_stream::CommitCondition::Tail { expected, .. } = &owner else {
             return Err(crate::scheduler::diagnostic(
                 work,
@@ -552,6 +561,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         drop(outcome);
         drop(received);
+        drop(coordinator);
         result
     }
 
@@ -597,7 +607,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
         use acyclic_stream::{CommitCondition, CommitOutcome, CommittedMutation};
-        let owner = self.condition(write, work).await?;
+        let mut coordinator = self.host.coordinator.lock().await;
+        let owner = self.condition_locked(&mut coordinator, write, work).await?;
         let target =
             match crate::store::operations::bounds_with_work(&self.host.stream, &path, work).await?
             {
@@ -680,6 +691,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         drop(outcome);
         drop(received);
+        drop(coordinator);
         result
     }
 }

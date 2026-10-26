@@ -548,11 +548,7 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Ok(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
             let metadata = (metadata, metadata_hold);
-            Some(io.decode(
-                std::marker::PhantomData::<FileRef>,
-                &metadata.0,
-                crate::wire::ErrorCode::Storage,
-            )?)
+            Some(decode_content_metadata(&metadata.0, io)?)
         }
         Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
         Err(error) => return Err(error),

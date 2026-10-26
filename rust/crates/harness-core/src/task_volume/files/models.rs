@@ -37,6 +37,8 @@ fn files() -> Arc<TaskFiles<MemoryStream>> {
         inner,
         volume,
         maximum_bytes: 4096,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _native_custody: None,
     })
 }
 
@@ -57,6 +59,8 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
         inner,
         volume: files.volume.clone(),
         maximum_bytes: files.maximum_bytes,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _native_custody: None,
     })
 }
 
@@ -191,14 +195,14 @@ fn competing_appends(
     let (left_request, left_file, left_next) = loom::future::block_on(Box::pin(
         first
             .inner
-            .prepare_append(cut, left, Vec::new(), false, None),
+            .prepare_append(cut, left, Vec::new(), super::super::Mode::Append, None),
     ))
     .unwrap()
     .unwrap();
     let (mut right_request, right_file, right_next) = loom::future::block_on(Box::pin(
         second
             .inner
-            .prepare_append(cut, right, Vec::new(), false, None),
+            .prepare_append(cut, right, Vec::new(), super::super::Mode::Append, None),
     ))
     .unwrap()
     .unwrap();
@@ -474,6 +478,8 @@ fn child_terminal_freeze(broken: bool) {
                             Control::Resume.bytes().to_vec(),
                         ),
                         position: cut.position,
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        native_metadata_bytes: 0,
                     },
                 );
         }

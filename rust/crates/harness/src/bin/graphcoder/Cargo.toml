@@ -20,12 +20,14 @@ acyclic-stream = { path = "../../../../stream", default-features = false }
 clap.workspace = true
 dirs.workspace = true
 futures.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "signal"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+harness-mock-model = { path = "../../../../harness-mock-model" }
 acyclic-harness = { path = "../../..", features = ["test-support"] }
 serde.workspace = true
 serde_json.workspace = true

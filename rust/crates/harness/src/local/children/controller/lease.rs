@@ -13,10 +13,9 @@ impl LocalHarness {
             WorkPull::Idle => {
                 if !self.runtime.poll_task_wake(child, None).await? {
                     if let Some(slot) = host.workflow_suspension(child, &mut None).await?
-                        && let Some(waiting) = slot.waiting_command
+                        && slot.waiting_command.is_some()
                     {
-                        host.wake_command(child, slot.revision, waiting, &mut None)
-                            .await?;
+                        host.wake_command(child, &slot, &mut None).await?;
                     }
                 }
                 let worker = Worker {

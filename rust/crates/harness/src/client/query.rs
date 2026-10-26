@@ -82,8 +82,15 @@ impl ClientQuery {
         let views = &mut self.views;
         self.subscription
             .publish_next(async |change| {
+                let active;
+                let presentation = if views.window {
+                    active = change.active_approval_view(views.files().map(|file| &file.key));
+                    &active
+                } else {
+                    change
+                };
                 let apply = views
-                    .prepare(change)
+                    .prepare(presentation)
                     .map_err(query_error)
                     .map_err(PublishError::Rejected)?;
                 publish(change).await.map_err(PublishError::Failed)?;

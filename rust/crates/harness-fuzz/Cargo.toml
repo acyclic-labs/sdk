@@ -348,3 +348,19 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "approval_contract"
+path = "fuzz_targets/approval_contract.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_task_files"
+path = "fuzz_targets/native_task_files.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false

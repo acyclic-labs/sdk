@@ -239,6 +239,20 @@ impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn transfer(&mut self) {
         self.bytes = 0;
     }
+    /// Transfers this construction only when the observer supplies an output owner.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn take_owned_custody(
+        &mut self,
+    ) -> Result<Option<crate::filesystem::PreparationCustody>> {
+        let custody = match self.work.as_deref_mut() {
+            Some(io) => io.take_owned_custody(self.bytes)?,
+            None => None,
+        };
+        if custody.is_some() {
+            self.transfer();
+        }
+        Ok(custody)
+    }
     /// Move this construction's exact storage into its native output owner.
     #[cfg(feature = "filesystem")]
     pub(crate) fn into_custody(mut self) -> Result<NativeCustody> {

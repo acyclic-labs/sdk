@@ -174,22 +174,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let path = self.mutation_path(path, &mut accounting, cancellation)?;
-            let operation = match build(path.value) {
-                Ok(value) => crate::kernel::Owned::new(value, path.allocation, path.bytes),
-                Err(error) => {
-                    let mut allocation = path.allocation;
-                    accounting.release_owned(&mut allocation, path.bytes)?;
-                    return Err(error);
-                }
-            };
-            let mut operations = crate::kernel::Owned::allocate(1, &mut accounting)?;
-            Self::push_mutation(&mut operations, operation, &mut accounting)?;
-            self.apply_authored(operations, &mut accounting, cancellation)
-                .await
-        }
-        .await;
+        let result = self
+            .mutate_with_accounting(path, build, &mut accounting, cancellation)
+            .await;
         work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn mutate_with_accounting(
+        &mut self,
+        path: &str,
+        build: impl FnOnce(NamespacePath) -> Result<AuthoredMutation, WorkspaceError>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let path = self.mutation_path(path, accounting, cancellation)?;
+        let operation = match build(path.value) {
+            Ok(value) => crate::kernel::Owned::new(value, path.allocation, path.bytes),
+            Err(error) => {
+                let mut allocation = path.allocation;
+                accounting.release_owned(&mut allocation, path.bytes)?;
+                return Err(error);
+            }
+        };
+        let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
+        Self::push_mutation(&mut operations, operation, accounting)?;
+        self.apply_authored(operations, accounting, cancellation)
+            .await
     }
 }

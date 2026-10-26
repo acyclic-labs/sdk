@@ -195,6 +195,7 @@ pub struct CoordinatorTaskHost<P> {
 #[cfg(feature = "filesystem")]
 pub struct TaskJournalOwner<P> {
     host: Arc<CoordinatorTaskHost<P>>,
+    authority: crate::distributed::JournalAuthority<P>,
     fence: crate::scheduler::LeaseFence,
     workflow: crate::workflow::WorkflowAdmission,
     admission: Arc<TaskAdmissionRecord>,

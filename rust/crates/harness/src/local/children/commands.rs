@@ -12,7 +12,7 @@ use serde_json::Value;
 
 type Files = TaskFiles<acyclic_stream::LocalStream>;
 
-pub(super) async fn state(
+pub(in crate::local) async fn state(
     files: &Files,
     reference: &Component,
     maximum_bytes: usize,

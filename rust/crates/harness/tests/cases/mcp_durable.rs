@@ -417,6 +417,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
                     "Install this exact MCP catalog".into(),
                     operation,
                     catalog().installation_digest(None, 1, 8192)?,
+                    acyclic_harness::interaction::ApprovalSubject::Opaque {},
                 )?,
                 None,
             )?

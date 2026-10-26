@@ -91,6 +91,11 @@ impl ToolExecutor for PendingTool {
         }
         Box::pin(async move {
             self.executed.fetch_add(1, Ordering::SeqCst);
+            if self.receipt_ready.load(Ordering::SeqCst) {
+                return Ok(ToolResult {
+                    value: json!("original receipt"),
+                });
+            }
             self.clock.0.store(20, Ordering::SeqCst);
             futures::future::pending().await
         })
@@ -134,6 +139,20 @@ impl ToolExecutor for PendingTool {
         self.supports_native_execution(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.executed.fetch_add(1, Ordering::SeqCst);
+            if self.receipt_ready.load(Ordering::SeqCst) {
+                let (value, custody) = crate::tool::value(
+                    &"original receipt",
+                    work.remaining()?.bytes_encoded,
+                    Some(work),
+                )?;
+                return Ok((
+                    ToolResult { value },
+                    custody.ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "native tool result has no custody",
+                    })?,
+                ));
+            }
             self.clock.0.store(20, Ordering::SeqCst);
             futures::future::pending().await
         })
@@ -485,6 +504,13 @@ impl Fixture {
             .ok_or_else(|| Error::NotFound("fixture task".into()))
     }
     async fn runtime(&self, io: Option<&PreparationIo>) -> Result<Runtime> {
+        self.runtime_with_policy(io, None).await
+    }
+    async fn runtime_with_policy(
+        &self,
+        io: Option<&PreparationIo>,
+        policy: Option<Arc<dyn ToolPolicy>>,
+    ) -> Result<Runtime> {
         FilesystemTaskRuntime::open(
             self.stream.clone(),
             self.filesystem.clone(),
@@ -505,7 +531,7 @@ impl Fixture {
             1,
             65_536,
             self.clock.clone(),
-            None,
+            policy,
             &[],
             &ResumableToolRegistry::default(),
             io,
@@ -792,6 +818,7 @@ impl ModelProvider for PendingModel {
 mod mail_tests;
 
 mod admission;
+mod approvals;
 mod future_sizes;
 mod manifest;
 mod model;

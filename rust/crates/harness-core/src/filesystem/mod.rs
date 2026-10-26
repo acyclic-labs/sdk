@@ -50,7 +50,6 @@ mod fork_preparer;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
-pub use fork_preparer::bounded_io::PreparationIo;
 #[doc(hidden)]
 pub use fork_preparer::bounded_io::PreparationRecord;
 #[doc(hidden)]
@@ -58,6 +57,7 @@ pub use fork_preparer::bounded_io::UploadRecord;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
 pub(crate) use fork_preparer::bounded_io::{DecodeReservation, retain_decoded};
+pub use fork_preparer::bounded_io::{PreparationCustody, PreparationIo};
 pub(crate) use fork_preparer_io::PreparationScope;
 use fork_preparer_io::decode_record;
 mod summary_fork;
@@ -325,15 +325,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 idempotency_key.as_str()
             };
             let receipt_path =
-                content_identity_path_io(receipt_identity, false, ".system/harness-uploads/", io)?;
+                content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
             let metadata_path = content_metadata_path_io(provisional.path(), false, io)?;
-            let metadata_bytes = match io {
-                Some(io) => io.encode(&provisional, io.remaining()?.bytes_encoded, false)?,
-                None => acyclic_stream::OwnedBytes::from(
-                    serde_json::to_vec(&provisional)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                ),
-            };
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
@@ -388,6 +381,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         + 1024);
                 let original_receipt =
                     read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+                let original_receipt = if internal_class.is_some() {
+                    recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
+                        .await?
+                } else {
+                    original_receipt
+                };
                 if original_receipt.as_ref() != receipt_bytes.as_ref() {
                     return Err(stock_boundary(
                         io,
@@ -400,8 +399,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
                 })?;
                 let indexed =
-                    read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io).await?;
-                if indexed.as_ref() != metadata_bytes.as_slice() {
+                    read_generation(&prior, &indexed_path, receipt_bytes.len() as u64, io).await?;
+                if !content_metadata_matches(&indexed, &provisional, &receipt_bytes, io)? {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,
@@ -467,17 +466,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 bytes: owned_bytes,
             });
             mutations.push(WorkspaceMutation::CreateDirectory {
-                path: stock_string_copy("/.system/harness-uploads", io)?,
-            });
-            mutations.push(WorkspaceMutation::CreateDirectory {
                 path: stock_string_copy("/.system/harness-file-metadata", io)?,
             });
-            mutations.push(WorkspaceMutation::PutFile {
-                path: crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-                })?,
-                bytes: metadata_bytes,
-            });
+            if internal_class.is_none() {
+                mutations.push(WorkspaceMutation::CreateDirectory {
+                    path: stock_string_copy("/.system/harness-uploads", io)?,
+                });
+                mutations.push(WorkspaceMutation::PutFile {
+                    path: crate::executor::with_history_io(io, |work| {
+                        crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
+                    })?,
+                    bytes: receipt_bytes.mutation_bytes(io)?,
+                });
+            }
             mutations.push(WorkspaceMutation::PutFile {
                 path: crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
@@ -845,6 +846,6 @@ mod checkout_publication;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use checkout_publication::CheckoutPublication;
+pub use checkout_publication::{AuthorizedCheckout, CheckoutApproval, CheckoutPublication};
 
 pub use host::DirectoryOptions;

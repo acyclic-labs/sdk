@@ -5,8 +5,11 @@ use prost::Message;
 use std::collections::HashSet;
 use zeroize::Zeroizing;
 
+mod certificates;
 mod current;
 mod effective;
+pub use certificates::CertificateVerifier;
+mod signatures;
 mod signer;
 mod wire;
 pub use current::{TrustEvidence, TrustEvidenceStorage};
@@ -169,6 +172,15 @@ pub fn verify(
     trust: &(impl Trust + ?Sized),
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
+    CertificateVerifier::default().verify(bytes, trust, now_unix_seconds)
+}
+
+fn verify_certified(
+    bytes: &[u8],
+    trust: &(impl Trust + ?Sized),
+    now_unix_seconds: u64,
+    certification: &mut CertificateVerifier,
+) -> Result<VerifiedCapability, VerifyError> {
     let envelope = wire::decode(bytes)?;
     let wire = decode_blocks(&envelope)?;
     let certificates = wire
@@ -177,47 +189,11 @@ pub fn verify(
         .certificates
         .as_ref()
         .ok_or(VerifyError::Malformed)?;
-    let birth = certificates.birth.as_ref().ok_or(VerifyError::Malformed)?;
-    let claims = birth.birth.as_ref().ok_or(VerifyError::Malformed)?;
-    let environments = trust.environment_keys(&claims.environment)?;
+    let roots = certification.authenticate(certificates, trust, now_unix_seconds)?;
+    let environment = roots.environment;
+    let issuers = roots.issuers.clone();
+    let mut seen = certification.signing_keys(certificates, trust)?;
     let mut message = Vec::new();
-    claims_message(&mut message, BIRTH_DOMAIN, claims)?;
-    let environment = environments
-        .iter()
-        .find(|issuer| {
-            public_key(*issuer)
-                .is_ok_and(|key| verify_signature(&key, &message, &birth.signature).is_ok())
-        })
-        .copied()
-        .ok_or(VerifyError::Signature)?;
-    if claims.issued_at_unix_seconds > now_unix_seconds {
-        return Err(VerifyError::Time);
-    }
-    let account = trust.account(&claims.account_id)?;
-    let mut issuers = Vec::with_capacity(certificates.keys.len());
-    let mut seen = HashSet::new();
-    for issuer in environments {
-        seen.insert(public_key(issuer)?.to_bytes());
-    }
-    seen.insert(public_key(&claims.genesis_public_key)?.to_bytes());
-    for issuer in account.issuer_keys {
-        seen.insert(public_key(issuer)?.to_bytes());
-    }
-    for certificate in &certificates.keys {
-        let key = certificate.key.as_ref().ok_or(VerifyError::Malformed)?;
-        claims_message(&mut message, KEY_DOMAIN, key)?;
-        let issuer = account
-            .issuer_keys
-            .iter()
-            .find(|issuer| {
-                public_key(*issuer).is_ok_and(|key| {
-                    verify_signature(&key, &message, &certificate.signature).is_ok()
-                })
-            })
-            .ok_or(VerifyError::Signature)?;
-        issuers.push(*issuer);
-        seen.insert(public_key(&key.public_key)?.to_bytes());
-    }
     let leaf = certificates
         .keys
         .last()
@@ -226,11 +202,23 @@ pub fn verify(
     let mut signer = public_key(&leaf.public_key)?;
     let mut previous = [0; 32];
     let mut ids = Vec::with_capacity(wire.len());
-    for (index, (block, signed)) in wire.iter().zip(&envelope.blocks).enumerate() {
+    // Each id commits to its signing transcript, signature, and predecessor.
+    // Block zero includes the exact certificates and their leaf key. Matching
+    // an authenticated endpoint therefore proves every signed ancestor, while
+    // retaining neither input-sized storage nor a workload's append secret.
+    for (index, signed) in envelope.blocks.iter().enumerate() {
         block_message(&mut message, index as u64, &previous, &signed.payload);
-        verify_signature(&signer, &message, &signed.signature)?;
         previous = block_id(&message, &signed.signature);
         ids.push(previous);
+    }
+    let authenticated_through = certification.workloads.authenticated_through(&ids);
+    previous = [0; 32];
+    for (index, (block, signed)) in wire.iter().zip(&envelope.blocks).enumerate() {
+        if index >= authenticated_through {
+            block_message(&mut message, index as u64, &previous, &signed.payload);
+            verify_signature(&signer, &message, &signed.signature)?;
+        }
+        previous = *ids.get(index).ok_or(VerifyError::Malformed)?;
         signer = public_key(&block.next_public_key)?;
         if !seen.insert(signer.to_bytes()) {
             return Err(VerifyError::RepeatedKey);
@@ -264,6 +252,7 @@ pub fn verify(
     };
     verified.evaluate();
     verified.check(trust, now_unix_seconds)?;
+    certification.workloads.retain(&verified.ids);
     Ok(verified)
 }
 

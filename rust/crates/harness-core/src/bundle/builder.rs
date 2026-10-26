@@ -286,6 +286,14 @@ impl HarnessBuilder {
                 bindings.workspace_tools.is_some(),
             )?;
         }
+        // A caller may install the stock catalog with replace_tools instead
+        // of asking this builder to register it. Both routes bind the same
+        // human approval policy; catalog ownership cannot bypass this fence.
+        if bindings.tools.requires_approval_policy() && bindings.policy.is_none() {
+            bindings.policy = Some(Arc::new(
+                crate::approvals::ApprovalPolicy::default().bind()?,
+            ));
+        }
         let capabilities = Capabilities::new(grants);
         let mut scope = if let Some(bound) = self.bound_scope {
             bound.narrow(capabilities.clone(), self.limits)?

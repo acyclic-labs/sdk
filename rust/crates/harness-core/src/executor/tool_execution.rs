@@ -12,10 +12,13 @@ enum ToolCallRejection {
     InvalidInput(Error),
     /// The bound policy denied the call; the model can adapt.
     Refused(Error),
+    /// A pre-tool approval refused this call, retaining the guard's explanation.
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    Approval(crate::InteractionRejection, String),
 }
 
 impl ToolCallRejection {
-    fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error) {
+    fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error, Option<String>) {
         match self {
             Self::Unavailable => (
                 ToolFailureKind::Unavailable,
@@ -24,9 +27,16 @@ impl ToolCallRejection {
                     crate::wire::ErrorCode::NotFound,
                     "tool is not available",
                 ),
+                None,
             ),
-            Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation),
-            Self::Refused(denial) => (ToolFailureKind::Refused, denial),
+            Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation, None),
+            Self::Refused(denial) => (ToolFailureKind::Refused, denial, None),
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Approval(reason, prompt) => (
+                ToolFailureKind::Refused,
+                Error::InteractionRejected(reason),
+                Some(prompt),
+            ),
         }
     }
 }
@@ -199,11 +209,27 @@ impl StockExecution<'_> {
                 let started = matches!(pending, RecordedCall::Started(_));
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(prompt) = hook_approval
-                    && let Some(progress) = self
+                    && let Some(stop) = self
                         .hook_approval(journal, operation_id, &invocation, tool, prompt, started)
                         .await?
                 {
-                    return Ok(progress);
+                    match stop {
+                        super::tool_hooks::HookApprovalStop::Progress(progress) => {
+                            return Ok(progress);
+                        }
+                        super::tool_hooks::HookApprovalStop::Refused(reason, prompt) => {
+                            let content = self
+                                .settle_tool_refusal(
+                                    journal,
+                                    operation_id,
+                                    step,
+                                    &invocation,
+                                    ToolCallRejection::Approval(reason, prompt),
+                                )
+                                .await?;
+                            return self.push_tool_result(&invocation, content, prior_messages);
+                        }
+                    }
                 }
                 match self
                     .require_tool_policy(journal, operation_id, &invocation, tool, started)
@@ -279,7 +305,7 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         rejection: ToolCallRejection,
     ) -> Result<crate::model::ToolResultContent> {
-        let (reason, error) = rejection.into_failure(self.io);
+        let (reason, error, context) = rejection.into_failure(self.io);
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
@@ -307,7 +333,7 @@ impl StockExecution<'_> {
             }
         }
         let cause = with_history_io(self.io, |work| {
-            ToolFailureCause::refusal(&invocation.name, reason, &error, work)
+            ToolFailureCause::refusal(&invocation.name, reason, &error, context.as_deref(), work)
         })?;
         self.settle_tool_cause(
             journal,
@@ -420,6 +446,7 @@ impl StockExecution<'_> {
                             invocation,
                             (prompt, None),
                             None,
+                            crate::interaction::ApprovalRoute::Policy,
                         )?;
                         if let Some(progress) = self
                             .settle_approval(
@@ -1022,7 +1049,8 @@ mod refusal_admission_tests {
         let allocated = acyclic_test_support::measure(|| {
             refusal = Some(ToolCallRejection::Unavailable.into_failure(Some(&io)));
         });
-        let (kind, error) = refusal.unwrap();
+        let (kind, error, context) = refusal.unwrap();
+        assert!(context.is_none());
         assert_eq!(kind, ToolFailureKind::Unavailable);
         assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
         assert_eq!(allocated.count_total, 0);

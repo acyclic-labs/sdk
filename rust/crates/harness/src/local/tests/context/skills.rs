@@ -123,6 +123,14 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
         harness.verifier.audience().clone(),
     );
     let verifier = issuer.verifier(&mut None)?;
+    let approval_issuer = crate::core::AuthorityRoot::new(
+        "bound-skills-approvals",
+        [39; 32],
+        crate::core::Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: "bound-skills-approvals".into(),
+        },
+    );
     let files = harness.files.clone();
     let provider = scripted([ScriptedTurn::Text("done".into())]);
     let config = checkout_config(checkout.path(), (model()?, provider.clone()))?
@@ -144,6 +152,8 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
             stream: stream.clone(),
             task_volume: &volume,
             issuer: &issuer,
+            approval_issuer: &approval_issuer,
+            approval_policy: &config.approval_policy,
             verifier: &verifier,
             agent: harness.signed.agent().unwrap(),
             project: &volume,

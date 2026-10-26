@@ -153,10 +153,7 @@ impl NativeMaterializationWork {
             (None, None) => true,
             _ => false,
         };
-        (bound.shares_allocation_context(original)
-            && bound.cancellation().same_state(original.cancellation())
-            && same_invocation
-            && same_capture)
+        (bound.shares_invocation_context(original) && same_invocation && same_capture)
             .then(|| self.runtime_meter())
     }
     #[cfg(any(test, feature = "distributed"))]

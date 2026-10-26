@@ -99,6 +99,13 @@ pub enum TaskFile {
     },
     /// Immutable operation and argument binding to be approved.
     ApprovalRequest(Component),
+    /// Owner-published escalation result for an independently identified stage.
+    ApprovalReview {
+        /// Immutable request identity.
+        request: Component,
+        /// Stage principal's file identity.
+        principal: Component,
+    },
     /// Authenticated decision about that immutable binding.
     ApprovalDecision {
         /// Immutable approval request identity.
@@ -157,6 +164,11 @@ impl TaskFile {
                 format!("turns/{turn}/tools/{}/{leaf}", call.as_str())
             }
             Self::ApprovalRequest(id) => format!("approvals/{}/request.json", id.as_str()),
+            Self::ApprovalReview { request, principal } => format!(
+                "approvals/{}/reviews/{}.json",
+                request.as_str(),
+                principal.as_str()
+            ),
             Self::ApprovalDecision { request, principal } => format!(
                 "approvals/{}/decisions/{}.json",
                 request.as_str(),
@@ -370,6 +382,10 @@ impl FileKey {
                 }
             }
             ["approvals", request, "request.json"] => TaskFile::ApprovalRequest(id(request)?),
+            ["approvals", request, "reviews", principal] => TaskFile::ApprovalReview {
+                request: id(request)?,
+                principal: json_id(principal)?,
+            },
             ["approvals", request, "decisions", principal] => TaskFile::ApprovalDecision {
                 request: id(request)?,
                 principal: json_id(principal)?,
@@ -425,7 +441,12 @@ impl FileKey {
                 ..
             } => Owner::Caller,
             Self::Child {
-                file: ChildFile::Status | ChildFile::Delivered | ChildFile::Result(_),
+                file:
+                    ChildFile::Status
+                    | ChildFile::Delivered
+                    | ChildFile::Result(_)
+                    | ChildFile::ApprovalRequest(_)
+                    | ChildFile::ApprovalAttention,
                 ..
             } => Owner::Harness,
             Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,
@@ -453,7 +474,7 @@ impl FileKey {
                     ..
                 }
                 | Self::Child {
-                    file: ChildFile::Status | ChildFile::Delivered,
+                    file: ChildFile::Status | ChildFile::Delivered | ChildFile::ApprovalAttention,
                     ..
                 }
                 | Self::Input(_)

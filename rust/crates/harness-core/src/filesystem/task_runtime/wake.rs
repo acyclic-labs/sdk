@@ -280,8 +280,7 @@ where
             self.host
                 .wake_command(
                     task,
-                    slot.revision,
-                    waiting,
+                    &slot,
                     &mut Some(
                         &mut crate::filesystem::PreparationIo::from_native_work(work)
                             .map(crate::store::HistoryWork::new)?,
@@ -289,14 +288,10 @@ where
                 )
                 .await?;
         } else {
-            self.host
-                .wake_command(task, slot.revision, waiting, &mut None)
-                .await?;
+            self.host.wake_command(task, &slot, &mut None).await?;
         }
         #[cfg(target_arch = "wasm32")]
-        self.host
-            .wake_command(task, slot.revision, waiting, &mut None)
-            .await?;
+        self.host.wake_command(task, &slot, &mut None).await?;
         Ok(true)
     }
 }

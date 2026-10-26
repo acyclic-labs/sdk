@@ -206,6 +206,7 @@ async fn completed_turn_retains_provider_metadata_in_next_conversation_and_repla
         let build = |provider: Arc<dyn ModelProvider>| {
             storage
                 .builder()
+                .without_default_tools()
                 .model(
                     Model::new("fixture".into(), "signed".into(), "1".into(), json!({}))?,
                     provider,

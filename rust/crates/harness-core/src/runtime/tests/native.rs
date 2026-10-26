@@ -226,6 +226,7 @@ async fn native_policy_approval_keeps_exact_binding_and_paid_utf8_prompt() -> Re
             None,
         ),
         None,
+        crate::interaction::ApprovalRoute::Policy,
     )?
     .0;
     assert_eq!(actual, expected);
@@ -285,7 +286,8 @@ fn native_policy_approval_rejects_foreign_prompt_before_encoding() -> Result<()>
             &definition,
             &invocation,
             (prompt, Some(custody)),
-            Some(&original)
+            Some(&original),
+            crate::interaction::ApprovalRoute::Policy,
         ),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Conflict,
@@ -326,6 +328,7 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
         prompt,
         operation_id: OperationId::new(),
         action_digest: [1; 32],
+        subject: crate::interaction::ApprovalSubject::Opaque {},
     };
     let custody = io.into_custody()?;
     assert!(matches!(

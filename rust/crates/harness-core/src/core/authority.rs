@@ -585,7 +585,7 @@ impl AuthorityRoot {
         effect_id: EffectId,
         effect: &EffectState,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         self.verifier(work)?
             .verify_effect_plan(effect_id, effect, work)
     }
@@ -682,7 +682,7 @@ impl AuthorityVerifier {
         effect_id: EffectId,
         effect: &EffectState,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         let event = effect
             .planning
             .as_ref()
@@ -746,6 +746,8 @@ impl AuthorityVerifier {
             public: std::sync::Arc::new(runtime_signing::PublicAuthority {
                 trust: std::sync::RwLock::new(trust),
                 metadata_key: checkpoint_key,
+                workload: Default::default(),
+                historical: Default::default(),
                 revision: tokio::sync::watch::channel(0).0,
             }),
             admission: runtime_signing::AdmissionPort::closed(),
@@ -1007,14 +1009,14 @@ impl AuthorityVerifier {
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        self.verify_event_capability(event, work).map(|_| ())
+        self.authenticated_event(event, work).map(|_| ())
     }
 
-    fn verify_event_capability(
+    fn authenticated_event(
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         if event.scope.issuer != self.id {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
@@ -1040,7 +1042,7 @@ impl AuthorityVerifier {
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         let digest = self.event_digest(event, work)?;
         workload::verify_record(
             self,

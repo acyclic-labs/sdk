@@ -80,6 +80,11 @@ impl Plans {
         if agent {
             let bundle = storage
                 .builder()
+                .policy(Arc::new(
+                    acyclic_harness::test_support::FixedToolPolicy::new(
+                        acyclic_harness::runtime::ToolPolicyDecision::Allow,
+                    )?,
+                ))
                 .model(
                     Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
                     provider.clone(),

@@ -95,82 +95,9 @@ pub(super) fn file_fixture(path: &str, media_type: &str) -> Result<FileRef> {
     Ok(file)
 }
 
-#[derive(Clone)]
-pub(super) struct FixedPolicy {
-    pub(super) identity: ComponentIdentity,
-    pub(super) decision: ToolPolicyDecision,
-}
-
-impl ToolPolicy for FixedPolicy {
-    fn identity(&self) -> ComponentIdentity {
-        self.identity.clone()
-    }
-
-    fn evaluate<'a>(
-        &'a self,
-        _: &'a ToolInvocation,
-        _: &'a RuntimeScope,
-        _native_io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = task_original_work(_native_io)? {
-            return crate::NativeFutureBundle::new(work, || async move {
-                use crate::store::history::HistoryIo;
-                let mut io = crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                );
-                let value = match &self.decision {
-                    ToolPolicyDecision::Allow => ToolPolicyDecision::Allow,
-                    ToolPolicyDecision::Deny { reason } => ToolPolicyDecision::Deny {
-                        reason: io.clone_text(reason)?,
-                    },
-                    ToolPolicyDecision::RequireApproval { prompt } => {
-                        ToolPolicyDecision::RequireApproval {
-                            prompt: io.clone_text(prompt)?,
-                        }
-                    }
-                };
-                Ok((value, Some(io.into_custody()?)))
-            })
-            .map(crate::store::HistoryContentFuture::Native);
-        }
-        let decision = self.decision.clone();
-        Ok(crate::store::HistoryContentFuture::Ordinary {
-            future: Box::pin(async move { Ok((decision, None)) }),
-            frame_bytes: 0,
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn identity_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(ComponentIdentity, acyclic_fs::NativeAllocation)> {
-        native_fixture_policy_identity(&self.identity, work)
-    }
-}
-
+use crate::test_support::FixedToolPolicy as FixedPolicy;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_fixture_policy_identity(
-    identity: &ComponentIdentity,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(ComponentIdentity, acyclic_fs::NativeAllocation)> {
-    use crate::store::history::HistoryIo;
-    let mut io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    io.retain_owned(std::mem::size_of::<ComponentIdentity>() as u64)?;
-    let name = io.clone_text(&identity.name)?;
-    let version = io.clone_text(&identity.version)?;
-    Ok((
-        ComponentIdentity {
-            name,
-            version,
-            digest: identity.digest,
-        },
-        io.into_custody()?,
-    ))
-}
+use crate::test_support::native_fixture_policy_identity;
 
 pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, ToolInvocation) {
     let policy = FixedPolicy {

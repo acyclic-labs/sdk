@@ -178,8 +178,9 @@ proptest! {
         prop_assert!(encoded.is_ok());
         prop_assert_eq!(allocations.count_total, 0);
         prop_assert_eq!(&output.get_ref()[..output.position() as usize], &compact);
-        super::journal_verification::verify_decode(&compact);
-        super::journal_verification::verify_decode(&compact[..cut % (compact.len() + 1)]);
+        for input in [compact.as_slice(), &compact[..cut % (compact.len() + 1)]] {
+            super::journal_verification::verify_decode(input);
+        }
     }
 }
 

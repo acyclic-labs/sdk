@@ -1,0 +1,1 @@
+{"principal":"reviewer@example","request_sha256":"abababababababababababababababababababababababababababababababab","expected_version":7,"verdict":"deny","reason":"too broad"}

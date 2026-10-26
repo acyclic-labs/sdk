@@ -142,6 +142,8 @@ pub struct NativeMountRecoveryOwner {
 }
 
 enum RecoveryDestination {
+    #[cfg(target_os = "macos")]
+    Locked(MountDestinationGuard),
     Parent(Option<cap_std::fs::Dir>),
     #[cfg(any(target_os = "macos", test))]
     ExistingCanonical,
@@ -276,6 +278,16 @@ impl NativeMountRecoveryOwner {
             &original,
             RecoveryDestination::Parent(Some(directory)),
         )
+    }
+
+    // Startup transfers the authenticated locked inode without releasing it.
+    #[cfg(target_os = "macos")]
+    pub(super) fn from_locked_existing(
+        destination: &Path,
+        guard: MountDestinationGuard,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        Self::acquire_bound(destination, original, RecoveryDestination::Locked(guard))
     }
 
     fn acquire_bound(
@@ -509,25 +521,35 @@ impl NativeRecoveryState {
         source: RecoveryDestination,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if let RecoveryDestination::Parent(Some(directory)) = source {
-            MountDestinationGuard::acquire_recovery_in_directory(
-                destination,
-                directory,
-                work,
-                &mut self.guard,
-            )?;
-        } else if matches!(source, RecoveryDestination::Parent(None)) {
-            MountDestinationGuard::acquire_with_work(
-                destination,
-                true,
-                work,
-                &mut self.guard,
-                true,
-            )?;
-        } else {
-            #[cfg(any(target_os = "macos", test))]
-            MountDestinationGuard::acquire_existing_canonical(destination, work, &mut self.guard)?;
+        #[cfg(target_os = "macos")]
+        let source = match source {
+            RecoveryDestination::Locked(guard) => {
+                self.guard = Some(guard);
+                RecoveryDestination::Parent(None)
+            }
+            source => source,
+        };
+        if self.guard.is_none() {
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            if let RecoveryDestination::Parent(Some(directory)) = source {
+                MountDestinationGuard::acquire_recovery_in_directory(
+                    destination,
+                    directory,
+                    work,
+                    &mut self.guard,
+                )?;
+            } else if matches!(source, RecoveryDestination::Parent(None)) {
+                MountDestinationGuard::acquire_with_work(
+                    destination,
+                    true,
+                    work,
+                    &mut self.guard,
+                    true,
+                )?;
+            } else {
+                #[cfg(any(target_os = "macos", test))]
+                MountDestinationGuard::acquire_existing_canonical(destination, work, &mut self.guard)?;
+            }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         return Err(NativeMountError::UnsupportedTarget);

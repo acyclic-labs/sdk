@@ -116,15 +116,15 @@ fn require_seed<A, O>(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     binding.require_native_work(work)?;
-    let audience = binding.verifier.audience();
+    let audience = binding.authority.verifier().audience();
     if audience != &seed.parent && audience != &seed.child {
         return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "fork verifier belongs to another publication aggregate",
         });
     }
-    if binding.scope.agent().is_none()
-        || audience == &seed.child && binding.scope.agent() != Some(seed.child_agent)
+    if binding.authority.scope().agent().is_none()
+        || audience == &seed.child && binding.authority.scope().agent() != Some(seed.child_agent)
     {
         return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
@@ -133,7 +133,8 @@ fn require_seed<A, O>(
     }
     if audience == &seed.parent
         && !binding
-            .scope
+            .authority
+            .scope()
             .capabilities()
             .contains(capability::FORK_PUBLISH)
     {
@@ -358,8 +359,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                     let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                         reason: "Filesystem verifier has no native authority" })?;
                     require_seed(binding, seed, original)?;
-                    if binding.verifier.audience() != &seed.parent
-                        && !io.contains_capability(binding.scope.capabilities(), &seed.child_private_volume, acyclic_fs::access::VolumeOperation::Write.capability_prefix())?
+                    if binding.authority.verifier().audience() != &seed.parent
+                        && !io.contains_capability(binding.authority.scope().capabilities(), &seed.child_private_volume, acyclic_fs::access::VolumeOperation::Write.capability_prefix())?
                     {
                         return Err(crate::executor::stock_boundary(Some(&io), crate::wire::ErrorCode::Unauthorized,
                             "fork private publication fence lacks the exact current provider write grant"));

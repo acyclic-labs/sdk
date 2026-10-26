@@ -176,9 +176,12 @@ mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;
 pub(in crate::filesystem) use keys::{
-    content_identity_path_io, content_metadata_path_io, project_join_key,
+    content_metadata_path_io, content_receipt_path_io, project_join_key,
 };
 pub use keys::{filesystem_key, workspace_ref};
+pub(in crate::filesystem) use publication::{
+    content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
+};
 pub(crate) use reads::file_publication;
 pub(in crate::filesystem) use reads::read_generation;
 

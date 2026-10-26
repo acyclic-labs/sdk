@@ -197,6 +197,12 @@ impl NativeMaterializationWork {
     pub fn shares_allocation_context(&self, other: &Self) -> bool {
         self.shares_ledger(other) && self.shares_resource_allowance(other)
     }
+    /// Whether contexts preserve the same resource owner and invocation cancellation.
+    /// Accounting windows may differ when the same operation resumes.
+    pub fn shares_invocation_context(&self, other: &Self) -> bool {
+        self.shares_allocation_context(other)
+            && self.cancellation().same_state(other.cancellation())
+    }
     pub(crate) fn allocation_work(&self) -> Self {
         Self {
             recheck_items: false,

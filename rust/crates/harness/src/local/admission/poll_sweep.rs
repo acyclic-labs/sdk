@@ -193,6 +193,17 @@ impl Fixture {
                 None,
             )?;
         }
+        let approval_issuer = AuthorityRoot::new(
+            "approvals",
+            [8; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "approval-fixture".into(),
+            },
+        );
+        let approval_policy =
+            serde_json::from_slice(include_bytes!("../../bin/graphcoder/approval-policy.json"))
+                .map_err(storage)?;
         let code = crate::package::harness::HarnessCode::new()?;
         let (runtime, signed, task_files) = runtime::open(
             &code,
@@ -204,6 +215,8 @@ impl Fixture {
                 stream: stream.clone(),
                 task_volume: &self.volumes[3],
                 issuer: &self.issuer,
+                approval_issuer: &approval_issuer,
+                approval_policy: &approval_policy,
                 verifier: &verifier,
                 agent: AgentId::from_bytes([1; 16]),
                 project: if matches!(self.scenario, Scenario::EffectAndContinuation) {
@@ -232,6 +245,8 @@ impl Fixture {
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:runtime");
         let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
+            approval_policy,
+            approval_models: Default::default(),
             task_files,
             files: files.clone(),
             runtime,

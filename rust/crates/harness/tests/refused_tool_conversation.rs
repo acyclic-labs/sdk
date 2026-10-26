@@ -122,6 +122,7 @@ async fn refused_and_failed_calls_publish_their_exchange_for_the_next_turn() -> 
     let build = |provider: Arc<dyn ModelProvider>| {
         storage
             .builder()
+            .without_default_tools()
             .model(
                 Model::new("fixture".into(), "refusals".into(), "1".into(), json!({}))?,
                 provider,

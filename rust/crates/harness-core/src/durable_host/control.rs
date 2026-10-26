@@ -3,6 +3,28 @@ use super::*;
 use crate::store::HistoryIo;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Authenticated cancellation snapshot and gap-free coordinator wakeups.
+    /// Each wake requires a fresh authenticated observation; it grants no state.
+    pub async fn cancellation_follow(
+        &self,
+        task: TaskId,
+    ) -> Result<(bool, acyclic_stream::BoxProviderStream<'static, Result<()>>)> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(&mut None).await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            &mut None,
+        )?;
+        // Cancelling a passive task settles it immediately without setting
+        // cancellation_requested. Such a terminal owner must stop waiters too.
+        let cancelled = operation.cancellation_requested
+            || operation.phase == crate::scheduler::OperationPhase::Terminal;
+        Ok((cancelled, coordinator.change_notifications().await?))
+    }
+
     /// Returns the host clock used for pinned task deadlines.
     pub fn now_unix_millis(&self) -> u64 {
         self.clock.now_unix_millis()

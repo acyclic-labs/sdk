@@ -35,6 +35,7 @@ pub(super) fn verify(release_only: bool) {
                     value: vec![current as u8].into(),
                     commit_id: crate::CommitId::from_bytes([7; 32]),
                     committed_at_micros: 0,
+                    headers: crate::RecordHeaders::default(),
                 })),
             )))
         })

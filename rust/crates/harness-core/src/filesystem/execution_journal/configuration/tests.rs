@@ -25,7 +25,10 @@ async fn rebinding_rotates_the_execution_identity_and_discards_cached_authority(
     assert_ne!(journal.cache_identity(), identity);
     assert_eq!(journal.verified.get_mut().summary().operation, None);
     identity = journal.cache_identity();
-    journal = journal.with_task_files(None);
+    journal = journal.with_optional_task_files(None)?;
+    assert_ne!(journal.cache_identity(), identity);
+    identity = journal.cache_identity();
+    journal = journal.for_approval_projection(crate::TaskId::new());
     assert_ne!(journal.cache_identity(), identity);
     identity = journal.cache_identity();
     journal = journal.with_history_read_limits(crate::store::HistoryReadLimits {

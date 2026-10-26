@@ -334,6 +334,7 @@ impl TaskContext {
                     invocation,
                     (prompt, custody),
                     work,
+                    crate::interaction::ApprovalRoute::Policy,
                 )?))
             }
         }

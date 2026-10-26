@@ -3,8 +3,7 @@ use super::*;
 /// Filesystem-backed admission barrier for version-pinned conversation content.
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
-    pub(in crate::filesystem) verifier: Arc<AuthorityVerifier>,
-    pub(in crate::filesystem) scope: Arc<Scope>,
+    pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
     pub(in crate::filesystem) creation: Option<Arc<fork_preparer::CreatedProvenance>>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
     pub(in crate::filesystem) maximum_bytes: u64,
@@ -29,8 +28,7 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             });
         }
         let io = PreparationIo::from_native_work(work)?;
-        self.verifier
-            .verify(&self.scope, &mut Some(&mut io.history_io()))
+        self.authority.recheck(&mut Some(&mut io.history_io()))
     }
 
     /// Binds authenticated read authority with optional preparation accounting.
@@ -49,21 +47,18 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             ));
         }
         crate::executor::with_history_io(io, |work| -> Result<_> {
-            verifier.verify(scope, work)?;
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let verifier = verifier.copy_in_quota(&mut quota)?;
-            let scope = scope.copy_in_quota(&mut quota)?;
+            let authority = verifier.authenticate_scope(scope, quota.work())?;
+            quota.adopt(authority.logical_owned_bytes()?)?;
             if quota.work().is_some() {
                 quota.retain(std::mem::size_of::<Self>() as u64)?;
                 quota
                     .observer()?
                     .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-                let authority_bytes = (std::mem::size_of::<AuthorityVerifier>()
-                    + std::mem::size_of::<Scope>()
-                    + 4 * std::mem::size_of::<usize>())
+                let authority_bytes = (std::mem::size_of::<crate::core::VerifiedScope>()
+                    + 2 * std::mem::size_of::<usize>())
                     as u64;
                 quota.retain(authority_bytes)?;
-                quota.observer()?.allocation_attempt(1)?;
                 quota.observer()?.allocation_attempt(1)?;
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -81,8 +76,7 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             let _native_metadata = quota.into_custody()?.map(Arc::new);
             Ok(Arc::new(Self {
                 host,
-                verifier: Arc::new(verifier),
-                scope: Arc::new(scope),
+                authority: Arc::new(authority),
                 creation: None,
                 exact_file: None,
                 maximum_bytes,
@@ -161,15 +155,15 @@ where
             let authority_io = if let Some(io) = io {
                 io
             } else {
-                self.verifier.verify(&self.scope, &mut None)?;
+                self.authority.recheck(&mut None)?;
                 owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                 &owned
             };
-            crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+            crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
             let bytes = self
                 .host
                 .read_selection_with_access(
-                    &self.scope,
+                    self.authority.scope(),
                     reference,
                     self.maximum_bytes,
                     self.exact_file.is_some(),
@@ -179,7 +173,7 @@ where
                 .await?
                 .read_range(range)
                 .await?;
-            crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+            crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
             Ok(bytes)
         })
     }
@@ -219,11 +213,10 @@ where
             };
             self.verify_creation(reference.volume(), Some(reference), Some(io))
                 .await?;
-            self.verifier
-                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
+            self.authority.recheck(&mut Some(&mut io.history_io()))?;
             self.host
                 .read_selection_with_access(
-                    &self.scope,
+                    self.authority.scope(),
                     reference,
                     maximum_bytes.min(self.maximum_bytes),
                     self.exact_file.is_some(),
@@ -233,8 +226,7 @@ where
                 .await?
                 .confirm_publication()
                 .await?;
-            self.verifier
-                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
+            self.authority.recheck(&mut Some(&mut io.history_io()))?;
             io.remaining()?;
             Ok(())
         })
@@ -262,8 +254,8 @@ where
             }
             let grant = crate::executor::with_history_io(io, |work| {
                 ContentGrant::verify_directory_read(
-                    &self.verifier,
-                    &self.scope,
+                    self.authority.verifier(),
+                    self.authority.scope(),
                     volume,
                     granted_prefix,
                     work,
@@ -389,8 +381,8 @@ where
             self.verify_creation(volume, None, io).await?;
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
-                &self.verifier,
-                &self.scope,
+                self.authority.verifier(),
+                self.authority.scope(),
                 volume,
                 granted_prefix,
                 &mut history
@@ -447,7 +439,7 @@ where
             creation
                 .verify(
                     &self.host,
-                    self.verifier.audience(),
+                    self.authority.verifier().audience(),
                     volume,
                     self.exact_file.as_ref(),
                     io,
@@ -466,8 +458,7 @@ where
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         Ok(Arc::new(Self {
             host: self.host.clone(),
-            verifier: self.verifier.clone(),
-            scope: self.scope.clone(),
+            authority: self.authority.clone(),
             maximum_bytes: self.maximum_bytes,
             creation: self.creation.clone(),
             exact_file: Some(file.copy(&mut Some(&mut io.history_io()))?),
@@ -494,11 +485,11 @@ where
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+        crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
         let bytes = self
             .host
             .read_file_with_access(
-                &self.scope,
+                self.authority.scope(),
                 reference,
                 maximum_bytes.min(self.maximum_bytes),
                 self.exact_file.is_some(),
@@ -506,7 +497,7 @@ where
                 authority_io,
             )
             .await?;
-        crate::executor::with_history_io(io, |work| self.verifier.verify(&self.scope, work))?;
+        crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("resolved content body", bytes.len() as u64));
         Ok(bytes)
@@ -529,8 +520,8 @@ where
 
         self.verify_creation(volume, None, None).await?;
         let grant = ContentGrant::verify_directory_read(
-            &self.verifier,
-            &self.scope,
+            self.authority.verifier(),
+            self.authority.scope(),
             volume,
             granted_prefix,
             &mut None,
@@ -601,8 +592,8 @@ where
                 crate::filesystem::PreparationIo::from_native_work(work)?,
             );
             let grant = ContentGrant::verify_directory_read(
-                &self.verifier,
-                &self.scope,
+                self.authority.verifier(),
+                self.authority.scope(),
                 volume,
                 granted_prefix,
                 &mut Some(&mut observer),
@@ -761,3 +752,6 @@ pub(in crate::filesystem) fn require_file_read(
 }
 
 use crate::executor::stock_boundary;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

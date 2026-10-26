@@ -30,6 +30,8 @@ impl RuntimeSigner {
         let public = Arc::new(PublicAuthority {
             trust: std::sync::RwLock::new(workload::trust(id, &workload)),
             metadata_key: metadata.verifying_key().to_bytes(),
+            workload: Default::default(),
+            historical: Default::default(),
             revision: tokio::sync::watch::channel(0).0,
         });
         Self {
@@ -43,6 +45,11 @@ impl RuntimeSigner {
 pub(super) struct PublicAuthority {
     pub(super) trust: std::sync::RwLock<acyclic_auth::trust::Snapshot>,
     pub(super) metadata_key: [u8; 32],
+    // One immutable workload and the canonical certificate verifier. Switching
+    // scopes retires the old workload without reauthenticating identical roots.
+    // Admission decisions are never retained.
+    pub(super) workload: std::sync::Mutex<workload::WorkloadOwner>,
+    pub(super) historical: std::sync::Mutex<workload::HistoricalOwner>,
     pub(super) revision: tokio::sync::watch::Sender<u64>,
 }
 

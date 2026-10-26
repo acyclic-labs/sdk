@@ -30,6 +30,12 @@ impl NativeStockExecutor {
         let (compaction, max_output_tokens) = output;
         let work = context.native_work()?;
         let invalid = |code, reason| Error::NativeBoundary { code, reason };
+        if tools.requires_approval_policy() && policy.is_none() {
+            return Err(invalid(
+                crate::wire::ErrorCode::Invalid,
+                "default tools require an approval policy binding",
+            ));
+        }
         if max_output_tokens == Some(0) {
             return Err(invalid(
                 crate::wire::ErrorCode::Invalid,

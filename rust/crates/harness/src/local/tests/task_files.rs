@@ -498,3 +498,167 @@ async fn delegate_dispatch_uses_spawn_and_publishes_a_child_result() -> Result<(
     harness.close().await?;
     Ok(())
 }
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn approval_history_is_independent_of_message_attachment_limits() -> Result<()> {
+    use crate::interaction::ApprovalDecisionFile;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let calls = (0..2).map(|i| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                format!("write-{i}"),
+                "write".into(),
+                json!({"path":format!("effect-{i}.txt"),
+                "text":"approved", "media_type":"text/plain", "display_name":"effect"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            }),
+        ])
+    });
+    let provider = scripted(calls.chain([ScriptedTurn::Text("done".into())]));
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .approval_policy(crate::approvals::ApprovalPolicy::default())
+            .limits(crate::conversation::Limits {
+                attachments: 1,
+                ..Default::default()
+            }),
+    )
+    .await?;
+    let foreign = super::context::admitted(
+        harness
+            .submit(OperationId::new(), "unrelated operation")
+            .await?,
+    )?;
+    let task = super::context::admitted(harness.submit(OperationId::new(), "write twice").await?)?;
+    let files = harness.runtime.approval_files(task).await?;
+    let query = Query::Approvals(Component::new(task.to_string())?);
+    let initial = files.observe(query.clone(), None, 1).await?;
+    let decide = async {
+        let mut changes = initial.changes;
+        let mut request = None;
+        let mut count = 0;
+        while count < 2 {
+            let change = changes.next().await.unwrap()?;
+            let Some(file) = change.file else {
+                continue;
+            };
+            match &file.key {
+                FileKey::Task {
+                    file: TaskFile::ApprovalRequest(_),
+                    ..
+                } => request = Some(file),
+                FileKey::Task {
+                    file: TaskFile::ApprovalReview { .. },
+                    ..
+                } => {
+                    // Negative control: the old per-message bound cannot even
+                    // hold one request plus its human waiting review.
+                    assert!(matches!(
+                        files.snapshot(&query, 1).await,
+                        Err(crate::task_volume::Error::LimitExceeded)
+                    ));
+                    let original = request.as_ref().unwrap();
+                    let FileKey::Task {
+                        task: component,
+                        file: TaskFile::ApprovalRequest(id),
+                    } = &original.key
+                    else {
+                        panic!("request");
+                    };
+                    let hash = crate::conversation::FileDescriptor::from_bytes(
+                        &original.bytes,
+                        "application/json",
+                        &mut None,
+                    )?;
+                    let decision = FileValue::new(
+                        FileKey::Task {
+                            task: component.clone(),
+                            file: TaskFile::ApprovalDecision {
+                                request: id.clone(),
+                                principal: Component::new(ApprovalDecisionFile::principal_file(
+                                    "human",
+                                ))?,
+                            },
+                        },
+                        serde_json::to_vec(&ApprovalDecisionFile::new(
+                            "human",
+                            hash.sha256(),
+                            1,
+                            count == 0,
+                            None,
+                        )?)
+                        .map_err(super::super::storage)?,
+                    );
+                    assert!(
+                        matches!(
+                            harness.submit_operation_approval(foreign, &decision).await,
+                            Err(Error::Unauthorized(_))
+                        ),
+                        "an unrelated admitted operation acquired decision authority"
+                    );
+                    harness.submit_operation_approval(task, &decision).await?;
+                    // An exact authenticated retry still finds the settled
+                    // canonical binding after it leaves the active index.
+                    harness.submit_approval_decision(&decision).await?;
+                    count += 1;
+                }
+                _ => {}
+            }
+        }
+        Ok::<_, Error>(())
+    };
+    let (result, decisions) = tokio::join!(harness.resume(task), decide);
+    decisions?;
+    assert!(
+        matches!(result, Err(Error::TaskFailed { task: failed, message })
+        if failed == task && message == "declined")
+    );
+    let head = harness
+        .workspace()
+        .unwrap()
+        .view()
+        .workspace()
+        .head(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    assert_eq!(
+        head.read(
+            "/effect-0.txt",
+            64,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new()
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .as_ref(),
+        b"approved"
+    );
+    assert!(
+        head.read(
+            "/effect-1.txt",
+            64,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new()
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        files
+            .inner
+            .pending_approvals(&Component::new(task.to_string())?)
+            .await?
+            .files
+            .is_empty()
+    );
+    harness.close().await?;
+    Ok(())
+}

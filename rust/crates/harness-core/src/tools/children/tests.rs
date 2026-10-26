@@ -565,3 +565,58 @@ proptest! {
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod crash_cuts;
 mod review;
+
+#[tokio::test]
+async fn wait_returns_parent_approval_attention_without_claiming_settlement() {
+    let files = files().await;
+    let worker = Component::new("worker").unwrap();
+    publish(
+        &files,
+        &worker,
+        ChildFile::Request,
+        b"work",
+        OperationId::new(),
+    )
+    .await
+    .unwrap();
+    let task = TaskId::from_bytes([3; 16]);
+    let status = ChildStatus {
+        task,
+        state: ChildState::Running,
+        settled: false,
+        inputs: 1,
+    };
+    let key = |file| FileKey::Child {
+        reference: worker.clone(),
+        file,
+    };
+    files
+        .inner
+        .append(
+            files.inner.head().await.unwrap(),
+            &FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap()),
+        )
+        .await
+        .unwrap();
+    let mut waiting = Box::pin(super::files::follow(&files, &worker, limits(), true, true));
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "running child must wait"
+    );
+    let approval = json!({"task": task, "request":"request", "request_sha256":"11".repeat(32)});
+    files
+        .inner
+        .append(
+            files.inner.head().await.unwrap(),
+            &FileValue::new(
+                key(ChildFile::ApprovalAttention),
+                serde_json::to_vec(&approval).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let result = waiting.await.unwrap().unwrap();
+    assert_eq!(result["approval"], approval);
+    assert_eq!(result["settled"], false);
+    assert_eq!(result["execution"]["settled"], false);
+}

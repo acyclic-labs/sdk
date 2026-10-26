@@ -417,7 +417,7 @@ async fn workspace_commands_reject_unbound_and_forged_calls_without_native_alloc
 }
 
 #[tokio::test]
-async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result<()> {
+async fn workspace_commands_use_the_calling_runtime_with_an_explicit_policy() -> Result<()> {
     struct Workspace(&'static str);
     impl ToolExecutor for Workspace {
         fn execute<'a>(
@@ -445,6 +445,11 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
     for workspace in ["checkout", "child-view"] {
         let bundle = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
+            .policy(Arc::new(
+                acyclic_harness::test_support::FixedToolPolicy::new(
+                    runtime::ToolPolicyDecision::Allow,
+                )?,
+            ))
             .workspace(Arc::new(Workspace(workspace)))
             .grant("task:spawn:commands@1")
             .task(TaskDefinition::live(

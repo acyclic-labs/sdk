@@ -18,6 +18,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "transaction_create_batch"
+path = "tests/transaction_create_batch.rs"
+required-features = ["memory", "distributed"]
+
+[[test]]
 name = "shared_storage_contract"
 path = "tests/shared_storage_contract.rs"
 

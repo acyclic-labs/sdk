@@ -9,7 +9,12 @@ fn sse(value: Value) -> String {
     format!("{event}data: {value}\n\n")
 }
 
-pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
+pub(crate) fn events(
+    path: &str,
+    step: &Step,
+    input_tokens: u64,
+    completed_text: Option<&str>,
+) -> Option<Vec<String>> {
     let mut output = Vec::new();
     let total_tokens = input_tokens.checked_add(2)?;
     let usage = json!({"input_tokens":input_tokens,"output_tokens":2,"total_tokens":total_tokens});
@@ -20,7 +25,7 @@ pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<S
     }
     match path {
         "responses" => {
-            responses(step, &usage, &mut output);
+            responses(step, &usage, completed_text, &mut output);
         }
         "chat/completions" => {
             for text in &step.text {
@@ -69,7 +74,7 @@ pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<S
     Some(output)
 }
 
-fn responses(step: &Step, usage: &Value, output: &mut Vec<String>) {
+fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &mut Vec<String>) {
     output.push(sse(
         json!({"type":"response.created","response":{"id":"mock-response","status":"in_progress"}}),
     ));
@@ -77,9 +82,10 @@ fn responses(step: &Step, usage: &Value, output: &mut Vec<String>) {
         output.push(sse(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":text})));
     }
     let mut items = Vec::new();
-    if !step.text.is_empty() && !step.hold {
+    if (!step.text.is_empty() || completed_text.is_some()) && !step.hold {
+        let text = completed_text.map_or_else(|| step.text.concat(), str::to_owned);
         let item = json!({"type":"message","id":"mock-message","role":"assistant",
-            "content":[{"type":"output_text","text":step.text.concat()}]});
+            "content":[{"type":"output_text","text":text}]});
         output.push(sse(
             json!({"type":"response.output_item.done","output_index":0,"item":item}),
         ));

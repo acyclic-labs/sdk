@@ -13,7 +13,7 @@ pub(super) fn validate_task_transition(
     Ok(())
 }
 
-pub(super) fn task_original_work(
+pub(crate) fn task_original_work(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Option<&NativeWork>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

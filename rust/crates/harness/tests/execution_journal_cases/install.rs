@@ -44,7 +44,12 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         None,
         &mut None,
     )?;
-    let approval = Interaction::approval("Install echo".into(), operation, digest)?;
+    let approval = Interaction::approval(
+        "Install echo".into(),
+        operation,
+        digest,
+        acyclic_harness::interaction::ApprovalSubject::Opaque {},
+    )?;
     journal
         .open_interaction(denied_id, &approval, None)?
         .await?;

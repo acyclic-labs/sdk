@@ -134,6 +134,65 @@ fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> 
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
+fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Result<()> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    for route in [ApprovalRoute::Policy, ApprovalRoute::Human] {
+        let arguments = json!({
+            "$serde_json::private::RawValue": "literal text, not a JSON document",
+            "nested": [{"paths": ["a b", "雪", "build/output"]}, vec![false; 64]],
+        });
+        let operation_id = OperationId::from_bytes([4; 16]);
+        let request = Interaction::approval(
+            "Run?".into(),
+            operation_id,
+            [5; 32],
+            ApprovalSubject::Tool {
+                route,
+                tool: "fs".into(),
+                call_id: "original-call".into(),
+                arguments,
+            },
+        )?;
+        let bytes =
+            serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
+        let ticket = InteractionTicket {
+            id: Uuid::from_bytes([1; 16]),
+            kind: InteractionKind::Approval,
+            request: file("native-tool-approval.json", &bytes)?,
+            deadline_unix_ms: None,
+            approval: Some(ApprovalBinding {
+                operation_id,
+                action_digest: [5; 32],
+            }),
+        };
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native)?,
+        );
+        let decoded = match ticket.validate_request_bytes(&bytes, &mut Some(&mut io)) {
+            Ok(decoded) => decoded,
+            Err(error) => panic!("native literal approval arguments must decode: {error}"),
+        };
+        assert_eq!(
+            decoded.0, request,
+            "native approval changed literal arguments"
+        );
+        assert_eq!(decoded.1, 0);
+        let Some(custody) = decoded.2.as_ref() else {
+            panic!("native request custody");
+        };
+        assert_eq!(custody.bytes(), decoded.0.owned_bytes()?);
+        assert!(native.shares_ledger(custody.work()));
+        drop(decoded);
+        assert_eq!(io.into_custody()?.bytes(), 0);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
 fn native_answer_error_retains_original_response_cause_after_request_drop() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let request_bytes = br#"{"type":"choice","prompt":"Choose","options":[{"id":"one","label":"One"}],"min_selections":1,"max_selections":1}"#;
@@ -185,7 +244,12 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
 fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let operation_id = OperationId::from_bytes([4; 16]);
-    let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
+    let request = Interaction::approval(
+        "Proceed?".into(),
+        operation_id,
+        [5; 32],
+        ApprovalSubject::Opaque {},
+    )?;
     let request_bytes =
         serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let ticket = InteractionTicket {
@@ -198,38 +262,57 @@ fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()>
             action_digest: [5; 32],
         }),
     };
-    let bytes = br#"{"type":"approval","approved":false,"reason":"Declined"}"#;
-    let detail = file("native-approval-decision.json", bytes)?;
+    let decision = ApprovalDecisionFile::new(
+        "approver",
+        ticket.request.descriptor().sha256(),
+        1,
+        false,
+        Some("Declined".into()),
+    )?;
+    let bytes = serde_json::to_vec(&decision).map_err(|error| Error::Invalid(error.to_string()))?;
+    let detail = file("native-approval-decision.json", &bytes)?;
+    let resolution = |outcome, expected_version| InteractionResolution {
+        id: ticket.id,
+        expected_version,
+        outcome,
+        detail: Some(detail.clone()),
+    };
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(native_budget(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
-    let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
-    ticket.validate_decision_bytes(
-        &request.0,
-        &InteractionOutcome::Declined {},
-        &detail,
-        bytes,
-        &mut Some(&mut io),
-    )?;
-    drop(request);
-    let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
-    assert!(matches!(
+    assert_eq!(
         ticket.validate_decision_bytes(
-            &request.0,
-            &InteractionOutcome::Approved {},
+            &resolution(InteractionOutcome::Declined {}, 1),
+            Some("approver"),
             &detail,
-            bytes,
+            &bytes,
             &mut Some(&mut io),
-        ),
-        Err(Error::NativeBoundary {
-            code: Conflict,
-            reason: "approval artifact disagrees with outcome",
-        })
-    ));
-    drop(request);
+        )?,
+        ApprovalDecisionFile::principal_digest("approver"),
+    );
+    // Negative controls: another verdict, version or resolving principal.
+    for (outcome, version, principal) in [
+        (InteractionOutcome::Approved {}, 1, "approver"),
+        (InteractionOutcome::Declined {}, 2, "approver"),
+        (InteractionOutcome::Declined {}, 1, "intruder"),
+    ] {
+        assert!(matches!(
+            ticket.validate_decision_bytes(
+                &resolution(outcome, version),
+                Some(principal),
+                &detail,
+                &bytes,
+                &mut Some(&mut io),
+            ),
+            Err(Error::NativeBoundary {
+                code: Conflict,
+                reason: "approval artifact disagrees with outcome",
+            })
+        ));
+    }
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
 }
@@ -290,7 +373,12 @@ fn staged_question_and_answer_are_schema_validated_before_ref_publication() -> R
 #[test]
 fn approval_binding_cannot_change_with_display_json() -> Result<()> {
     let operation_id = OperationId::from_bytes([4; 16]);
-    let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
+    let request = Interaction::approval(
+        "Proceed?".into(),
+        operation_id,
+        [5; 32],
+        ApprovalSubject::Opaque {},
+    )?;
     let request_bytes =
         serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut ticket = InteractionTicket {
@@ -326,4 +414,135 @@ fn approval_binding_cannot_change_with_display_json() -> Result<()> {
         Err(Error::Invalid(_))
     ));
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+    /// Decision files round-trip exactly and bind only their own request cut.
+    #[test]
+    fn decision_file_round_trips_and_binds_exactly(
+        principal in "[ -~]{1,64}",
+        sha in proptest::prelude::any::<[u8; 32]>(),
+        other in proptest::prelude::any::<[u8; 32]>(),
+        version in 1_u64..u64::MAX,
+        approved in proptest::prelude::any::<bool>(),
+        reason in proptest::option::of("[ -~]{0,32}"),
+    ) {
+        proptest::prop_assume!(sha != [0; 32]);
+        let decision = ApprovalDecisionFile::new(&principal, &sha, version, approved, reason)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        let bytes = serde_json::to_vec(&decision).unwrap();
+        let decoded = ApprovalDecisionFile::decode(&bytes, bytes.len() as u64).unwrap();
+        proptest::prop_assert_eq!(&decoded, &decision);
+        proptest::prop_assert_eq!(decoded.approved(), approved);
+        proptest::prop_assert!(decoded.binds(&sha, version));
+        proptest::prop_assert!(!decoded.binds(&sha, version - 1));
+        proptest::prop_assert_eq!(decoded.binds(&other, version), other == sha);
+        proptest::prop_assert!(ApprovalDecisionFile::decode(&bytes, bytes.len() as u64 - 1).is_err());
+        let file = ApprovalDecisionFile::principal_file(&principal);
+        proptest::prop_assert_eq!(file.len(), 32);
+        proptest::prop_assert!(crate::task_volume::Component::new(&file).is_ok());
+    }
+}
+
+#[test]
+fn decision_file_rejects_unbound_bodies() {
+    let sha = "ab".repeat(32);
+    let body = |principal: &str, sha: &str, version: u64| {
+        format!(
+            r#"{{"principal":"{principal}","request_sha256":"{sha}","expected_version":{version},"verdict":"approve","reason":null}}"#
+        )
+    };
+    assert!(ApprovalDecisionFile::decode(body("human", &sha, 1).as_bytes(), 4096).is_ok());
+    for invalid in [
+        body("", &sha, 1),
+        body("human", &sha, 0),
+        body("human", &"0".repeat(64), 1),
+        body("human", &"AB".repeat(32), 1),
+        body("human", &"ab".repeat(31), 1),
+        body("human", &sha, 1).replace("approve", "abstain"),
+        body("human", &sha, 1).replace("null}", r#"null,"extra":1}"#),
+    ] {
+        assert!(
+            ApprovalDecisionFile::decode(invalid.as_bytes(), 4096).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn approval_subject_names_the_exact_tool_call() -> Result<()> {
+    let tool = |tool: &str, call_id: &str| ApprovalSubject::Tool {
+        route: crate::interaction::ApprovalRoute::Policy,
+        tool: tool.into(),
+        call_id: call_id.into(),
+        arguments: json!({"command": "rm -rf build", "timeout": 30}),
+    };
+    let approval = |subject| {
+        Interaction::approval(
+            "Run?".into(),
+            OperationId::from_bytes([1; 16]),
+            [2; 32],
+            subject,
+        )
+    };
+    let request = approval(tool("bash", "call-1"))?;
+    let value =
+        serde_json::to_value(&request).map_err(|error| Error::Storage(error.to_string()))?;
+    assert_eq!(value["subject"]["arguments"]["command"], "rm -rf build");
+    assert_eq!(
+        serde_json::from_value::<Interaction>(value.clone())
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        request
+    );
+    // The exact arguments are retained, and accounted, by the request.
+    let opaque = approval(ApprovalSubject::Opaque {})?;
+    assert!(request.owned_bytes()? > opaque.owned_bytes()?);
+    // A tool subject must name its call.
+    for (name, call) in [("", "call-1"), ("bash", "")] {
+        assert!(approval(tool(name, call)).is_err());
+    }
+    // Unknown subject kinds, extra fields and a missing subject never decode.
+    let mut unknown = value.clone();
+    unknown["subject"]["kind"] = json!("shell");
+    let mut extra = value.clone();
+    extra["subject"]["extra"] = json!(1);
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("subject");
+    for invalid in [unknown, extra, missing] {
+        assert!(serde_json::from_value::<Interaction>(invalid).is_err());
+    }
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+    #[test]
+    fn approval_subject_round_trips_exact_arguments_and_rejects_substitution(
+        strings in proptest::collection::vec(".{0,24}", 0..6),
+        number in proptest::prelude::any::<i32>(),
+        flag in proptest::prelude::any::<bool>(),
+    ) {
+        let arguments = json!({"strings": strings, "number": number, "flag": flag,
+            "$serde_json::private::RawValue": ["literal", false]});
+        let request = Interaction::approval("Run?".into(), OperationId::from_bytes([1;16]), [2;32],
+            ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy, tool: "tool".into(), call_id: "call".into(), arguments }).unwrap();
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let ticket = InteractionTicket { id: Uuid::from_bytes([3;16]), kind: InteractionKind::Approval,
+            request: file("approval.json", &bytes).unwrap(), deadline_unix_ms: None,
+            approval: Some(ApprovalBinding { operation_id: OperationId::from_bytes([1;16]), action_digest: [2;32] }) };
+        proptest::prop_assert_eq!(&ticket.validate_request_bytes(&bytes, &mut None).unwrap().0, &request);
+        let native = crate::executor::json::json_from_slice_bounded(
+            std::marker::PhantomData::<Interaction>, &bytes,
+            crate::executor::json::JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 },
+            Some(crate::wire::ErrorCode::Invalid),
+            Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
+        ).unwrap();
+        proptest::prop_assert_eq!(&native, &request);
+        let mut substituted = serde_json::to_value(&request).unwrap();
+        substituted["subject"]["arguments"] = serde_json::Value::Null;
+        let altered = serde_json::to_vec(&substituted).unwrap();
+        proptest::prop_assert!(ticket.validate_request_bytes(&altered, &mut None).is_err());
+    }
 }

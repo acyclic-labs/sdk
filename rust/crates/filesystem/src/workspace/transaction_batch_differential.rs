@@ -137,7 +137,7 @@ fn pair(
                         Ok(())
                     } else {
                         transaction
-                            .write_batch_with_accounting::<true>(
+                            .stage_file_batch::<true, ReplaceFiles>(
                                 &directories,
                                 &files,
                                 &mut accounting,

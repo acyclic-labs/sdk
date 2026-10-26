@@ -68,11 +68,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key.as_str()
         };
         let receipt_path =
-            content_identity_path_io(receipt_identity, true, ".system/harness-uploads/", Some(io))?;
+            content_receipt_path_io(receipt_identity, internal_class.is_some(), true, Some(io))?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
         let receipt =
             read_generation(&original, &receipt_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
+        let receipt = if internal_class.is_some() {
+            recover_internal_upload_receipt(&original, receipt_identity, receipt, Some(io)).await?
+        } else {
+            receipt
+        };
         let hold = io.guard_bytes(&receipt)?;
         let receipt = (receipt, hold);
         let recorded = io.decode(
@@ -214,6 +219,46 @@ const UPLOAD_RECORD_BYTES: u64 = 6
         + 32 * crate::conversation::MAX_LABEL_BYTES as u64
         + 1024);
 
+// Older internal writes kept the FileRef index and the canonical receipt at
+// separate paths. New writes use the tuple-shaped index as their receipt.
+pub(in crate::filesystem) async fn recover_internal_upload_receipt<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    original: &acyclic_fs::Generation<A, O>,
+    identity: &str,
+    receipt: acyclic_stream::OwnedBytes,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    if receipt.trim_ascii_start().first() != Some(&b'{') {
+        return Ok(receipt);
+    }
+    drop(receipt);
+    let path = content_receipt_path_io(identity, false, true, io)?;
+    let _hold = io
+        .map(|io| io.guard_owned(path.capacity() as u64))
+        .transpose()?;
+    read_generation(original, &path, UPLOAD_RECORD_BYTES, io).await
+}
+
+pub(in crate::filesystem) fn content_metadata_matches(
+    metadata: &[u8],
+    file: &FileRef,
+    receipt: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<bool> {
+    if metadata == receipt {
+        return Ok(true);
+    }
+    let legacy = match io {
+        Some(io) => io.encode(file, UPLOAD_RECORD_BYTES, false)?,
+        None => acyclic_stream::OwnedBytes::from(
+            serde_json::to_vec(file).map_err(|error| Error::Invalid(error.to_string()))?,
+        ),
+    };
+    Ok(metadata == legacy.as_ref())
+}
+
 async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     original: &acyclic_fs::Generation<A, O>,
     recorded: &(FileRef, Option<GenerationRef>),
@@ -237,10 +282,7 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         read_generation(original, &metadata_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
     let hold = io.guard_bytes(&metadata)?;
     let metadata = (metadata, hold);
-    let encoded = io.encode(&recorded.0, UPLOAD_RECORD_BYTES, false)?;
-    let hold = io.guard_bytes(&encoded)?;
-    let encoded = (encoded, hold);
-    if encoded.0.as_ref() != metadata.0.as_ref() {
+    if !content_metadata_matches(&metadata.0, &recorded.0, &canonical.0, Some(io))? {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
@@ -248,6 +290,24 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         ));
     }
     Ok(())
+}
+
+/// Decode current publication records and the FileRef indexes written before them.
+pub(in crate::filesystem) fn decode_content_metadata<'a>(
+    bytes: &[u8],
+    io: &'a PreparationIo,
+) -> Result<(FileRef, DecodeReservation<'a>)> {
+    if bytes.trim_ascii_start().first() == Some(&b'{') {
+        return io.decode(PhantomData::<FileRef>, bytes, crate::wire::ErrorCode::Storage);
+    }
+    let ((file, expected), mut hold) = io.decode(
+        PhantomData::<(FileRef, Option<GenerationRef>)>,
+        bytes,
+        crate::wire::ErrorCode::Storage,
+    )?;
+    drop(expected);
+    hold.substitute(file.logical_owned_bytes()?)?;
+    Ok((file, hold))
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {

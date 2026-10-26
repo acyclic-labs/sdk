@@ -2,11 +2,11 @@ use super::*;
 
 // Controls may fail after accepting a terminal intent. Keep the original effect
 // future alive until its cancellation and final publications have drained.
-pub(super) async fn drain(
-    effect: impl Future<Output = Result<()>>,
+pub(super) async fn drain<T>(
+    effect: impl Future<Output = Result<T>>,
     controls: impl Future<Output = Result<std::convert::Infallible>>,
     cancellation: &acyclic_fs::CancellationToken,
-) -> Result<()> {
+) -> Result<T> {
     futures::pin_mut!(effect, controls);
     match futures::future::select(controls, effect).await {
         futures::future::Either::Right((result, _)) => result,

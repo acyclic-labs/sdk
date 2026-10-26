@@ -43,8 +43,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         proof: &ResourceCreationProofRef,
         io: &PreparationIo,
     ) -> Result<CreatedResourceReceipt> {
-        let allocation =
-            authenticate(&self.host, self.issuer.audience(), request, proof, Some(io)).await?;
+        let bound = CreationRequest::new(&self.host, request, proof, io).await?;
+        let allocation = bound
+            .authenticate(&self.host, self.issuer.audience(), Some(io))
+            .await?;
         // Verify immutable input bodies once when issuing the reader. Rechecking
         // its protected allocation identity must not reload those bodies on each read.
         if allocation.authority.is_some() {
@@ -140,8 +142,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop((verifier, scope));
         io.release(temporary)?;
         let creation = Arc::new(CreatedProvenance {
-            request: request.clone(),
-            proof: proof.clone(),
+            request: bound.into_owned(),
             origin: allocation.origin.clone(),
             volume: allocation.volume.clone(),
             generation: allocation.generation.clone(),

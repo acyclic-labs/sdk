@@ -73,6 +73,74 @@ pub struct Change {
 }
 
 impl Change {
+    /// Retires a settled binding from a disposable session view. Exact file
+    /// queries keep the canonical request, reviews and decision unchanged.
+    #[doc(hidden)]
+    pub fn active_approval_view<'a>(&self, keys: impl Iterator<Item = &'a super::FileKey>) -> Self {
+        use super::{FileKey, TaskFile};
+        let mut change = self.clone();
+        if !self.file.iter().chain(&self.files).any(|file| {
+            matches!(
+                file.key,
+                FileKey::Task {
+                    file: TaskFile::ApprovalDecision { .. } | TaskFile::ApprovalReview { .. },
+                    ..
+                }
+            )
+        }) {
+            return change;
+        }
+        let retained: Vec<_> = keys.collect();
+        let decisions: Vec<_> = self
+            .file
+            .iter()
+            .chain(&self.files)
+            .filter_map(|file| match &file.key {
+                FileKey::Task {
+                    task,
+                    file: TaskFile::ApprovalDecision { request, .. },
+                } => Some((task, request)),
+                _ => None,
+            })
+            .collect();
+        for key in &retained {
+            if let FileKey::Task { task, file } = key {
+                let (TaskFile::ApprovalRequest(request) | TaskFile::ApprovalReview { request, .. }) =
+                    file
+                else {
+                    continue;
+                };
+                if decisions.contains(&(task, request)) {
+                    change.removed.push((*key).clone());
+                }
+            }
+        }
+        let active = |file: &FileValue| match &file.key {
+            FileKey::Task {
+                file: TaskFile::ApprovalDecision { .. },
+                ..
+            } => false,
+            FileKey::Task {
+                task,
+                file: TaskFile::ApprovalReview { request, .. },
+            } => {
+                !decisions.contains(&(task, request))
+                    && retained.contains(&&FileKey::Task {
+                        task: task.clone(),
+                        file: TaskFile::ApprovalRequest(request.clone()),
+                    })
+            }
+            _ => true,
+        };
+        if change.file.as_ref().is_some_and(|file| !active(file)) {
+            change.file = None;
+        }
+        change.files.retain(active);
+        change.removed.sort_unstable();
+        change.removed.dedup();
+        change
+    }
+
     /// A cursor-only observation contains no presentation changes.
     pub fn is_checkpoint(&self) -> bool {
         self.file.is_none() && self.files.is_empty() && self.removed.is_empty()
@@ -331,7 +399,7 @@ pub fn record_changes(
                     continue;
                 }
                 let settled = if matches!(query, Query::PendingApprovals(_)) {
-                    super::approval_query::Pending::prepare(&file.key)
+                    super::approval_query::prepare(&file.key)
                         .filter(|(_, open)| !open)
                         .map(|(key, _)| key)
                 } else {

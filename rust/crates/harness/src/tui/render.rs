@@ -40,6 +40,7 @@ pub struct ClientRenderer {
     task: task::TaskRows,
     archive: archive::Archive,
     transcript: OnceLock<Vec<Line<'static>>>,
+    approval_rows: Vec<Line<'static>>,
     wrapped: bool,
     top: Option<super::TranscriptAnchor>,
     view_height: usize,
@@ -144,6 +145,15 @@ impl ClientRenderer {
             self.tool_details,
             owner,
         );
+        let approval_rows = if self.task.busy() {
+            approvals::rows(selected.as_ref().map(|(files, task)| files.task(task)))
+        } else {
+            Vec::new()
+        };
+        if self.approval_rows != approval_rows {
+            self.approval_rows = approval_rows;
+            self.transcript.take();
+        }
         self.project_rows(old_prefix, archive_changed, task_changed);
         self.documents(views);
         self.busy = self.task.busy();
@@ -158,10 +168,6 @@ impl ClientRenderer {
         ]);
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
-        if self.busy {
-            self.notices
-                .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
-        }
         self.compose_notices();
     }
 
@@ -208,7 +214,13 @@ impl ClientRenderer {
         } else {
             prefix + task_changed
         };
-        let total = prefix + self.task.rows().len();
+        let answer_total = prefix + self.task.rows().len();
+        let total = answer_total + self.approval_rows.len();
+        let changed = if self.transcript.get().is_none() {
+            changed.min(answer_total)
+        } else {
+            changed
+        };
         if archive_dropped > 0
             || self.task.answer_dropped() > 0
             || changed < total
@@ -216,7 +228,8 @@ impl ClientRenderer {
         {
             self.transcript.take();
         }
-        if archive_changed >= old_prefix
+        if self.approval_rows.is_empty()
+            && archive_changed >= old_prefix
             && prefix == old_prefix
             && self.wrapped_transcript.source_len() == total
             && changed + 1 == total
@@ -224,8 +237,10 @@ impl ClientRenderer {
         {
             self.wrapped_transcript.append_line(&text, style);
         } else {
-            self.wrapped_transcript
-                .replace_parts(&[self.archive.rows(), self.task.rows()], changed);
+            self.wrapped_transcript.replace_parts(
+                &[self.archive.rows(), self.task.rows(), &self.approval_rows],
+                changed,
+            );
         }
         if self.task.tools_full() {
             self.wrapped_tools.replace(self.task.tools(), 0);
@@ -545,6 +560,7 @@ impl ClientRenderer {
                 .rows()
                 .iter()
                 .chain(self.task.rows())
+                .chain(&self.approval_rows)
                 .cloned()
                 .collect()
         })
