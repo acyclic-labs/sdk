@@ -140,6 +140,8 @@ mod packet_dispatch;
 mod packet_publication;
 mod packet_router;
 mod packet_session;
+mod vring;
+mod vring_packet;
 use notification::CacheNotifier;
 mod host_io;
 mod host_session;

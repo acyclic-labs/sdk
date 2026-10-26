@@ -1,9 +1,9 @@
 //! One physical completion boundary for every packet transport.
 
+use super::NativeMountError;
 use super::packet::{OUTPUT_HEADER, PacketOutput, PacketRequest};
 use super::packet_dispatch::PacketFailure;
 use super::packet_session::PacketSession;
-use std::io;
 
 impl PacketSession {
     /// The publisher must complete the transport's descriptor/device operation
@@ -13,7 +13,7 @@ impl PacketSession {
         &self,
         request: &PacketRequest<'_>,
         response: &mut [u8],
-        publish: impl FnOnce(Option<&[u8]>) -> io::Result<()>,
+        publish: impl FnOnce(Option<&[u8]>) -> Result<(), NativeMountError>,
     ) -> Result<bool, PacketFailure> {
         match self.dispatch(request, response) {
             Ok(reply) => {
@@ -23,7 +23,7 @@ impl PacketSession {
                     .transpose()?;
                 // On failure the pending reply closes the session before its
                 // original work and projection leases can be released.
-                publish(bytes).map_err(super::NativeMountError::from)?;
+                publish(bytes)?;
                 reply.delivered();
                 Ok(request.opcode != 38)
             }
@@ -45,7 +45,7 @@ impl PacketSession {
         request: &PacketRequest<'_>,
         response: &mut [u8],
         errno: i32,
-        publish: impl FnOnce(Option<&[u8]>) -> io::Result<()>,
+        publish: impl FnOnce(Option<&[u8]>) -> Result<(), NativeMountError>,
     ) -> Result<(), PacketFailure> {
         let result = (|| {
             let bytes = if matches!(request.opcode, 2 | 42) {
@@ -54,7 +54,7 @@ impl PacketSession {
                 PacketOutput::new(response, 0)?.finish(request.unique, Some(errno))?;
                 Some(response.get(..OUTPUT_HEADER).ok_or(libc::EPROTO)?)
             };
-            publish(bytes).map_err(super::NativeMountError::from)?;
+            publish(bytes)?;
             Ok(())
         })();
         if result.is_err() {
