@@ -3,7 +3,6 @@ import test from "node:test";
 import { render as renderHttp, rust as httpSource } from "./generate-stream-http-contract.mjs";
 import { render as renderTokens, rust as tokenSource } from "./generate-stream-token-operations.mjs";
 import { render as renderWidths, rust as widthSource } from "./generate-inference-widths.mjs";
-import { render as renderChildPage } from "./generate-harness-child-page-contract.mjs";
 
 test("Stream HTTP generator keeps route result types without a runtime contract export", () => {
   assert.deepEqual(httpSource, [["acyclic-stream", "bin", "stream-http-contract"]]);
@@ -43,13 +42,3 @@ test("inference generator retains named Rust widths without publishing the unuse
   assert.match(files["typescript/packages/inference/generated/widths.d.ts"], /readonly "futureWidth": 7;/);
 });
 
-test("child-page generator admits only the one positive safe-integer default", () => {
-  const key = "typescript/packages/harness/src/child-page-contract.ts";
-  assert.match(renderChildPage([JSON.stringify({ default_page: 345 })])[key], /HARNESS_CHILD_PAGE_DEFAULT = 345 as number;/);
-  for (const contract of [{}, { other: 1 }, { default_page: 1, extra: 1 }, { ",default_page": 1 }]) {
-    assert.throws(() => renderChildPage([JSON.stringify(contract)]), /child-page contract field inventory drift/);
-  }
-  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, null, "1"]) {
-    assert.throws(() => renderChildPage([JSON.stringify({ default_page: value })]), /has invalid default_page/);
-  }
-});

@@ -43,10 +43,6 @@ name = "custom_executor"
 required-features = ["test-support"]
 
 [[example]]
-name = "runtime-turn-cost"
-required-features = ["filesystem-local", "native-execution", "test-support"]
-
-[[example]]
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
 

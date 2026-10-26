@@ -28,7 +28,6 @@ node_modules/
 /typescript/packages/machines/src/managed-oci-contract.ts
 /typescript/packages/stream/src/http-contract.ts
 /typescript/packages/stream/src/token-operations.ts
-/typescript/packages/harness/src/child-page-contract.ts
 /typescript/packages/harness/src/conversation-page-contract.ts
 /typescript/packages/harness/src/private-directory-page-contract.ts
 /typescript/packages/harness/src/limits-contract.ts

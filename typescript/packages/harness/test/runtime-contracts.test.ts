@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { type TaskId, type HarnessRuntimeState, policyIdentity, Harness, type WasmTaskAdmissionWire, type WorkflowAdmissionWire, type WasmNativeLimitsWire, DEFAULT_LIMITS } from "../src/index.js";
 import { contracts } from "./support/runtime-fixture.js";
-import { HARNESS_CHILD_PAGE_DEFAULT } from "../src/child-page-contract.js";
+import { CHILD_PAGE_DEFAULT } from "../src/agent-harness.js";
 
 test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
 const parent = "12345678-1234-4234-8234-123456789abc" as TaskId;
@@ -47,7 +47,7 @@ const state: HarnessRuntimeState = {
 };
 const runtime = await Harness.builder(contracts).state(state).build();
 expect(await runtime.children(parent)).toEqual(page);
-expect(observedMaximum).toBe(HARNESS_CHILD_PAGE_DEFAULT);
+expect(observedMaximum).toBe(CHILD_PAGE_DEFAULT);
 
 const malformedRuntime = await Harness.builder(contracts).state({
   ...state,
