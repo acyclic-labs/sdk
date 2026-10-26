@@ -9,7 +9,9 @@ use acyclic_fs::{
 /// Durable leases sharing the filesystem's exact `IndexedDB` authority.
 #[wasm_bindgen]
 pub struct BrowserOperationWindowCoordinator {
-    inner: OperationWindowCoordinator<BrowserAuthority>,
+    inner: OperationWindowCoordinator<
+        acyclic_fs::StreamOperationWindowStore<dyn acyclic_stream::StreamProvider>,
+    >,
     owner: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
 }
 
@@ -161,7 +163,7 @@ impl BrowserFs {
                 "operation windows require persistent browser authority",
             ));
         }
-        let inner = engine.operation_windows();
+        let inner = OperationWindowCoordinator::new(engine.operation_window_store());
         Ok(BrowserOperationWindowCoordinator {
             inner,
             owner: engine.clone(),

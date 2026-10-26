@@ -1,14 +1,14 @@
 use super::*;
 
 /// One unpublished sparse atomic workspace transaction.
-pub struct Transaction<A, O> {
+pub struct Transaction<A: 'static, O: 'static> {
     pub(super) workspace: Workspace<A, O>,
     pub(crate) checkout: Checkout<A, O>,
     pub(super) idempotency_key: IdempotencyKey,
     pub(super) requires_rebase: bool,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Observe an authorized policy cut as a transaction dependency. A rebase
     /// across a policy edit then conflicts even when the data paths are disjoint.
     /// The caller must recheck the fence's time interval before publication.

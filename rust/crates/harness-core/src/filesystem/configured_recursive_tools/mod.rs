@@ -45,7 +45,7 @@ use crate::filesystem::PreparationIo;
 use crate::wire::ErrorCode;
 
 /// Portable source factory using the runtime's actual Filesystem and Stream.
-pub struct ConfiguredRecursiveToolSource<P, A, O> {
+pub struct ConfiguredRecursiveToolSource<P, A: 'static, O: 'static> {
     config: ConfiguredRecursiveToolsConfig,
     stream: Arc<P>,
     filesystem: Arc<FilesystemHost<A, O>>,

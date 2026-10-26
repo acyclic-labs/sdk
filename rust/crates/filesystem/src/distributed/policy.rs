@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn publish_with_policy<G: AuthorityGuard>(
         &self,
         request: CommitRequest,
@@ -8,8 +8,50 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<(CommitOutcome, ProviderAllocation), AuthorityError<G::Error>> {
-        let request = self.fence_policy(request, work)?;
+        self.publish_with_policy_cuts(request, deadline, &[], work, guard)
+            .await
+    }
+
+    pub(super) async fn publish_with_policy_cuts<G: AuthorityGuard>(
+        &self,
+        request: CommitRequest,
+        deadline: Option<u64>,
+        cuts: &[crate::PolicyCut],
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<(CommitOutcome, ProviderAllocation), AuthorityError<G::Error>> {
+        let request = self.with_policy_cuts(request, cuts, work)?;
         self.commit(request, deadline, work, guard).await
+    }
+
+    pub(super) fn with_policy_cuts(
+        &self,
+        mut request: CommitRequest,
+        cuts: &[crate::PolicyCut],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<CommitRequest, AuthorityStoreError> {
+        for cut in cuts {
+            request = self.fence_policy(request, *cut, work)?;
+        }
+        if let Some(current) = crate::PolicyCut::current() {
+            let mut captured = false;
+            for cut in cuts {
+                let visit = WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                };
+                work.admit(visit)?;
+                work.charge(visit)?;
+                if *cut == current {
+                    captured = true;
+                    break;
+                }
+            }
+            if !captured {
+                request = self.fence_policy(request, current, work)?;
+            }
+        }
+        Ok(request)
     }
 
     /// Every disclosure publication checks its source in the same Streams
@@ -17,11 +59,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     fn fence_policy(
         &self,
         mut request: CommitRequest,
+        cut: crate::PolicyCut,
         work: &mut AuthorityWork<'_>,
     ) -> Result<CommitRequest, AuthorityStoreError> {
-        let Some(cut) = crate::PolicyCut::current() else {
-            return Ok(request);
-        };
         if cut.owner != self.operation_claims().owner_identity() {
             return Err(AuthorityStoreError::RejectedStatic(
                 "policy cut and publication use different Streams owners",
@@ -59,21 +99,25 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         )?;
         request.conditions = conditions;
         // A rejected stale cut cannot consume a later freshly authorized attempt.
-        request.idempotency_key = work.key(
+        let key = work.key(
             b"policy-cut-attempt\0",
             &[
-                request.idempotency_key.as_bytes(),
                 &cut.authority.into_bytes(),
                 cut.head.digest.as_bytes(),
                 &cut.head.sequence.get().to_le_bytes(),
                 &cut.epoch_tail.to_le_bytes(),
             ],
         )?;
+        request.idempotency_key = work.folded_key(
+            b"authority-policy-attempt\0",
+            &request.idempotency_key,
+            &key,
+        )?;
         Ok(request)
     }
 }
 
-fn condition_path(condition: &CommitCondition) -> &StreamPath {
+pub(super) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Head { path, .. }
         | CommitCondition::Tail { path, .. }
@@ -81,7 +125,7 @@ fn condition_path(condition: &CommitCondition) -> &StreamPath {
     }
 }
 
-fn merge_policy_condition(
+pub(super) fn merge_policy_condition(
     conditions: &mut Vec<CommitCondition>,
     policy: CommitCondition,
     work: &mut AuthorityWork<'_>,

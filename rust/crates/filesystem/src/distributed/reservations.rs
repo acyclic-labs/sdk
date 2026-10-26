@@ -105,6 +105,66 @@ fn key_matches(key: &[u8], domain: &[u8], parts: &[&[u8]]) -> bool {
     remaining.is_empty()
 }
 
+fn verify_release(
+    reservation: PublicationReservation,
+    observation: &acyclic_stream::IdempotencyObservation,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityStoreError> {
+    if !key_matches(
+        observation.idempotency_key.as_bytes(),
+        b"release-publication\0",
+        &[
+            &reservation.authority_id.into_bytes(),
+            &reservation.operation_id.into_bytes(),
+            &reservation.gate_tail.to_le_bytes(),
+        ],
+    ) {
+        return Err(authority_corrupt(
+            "publication release observation has another retry identity",
+            work,
+        ));
+    }
+    let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
+        return Err(authority_corrupt(
+            "publication release identity retained another Stream mutation family",
+            work,
+        ));
+    };
+    let CommitOutcome::Committed(envelope) = outcome else {
+        return Err(AuthorityStoreError::RejectedStatic(
+            "publication reservation is no longer active",
+        ));
+    };
+    let mut request = request(
+        reservation.authority_id,
+        None,
+        reservation.operation_id,
+        reservation.gate_tail,
+        None,
+        work,
+    )?;
+    let end = reservation
+        .gate_tail
+        .checked_add(1)
+        .ok_or(crate::WorkError::Overflow)?;
+    let request_digest = digest(&mut request, work)?;
+    let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
+        unreachable!("release is one append");
+    };
+    let valid = request_digest == observation.request_digest
+        && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)]
+            if &append.path == gate && append.start == reservation.gate_tail && append.end == end && append.tail == end
+            && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail
+        && record.commit_id == envelope.commit_id && record.value.as_ref() == PUBLICATION_GATE_FREE));
+    if !valid {
+        return Err(authority_corrupt(
+            "publication release observation does not bind the original gate release",
+            work,
+        ));
+    }
+    Ok(())
+}
+
 fn qualified(
     observation: &acyclic_stream::IdempotencyObservation,
     authority: AuthorityId,
@@ -163,7 +223,7 @@ fn qualified(
         ))
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn reservation_gate(
         &self,
         authority: AuthorityId,
@@ -381,6 +441,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ReservationOutcome, AuthorityStoreError> {
+        let actor = self.actor(authority, work)?;
+        let journal = actor.lease(work).await?;
+        let _revision = actor.begin(journal)?;
         work.check()?;
         let snapshot = self.fork_snapshot(authority, work).await?;
         if snapshot.head != expected {
@@ -445,6 +508,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         reservation: PublicationReservation,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
+        let actor = self.actor(reservation.authority_id, work)?;
+        let journal = actor.lease(work).await?;
+        let _revision = actor.begin(journal)?;
         work.check()?;
         let observed = self
             .inspect_reservation(
@@ -458,59 +524,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             )
             .await?;
         if let Some(observation) = &observed.0 {
-            if !key_matches(
-                observation.idempotency_key.as_bytes(),
-                b"release-publication\0",
-                &[
-                    &reservation.authority_id.into_bytes(),
-                    &reservation.operation_id.into_bytes(),
-                    &reservation.gate_tail.to_le_bytes(),
-                ],
-            ) {
-                return Err(authority_corrupt(
-                    "publication release observation has another retry identity",
-                    work,
-                ));
-            }
-            let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
-                return Err(authority_corrupt(
-                    "publication release identity retained another Stream mutation family",
-                    work,
-                ));
-            };
-            let CommitOutcome::Committed(envelope) = outcome else {
-                return Err(AuthorityStoreError::RejectedStatic(
-                    "publication reservation is no longer active",
-                ));
-            };
-            let mut request = request(
-                reservation.authority_id,
-                None,
-                reservation.operation_id,
-                reservation.gate_tail,
-                None,
-                work,
-            )?;
-            let end = reservation
-                .gate_tail
-                .checked_add(1)
-                .ok_or(crate::WorkError::Overflow)?;
-            let request_digest = digest(&mut request, work)?;
-            let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
-                unreachable!("release is one append");
-            };
-            let valid = request_digest == observation.request_digest
-                && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)]
-                    if &append.path == gate && append.start == reservation.gate_tail && append.end == end && append.tail == end
-                    && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail
-                        && record.commit_id == envelope.commit_id && record.value.as_ref() == PUBLICATION_GATE_FREE));
-            if !valid {
-                return Err(authority_corrupt(
-                    "publication release observation does not bind the original gate release",
-                    work,
-                ));
-            }
-            drop(request);
+            verify_release(reservation, observation, work)?;
             drop(observed);
             work.release_request()?;
             return work.finish(());

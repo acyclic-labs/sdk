@@ -180,9 +180,10 @@ pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLi
 #[cfg(not(target_arch = "wasm32"))]
 pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError, AuthorityGuard,
-    AuthorityWork, GenerationFork, GenerationForkSource, PolicyCut, PolicyOwner, PublicationScope,
-    WorkspaceForkCommit, WorkspaceForkOutcome,
+    AppendGroupOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError,
+    AuthorityGroupCost, AuthorityGuard, AuthorityWork, GenerationFork, GenerationForkSource,
+    OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask, PolicyCut, PolicyOwner,
+    PublicationScope, WorkspaceForkCommit, WorkspaceForkOutcome,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};

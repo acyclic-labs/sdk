@@ -2,7 +2,7 @@ use super::*;
 
 /// The selected data, policy and authenticated identity cannot be replaced or
 /// extracted. A read consumes this observation and fences its returned bytes.
-pub(in crate::filesystem) struct ReadObservation<'a, A, O> {
+pub(in crate::filesystem) struct ReadObservation<'a, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     generation: acyclic_fs::Generation<A, O>,
     view: CompiledAccess<'a>,

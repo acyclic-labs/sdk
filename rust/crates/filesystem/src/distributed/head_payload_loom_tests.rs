@@ -32,7 +32,7 @@ pub(super) fn resample_payload() -> bool {
     FAULT.with(Cell::get) == Fault::ResamplePayload
 }
 
-pub(super) async fn resampled_payload<P: StreamProvider>(
+pub(super) async fn resampled_payload<P: crate::distributed::AuthorityProvider + ?Sized>(
     store: &StreamAuthorityStore<P>,
     authority: AuthorityId,
     work: &mut AuthorityWork<'_>,

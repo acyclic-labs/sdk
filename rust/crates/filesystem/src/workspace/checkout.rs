@@ -4,7 +4,7 @@ pub(super) fn authorization_changed(authorized: GenerationId, observed: Generati
     authorized != observed
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Opens an authored private or immutable checkout.
     pub async fn checkout<W: crate::facade::FsWork>(
         &self,

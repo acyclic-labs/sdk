@@ -118,7 +118,7 @@ pub(super) fn pending_binding_path<'a>(
     Ok(None)
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) async fn admit_mutation_names_with_accounting(
         &mut self,
         operations: &mut [Mutation],
@@ -659,7 +659,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(crate) async fn directory_binding_with_accounting(
         &self,
         id: FileId,

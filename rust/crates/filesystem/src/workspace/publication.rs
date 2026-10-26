@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Fences this workspace's mutable head for an exact publication operation.
     pub async fn reserve_publication<W: crate::facade::FsWork>(
         &self,

@@ -9,13 +9,13 @@ use acyclic_fs::access::Action;
 ///     plan.plan
 /// }
 /// ```
-pub struct VolumeImportPlan<'a, A, O> {
+pub struct VolumeImportPlan<'a, A: 'static, O: 'static> {
     plan: JoinPlan<A, O>,
     source_grant: &'a ContentGrant,
     target_grant: &'a ContentGrant,
 }
 
-impl<'a, A, O> VolumeImportPlan<'a, A, O> {
+impl<'a, A: 'static, O: 'static> VolumeImportPlan<'a, A, O> {
     pub(super) fn new(
         plan: JoinPlan<A, O>,
         source_grant: &'a ContentGrant,

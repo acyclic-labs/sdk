@@ -34,3 +34,38 @@ pub(crate) async fn delay(milliseconds: u32) {
     };
     let _ = receiver.await;
 }
+
+struct HostTurn {
+    channel: web_sys::MessageChannel,
+    _callback: Closure<dyn FnMut(web_sys::MessageEvent)>,
+}
+impl Drop for HostTurn {
+    fn drop(&mut self) {
+        self.channel.port1().set_onmessage(None);
+        self.channel.port1().close();
+        self.channel.port2().close();
+    }
+}
+pub(crate) async fn yield_now() -> Result<(), crate::StreamError> {
+    use wasm_bindgen::JsCast;
+    let channel = web_sys::MessageChannel::new().map_err(|_| crate::StreamError::Unavailable)?;
+    let (sender, receiver) = oneshot::channel();
+    let mut sender = Some(sender);
+    let callback = Closure::new(move |_: web_sys::MessageEvent| {
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(());
+        }
+    });
+    channel
+        .port1()
+        .set_onmessage(Some(callback.as_ref().unchecked_ref()));
+    let turn = HostTurn {
+        channel,
+        _callback: callback,
+    };
+    turn.channel
+        .port2()
+        .post_message(&wasm_bindgen::JsValue::UNDEFINED)
+        .map_err(|_| crate::StreamError::Unavailable)?;
+    receiver.await.map_err(|_| crate::StreamError::Unavailable)
+}

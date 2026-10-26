@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Creates or replaces one complete UTF-8 file in a single atomic
     pub async fn write_text(
         &self,

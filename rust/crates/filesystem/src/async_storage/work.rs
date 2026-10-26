@@ -6,6 +6,103 @@ use crate::{
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProvider};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod commit_tests;
+
+/// Transfer retained custody only at an existing public value/guard boundary.
+/// Internal fallible operations keep `Owned` intact so its value drops first.
+pub(crate) fn authority_parts<T>(owned: crate::kernel::Owned<T>) -> (T, AuthorityAllocation) {
+    let allocation = match owned.allocation {
+        crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+            Some(allocation)
+        }
+    };
+    (owned.value, allocation)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod custody_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Waker};
+
+    struct ObserveRetirement<'a> {
+        original: &'a crate::NativeMaterializationWork,
+        minimum: u64,
+        observed: &'a AtomicBool,
+    }
+
+    impl Drop for ObserveRetirement<'_> {
+        fn drop(&mut self) {
+            self.observed.store(
+                self.original.live_allocation_bytes() >= self.minimum,
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    #[test]
+    fn authority_owned_vectors_keep_funding_through_success_error_and_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for exit in 0..3 {
+            let cancellation = CancellationToken::new();
+            let original = crate::NativeMaterializationWork::new(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let observed = AtomicBool::new(false);
+            let mut work = AuthorityWork::native(&original, &cancellation);
+            let mut values = work.vec_owned(4)?;
+            let minimum = baseline + values.bytes;
+            values.value.push(ObserveRetirement {
+                original: &original,
+                minimum,
+                observed: &observed,
+            });
+            match exit {
+                0 => drop(values),
+                1 => {
+                    let result: Result<(), AuthorityStoreError> = (|| {
+                        let _values = values;
+                        cancellation.cancel();
+                        work.check()?;
+                        Ok(())
+                    })();
+                    assert!(result.is_err());
+                }
+                _ => {
+                    let future = async move {
+                        let values = values;
+                        std::future::pending::<()>().await;
+                        drop(values);
+                    };
+                    let mut future = std::pin::pin!(future);
+                    assert!(matches!(
+                        std::future::Future::poll(
+                            future.as_mut(),
+                            &mut Context::from_waker(Waker::noop())
+                        ),
+                        Poll::Pending
+                    ));
+                }
+            }
+            assert!(
+                observed.load(Ordering::SeqCst),
+                "vector funding retired before its contents on exit {exit}"
+            );
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            original
+                .receipt()
+                .verify(crate::performance::BOUNDARY_BUDGET)?;
+        }
+        Ok(())
+    }
+}
+
 /// Work shared by authority operations in one budget or native ledger.
 pub struct AuthorityWork<'a> {
     /// Completed ordinary provider work.
@@ -25,6 +122,30 @@ pub struct AuthorityWork<'a> {
 }
 
 impl<'a> AuthorityWork<'a> {
+    pub(crate) fn durable_digest(
+        &mut self,
+        authority: AuthorityId,
+        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+    ) -> Result<crate::Digest, AuthorityStoreError> {
+        let hashing = WorkCounters {
+            bytes_hashed: crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
+                .checked_add(record.payload.len() as u64)
+                .ok_or(WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        };
+        self.admit(hashing)?;
+        let digest = crate::foundation::authority_commit_digest(
+            authority,
+            record.epoch,
+            record.sequence,
+            record.operation_id,
+            record.fingerprint,
+            record.previous_digest,
+            record.payload,
+        );
+        self.charge(hashing)?;
+        Ok(digest)
+    }
     /// Starts authority work against a bounded budget.
     pub fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
         Self {
@@ -62,6 +183,15 @@ impl<'a> AuthorityWork<'a> {
         {
             false
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit_meter(
+        &self,
+    ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, AuthorityStoreError> {
+        self.original
+            .map(crate::NativeMaterializationWork::runtime_meter)
+            .ok_or(AuthorityStoreError::NativeOriginalUnsupported)
     }
 
     pub(super) fn object_fallback(&self) -> Result<(), ObjectStoreError> {
@@ -191,17 +321,9 @@ impl<'a> AuthorityWork<'a> {
     pub(crate) fn vec_owned<T>(
         &mut self,
         capacity: usize,
-    ) -> Result<(Vec<T>, AuthorityAllocation), AuthorityStoreError> {
-        let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, &mut self.accounting())
-            .map_err(authority_error)?;
-        let allocation = match owned.allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                Some(allocation)
-            }
-        };
-        Ok((owned.value, allocation))
+    ) -> Result<crate::kernel::Owned<Vec<T>>, AuthorityStoreError> {
+        crate::kernel::Owned::<Vec<T>>::allocate(capacity, &mut self.accounting())
+            .map_err(authority_error)
     }
 
     pub(crate) fn accounting(&mut self) -> crate::kernel::allocation::KernelAccounting<'_> {
@@ -222,11 +344,17 @@ impl<'a> AuthorityWork<'a> {
 
     #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
+        self.record_completed(delta).map_err(Into::into)
+    }
+
+    fn record_completed(&mut self, delta: WorkCounters) -> Result<(), WorkError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original.is_some() {
             return Ok(());
         }
-        self.work = self.work.checked_add(delta)?;
+        self.work = self
+            .work
+            .with_backend(delta, self.allocations.live_bytes())?;
         Ok(())
     }
 
@@ -239,9 +367,7 @@ impl<'a> AuthorityWork<'a> {
             Ok(receipt) => receipt.work,
             Err(failure) => *failure.work,
         };
-        if !self.is_native() {
-            self.work = self.work.checked_add(delta).map_err(E::from)?;
-        }
+        self.record_completed(delta).map_err(E::from)?;
         result
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -306,10 +432,10 @@ pub trait AuthorityGuard: ProviderTask {
             if let Err(error) = self.seal(work).await {
                 return Ok(Err(error));
             }
-            let Some(original) = work.original else {
-                return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
+            let meter = match work.native_commit_meter() {
+                Ok(meter) => meter,
+                Err(error) => return Ok(Err(error.into())),
             };
-            let meter = original.state.clone();
             let result = provider.native_commit(request, deadline, meter).await;
             result.map(|result| result.map_err(AuthorityError::from))
         }
@@ -375,7 +501,10 @@ where
         let Some(original) = work.original else {
             return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
         };
-        let meter = original.state.clone();
+        let meter = match work.native_commit_meter() {
+            Ok(meter) => meter,
+            Err(error) => return Ok(Err(error.into())),
+        };
         let original = original.clone();
         let mut callback = self.0.clone();
         let before = move || {

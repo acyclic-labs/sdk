@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFile<A, O> {
     /// Plans sparse physical spans without another namespace lookup.
     pub async fn plan_extents<W: FsWork>(
         &self,
@@ -150,7 +150,7 @@ pub(crate) async fn seek_record_extent_with_accounting<
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(crate) async fn plan_record_extents(
         &mut self,
         record: FileRecord,
@@ -273,7 +273,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFile<A, O> {
     /// Finds the first sparse data or hole boundary without a namespace binding.
     pub async fn seek<W: FsWork>(
         &self,

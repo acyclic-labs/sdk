@@ -38,6 +38,7 @@ pub(in crate::native_mount) fn mount_wait_error(
     error: crate::cancellation::CancellationWaitError,
 ) -> MountSourceError {
     match error {
+        crate::cancellation::CancellationWaitError::Accounting(error) => mount_engine_error(error),
         crate::cancellation::CancellationWaitError::Work(error) => MountSourceError::Work(error),
         crate::cancellation::CancellationWaitError::Native(error) => {
             MountSourceError::NativeWork(error)

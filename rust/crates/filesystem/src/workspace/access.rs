@@ -1,7 +1,7 @@
 use super::*;
 use crate::access::{Action, Capability, Context, PathTrie, Principal};
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Authorize and publish under one backend-owned policy cut. The operation
     /// must reject clock-expiring authority. Atomic backends reject publication
     /// if the source changes; process owners exclude policy edits while it runs.

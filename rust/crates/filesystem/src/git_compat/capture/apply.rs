@@ -1,6 +1,9 @@
 use super::*;
 
-pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn apply_git_capture<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     parent: &Generation<A, O>,
     base: Option<&Generation<A, O>>,
     source: Option<&Generation<A, O>>,

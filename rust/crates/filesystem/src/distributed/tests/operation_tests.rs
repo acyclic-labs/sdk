@@ -189,7 +189,7 @@ async fn concurrent_attempts_admit_only_one_semantic_operation() -> TestResult {
             winner.commit.fingerprint = Digest::from_bytes([80; 32]);
         }
         let mut spy = ReleaseSpy::new(stream);
-        spy.before_commit = Some(winner);
+        spy.before_commit = vec![winner];
         let racing = StreamAuthorityStore::new(Arc::new(spy));
         let result = racing
             .compare_and_append(request, &mut work, None::<&mut ()>)

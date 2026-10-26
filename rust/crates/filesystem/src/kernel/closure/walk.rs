@@ -64,11 +64,23 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             .map(|(proof, guard, _)| (proof, guard))
     }
 
-    /// Proves the closure, reusing the parent's published proof from `cache` when it is current.
+    /// Proves the closure, reusing its immediate parent's published proof.
     pub(crate) async fn prove_cached(
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
+    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+        self.prove_cached_from(generation_root, cache, None).await
+    }
+
+    /// A combiner prefix may instead use its authenticated current authority
+    /// root. Its successful CAS keeps that root live while collection marks;
+    /// arbitrary older published roots are not eligible for this shortcut.
+    pub(crate) async fn prove_cached_from(
+        &mut self,
+        generation_root: ObjectId,
+        cache: Option<&Mutex<CachedProofs>>,
+        authority_root: Option<ObjectId>,
     ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
         let store = self.store;
         let epochs = store.collection().map(|collection| collection.epochs());
@@ -86,25 +98,11 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         drop(root_bytes);
         let generation_id = GenerationId::new(generation_root.digest);
         let root_object_bytes = self.object_bytes;
-        let slot = match cache {
-            Some(cache) => Some(
-                cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .slot(root.0.volume_id, &self.meter)?,
-            ),
-            None => None,
-        };
+        let slot = self.proof_slot(cache, root.0.volume_id)?;
         let previous = slot
             .as_ref()
             .and_then(|slot| slot.current(epochs))
-            .filter(|cached| {
-                cached.limits == self.limits
-                    && root.0.volume_id == cached.root.volume_id
-                    && root.0.root_file_id == cached.root.root_file_id
-                    && root.0.required_features == cached.root.required_features
-                    && root.0.parents.as_slice() == [cached.generation_id]
-            });
+            .filter(|cached| reusable(&root.0, cached, self.limits, authority_root));
         if let Some(previous) = previous {
             let increment = match self.prove_increment(&root.0, &previous).await {
                 Err(crate::FsError::Closure(
@@ -178,6 +176,21 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let pending = self.remember(slot, began, &output.0, object_count)?;
         output.0.work = self.meter.work();
         Ok((output.0, output.1, pending))
+    }
+
+    fn proof_slot(
+        &self,
+        cache: Option<&Mutex<CachedProofs>>,
+        volume: crate::VolumeId,
+    ) -> Result<Option<std::sync::Arc<ProofSlot<CachedProof>>>, crate::FsError> {
+        cache
+            .map(|cache| {
+                cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .slot(volume, &self.meter)
+            })
+            .transpose()
     }
 
     async fn read_object(
@@ -777,4 +790,21 @@ pub(super) fn validate_extent_bounds(
         return Err(ClosureError::RoutingBoundsMismatch);
     }
     Ok(())
+}
+
+fn reusable(
+    root: &GenerationRoot,
+    cached: &CachedProof,
+    limits: ClosureLimits,
+    authority_root: Option<ObjectId>,
+) -> bool {
+    cached.limits == limits
+        && root.volume_id == cached.root.volume_id
+        && root.root_file_id == cached.root.root_file_id
+        && root.required_features == cached.root.required_features
+        && (root.parents.as_slice() == [cached.generation_id]
+            || authority_root.is_some_and(|root| {
+                root.kind == ObjectKind::GenerationRoot
+                    && root.digest == cached.generation_id.digest()
+            }))
 }

@@ -384,7 +384,7 @@ pub trait ExecutorFixture: ProviderPlatform {
 }
 
 /// Explicit provider bundle for executor journals, files and context discovery.
-pub struct Providers<P, A, O> {
+pub struct Providers<P, A: 'static, O: 'static> {
     /// Runtime-resolved Streams provider.
     pub stream: Arc<P>,
     /// Runtime-resolved filesystem providers.

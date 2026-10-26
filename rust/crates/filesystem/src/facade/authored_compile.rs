@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Lowers every authored kind on the caller's existing allocation context.
     pub(super) async fn compile_authored_mutation_with_accounting(
         &self,

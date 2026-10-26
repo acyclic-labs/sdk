@@ -15,7 +15,7 @@ pub enum JoinHistory {
 }
 
 /// Side-effect-free join builder.
-pub struct JoinBuilder<A, O> {
+pub struct JoinBuilder<A: 'static, O: 'static> {
     pub(super) source: Workspace<A, O>,
     pub(super) target: Workspace<A, O>,
     pub(super) history: JoinHistory,
@@ -25,7 +25,7 @@ pub struct JoinBuilder<A, O> {
     pub(super) maximum_conflicts: u32,
 }
 
-impl<A, O> JoinBuilder<A, O> {
+impl<A: 'static, O: 'static> JoinBuilder<A, O> {
     pub(super) fn validate_workspaces(&self) -> Result<(), WorkspaceError> {
         if self.maximum_generations == 0 || self.maximum_changes == 0 || self.maximum_conflicts == 0
         {
@@ -106,7 +106,7 @@ impl<A, O> JoinBuilder<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinBuilder<A, O> {
     /// Authenticates current endpoints and discovers a bounded common ancestor.
     pub async fn plan<W: crate::facade::FsWork>(
         self,
@@ -302,7 +302,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     /// Merges against an exact form of the discovered common ancestor.
     ///
     /// A lazy view's authored generation leaves its unresolved source entries
@@ -352,7 +352,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
 }
 
 /// Immutable side-effect-free join plan.
-pub struct JoinPlan<A, O> {
+pub struct JoinPlan<A: 'static, O: 'static> {
     pub(super) source_head: Generation<A, O>,
     pub(super) target_head: Generation<A, O>,
     pub(super) target_authority_head: crate::Head,
@@ -366,7 +366,7 @@ pub struct JoinPlan<A, O> {
     pub(super) maximum_conflicts: u32,
 }
 
-impl<A, O> JoinPlan<A, O> {
+impl<A: 'static, O: 'static> JoinPlan<A, O> {
     /// Source generation captured while planning.
     pub const fn source_head(&self) -> GenerationId {
         self.source_head.id

@@ -318,7 +318,7 @@ where
     }
 }
 
-pub(super) struct JournalSelectedResolver<'a, P, A, O> {
+pub(super) struct JournalSelectedResolver<'a, P, A: 'static, O: 'static> {
     pub(super) journal: &'a FilesystemExecutionJournal<P, A, O>,
     pub(super) inner: &'a dyn ContentResidencyVerifier,
 }

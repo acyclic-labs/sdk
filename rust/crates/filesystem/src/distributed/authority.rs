@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     /// Lists up to `maximum` exact filesystem authority identities, in order.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
         /// Restarts tolerated when authorities come and go mid-listing.
@@ -194,6 +194,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 AuthoritySnapshot {
                     head: Head::genesis(epoch),
                     epoch_tail,
+                    record_commit_id: record.0.commit_id,
                 },
                 None,
             ));
@@ -211,6 +212,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             sequence: durable.sequence,
             digest: durable.digest,
         };
+        let record_commit_id = record.0.commit_id;
         let latest = if RETAIN {
             // Keep provider custody until the bounded payload copy is admitted.
             // Decoding authenticates a complete suffix; its offset needs no copy.
@@ -219,7 +221,14 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         } else {
             None
         };
-        Ok((AuthoritySnapshot { head, epoch_tail }, latest))
+        Ok((
+            AuthoritySnapshot {
+                head,
+                epoch_tail,
+                record_commit_id,
+            },
+            latest,
+        ))
     }
 
     pub(super) async fn authority_require_live(

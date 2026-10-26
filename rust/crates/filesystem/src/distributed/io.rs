@@ -65,10 +65,9 @@ pub(super) enum AuthorityRead {
 impl AuthorityRead {
     pub(super) async fn next(
         &mut self,
-        work: &AuthorityWork<'_>,
+        work: &mut AuthorityWork<'_>,
     ) -> Result<Option<(acyclic_stream::Record, ProviderAllocation)>, AuthorityStoreError> {
-        let _ = work;
-        match self {
+        let record = match self {
             Self::Plain(stream) => stream
                 .next()
                 .await
@@ -81,11 +80,23 @@ impl AuthorityRead {
                 .await
                 .map(|record| work.result(record))
                 .transpose(),
+        }?;
+        if let Some((record, _)) = &record {
+            work.charge(WorkCounters {
+                authority_records_read: 1,
+                authority_bytes_read: if work.is_native() {
+                    0
+                } else {
+                    record.value.len() as u64
+                },
+                ..WorkCounters::UNCHARGED
+            })?;
         }
+        Ok(record)
     }
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn authority_read(
         &self,
         request: acyclic_stream::ReadRequest,
@@ -176,16 +187,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 work,
             )
         })?;
-        let completed = WorkCounters {
-            authority_records_read: 1,
-            authority_bytes_read: if work.is_native() {
-                0
-            } else {
-                record.0.value.len() as u64
-            },
-            ..WorkCounters::UNCHARGED
-        };
-        work.charge(completed)?;
         if !work.is_native() {
             work.hold_opaque(record.0.value.len() as u64)?;
         }
@@ -240,7 +241,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             let outcome = match guard.as_deref_mut() {
                 Some(guard) => {
                     guard
-                        .native_commit(self.provider.as_ref(), request, deadline, meter)
+                        .native_commit(self.provider.native_provider(), request, deadline, meter)
                         .await
                 }
                 None => {

@@ -2,7 +2,7 @@ use super::*;
 
 /// Exact source selection for a cheap workspace fork.
 #[derive(Clone)]
-pub struct ForkOptions<A, O> {
+pub struct ForkOptions<A: 'static, O: 'static> {
     pub(crate) generation: Generation<A, O>,
     pub(crate) idempotency_key: IdempotencyKey,
     pub(crate) paths: Option<Vec<String>>,

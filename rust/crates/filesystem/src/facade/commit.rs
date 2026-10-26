@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Publishes this overlay with its permit, original context, and owner check.
     pub async fn commit<E, F, Fut>(
         &mut self,

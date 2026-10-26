@@ -22,7 +22,7 @@ use authentication::authenticate;
 pub(in crate::filesystem) use provenance::CreatedProvenance;
 
 /// Trusted creation verifier with host-managed signing authority.
-pub struct FilesystemResourceCreationProvider<A, O> {
+pub struct FilesystemResourceCreationProvider<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityRoot,
     #[cfg(not(target_arch = "wasm32"))]

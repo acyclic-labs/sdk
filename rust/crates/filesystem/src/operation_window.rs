@@ -216,7 +216,7 @@ fn validate_reconcile_limits(limits: OperationReconcileLimits) -> Result<(), Wor
 }
 
 /// Workspace-aware result of closing one tool lease.
-pub enum WorkspaceOperationFinish<A, O> {
+pub enum WorkspaceOperationFinish<A: 'static, O: 'static> {
     /// Other live leases still pin the shared mount.
     StillActive {
         /// Number of unexpired leases that remain.

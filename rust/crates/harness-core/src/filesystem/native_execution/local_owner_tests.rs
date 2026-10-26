@@ -489,7 +489,7 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
     Ok(())
 }
 
-async fn preparation_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn preparation_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     fs: &acyclic_fs::Fs<A, O>,
     name: &str,
 ) -> TestResult<acyclic_fs::Workspace<A, O>> {

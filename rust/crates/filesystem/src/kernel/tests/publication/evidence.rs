@@ -1,8 +1,51 @@
 use super::*;
 
+#[test]
+fn publication_payload_keeps_original_credit_until_the_last_retained_bytes_drop() -> TestResult {
+    let cancel = CancellationToken::new();
+    let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = WorkCounters::UNCHARGED;
+    let volume_id = VolumeId::from_bytes([127; 16]);
+    let request = PublishGenerationRequest {
+        authority_id: volume_authority_id(volume_id),
+        volume_id,
+        epoch: Epoch::GENESIS,
+        expected: Head::genesis(Epoch::GENESIS),
+        operation_id: OperationId::from_bytes([128; 16]),
+        generation_root: ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: Digest::ZERO,
+        },
+    };
+    let commit = {
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        );
+        prepare_publication_commit(request, None, None, None, &mut accounting, &cancel)?
+    };
+    let retained = ledger.live_bytes();
+    assert!(retained >= commit.payload.len() as u64);
+    let second = commit.payload.clone();
+    drop(commit);
+    assert_eq!(
+        ledger.live_bytes(),
+        retained,
+        "one clone retired shared publication bytes"
+    );
+    drop(second);
+    assert!(
+        ledger.live_bytes() < retained,
+        "last payload leaked its original standalone credit"
+    );
+    Ok(())
+}
+
 fn encode_publication_payload(volume_id: VolumeId, generation_root: ObjectId) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(publication_payload_length());
-    write_publication_payload(&mut bytes, volume_id, generation_root, None);
+    write_publication_payload(&mut bytes, volume_id, generation_root, None, None);
     bytes
 }
 
@@ -74,6 +117,7 @@ async fn evidence_fixture() -> TestResult<(
     let cancellation = CancellationToken::new();
     let commit = prepare_publication_commit(
         request,
+        None,
         None,
         None,
         &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),

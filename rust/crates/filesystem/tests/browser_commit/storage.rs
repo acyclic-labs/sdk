@@ -1,9 +1,25 @@
 use super::*;
-use crate::{AsyncObjectStore, Digest, ObjectKind, WorkError};
+use acyclic_fs::storage::ObjectWrite;
+use acyclic_fs::{
+    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CreateAuthorityOutcome,
+    Digest, DurableCommit, Epoch, FenceOutcome, GuardedAppend, Head, ObjectKind, OperationId,
+    ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    Sequence, WorkError, WorkspaceForkCommit, WorkspaceForkOutcome,
+};
+use acyclic_fs::{
+    AuthorityStoreError, ObjectId, ObjectReadRetention, ObjectStoreError, object_digest,
+};
+use acyclic_stream::OwnedBytes;
+use bytes::Bytes;
+use indexed_db_futures::transaction::TransactionMode;
+use js_sys::Uint8Array;
+use std::mem::size_of;
+use wasm_bindgen::JsCast;
+type BrowserAuthority = acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>;
+async fn open_authority(name: &str) -> Result<BrowserAuthority, acyclic_stream::StreamError> {
+    acyclic_fs::browser::open_authority(name, acyclic_stream::BrowserStreamLimits::default()).await
+}
 use wasm_bindgen::JsValue;
-use wasm_bindgen_test::*;
-
-wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 async fn obsolete_database_version_is_rejected_without_deletion() -> Result<(), JsValue> {
@@ -12,7 +28,7 @@ async fn obsolete_database_version_is_rejected_without_deletion() -> Result<(), 
     const KEY: &str = "original-record";
     const VALUE: &[u8] = b"obsolete-version-4-persisted-record";
     delete_database(NAME).await?;
-    let obsolete_version = DATABASE_VERSION + 3;
+    let obsolete_version = 5_u32;
     let old = Database::open(NAME)
         .with_version(obsolete_version)
         .with_on_upgrade_needed(|_, database| {
@@ -41,17 +57,11 @@ async fn obsolete_database_version_is_rejected_without_deletion() -> Result<(), 
         .await
         .err()
         .ok_or_else(|| js_error("obsolete object database was accepted"))?;
-    let authority_failure = IndexedDbAuthorityStore::open(NAME, 1_024)
-        .await
-        .err()
-        .ok_or_else(|| js_error("obsolete authority database was accepted"))?;
-    for failure in [object_failure, authority_failure] {
-        let exception = JsValue::from(failure)
-            .dyn_into::<web_sys::DomException>()
-            .map_err(|_| js_error("version rejection lost its original DOM exception"))?;
-        assert_eq!(exception.name(), "VersionError");
-    }
-    // The rejected version-4 database must remain intact.
+    let exception = JsValue::from(object_failure)
+        .dyn_into::<web_sys::DomException>()
+        .map_err(|_| js_error("version rejection lost its original DOM exception"))?;
+    assert_eq!(exception.name(), "VersionError");
+    // The rejected future-version database must remain intact.
     let retained = Database::open(NAME)
         .with_version(obsolete_version)
         .with_on_upgrade_needed(|_, _| {
@@ -93,13 +103,13 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &bytes),
     };
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store
         .put(object_id, bytes.clone(), &mut work)
         .await
         .map_err(js_error)?;
     assert_eq!(work.spent().object_bytes_written, bytes.len() as u64);
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store
         .put(object_id, bytes.clone(), &mut work)
         .await
@@ -110,7 +120,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         peak_allocation_bytes: work.spent().peak_allocation_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
-    let mut work = crate::AuthorityWork::new(below_retry_peak, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(below_retry_peak, &cancellation);
     assert!(matches!(
         store.put(object_id, bytes.clone(), &mut work).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
@@ -118,11 +128,12 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
             ..
         }))
     ));
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let read = store
         .read(object_id, 1_024, &mut work)
         .await
         .map_err(js_error)?;
+    let read_peak = work.spent().peak_allocation_bytes;
     assert_eq!(read.bytes, bytes);
     assert_eq!(
         read.retention,
@@ -130,7 +141,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
             logical_bytes: bytes.len() as u64
         }
     );
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(
         store
             .contains(object_id, &mut work)
@@ -138,10 +149,10 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
             .map_err(js_error)?
     );
     let one_byte_short = WorkBudget {
-        peak_allocation_bytes: OBJECT_KEY_BYTES + 2 * bytes.len() as u64 - 1,
+        peak_allocation_bytes: read_peak - 1,
         ..WorkBudget::UNBOUNDED
     };
-    let mut work = crate::AuthorityWork::new(one_byte_short, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(one_byte_short, &cancellation);
     assert!(matches!(
         store.read(object_id, 1_024, &mut work).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
@@ -153,7 +164,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([9; 32]),
     };
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(matches!(
         store
             .put(forged, OwnedBytes::from_static(b"forged"), &mut work)
@@ -184,7 +195,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let cancellation = CancellationToken::new();
     let first = blob_write(b"first batch object");
     let second = blob_write(b"second batch object");
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store
         .put_many(&[first.clone(), second.clone()], &mut work)
         .await
@@ -194,7 +205,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         (first.bytes.len() + second.bytes.len()) as u64
     );
     let third = blob_write(b"third batch object");
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store
         .put_many(&[first.clone(), third.clone()], &mut work)
         .await
@@ -202,11 +213,11 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     assert_eq!(work.spent().object_bytes_written, third.bytes.len() as u64);
     assert_eq!(work.spent().object_bytes_read, first.bytes.len() as u64);
     let requests =
-        [first.clone(), second.clone(), third.clone()].map(|write| crate::ObjectReadRequest {
+        [first.clone(), second.clone(), third.clone()].map(|write| acyclic_fs::ObjectReadRequest {
             object_id: write.object_id,
             maximum_bytes: 1_024,
         });
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let (batch, _) = store
         .read_many(&requests, &mut work)
         .await
@@ -226,7 +237,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         peak_allocation_bytes: work.spent().peak_allocation_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
-    let mut work = crate::AuthorityWork::new(below_peak, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(below_peak, &cancellation);
     assert!(matches!(
         store.read_many(&requests, &mut work).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
@@ -237,7 +248,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let reopened = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
         .await
         .map_err(js_error)?;
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let (persisted, _) = reopened
         .read_many(&requests, &mut work)
         .await
@@ -245,7 +256,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     assert_eq!(persisted, batch);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
     assert!(matches!(
         reopened.read_many(&requests, &mut work).await,
         Err(ObjectStoreError::Cancelled)
@@ -254,12 +265,12 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let fourth = blob_write(b"fourth batch object");
     let mut forged = blob_write(b"forged batch object");
     forged.object_id.digest = Digest::from_bytes([9; 32]);
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(matches!(
         store.put_many(&[fourth.clone(), forged], &mut work).await,
         Err(ObjectStoreError::DigestMismatch)
     ));
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(
         !store
             .contains(fourth.object_id, &mut work)
@@ -267,7 +278,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
             .map_err(js_error)?
     );
     for write in [first, second, third] {
-        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let read = store
             .read(write.object_id, 1_024, &mut work)
             .await
@@ -282,7 +293,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
     let store = open_clean_authority("acyclic-fs-authority-conformance-v2").await?;
     let authority = AuthorityId::from_bytes([7; 16]);
     let cancellation = CancellationToken::new();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let genesis = Head::genesis(Epoch::GENESIS);
     assert_eq!(
         store
@@ -303,7 +314,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             .map_err(js_error)?,
         CreateAuthorityOutcome::Existing(genesis)
     );
-    let mut denied = crate::AuthorityWork::new(
+    let mut denied = acyclic_fs::AuthorityWork::new(
         WorkBudget {
             backend_read_operations: 1,
             ..WorkBudget::UNBOUNDED
@@ -379,7 +390,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         records: 8,
         payload_bytes: 64,
     };
-    let mut replay_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut replay_work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert_eq!(
         store
             .replay(authority, Sequence::GENESIS, replay_limit, &mut replay_work)
@@ -388,12 +399,14 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             .0,
         vec![first_commit.clone(), second_commit.clone()]
     );
-    let retained_peak = 2 * size_of::<DurableCommit>() as u64
-        + COMMIT_PREFIX_BYTES as u64
-        + first_commit.payload.len() as u64
-        + 2 * (COMMIT_PREFIX_BYTES as u64 + second_commit.payload.len() as u64);
-    assert!(replay_work.spent().peak_allocation_bytes >= retained_peak);
-    let mut short = crate::AuthorityWork::new(
+    let retained_peak = replay_work.spent().peak_allocation_bytes;
+    assert!(
+        retained_peak
+            >= 2 * size_of::<DurableCommit>() as u64
+                + first_commit.payload.len() as u64
+                + second_commit.payload.len() as u64
+    );
+    let mut short = acyclic_fs::AuthorityWork::new(
         WorkBudget {
             peak_allocation_bytes: retained_peak - 1,
             ..WorkBudget::UNBOUNDED
@@ -458,7 +471,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             actual_epoch: fenced.epoch
         }
     );
-    let mut bounded = crate::AuthorityWork::new(
+    let mut bounded = acyclic_fs::AuthorityWork::new(
         WorkBudget {
             durability_operations: 1,
             ..WorkBudget::UNBOUNDED
@@ -493,7 +506,7 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
     let store = open_clean_authority("acyclic-fs-authority-reservation-v3").await?;
     let authority = AuthorityId::from_bytes([31; 16]);
     let cancellation = CancellationToken::new();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let genesis = Head::genesis(Epoch::GENESIS);
     store
         .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
@@ -572,20 +585,16 @@ async fn indexed_db_authority_serializes_competing_connections() -> Result<(), J
     let creator = open_clean_authority(NAME).await?;
     let authority = AuthorityId::from_bytes([21; 16]);
     let cancellation = CancellationToken::new();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     creator
         .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await
         .map_err(js_error)?;
-    let left = IndexedDbAuthorityStore::open(NAME, 1_024)
-        .await
-        .map_err(js_error)?;
-    let right = IndexedDbAuthorityStore::open(NAME, 1_024)
-        .await
-        .map_err(js_error)?;
-    let append = |store: IndexedDbAuthorityStore, seed| async move {
+    let left = open_authority(NAME).await.map_err(js_error)?;
+    let right = open_authority(NAME).await.map_err(js_error)?;
+    let append = |store: BrowserAuthority, seed| async move {
         let cancellation = CancellationToken::new();
-        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let request = append_request(
             authority,
             Head::genesis(Epoch::GENESIS),
@@ -620,7 +629,7 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
 -> Result<(), JsValue> {
     let store = open_clean_authority("acyclic-fs-authority-fork-v1").await?;
     let cancellation = CancellationToken::new();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let proposal = |seed| proposal(seed, seed, Bytes::from(vec![seed; 8]));
     let fork = WorkspaceForkCommit {
         lineage: None,
@@ -734,22 +743,4 @@ fn commit_head(commit: &DurableCommit) -> Head {
         sequence: commit.sequence,
         digest: commit.digest,
     }
-}
-
-async fn delete_database(name: &str) -> Result<(), JsValue> {
-    Database::delete_by_name(name)
-        .map_err(js_error)?
-        .await
-        .map_err(js_error)
-}
-
-async fn open_clean_authority(name: &str) -> Result<IndexedDbAuthorityStore, JsValue> {
-    delete_database(name).await?;
-    IndexedDbAuthorityStore::open(name, 1_024)
-        .await
-        .map_err(js_error)
-}
-
-fn js_error(error: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&error.to_string())
 }

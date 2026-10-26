@@ -1,4 +1,4 @@
-pub(super) struct CheckoutCandidate<'a, A, O> {
+pub(super) struct CheckoutCandidate<'a, A: 'static, O: 'static> {
     pub(super) base: Checkout<A, O>,
     pub(super) checkout: Checkout<A, O>,
     pub(super) operation: Option<OperationId>,

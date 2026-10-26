@@ -48,7 +48,7 @@ const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Prepares idempotent captures of parent history and filesystem resources.
-pub struct FilesystemForkPreparer<A, O> {
+pub struct FilesystemForkPreparer<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     parent: Reducer,
     verifier: AuthorityVerifier,
@@ -70,13 +70,13 @@ struct BoundSummary {
     journal: Arc<dyn crate::executor::ExecutionJournal>,
 }
 
-struct PreparationAttempt<'a, A, O> {
+struct PreparationAttempt<'a, A: 'static, O: 'static> {
     preparer: &'a FilesystemForkPreparer<A, O>,
     io: Option<&'a PreparationIo>,
     task_preparation: Option<&'a Arc<TaskResourcePreparation>>,
 }
 
-impl<A, O> FilesystemForkPreparer<A, O> {
+impl<A: 'static, O: 'static> FilesystemForkPreparer<A, O> {
     /// Binds the authenticated parent, history and optional original native custody.
     #[allow(
         clippy::too_many_arguments,

@@ -2,7 +2,7 @@ use super::super::session::NativeSessionControl;
 use super::*;
 
 /// Process-owned native mount over a sparse workspace.
-pub struct LazyMount<A, O, D, S> {
+pub struct LazyMount<A: 'static, O: 'static, D, S> {
     pub(super) source: Arc<LazyMountSource<A, O, D, S>>,
     pub(super) session: Mutex<Option<NativeMountSession>>,
     pub(super) destination: PathBuf,

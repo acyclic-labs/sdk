@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
     /// Finds paths for one stable file identity under supplied work limits.
     pub async fn paths_for_file_id(
         &self,

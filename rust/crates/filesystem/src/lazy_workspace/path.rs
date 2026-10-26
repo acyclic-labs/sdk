@@ -1,7 +1,11 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
-    LazyWorkspace<A, O, D, S>
+impl<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+> LazyWorkspace<A, O, D, S>
 {
     pub(super) fn canonical_path(
         &self,

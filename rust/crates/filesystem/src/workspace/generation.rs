@@ -1,13 +1,13 @@
 use super::*;
 
 /// Immutable complete filesystem state belonging to one workspace.
-pub struct Generation<A, O> {
+pub struct Generation<A: 'static, O: 'static> {
     pub(crate) workspace: Workspace<A, O>,
     pub(crate) id: GenerationId,
     pub(crate) publication_closure: Option<crate::facade::PublicationClosure<A, O>>,
 }
 
-impl<A, O> Clone for Generation<A, O> {
+impl<A: 'static, O: 'static> Clone for Generation<A, O> {
     fn clone(&self) -> Self {
         Self {
             workspace: self.workspace.clone(),
@@ -34,7 +34,7 @@ impl<A, O> Generation<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
     /// Retains this generation until its owning volume ends, reusing durable
     /// published history when available. Unpublished generations receive an
     /// independent pin. Explicit named pins continue to use `pin`.

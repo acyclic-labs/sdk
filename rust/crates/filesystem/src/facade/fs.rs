@@ -19,15 +19,18 @@ pub(super) struct FsInner<A, O> {
     pub(super) workspace_namespace: [u8; 16],
     pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
     pub(super) generation_positions: super::generation_cache::GenerationPositions,
-    pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
     pub(super) policy_cache: super::policy_cache::PolicyCache,
+    pub(super) publication_proof: crate::kernel::PublicationCache,
     // This field must remain last: Rust drops fields in declaration order, so every durable
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     pub(super) _local_root_lifecycle: Option<OwnershipAnchor>,
 }
 
 /// Embedded filesystem composition handle.
-pub struct Fs<A, O> {
+///
+/// Stores are owned for the lifetime of the handle and any authority task.
+/// Lower-level store traits may still be implemented by borrowed read adapters.
+pub struct Fs<A: 'static, O: 'static> {
     pub(super) inner: Arc<FsInner<A, O>>,
 }
 
@@ -36,6 +39,25 @@ impl<A, O> Clone for Fs<A, O> {
         Self {
             inner: Arc::clone(&self.inner),
         }
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    crate::kernel::PublicationOwner for Fs<A, O>
+{
+    type Authority = A;
+    type Objects = O;
+
+    fn authority(&self) -> &A {
+        &self.inner.authority
+    }
+
+    fn objects(&self) -> &O {
+        &self.inner.objects
+    }
+
+    fn publication_cache(&self) -> Option<&crate::kernel::PublicationCache> {
+        Some(&self.inner.publication_proof)
     }
 }
 
@@ -66,6 +88,7 @@ impl<A, O> Fs<A, O> {
         *self
             .inner
             .publication_proof
+            .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Default::default();
     }
@@ -202,8 +225,8 @@ impl<A, O> Fs<A, O> {
                 workspace_namespace,
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
                 generation_positions: super::generation_cache::GenerationPositions::default(),
-                publication_proof: Mutex::default(),
                 policy_cache: super::policy_cache::PolicyCache::default(),
+                publication_proof: Default::default(),
                 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
                 _local_root_lifecycle: None,
             }),
@@ -212,7 +235,7 @@ impl<A, O> Fs<A, O> {
 }
 
 #[cfg(any(test, feature = "distributed"))]
-impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
+impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
     /// Returns the existing durable history behind a volume snapshot/follow.
     /// This does not publish a second copy of file contents.
     pub fn authority_records(

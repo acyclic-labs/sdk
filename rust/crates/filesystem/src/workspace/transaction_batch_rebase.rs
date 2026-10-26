@@ -82,10 +82,6 @@ async fn sibling_writes_preserve_safe_batch_rebase() {
         .write_text("/out/sibling", "upstream")
         .await
         .unwrap();
-    assert!(matches!(
-        rebase(&mut local).await,
-        crate::TransactionRebase::Rebased(_)
-    ));
     publish(&mut local).await;
     for (path, expected) in [
         ("/out/local", "local"),

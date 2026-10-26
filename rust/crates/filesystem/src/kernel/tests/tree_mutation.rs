@@ -8,6 +8,8 @@ use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 
 use crate::kernel::Child;
+#[path = "tree_mutation/canonical_history.rs"]
+mod canonical_history;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn original_mutation_refuses_index_copy_before_allocating_or_reading()

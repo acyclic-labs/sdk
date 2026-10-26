@@ -2,8 +2,8 @@ use super::*;
 use crate::facade::FsWork as _;
 
 pub(super) async fn read_selected<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     W: crate::facade::FsWork,
 >(
     workspace: &Workspace<A, O>,
@@ -51,8 +51,8 @@ pub(super) async fn read_selected<
 }
 
 pub(super) async fn read_range<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     W: crate::facade::FsWork,
 >(
     workspace: &Workspace<A, O>,
@@ -114,8 +114,8 @@ pub(super) async fn read_range<
 }
 
 pub(super) async fn matches_content<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     W: crate::facade::FsWork,
 >(
     workspace: &Workspace<A, O>,
@@ -178,8 +178,8 @@ pub(super) async fn matches_content<
 }
 
 pub(super) async fn read_link<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     W: crate::facade::FsWork,
 >(
     workspace: &Workspace<A, O>,
@@ -203,7 +203,7 @@ pub(super) async fn read_link<
     finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
-async fn lookup_stat<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn lookup_stat<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
@@ -241,7 +241,11 @@ async fn lookup_stat<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .transpose()
 }
 
-pub(super) async fn stat<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
+pub(super) async fn stat<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    W: crate::facade::FsWork,
+>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
@@ -255,7 +259,11 @@ pub(super) async fn stat<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::
     finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
-pub(super) async fn list<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
+pub(super) async fn list<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    W: crate::facade::FsWork,
+>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
@@ -286,7 +294,7 @@ pub(super) async fn list<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::
     finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
-pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn plan<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
@@ -354,7 +362,12 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|failure| failure.error)
 }
 
-async fn finish<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork, T>(
+async fn finish<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    W: crate::facade::FsWork,
+    T,
+>(
     workspace: &Workspace<A, O>,
     work: &W,
     result: Result<T, WorkspaceError>,

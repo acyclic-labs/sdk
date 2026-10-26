@@ -9,13 +9,13 @@ use crate::runtime::{TaskAdmissionRecord, TaskChildrenPage};
 mod project;
 use project::ProjectSourceReader;
 
-enum SourceReader<P, A, O> {
+enum SourceReader<P, A: 'static, O: 'static> {
     Caller(Arc<TaskContext>),
     Project(Box<ProjectSourceReader<P, A, O>>),
 }
 
 /// A retained source identity and a separately authorized reader.
-pub struct TaskSourceInspection<P, A, O> {
+pub struct TaskSourceInspection<P, A: 'static, O: 'static> {
     source: TaskAdmissionRecord,
     volumes: Vec<crate::durable_host::TaskVolumeSnapshot>,
     reader: SourceReader<P, A, O>,

@@ -84,7 +84,7 @@ fn observed_mutation<A, O>(
     ))
 }
 
-async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn workspace_message<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
 ) -> Result<wire::Workspace, Status> {
     let head = workspace
@@ -101,7 +101,7 @@ async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     })
 }
 
-async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn generation_message<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     generation: &Generation<A, O>,
 ) -> Result<wire::GenerationResponse, Status> {
     let reference = generation_ref(generation);
@@ -123,7 +123,9 @@ async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     })
 }
 
-fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationResponse {
+fn commit_message<A: 'static, O: 'static>(
+    value: TransactionCommit<A, O>,
+) -> wire::MutationResponse {
     match value {
         TransactionCommit::Committed(generation) => mutation(
             wire::MutationStatus::Committed,
@@ -147,7 +149,7 @@ fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationRespons
     }
 }
 
-fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
+fn join_message<A: 'static, O: 'static>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
     match value {
         JoinOutcome::Applied(generation) => {
             join_response(wire::JoinStatus::Applied, Some(&generation.generation))

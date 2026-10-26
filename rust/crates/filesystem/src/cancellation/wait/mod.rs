@@ -11,11 +11,12 @@ pub struct Cancelled<'a> {
     pub(super) token: CancellationToken,
     pub(super) waiter: Option<Arc<CancellationWaiter>>,
     pub(super) meter: Option<WaitMeter<'a>>,
-    pub(super) waiter_bytes: u64,
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum CancellationWaitError {
+    #[error(transparent)]
+    Accounting(#[from] crate::FsError),
     #[error(transparent)]
     Work(#[from] crate::WorkError),
     #[cfg(not(target_arch = "wasm32"))]
@@ -23,15 +24,26 @@ pub(crate) enum CancellationWaitError {
     Native(#[from] crate::NativeTreeMaterializationError),
 }
 
-impl Cancelled<'_> {
+impl CancellationWaitError {
     #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn into_native(self) -> crate::NativeTreeMaterializationError {
+        match self {
+            Self::Work(error) | Self::Accounting(crate::FsError::Work(error)) => error.into(),
+            Self::Native(error) => error,
+            Self::Accounting(error) => {
+                crate::NativeTreeMaterializationError::Io(std::io::Error::other(error))
+            }
+        }
+    }
+}
+
+impl Cancelled<'_> {
     pub(super) fn detach_meter(mut self) -> Cancelled<'static> {
         self.meter.take();
         Cancelled {
             token: self.token.clone(),
             waiter: self.waiter.take(),
             meter: None,
-            waiter_bytes: std::mem::take(&mut self.waiter_bytes),
         }
     }
 
@@ -54,7 +66,7 @@ impl Cancelled<'_> {
         }
         let bytes = std::mem::size_of::<CancellationWaiter>() as u64;
         #[cfg(not(target_arch = "wasm32"))]
-        let (allocation, cleanup) = if let Some(original) = original {
+        let (native_allocation, cleanup) = if let Some(original) = original {
             original.admit(crate::WorkCounters {
                 allocation_operations: 1,
                 items_examined: 1,
@@ -72,6 +84,15 @@ impl Cancelled<'_> {
         } else {
             (None, None)
         };
+        let mut allocation = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = native_allocation {
+            allocation = Some(
+                crate::kernel::allocation::retained::RetainedAllocation::Native {
+                    _allocation: native,
+                },
+            );
+        }
         if let Some(meter) = &mut self.meter {
             let peak = meter
                 .allocations
@@ -91,15 +112,23 @@ impl Cancelled<'_> {
                 .allocations
                 .claim_bytes(bytes, 1, meter.work, meter.budget)
                 .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-            self.waiter_bytes = bytes;
+            match meter.allocations.retain(bytes, meter.work, meter.budget) {
+                Ok(retained) => allocation = Some(retained),
+                Err(error) => {
+                    meter
+                        .allocations
+                        .release(bytes)
+                        .map_err(|cause| cause.into_work_or(crate::WorkError::Overflow))?;
+                    return Err(error.into());
+                }
+            }
         }
         let next = head.upgrade();
         let waiter = Arc::new(CancellationWaiter {
             links: Mutex::new(Some((Weak::new(), head.clone()))),
             #[cfg(not(target_arch = "wasm32"))]
             cleanup: parking_lot::Mutex::new(cleanup),
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_allocation: allocation,
+            _allocation: allocation,
             ..CancellationWaiter::default()
         });
         if let Some(next) = &next {
@@ -162,7 +191,6 @@ impl Cancelled<'static> {
         let future = Cancelled {
             token: self.token.clone(),
             waiter: self.waiter.take(),
-            waiter_bytes: std::mem::take(&mut self.waiter_bytes),
             meter: Some(WaitMeter {
                 allocations,
                 work,
@@ -261,18 +289,16 @@ impl Drop for Cancelled<'_> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        drop(waiter);
         if let Some(meter) = &mut self.meter {
             meter
                 .work
                 .charge_items(1, &meter.budget)
                 .expect("admitted unregister");
-            meter
-                .allocations
-                .release(self.waiter_bytes)
-                .expect("owned cancellation waiter");
         }
-        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
+        // Keep the last node lease until arbitrary waker destruction completes.
+        let destruction = catch_unwind(AssertUnwindSafe(|| drop(waker)));
+        drop(waiter);
+        if let Err(panic) = destruction {
             std::panic::resume_unwind(panic);
         }
     }

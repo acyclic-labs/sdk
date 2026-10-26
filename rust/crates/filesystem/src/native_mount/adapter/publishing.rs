@@ -1,10 +1,10 @@
-struct Publication<'a, A, O> {
+struct Publication<'a, A: 'static, O: 'static> {
     shared: &'a SharedCheckout<A, O>,
     original: Option<SharedCheckoutState<A, O>>,
     fence: Option<tokio::sync::RwLockWriteGuard<'a, ()>>,
 }
 
-impl<A, O> Drop for Publication<'_, A, O> {
+impl<A: 'static, O: 'static> Drop for Publication<'_, A, O> {
     fn drop(&mut self) {
         let Some(mut original) = self.original.take() else {
             return;

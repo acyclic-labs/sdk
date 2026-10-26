@@ -1,14 +1,14 @@
 use super::*;
 
 /// Ephemeral path-independent regular file retained by an open native handle.
-pub struct DetachedFile<A, O> {
+pub struct DetachedFile<A: 'static, O: 'static> {
     pub(super) volume: Volume<A, O>,
     pub(super) record: FileRecord,
     /// Keeps what the record reaches from a running collection.
     pub(super) _hold: Option<crate::collection::Hold>,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Captures one regular file as an ephemeral path-independent open view.
     pub async fn detach_regular_file(
         &mut self,

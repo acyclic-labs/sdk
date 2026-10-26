@@ -119,27 +119,27 @@ impl CheckoutRoots {
     }
 
     /// Installs admitted roots, retiring each old buffer before its guard.
+    /// Incoming buffers also precede their custody if the transfer is refused.
     pub(crate) fn set(
         &mut self,
         base: ObjectId,
-        working: GenerationRoot,
-        control: crate::kernel::ProofDataClaim,
+        working: (GenerationRoot, crate::kernel::ProofDataClaim),
         held: Option<(GenerationRoot, crate::kernel::ProofDataClaim)>,
-    ) {
-        self.base = base;
-        if let Some(hold) = &self.hold {
-            let (working, control) = held.expect("the existing registration has a prepared root");
-            hold.update(Held::Checkout {
-                base: self.base,
+    ) -> Result<(), crate::FsError> {
+        match (&self.hold, held) {
+            (Some(hold), Some((working, control))) => hold.update(Held::Checkout {
+                base,
                 working,
                 config: self.config,
                 control,
-            });
-        } else {
-            debug_assert!(held.is_none());
+            }),
+            (None, None) => {}
+            _ => return Err(crate::FsError::InvalidDiff),
         }
-        self.working = working;
-        self.working_control = control;
+        self.base = base;
+        self.working = working.0;
+        self.working_control = working.1;
+        Ok(())
     }
 }
 

@@ -163,7 +163,7 @@ pub struct GitBlameLine {
 /// Walks an authenticated tree in stable portable path order.
 ///
 /// Paths in the host's namespaces are outside the repository and never listed.
-pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn walk_git_tree<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     generation: &Generation<A, O>,
     host: &GitIgnorePolicy,
     root: Option<&str>,
@@ -252,7 +252,10 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// Searches UTF-8 regular files without consulting the host filesystem.
 ///
 /// Paths in the host's namespaces are outside the repository and never read.
-pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn grep_git_generation<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     generation: &Generation<A, O>,
     host: &GitIgnorePolicy,
     pattern: &str,
@@ -362,7 +365,10 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Attributes UTF-8 lines across explicit compatibility history.
-pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn blame_git_generations<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     history_newest_first: &[(GitCommit, Generation<A, O>)],
     host: &GitIgnorePolicy,
     path: &str,

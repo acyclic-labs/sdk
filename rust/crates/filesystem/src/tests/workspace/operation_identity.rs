@@ -9,7 +9,7 @@ fn permit(reservation: &crate::PublicationReservation) -> PublicationPermit {
     }
 }
 
-async fn contextual_commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn contextual_commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     evidence: &'static [u8],
     permit: PublicationPermit,

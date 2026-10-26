@@ -150,8 +150,8 @@ fn merge_reverse_group(
 }
 
 pub(crate) async fn namespace_records_to_file_root_with_accounting<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 >(
     volume: &Volume<A, O>,
     root: &crate::kernel::GenerationRoot,
@@ -239,7 +239,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
 /// Answers from a decoded path index entry when every cached path still
 /// binds the identity it recorded, inserting those paths into `matches`.
 /// Returns whether `matches` now holds the complete answer.
-async fn answer_from_cache<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn answer_from_cache<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     volume: &Volume<A, O>,
     root: &crate::kernel::GenerationRoot,
     maximum_entries: u32,

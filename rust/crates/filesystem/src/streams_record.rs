@@ -37,6 +37,7 @@ pub struct StreamsAuthorityRecord {
 pub struct StreamsDurableRecord(pub DurableCommit);
 
 /// Validated durable fields borrowing the original provider record.
+#[derive(Clone, Copy)]
 pub(crate) struct BorrowedStreamsDurableRecord<'a> {
     pub(crate) epoch: Epoch,
     pub(crate) sequence: Sequence,

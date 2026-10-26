@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn raw_changed_paths<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     changes: &ChangeSet<A, O>,
     maximum_entries: u32,
     original: &crate::NativeMaterializationWork,
@@ -13,7 +13,7 @@ async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn raw_endpoint_paths<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     changes: &ChangeSet<A, O>,
     maximum_entries: u32,
     original: &crate::NativeMaterializationWork,
@@ -23,7 +23,10 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn raw_endpoint_paths_mode<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn raw_endpoint_paths_mode<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     changes: &ChangeSet<A, O>,
     maximum_entries: u32,
     original: &crate::NativeMaterializationWork,

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Filesystem-backed admission barrier for version-pinned conversation content.
-pub struct FilesystemContentVerifier<A, O> {
+pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) verifier: Arc<AuthorityVerifier>,
     pub(in crate::filesystem) scope: Arc<Scope>,

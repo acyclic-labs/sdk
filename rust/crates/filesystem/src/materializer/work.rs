@@ -44,10 +44,7 @@ impl NativeMaterializationWork {
         self.state
             .cancellation()
             .prepare_cancelled_with_native_work(self)
-            .map_err(|cause| match cause {
-                crate::cancellation::CancellationWaitError::Work(cause) => cause.into(),
-                crate::cancellation::CancellationWaitError::Native(cause) => cause,
-            })
+            .map_err(crate::cancellation::CancellationWaitError::into_native)
     }
 
     /// Complete Arc allocation retained by the original shared ledger.

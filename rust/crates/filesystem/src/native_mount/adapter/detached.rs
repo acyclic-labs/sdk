@@ -1,10 +1,10 @@
-struct DetachedMountState<A, O> {
+struct DetachedMountState<A: 'static, O: 'static> {
     file: DetachedFile<A, O>,
     metadata: FileMetadata,
     mutation_epoch: u64,
 }
 
-impl<A, O> DetachedMountState<A, O> {
+impl<A: 'static, O: 'static> DetachedMountState<A, O> {
     async fn change_content(
         &mut self,
         change: ContentChange<std::convert::Infallible>,
@@ -44,7 +44,7 @@ impl<A, O> DetachedMountState<A, O> {
     }
 }
 
-pub(super) struct CheckoutDetachedFile<A, O> {
+pub(super) struct CheckoutDetachedFile<A: 'static, O: 'static> {
     _native_allocation: crate::NativeAllocation,
     state: tokio::sync::Mutex<DetachedMountState<A, O>>,
     ledger: Arc<ViewLedger>,
@@ -54,7 +54,7 @@ pub(super) struct CheckoutDetachedFile<A, O> {
     limits: VolumeLimits,
 }
 
-impl<A, O> CheckoutDetachedFile<A, O> {
+impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
     pub(super) async fn read_bytes(
         &self,
         offset: u64,

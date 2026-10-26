@@ -104,7 +104,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedReader<A, O> {
     /// Reads complete canonical metadata for one exact path.
     pub async fn read_metadata<W: FsWork>(
         &self,
@@ -171,7 +171,7 @@ pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
     result
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(crate) async fn stage_metadata_with_accounting(
         &self,
         metadata: FileMetadata,
@@ -345,7 +345,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFile<A, O> {
     /// Replaces complete metadata and optionally logical size as one detached
     pub async fn set_attributes<W: FsWork>(
         &mut self,

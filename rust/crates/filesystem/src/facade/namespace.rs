@@ -49,7 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Resolves an exact path without following links or scanning unrelated subtrees.
     pub async fn lookup_no_follow<W: FsWork>(
         &mut self,

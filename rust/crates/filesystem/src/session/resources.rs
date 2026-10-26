@@ -28,7 +28,7 @@ pub fn resource(volume: VolumeId, path: &str) -> Result<String, StreamError> {
 
 /// Owning filesystem and its exact backing Streams provider. No policy query
 /// callback or caller-supplied principal can manufacture an allowing decision.
-pub struct ChangeProvider<P, A, O> {
+pub struct ChangeProvider<P, A: 'static, O: 'static> {
     streams: Arc<P>,
     fs: Fs<A, O>,
 }

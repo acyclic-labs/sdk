@@ -25,6 +25,78 @@ fn root(budget: WorkBudget) -> NativeMaterializationWork {
 }
 
 #[test]
+fn publication_lifetime_preserves_original_windows_resources_and_cancellation() {
+    use crate::kernel::allocation::{KernelAccounting, retained::AuthorityLifetime};
+    for windowed in [false, true] {
+        let cancel = crate::CancellationToken::new();
+        let original = NativeMaterializationWork::new(
+            WorkBudget {
+                items_examined: 2,
+                ..crate::performance::BOUNDARY_BUDGET
+            },
+            &cancel,
+        )
+        .unwrap();
+        let scoped = original
+            .native_volume_work(WorkBudget {
+                items_examined: 1,
+                ..crate::performance::BOUNDARY_BUDGET
+            })
+            .unwrap();
+        let scoped = if windowed {
+            scoped.invocation_window().unwrap()
+        } else {
+            scoped
+        };
+        let baseline = original.live_allocation_bytes();
+        let lifetime =
+            AuthorityLifetime::admit(&mut KernelAccounting::native(&scoped, &cancel)).unwrap();
+        let durable = scoped.authority_publication_view(&lifetime).unwrap();
+        assert!(durable.shares_allocation_context(&scoped));
+        assert!(match (&durable.window, &scoped.window) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        });
+        let meter = durable.authority_read_allocation().unwrap();
+        cancel.cancel();
+        assert!(scoped.admit(crate::WorkCounters::UNCHARGED).is_err());
+        assert!(
+            durable.admit(crate::WorkCounters::UNCHARGED).is_ok(),
+            "sealed lifetime inherited reply cancellation"
+        );
+        assert!(
+            meter.work().admit(crate::WorkCounters::UNCHARGED).is_ok(),
+            "authority read lost sealed lifetime"
+        );
+        durable
+            .state(|state| {
+                state.charge(crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                })
+            })
+            .unwrap();
+        assert!(
+            durable
+                .state(|state| state.charge(crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                }))
+                .is_err(),
+            "sealed lifetime granted a fresh resource budget"
+        );
+        // The retained view must keep enforcing the ledger's fail-closed state.
+        durable.state(|state| state.poison_native_original_work());
+        assert!(durable.admit(crate::WorkCounters::UNCHARGED).is_err());
+        drop(meter);
+        drop(durable);
+        drop(lifetime);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+}
+
+#[test]
 fn invocation_layout_matches_allocator_through_the_last_alias() {
     for authority in [false, true] {
         let work = root(crate::performance::BOUNDARY_BUDGET);

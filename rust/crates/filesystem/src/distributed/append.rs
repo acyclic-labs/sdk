@@ -13,342 +13,121 @@ pub(super) async fn seal<G: AuthorityGuard>(
     Ok(())
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+mod group;
+mod preparation;
+mod quotation;
+mod recovery;
+mod view;
+use view::AppendCursor;
+pub(super) use view::AppendView;
+#[cfg(test)]
+pub(super) mod group_tests;
+
+enum Preparation<T> {
+    Ready(T),
+    Outcome(FsAppendOutcome),
+}
+
+struct PreparedAppend<'a> {
+    receipt: AppendReceipt<'a>,
+    request: CommitRequest,
+    deadline: Option<u64>,
+}
+
+// Purpose determines which capability may leave the canonical builder. A sizing
+// command deliberately models fresh lineage and can only return a cost, never
+// an append request whose absent-generation conditions could be submitted.
+trait AppendPurpose {
+    type Output<'a>;
+    const FRESH_LINEAGE: bool;
+
+    fn finish<'a, P: crate::distributed::AuthorityProvider + ?Sized>(
+        self,
+        store: &StreamAuthorityStore<P>,
+        prepared: PreparedAppend<'a>,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Self::Output<'a>, AuthorityStoreError>;
+}
+
+struct Publication;
+
+impl AppendPurpose for Publication {
+    type Output<'a> = PreparedAppend<'a>;
+    const FRESH_LINEAGE: bool = false;
+
+    fn finish<'a, P: crate::distributed::AuthorityProvider + ?Sized>(
+        self,
+        _: &StreamAuthorityStore<P>,
+        prepared: PreparedAppend<'a>,
+        _: &mut AuthorityWork<'_>,
+    ) -> Result<Self::Output<'a>, AuthorityStoreError> {
+        Ok(prepared)
+    }
+}
+
+struct AppendReceipt<'a> {
+    authority_id: AuthorityId,
+    epoch: Epoch,
+    commit: &'a ProposedCommit,
+    durable: crate::streams_record::BorrowedStreamsDurableRecord<'a>,
+    records: StreamPath,
+    gate: StreamPath,
+    lease_path: Option<StreamPath>,
+}
+
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn append<G: AuthorityGuard>(
         &self,
         request: crate::GuardedAppend,
         work: &mut AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
-        let crate::GuardedAppend {
-            authority_id,
-            epoch,
-            expected,
-            commit,
-            permit,
-        } = request;
-        if let Some(existing) = self
-            .authority_find_operation(authority_id, commit.operation_id, work)
+        match self
+            .compare_and_append_group(std::slice::from_ref(&request), &[], work, guard)
             .await?
         {
-            seal(work, guard).await?;
-            return Ok(if existing.fingerprint == commit.fingerprint {
-                FsAppendOutcome::AlreadyCommitted(existing)
-            } else {
-                FsAppendOutcome::IdempotencyConflict {
-                    committed_fingerprint: existing.fingerprint,
+            AppendGroupOutcome::Rejected {
+                index: 0, outcome, ..
+            } => Ok(outcome),
+            AppendGroupOutcome::Published {
+                mut receipts,
+                allocation,
+            } => {
+                if receipts.len() != 1 {
+                    return Err(
+                        authority_corrupt("single append has multiple receipts", work).into(),
+                    );
                 }
-            });
-        }
-        let snapshot = self.fork_snapshot(authority_id, work).await?;
-        if snapshot.head.epoch != epoch {
-            return Ok(FsAppendOutcome::Fenced {
-                actual_epoch: snapshot.head.epoch,
-            });
-        }
-        if snapshot.head != expected {
-            return Ok(FsAppendOutcome::Conflict {
-                actual: snapshot.head,
-            });
-        }
-        let (gate, gate_tail, active) = self.reservation_gate(authority_id, work).await?;
-        let admitted = permits_append(permit, authority_id, expected, gate_tail, active);
-        if !admitted {
-            return Ok(FsAppendOutcome::Fenced {
-                actual_epoch: snapshot.head.epoch,
-            });
-        }
-        let sequence = expected
-            .sequence
-            .checked_next()
-            .map_err(|_| AuthorityStoreError::SequenceExhausted)?;
-        let mut durable = crate::streams_record::BorrowedStreamsDurableRecord {
-            epoch,
-            sequence,
-            operation_id: commit.operation_id,
-            fingerprint: commit.fingerprint,
-            previous_digest: expected.digest,
-            digest: Digest::ZERO,
-            payload: &commit.payload,
-        };
-        durable.digest = work.durable_digest(authority_id, &durable)?;
-        let encoded = StreamsDurableRecord::encode_borrowed_with(
-            &durable,
-            STREAM_RECORD_LIMIT,
-            |domain, fields| work.stream_bytes(domain, fields),
-        )
-        .map_err(AuthorityStoreError::DurableCodec)??;
-        let records = work.path(authority_id, "/records", None)?;
-        let epochs = work.path(authority_id, "/epochs", None)?;
-        let retirement = work.path(authority_id, "/retirement", None)?;
-        // Four authority fences, lease, operation locator, changes, and two
-        // generation lineage fences must all fit the admitted allocation.
-        let mut conditions = work.vec(9)?;
-        conditions.extend([
-            CommitCondition::Absent { path: retirement },
-            CommitCondition::Tail {
-                path: records.clone(),
-                expected: snapshot.head.sequence.get() + 1,
-            },
-            CommitCondition::Tail {
-                path: epochs,
-                expected: snapshot.epoch_tail,
-            },
-            CommitCondition::Tail {
-                path: gate.clone(),
-                expected: gate_tail,
-            },
-        ]);
-        let (lease_path, deadline) = if let PublicationPermit::Lease {
-            workspace_id,
-            lease_id,
-            expires_at_millis,
-            ..
-        } = permit
-        {
-            let path = work.lease_path(
-                crate::WorkspaceId::from_bytes(workspace_id),
-                crate::OperationLeaseId::from_bytes(lease_id),
-                expires_at_millis,
-            )?;
-            match self.tail(path.clone(), work).await {
-                Ok(1) => {}
-                Ok(_) => {
-                    return Ok(FsAppendOutcome::Fenced {
-                        actual_epoch: epoch,
-                    });
-                }
-                Err(error) if authority_missing(&error) => {
-                    return Ok(FsAppendOutcome::Fenced {
-                        actual_epoch: epoch,
-                    });
-                }
-                Err(error) => return Err(error.into()),
+                let outcome = receipts
+                    .pop()
+                    .ok_or_else(|| authority_corrupt("single append has no receipt", work))?;
+                drop(receipts);
+                drop(allocation);
+                Ok(outcome)
             }
-            conditions.push(CommitCondition::Tail {
-                path: path.clone(),
-                expected: 1,
-            });
-            (Some(path), Some(expires_at_millis))
-        } else {
-            (None, None)
-        };
-        // Authority, operation locator, lineage, generation locator and changes.
-        let mut mutations = work.vec(5)?;
-        work.append_record(&mut mutations, records.clone(), [encoded])?;
-        self.locate_operation_in(
-            authority_id,
-            &durable,
-            &mut conditions,
-            &mut mutations,
-            work,
-        )?;
-        if let Some(generation) =
-            generation_from_payload(authority_id, sequence, durable.payload, work)?
-        {
-            let (path, records) = self.publication_changes(
-                authority_id,
-                &commit,
-                generation,
-                (expected.sequence != Sequence::GENESIS).then_some(expected),
-                sequence,
-                work,
-            )?;
-            let tail = match self.tail(path.clone(), work).await {
-                Ok(tail) => tail,
-                Err(error) if authority_missing(&error) => 0,
-                Err(error) => return Err(error.into()),
-            };
-            conditions.push(if tail == 0 {
-                CommitCondition::Absent { path: path.clone() }
-            } else {
-                CommitCondition::Tail {
-                    path: path.clone(),
-                    expected: tail,
-                }
-            });
-            mutations.push(CommitMutation::Append { path, records });
-            let lineage = work.path(authority_id, "/lineage", None)?;
-            let locator = work.path(authority_id, "/generations/", Some(generation))?;
-            match self.tail(locator.clone(), work).await {
-                Ok(1) => {
-                    let location = self.record(locator, 0, work).await?;
-                    let tail = work
-                        .decode_fixed::<8>(
-                            &location.0.value,
-                            LINEAGE_TAIL_DOMAIN,
-                            "invalid Stream generation locator",
-                        )
-                        .map(u64::from_le_bytes)?;
-                    let from = tail.checked_sub(1).ok_or_else(|| {
-                        authority_corrupt("generation locator selects an empty lineage", work)
-                    })?;
-                    let entry = self.record(lineage, from, work).await?;
-                    if work.decode_fixed::<32>(
-                        &entry.0.value,
-                        LINEAGE_DOMAIN,
-                        "invalid Stream generation lineage record",
-                    )? != *generation.digest().as_bytes()
-                    {
-                        return Err(authority_corrupt(
-                            "generation locator selected another generation",
-                            work,
-                        )
-                        .into());
-                    }
-                }
-                Err(error) if authority_missing(&error) => {
-                    let tail = match self.tail(lineage.clone(), work).await {
-                        Ok(tail) => tail,
-                        Err(error) if authority_missing(&error) => 0,
-                        Err(error) => return Err(error.into()),
-                    };
-                    conditions.push(if tail == 0 {
-                        CommitCondition::Absent {
-                            path: lineage.clone(),
-                        }
-                    } else {
-                        CommitCondition::Tail {
-                            path: lineage.clone(),
-                            expected: tail,
-                        }
-                    });
-                    conditions.push(CommitCondition::Absent {
-                        path: locator.clone(),
-                    });
-                    let entry =
-                        work.stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?;
-                    work.append_record(&mut mutations, lineage, [entry])?;
-                    let location = work.stream_bytes(
-                        LINEAGE_TAIL_DOMAIN,
-                        &[&tail.saturating_add(1).to_le_bytes()],
-                    )?;
-                    work.append_record(&mut mutations, locator, [location])?;
-                }
-                Ok(_) => {
-                    return Err(authority_corrupt(
-                        "generation locator contains an invalid record count",
+            AppendGroupOutcome::Rejected { .. } => {
+                Err(authority_corrupt("single append rejected another member", work).into())
+            }
+        }
+    }
+
+    async fn recover_append_error<G: AuthorityGuard>(
+        &self,
+        prepared: &AppendReceipt<'_>,
+        error: AuthorityError<G::Error>,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
+        match error {
+            AuthorityError::Authority(AuthorityStoreError::NativeStream(
+                acyclic_stream::StreamError::IdempotencyMismatch,
+            )) => {
+                let existing = self
+                    .authority_find_operation(
+                        prepared.authority_id,
+                        prepared.commit.operation_id,
                         work,
                     )
-                    .into());
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        // Stream retains rejected CAS requests too. Its retry key identifies
-        // this exact publication attempt; the atomic locator owns semantic
-        // operation identity across changing heads, gates and lease grants.
-        let idempotency_key = work.key(
-            b"operation-attempt\0",
-            &[
-                &authority_id.into_bytes(),
-                &commit.operation_id.into_bytes(),
-                durable.digest.as_bytes(),
-                &snapshot.epoch_tail.to_le_bytes(),
-                &gate_tail.to_le_bytes(),
-                lease_path
-                    .as_ref()
-                    .map_or(&[][..], |path| path.as_str().as_bytes()),
-            ],
-        )?;
-        let result = self
-            .publish_with_policy(
-                CommitRequest {
-                    conditions,
-                    mutations,
-                    idempotency_key,
-                },
-                deadline,
-                work,
-                guard.as_deref_mut(),
-            )
-            .await;
-        if work.is_native() && result.is_ok() {
-            work.check()?;
-        }
-        if !work.is_native() {
-            let retained = gate.as_str().len() as u64
-                + records.as_str().len() as u64
-                + lease_path
-                    .as_ref()
-                    .map_or(0, |path| path.as_str().len() as u64);
-            let retired = work
-                .allocations
-                .live_bytes()
-                .checked_sub(retained)
-                .ok_or_else(|| {
-                    authority_corrupt("append path custody exceeds live request claims", work)
-                })?;
-            work.release(retired)?;
-        }
-        match result {
-            Ok(output) => match &output.0 {
-                CommitOutcome::Committed(envelope) => {
-                    let record = envelope
-                        .mutations
-                        .iter()
-                        .find_map(|mutation| match mutation {
-                            acyclic_stream::CommittedMutation::Append(append)
-                                if append.path == records =>
-                            {
-                                match append.records.as_slice() {
-                                    [record]
-                                        if record.sequence == sequence.get()
-                                            && record.commit_id == envelope.commit_id =>
-                                    {
-                                        Some(record)
-                                    }
-                                    _ => None,
-                                }
-                            }
-                            _ => None,
-                        })
-                        .ok_or_else(|| {
-                            authority_corrupt("commit envelope omits its authority record", work)
-                        })?;
-                    Ok(FsAppendOutcome::Committed(durable_commit(
-                        durable,
-                        record.committed_at_micros,
-                        commit.payload.clone(),
-                    )))
-                }
-                CommitOutcome::Conflict(conflicts) => {
-                    if let Some(existing) = self
-                        .authority_find_operation(authority_id, commit.operation_id, work)
-                        .await?
-                    {
-                        seal(work, guard).await?;
-                        return Ok(if existing.fingerprint == commit.fingerprint {
-                            FsAppendOutcome::AlreadyCommitted(existing)
-                        } else {
-                            FsAppendOutcome::IdempotencyConflict {
-                                committed_fingerprint: existing.fingerprint,
-                            }
-                        });
-                    }
-                    let actual = self.fork_snapshot(authority_id, work).await?.head;
-                    let rejected = conflicts.iter().any(|conflict| {
-                        let path = match conflict {
-                            acyclic_stream::CommitConflict::Tail { path, .. }
-                            | acyclic_stream::CommitConflict::Head { path, .. }
-                            | acyclic_stream::CommitConflict::Exists { path } => path,
-                        };
-                        path == &gate || lease_path.as_ref().is_some_and(|lease| path == lease)
-                    });
-                    Ok(if rejected || actual.epoch != epoch {
-                        FsAppendOutcome::Fenced {
-                            actual_epoch: actual.epoch,
-                        }
-                    } else {
-                        FsAppendOutcome::Conflict { actual }
-                    })
-                }
-            },
-            Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
-                acyclic_stream::StreamError::IdempotencyMismatch,
-            ))) => {
-                let existing = self
-                    .authority_find_operation(authority_id, commit.operation_id, work)
                     .await?
                     .ok_or_else(|| {
                         authority_corrupt(
@@ -357,7 +136,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         )
                     })?;
                 seal(work, guard).await?;
-                Ok(if existing.fingerprint == commit.fingerprint {
+                Ok(if existing.fingerprint == prepared.commit.fingerprint {
                     FsAppendOutcome::AlreadyCommitted(existing)
                 } else {
                     FsAppendOutcome::IdempotencyConflict {
@@ -365,12 +144,84 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     }
                 })
             }
-            Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
+            AuthorityError::Authority(AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::DeadlineElapsed,
-            ))) => Ok(FsAppendOutcome::Fenced {
-                actual_epoch: epoch,
+            )) => Ok(FsAppendOutcome::Fenced {
+                actual_epoch: prepared.epoch,
             }),
-            Err(error) => Err(error),
+            error => Err(error),
+        }
+    }
+    async fn settle_append<G: AuthorityGuard>(
+        prepared: &AppendReceipt<'_>,
+        outcome: &CommitOutcome,
+        actual: Option<Head>,
+        recovered: Option<DurableCommit>,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
+        let epoch = prepared.epoch;
+        let commit = prepared.commit;
+        let records = &prepared.records;
+        let gate = &prepared.gate;
+        let lease_path = &prepared.lease_path;
+        let durable = prepared.durable;
+        let sequence = durable.sequence;
+        match outcome {
+            CommitOutcome::Committed(envelope) => {
+                let record = envelope
+                    .mutations
+                    .iter()
+                    .find_map(|mutation| match mutation {
+                        acyclic_stream::CommittedMutation::Append(append)
+                            if &append.path == records =>
+                        {
+                            append.records.iter().find(|record| {
+                                record.sequence == sequence.get()
+                                    && record.commit_id == envelope.commit_id
+                            })
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        authority_corrupt("commit envelope omits its authority record", work)
+                    })?;
+                Ok(FsAppendOutcome::Committed(durable_commit(
+                    durable,
+                    record.committed_at_micros,
+                    commit.payload.clone(),
+                )))
+            }
+            CommitOutcome::Conflict(conflicts) => {
+                if let Some(existing) = recovered {
+                    seal(work, guard).await?;
+                    return Ok(if existing.fingerprint == commit.fingerprint {
+                        FsAppendOutcome::AlreadyCommitted(existing)
+                    } else {
+                        FsAppendOutcome::IdempotencyConflict {
+                            committed_fingerprint: existing.fingerprint,
+                        }
+                    });
+                }
+                let actual = actual.ok_or_else(|| {
+                    authority_corrupt("conflicted append has no recovered head", work)
+                })?;
+                let rejected = conflicts.iter().any(|conflict| {
+                    let path = match conflict {
+                        acyclic_stream::CommitConflict::Tail { path, .. }
+                        | acyclic_stream::CommitConflict::Head { path, .. }
+                        | acyclic_stream::CommitConflict::Exists { path } => path,
+                    };
+                    path == gate || lease_path.as_ref().is_some_and(|lease| path == lease)
+                });
+                Ok(if rejected || actual.epoch != epoch {
+                    FsAppendOutcome::Fenced {
+                        actual_epoch: actual.epoch,
+                    }
+                } else {
+                    FsAppendOutcome::Conflict { actual }
+                })
+            }
         }
     }
 }

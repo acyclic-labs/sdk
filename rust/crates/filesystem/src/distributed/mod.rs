@@ -2,17 +2,17 @@
 
 use crate::async_storage::authority_error;
 use crate::cancellation::CancellationToken;
+#[cfg(test)]
+use crate::foundation::authority_commit_digest;
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, GenerationId, Head, OperationId, ProposedCommit,
-    Sequence, authority_commit_digest,
+    Sequence,
 };
 use crate::kernel::volume_authority_id;
 use crate::performance::{WorkBudget, WorkCounters};
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
-use crate::storage::ObjectId;
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
-    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    ObjectId, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
 use crate::streams_record::StreamsDurableRecord;
 use crate::{
@@ -34,13 +34,46 @@ const AUTHORITY_RETIRED: &[u8] = b"acyclic-fs-authority-retired-v1\0";
 const PUBLICATION_GATE_FREE: &[u8] = b"acyclic-fs-publication-gate-v1\0free";
 const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\0";
 
-/// Filesystem authority over native hierarchical Streams.
-#[derive(Clone)]
-pub struct StreamAuthorityStore<P> {
+/// Stream placement accepted by the canonical authority journal.
+///
+/// Native publication preserves a typed original-owner guard, so its provider
+/// must support concrete generic dispatch. Browser publication has no native
+/// guard and can retain an event-loop-owned provider behind a trait object.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait AuthorityProvider: acyclic_stream::StreamProvider {
+    /// Concrete dispatch required by the original native publication guard.
+    type NativeProvider: acyclic_stream::StreamProvider;
+    /// Borrows this same provider without erasing the native guard's type.
+    fn native_provider(&self) -> &Self::NativeProvider;
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: acyclic_stream::StreamProvider> AuthorityProvider for P {
+    type NativeProvider = P;
+    fn native_provider(&self) -> &P {
+        self
+    }
+}
+
+/// Stream placement accepted by the canonical browser authority journal.
+#[cfg(target_arch = "wasm32")]
+pub trait AuthorityProvider: acyclic_stream::StreamProvider {}
+#[cfg(target_arch = "wasm32")]
+impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
+
+/// Filesystem authority over the canonical hierarchical Streams provider.
+pub struct StreamAuthorityStore<P: ?Sized> {
     provider: Arc<P>,
 }
 
-impl<P> StreamAuthorityStore<P> {
+impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
+    fn clone(&self) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+        }
+    }
+}
+
+impl<P: ?Sized> StreamAuthorityStore<P> {
     /// Binds one authenticated public Stream provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
@@ -54,22 +87,25 @@ impl<P> StreamAuthorityStore<P> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct AuthoritySnapshot {
     // Validation binds the Stream record tail to head.sequence + 1.
     head: Head,
     epoch_tail: u64,
+    record_commit_id: acyclic_stream::CommitId,
 }
 
 // Private read-only capability: retirement bypass is available only to accounting.
-struct AccountingAuthority<'a, P>(&'a StreamAuthorityStore<P>);
+struct AccountingAuthority<'a, P: ?Sized>(&'a StreamAuthorityStore<P>);
 
 use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath};
 mod io;
 use io::*;
 mod native;
 use native::*;
+pub(crate) mod actor;
 mod append;
+pub use crate::AppendGroupOutcome;
 mod authority;
 mod bindings;
 mod changes;

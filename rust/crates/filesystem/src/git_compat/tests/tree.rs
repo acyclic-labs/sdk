@@ -199,3 +199,184 @@ fn portable_git_names_decode_canonical_windows_names() {
         Some("source-λ.rs")
     );
 }
+
+#[tokio::test]
+async fn independent_git_patches_share_one_append_and_recover_each_operation() {
+    use acyclic_stream::StreamProvider;
+    use futures::TryStreamExt;
+    use std::sync::Arc;
+
+    let stream = Arc::new(acyclic_stream::MemoryStream::default());
+    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let fs = Fs::new(
+        crate::StreamAuthorityStore::new(Arc::clone(&stream)),
+        crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs
+        .create_workspace(
+            "git-group",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("workspace")
+        .value;
+    let mut seed = workspace
+        .begin_transaction(
+            IdempotencyKey::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("seed transaction")
+        .value;
+    for name in ["/a.txt", "/b.txt"] {
+        seed.write_text(name, "old\n").await.expect("seed file");
+    }
+    let outcome = seed
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .expect("seed commit")
+        .value;
+    assert!(matches!(outcome, TransactionCommit::Committed(_)));
+    let records_path = acyclic_stream::StreamPath::new(format!(
+        "fs/authorities/{}/records",
+        hex::encode(crate::kernel::volume_authority_id(workspace.volume.id()).into_bytes())
+    ))
+    .expect("authority records");
+    let before: Vec<_> = stream
+        .read(acyclic_stream::ReadRequest {
+            path: records_path.clone(),
+            from: 1,
+            limit: 1024,
+        })
+        .await
+        .expect("before records")
+        .try_collect()
+        .await
+        .expect("before rows");
+    let patches = [
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+left\n".as_slice(),
+        b"--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+right\n".as_slice(),
+    ];
+    let operations = [IdempotencyKey::new(), IdempotencyKey::new()];
+    let (left, right) = futures::join!(
+        apply_git_patch(
+            &workspace,
+            patches[0],
+            operations[0],
+            crate::PublicationPermit::Unrestricted
+        ),
+        apply_git_patch(
+            &workspace,
+            patches[1],
+            operations[1],
+            crate::PublicationPermit::Unrestricted
+        ),
+    );
+    for outcome in [left, right] {
+        assert!(matches!(
+            outcome.expect("patch"),
+            TransactionCommit::Committed(_)
+        ));
+    }
+    let after: Vec<_> = stream
+        .read(acyclic_stream::ReadRequest {
+            path: records_path,
+            from: before.len() as u64 + 1,
+            limit: 2,
+        })
+        .await
+        .expect("batch records")
+        .try_collect()
+        .await
+        .expect("batch rows");
+    assert_eq!(after.len(), 2);
+    assert_eq!(
+        after[0].commit_id, after[1].commit_id,
+        "Git adapter bypassed group publication"
+    );
+    for (index, (name, expected)) in [
+        ("/a.txt", b"left\n".as_slice()),
+        ("/b.txt", b"right\n".as_slice()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let read = workspace
+            .read(name, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .expect("final file")
+            .value;
+        assert_eq!(read.as_ref(), expected);
+        assert!(matches!(
+            apply_git_patch(
+                &workspace,
+                patches[index],
+                operations[index],
+                crate::PublicationPermit::Unrestricted
+            )
+            .await
+            .expect("original retry"),
+            TransactionCommit::AlreadyCommitted(_)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn git_patch_preimage_cannot_overwrite_a_newer_transaction_base() {
+    let workspace = memory_workspace("git-preimage-fence").await;
+    let mut seed = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    seed.write_text("/a.txt", "old\n").await.expect("seed");
+    let preimage = publish_fixture(seed).await;
+    let mut other = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    other
+        .write_text("/a.txt", "other\n")
+        .await
+        .expect("other write");
+    publish_fixture(other).await;
+    let outcome = super::super::patch::apply_git_patch_at(
+        &workspace,
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+patch\n",
+        &preimage,
+        IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted,
+    )
+    .await
+    .expect("stale patch outcome");
+    assert!(
+        !matches!(
+            outcome,
+            TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)
+        ),
+        "stale Git preimage overwrote the newer base"
+    );
+    assert_eq!(
+        workspace
+            .read(
+                "/a.txt",
+                16,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .expect("current file")
+            .value
+            .as_ref(),
+        b"other\n"
+    );
+}

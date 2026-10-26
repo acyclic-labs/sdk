@@ -24,8 +24,12 @@ where
         crate::AuthorityError::Owner(error) => error.into(),
     })
 }
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
-    LazyWorkspace<A, O, D, S>
+impl<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+> LazyWorkspace<A, O, D, S>
 {
     /// Publishes a frozen file/directory batch and preserves the original ACK on replay.
     pub async fn write_at_snapshot<'path, I, G, E>(

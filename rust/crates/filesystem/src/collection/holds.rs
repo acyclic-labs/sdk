@@ -89,9 +89,10 @@ impl Collection {
                 ..WorkCounters::UNCHARGED
             })?;
         }
-        let slot_quota = accounting.claim_owned(
+        let slot_quota = crate::kernel::allocation::retained::RetainedAllocation::claim(
             crate::foundation::usize_to_u64(std::mem::size_of::<Slot>()),
             0,
+            accounting,
         )?;
         let id = if let Some(id) = holds.free {
             let slot = holds
@@ -130,6 +131,31 @@ impl Collection {
             })
             .transpose()
     }
+
+    /// Turn an admitted closure into a root pin before releasing its sweep
+    /// barrier. An active collection already remembers the admitted objects;
+    /// later collections see the same ordinary root registry.
+    pub(crate) async fn hold_generation_with_accounting(
+        self: &Arc<Self>,
+        proof: &crate::kernel::GenerationProof,
+        config: crate::model::VolumeConfig,
+        proven_at: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Hold, crate::FsError> {
+        let admitted = self.admit(&proof.objects, |_| false, proven_at).await?;
+        let hold = self.register_with_accounting(
+            Held::Generation {
+                root: ObjectId {
+                    kind: crate::ObjectKind::GenerationRoot,
+                    digest: proof.generation_id.digest(),
+                },
+                config,
+            },
+            accounting,
+        )?;
+        drop(admitted);
+        Ok(hold)
+    }
 }
 
 /// An open handle's registration; dropping it releases what it holds.
@@ -137,7 +163,7 @@ pub(crate) struct Hold {
     pub(super) collection: Arc<Collection>,
     pub(super) id: usize,
     // Last: Drop removes the actual held payload before this exclusive quota.
-    _slot_quota: KernelOwnedAllocation,
+    _slot_quota: crate::kernel::allocation::retained::RetainedAllocation,
 }
 
 impl Hold {

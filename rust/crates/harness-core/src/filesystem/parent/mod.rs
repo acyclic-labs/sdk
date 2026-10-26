@@ -7,7 +7,7 @@ pub(in crate::filesystem) type MergeAllocation = acyclic_fs::NativeAllocation;
 pub(in crate::filesystem) type MergeAllocation = ();
 
 /// Parent-owned project operations.
-pub struct ParentProjectController<'a, A, O> {
+pub struct ParentProjectController<'a, A: 'static, O: 'static> {
     pub(in crate::filesystem) host: &'a FilesystemHost<A, O>,
     pub(in crate::filesystem) project: VolumeRef,
     pub(in crate::filesystem) verifier: AuthorityVerifier,
@@ -17,7 +17,7 @@ pub struct ParentProjectController<'a, A, O> {
 }
 
 /// Inspected project changes whose publication remains bound to the parent controller.
-pub struct ParentMergePlan<A, O> {
+pub struct ParentMergePlan<A: 'static, O: 'static> {
     pub(in crate::filesystem) plan: JoinPlan<A, O>,
     pub(in crate::filesystem) child_project: VolumeRef,
     pub(in crate::filesystem) parent_project: VolumeRef,
@@ -38,7 +38,7 @@ pub struct InheritedContextCapture {
     pub attachment_manifests: Vec<FileRef>,
 }
 
-impl<A, O> ParentMergePlan<A, O> {
+impl<A: 'static, O: 'static> ParentMergePlan<A, O> {
     /// Exact parent generation observed while planning; publication uses this CAS target.
     #[must_use]
     pub const fn target_head(&self) -> GenerationId {

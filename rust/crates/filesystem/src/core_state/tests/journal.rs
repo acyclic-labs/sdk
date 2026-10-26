@@ -121,7 +121,7 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
     let paths = namespace
         .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
         .unwrap();
-    std::fs::create_dir_all(paths.directory()).unwrap();
+    std::fs::create_dir_all(paths.directory().unwrap()).unwrap();
     std::fs::write(&paths.previous, serde_json::to_vec(&journal).unwrap()).unwrap();
     assert_eq!(
         store.materialization_operations_async().await.unwrap(),

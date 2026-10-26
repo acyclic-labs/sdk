@@ -1,4 +1,4 @@
-impl<A, O> CheckoutMountSource<A, O> {
+impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
     pub(super) fn callback_guard(&self) -> Option<&Arc<dyn super::NativeMountCallbackGuard>> {
         self.native_callback_guard.as_ref()
     }

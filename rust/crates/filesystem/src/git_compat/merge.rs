@@ -4,7 +4,10 @@ use super::*;
 /// Returns the live Git-relative tracked paths, or `None` while markers remain.
 /// Retained conflict identities follow renames. Only conflicted regular files
 /// are streamed; removing a conflict is a valid explicit deletion resolution.
-pub async fn git_merge_resolution<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn git_merge_resolution<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     current: &Generation<A, O>,
     conflicts: &BTreeMap<String, Option<crate::FileId>>,
     tracked: &BTreeSet<String>,

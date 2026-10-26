@@ -78,7 +78,7 @@ pub(in crate::filesystem) struct RecursiveForkSourceIntent {
     pub request: ForkRequest,
 }
 
-pub(in crate::filesystem) struct RecursiveForkToolBinding<P, A, O> {
+pub(in crate::filesystem) struct RecursiveForkToolBinding<P, A: 'static, O: 'static> {
     pub source: RetainedSourceBinding<A, O>,
     pub child: TaskAdmissionRecord,
     pub source_checkpoint: FileRef,
@@ -92,7 +92,7 @@ pub(in crate::filesystem) struct RecursiveForkToolBinding<P, A, O> {
     pub limits: ForkPreparationLimits,
 }
 
-pub(in crate::filesystem) struct RecursiveMergeToolBinding<P, A, O> {
+pub(in crate::filesystem) struct RecursiveMergeToolBinding<P, A: 'static, O: 'static> {
     pub filesystem: Arc<FilesystemHost<A, O>>,
     pub destination: StreamAggregate<P>,
     pub verifier: AuthorityVerifier,
@@ -199,7 +199,7 @@ pub(super) enum Plan {
     Fork(Box<RecursiveForkToolPlan>),
     Merge(Box<RecursiveMergeToolPlan>),
 }
-struct RecursiveExecutor<P, A, O> {
+struct RecursiveExecutor<P, A: 'static, O: 'static> {
     source: Option<Arc<ConfiguredRecursiveToolSource<P, A, O>>>,
     definition: ToolDefinition,
     maximum_request_bytes: u64,

@@ -1,6 +1,38 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
+    for StreamAuthorityStore<P>
+{
+    fn own_group<G: crate::OwnedAuthorityGuard>(
+        &self,
+        group: crate::OwnedAuthorityGroup<G>,
+    ) -> Option<crate::OwnedAuthorityTask> {
+        group.bind(self.clone())
+    }
+
+    fn supports_atomic_group_commit(&self) -> bool {
+        true
+    }
+
+    async fn quote_group_append(
+        &self,
+        request: &crate::GuardedAppend,
+        growth: usize,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError> {
+        StreamAuthorityStore::quote_group_append(self, request, growth, work).await
+    }
+
+    async fn compare_and_append_group<G: AuthorityGuard>(
+        &self,
+        requests: &[crate::GuardedAppend],
+        cuts: &[crate::PolicyCut],
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<super::AppendGroupOutcome, AuthorityError<G::Error>> {
+        StreamAuthorityStore::compare_and_append_group(self, requests, cuts, work, guard).await
+    }
+
     fn policy_owner(&self) -> crate::PolicyOwner {
         if self.provider.has_exclusive_process_owner() {
             crate::PolicyOwner::ExclusiveProcess
@@ -309,6 +341,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
+        let actor = self.actor(authority, work)?;
+        let journal = actor.lease(work).await?;
+        let _revision = actor.begin(journal)?;
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported);

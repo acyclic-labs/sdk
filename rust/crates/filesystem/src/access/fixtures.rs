@@ -1,6 +1,9 @@
 use crate::*;
 
-pub(crate) async fn publish_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn publish_policy<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     workspace: &Workspace<A, O>,
     policy: &super::Policy,
 ) -> Result<(), Box<dyn std::error::Error>> {

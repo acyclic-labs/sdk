@@ -14,23 +14,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut accounting,
                 cancellation,
                 |request, intent, limits, budget| async move {
-                    publish_generation(
-                        &self.inner.objects,
-                        &self.inner.authority,
-                        request,
-                        intent,
-                        limits,
-                        budget,
-                        cancellation,
-                    )
-                    .await
-                    .map(|receipt| OperationReceipt {
-                        value: checkout_commit_outcome(&receipt),
-                        work: receipt.work,
-                    })
-                    .map_err(|failure| {
-                        failure.map_error(|error| WorkspaceError::from(FsError::from(error)))
-                    })
+                    publish_generation(self.clone(), request, intent, limits, budget, cancellation)
+                        .await
+                        .map(|receipt| OperationReceipt {
+                            value: checkout_commit_outcome(&receipt),
+                            work: receipt.work,
+                        })
+                        .map_err(|failure| {
+                            failure.map_error(|error| WorkspaceError::from(FsError::from(error)))
+                        })
                 },
             )
             .await?;
@@ -61,8 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
                 |request, intent, limits, _budget| async move {
                     let (receipt, allocation) = publish_generation_async_guarded_with_native_work(
-                        &self.inner.objects,
-                        &self.inner.authority,
+                        self.clone(),
                         request,
                         intent,
                         limits,
@@ -388,7 +379,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Prepares one bounded two-parent merge against this checkout's immutable base.
     pub async fn prepare_merge(
         &mut self,
@@ -468,7 +459,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .as_ref()
                     .map(|_| (root.clone(), Default::default()));
                 self.root
-                    .set(self.root.base, root, Default::default(), held);
+                    .set(self.root.base, (root, Default::default()), held)
+                    .map_err(|error| OperationFailure::new(error, work))?;
                 self.generation_root = generation_root;
                 self.prepared_merge_parent = Some(theirs_id);
                 self.authority_head = Some(current_head);

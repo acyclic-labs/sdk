@@ -13,13 +13,72 @@ pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
     Ok(usize_to_u64(layout.pad_to_align().size()))
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-/// Tracks live and reserved logical allocation bytes.
+/// Tracks live and reserved logical allocation bytes. Promotion retains this
+/// same ledger when a value crosses an owned asynchronous boundary.
+#[derive(Debug, Default)]
 pub struct AllocationLedger {
+    state: LedgerState,
+}
+
+#[derive(Debug, Default)]
+enum LedgerState {
+    #[default]
+    Empty,
+    Inline(AllocationBytes),
+    Shared(std::sync::Arc<std::sync::Mutex<SharedAllocationBytes>>),
+    Suspended(std::sync::Arc<std::sync::Mutex<SharedAllocationBytes>>),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AllocationBytes {
     live_bytes: u64,
     // Accepted future payload/control capacity, not a physical allocation or peak.
     #[cfg(not(target_arch = "wasm32"))]
     reserved_bytes: u64,
+}
+
+// Only promoted ledgers can contain independently owned leases. Inline/native
+// allocation arithmetic does not carry actor lifetime bookkeeping.
+#[derive(Debug)]
+pub(crate) struct SharedAllocationBytes {
+    allocations: AllocationBytes,
+    retained_bytes: u64,
+}
+
+impl SharedAllocationBytes {
+    fn retain_owned(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        let retained = self
+            .retained_bytes
+            .checked_add(bytes)
+            .ok_or(AllocationError::Overflow)?;
+        if retained > self.allocations.live_bytes {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.retained_bytes = retained;
+        Ok(())
+    }
+
+    fn release_retained(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        let retained = self
+            .retained_bytes
+            .checked_sub(bytes)
+            .ok_or(AllocationError::ReleaseInvariant)?;
+        self.allocations.release(bytes)?;
+        self.retained_bytes = retained;
+        Ok(())
+    }
+
+    fn release_scratch_bytes(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        if self
+            .allocations
+            .live_bytes
+            .checked_sub(bytes)
+            .is_none_or(|live| live < self.retained_bytes)
+        {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.allocations.release(bytes)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -177,7 +236,7 @@ impl LogicalVecCapacity {
     }
 }
 
-impl AllocationLedger {
+impl AllocationBytes {
     #[inline]
     pub(crate) fn claim_elements<T>(
         &mut self,
@@ -303,10 +362,162 @@ impl AllocationLedger {
     }
 
     pub(crate) fn release(&mut self, bytes: u64) -> Result<(), AllocationError> {
-        self.live_bytes = self
+        let live = self
             .live_bytes
             .checked_sub(bytes)
             .ok_or(AllocationError::ReleaseInvariant)?;
+        self.live_bytes = live;
+        Ok(())
+    }
+
+    /// Returns currently retained logical bytes.
+    pub const fn live_bytes(&self) -> u64 {
+        self.live_bytes
+    }
+}
+
+impl AllocationLedger {
+    fn with_state<R>(&mut self, operation: impl FnOnce(&mut AllocationBytes) -> R) -> R {
+        if matches!(self.state, LedgerState::Empty) {
+            self.state = LedgerState::Inline(AllocationBytes::default());
+        }
+        match &mut self.state {
+            LedgerState::Inline(state) => operation(state),
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => operation(
+                &mut state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .allocations,
+            ),
+            LedgerState::Empty => unreachable!("empty ledger initialized above"),
+        }
+    }
+
+    pub(crate) fn transaction<T>(
+        &mut self,
+        operation: impl FnOnce(&mut AllocationBytes) -> Result<T, crate::FsError>,
+    ) -> Result<T, crate::FsError> {
+        self.ensure_active()?;
+        match &mut self.state {
+            LedgerState::Shared(shared) => {
+                let mut state = shared
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut next = state.allocations;
+                let value = operation(&mut next)?;
+                if next.live_bytes < state.retained_bytes {
+                    return Err(AllocationError::ReleaseInvariant
+                        .into_work_or(crate::FsError::PendingMutationAllocationFailed));
+                }
+                state.allocations = next;
+                Ok(value)
+            }
+            _ => self.with_state(|state| {
+                let mut next = *state;
+                let value = operation(&mut next)?;
+                *state = next;
+                Ok(value)
+            }),
+        }
+    }
+
+    fn snapshot(&self) -> AllocationBytes {
+        match &self.state {
+            LedgerState::Empty => AllocationBytes::default(),
+            LedgerState::Inline(state) => *state,
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+                state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .allocations
+            }
+        }
+    }
+
+    pub(crate) fn claim_elements<T>(
+        &mut self,
+        count: usize,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<u64, AllocationError> {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.with_state(|state| state.claim_elements::<T>(count, work, budget))
+    }
+    pub(crate) fn claim_bytes(
+        &mut self,
+        bytes: u64,
+        operations: u64,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<(), AllocationError> {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.with_state(|state| state.claim_bytes(bytes, operations, work, budget))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reserve_allocation(
+        &mut self,
+        bytes: u64,
+        work: &WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<(), AllocationError> {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.with_state(|state| state.reserve_allocation(bytes, work, budget))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn cancel_reserved_allocation(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        self.with_state(|state| state.cancel_reserved_allocation(bytes))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn record_reserved_allocation(
+        &mut self,
+        bytes: u64,
+        work: &mut WorkCounters,
+    ) -> Result<(), AllocationError> {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.with_state(|state| state.record_reserved_allocation(bytes, work))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reserved_bytes(&self) -> u64 {
+        self.snapshot().reserved_bytes()
+    }
+    pub(crate) fn record_owned_bytes(
+        &mut self,
+        bytes: u64,
+        work: &mut WorkCounters,
+    ) -> Result<(), AllocationError> {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return Err(AllocationError::ReleaseInvariant);
+        }
+        self.with_state(|state| state.record_owned_bytes(bytes, work))
+    }
+    pub(crate) fn release(&mut self, bytes: u64) -> Result<(), AllocationError> {
+        match &mut self.state {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .release_scratch_bytes(bytes),
+            _ => self.with_state(|state| state.release(bytes)),
+        }
+    }
+    pub(crate) fn release_scratch(&mut self) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
+        match &mut self.state {
+            LedgerState::Shared(state) => {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.allocations.live_bytes = state.retained_bytes;
+            }
+            _ => self.with_state(|state| state.live_bytes = 0),
+        }
         Ok(())
     }
 
@@ -318,12 +529,90 @@ impl AllocationLedger {
         self.release(bytes)
             .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
     }
-
     /// Returns currently retained logical bytes.
-    pub const fn live_bytes(self) -> u64 {
-        self.live_bytes
+    pub fn live_bytes(&self) -> u64 {
+        self.snapshot().live_bytes()
+    }
+
+    pub(crate) fn ensure_active(&self) -> Result<(), crate::FsError> {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return Err(crate::FsError::AccountingHandoffActive);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn handoff(
+        &mut self,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<Self, crate::FsError> {
+        drop(self.retain(0, work, budget)?);
+        let LedgerState::Shared(state) = &self.state else {
+            unreachable!("promoted by retain")
+        };
+        let owned = Self {
+            state: LedgerState::Shared(std::sync::Arc::clone(state)),
+        };
+        self.state = match std::mem::take(&mut self.state) {
+            LedgerState::Shared(state) => LedgerState::Suspended(state),
+            _ => unreachable!("only an active shared ledger can hand off"),
+        };
+        Ok(owned)
+    }
+
+    pub(crate) fn resume(&mut self, owned: Self) -> Result<(), crate::FsError> {
+        let (LedgerState::Suspended(expected), LedgerState::Shared(actual)) =
+            (&self.state, &owned.state)
+        else {
+            return Err(crate::FsError::AccountingHandoffActive);
+        };
+        if !std::sync::Arc::ptr_eq(expected, actual) {
+            return Err(crate::FsError::AccountingHandoffActive);
+        }
+        self.state = owned.state;
+        Ok(())
+    }
+
+    pub(crate) fn retain(
+        &mut self,
+        bytes: u64,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<retained::RetainedAllocation, crate::FsError> {
+        self.ensure_active()?;
+        if !matches!(self.state, LedgerState::Shared(_)) {
+            let control = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                std::sync::Mutex<SharedAllocationBytes>,
+            >())
+            .map_err(|_| WorkError::Overflow)? as u64;
+            self.claim_bytes(control, 1, work, budget)
+                .map_err(|error| {
+                    error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
+                })?;
+            let state = SharedAllocationBytes {
+                allocations: self.snapshot(),
+                // The Arc itself lives with the ledger, outside request scratch.
+                retained_bytes: control,
+            };
+            self.state = LedgerState::Shared(std::sync::Arc::new(std::sync::Mutex::new(state)));
+        }
+        let LedgerState::Shared(state) = &self.state else {
+            unreachable!("promoted above")
+        };
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain_owned(bytes)
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
+        Ok(retained::RetainedAllocation::standalone(
+            std::sync::Arc::clone(state),
+            bytes,
+        ))
     }
 }
+
+pub(crate) mod fixed_index;
+pub(crate) mod retained;
 
 /// Retains the allocation backing a value returned by a kernel operation.
 #[cfg_attr(target_arch = "wasm32", derive(Clone, Copy))]

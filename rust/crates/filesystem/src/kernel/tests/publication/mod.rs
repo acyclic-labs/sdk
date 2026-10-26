@@ -236,4 +236,6 @@ mod api;
 mod codec;
 mod evidence;
 #[cfg(not(target_arch = "wasm32"))]
+mod generation_catalog;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;

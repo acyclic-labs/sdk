@@ -6,8 +6,8 @@ pub(crate) async fn load_git_ignore_policy<A, O>(
     directory: &str,
 ) -> Result<(), GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     if policies.contains_key(directory) {
         return Ok(());
@@ -44,8 +44,8 @@ pub(crate) async fn scan_git_capture_entries<A, O>(
     live: &crate::Generation<A, O>,
 ) -> Result<(Vec<(String, bool)>, BTreeMap<String, GitIgnorePolicy>), GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let mut entries = Vec::new();
     let mut nested_policies = BTreeMap::new();

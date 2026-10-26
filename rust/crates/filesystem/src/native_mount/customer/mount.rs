@@ -2,7 +2,7 @@ use super::super::session::NativeSessionControl;
 use super::*;
 
 /// One process-owned customer mount over a canonical workspace checkout.
-pub struct Mount<A, O> {
+pub struct Mount<A: 'static, O: 'static> {
     pub(crate) source: Arc<CheckoutMountSource<A, O>>,
     pub(crate) session: Mutex<Option<NativeMountSession>>,
     pub(crate) destination: PathBuf,

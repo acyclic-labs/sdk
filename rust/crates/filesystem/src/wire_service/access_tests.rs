@@ -239,7 +239,10 @@ thread_local! {
     static REVOKE_DURING_FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-pub(super) async fn fork_policy_cut<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn fork_policy_cut<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     source: &Workspace<A, O>,
 ) {
     if !REVOKE_DURING_FORK.replace(false) {

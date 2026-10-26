@@ -77,8 +77,12 @@ impl SelectedImportPlan {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
-    LazyWorkspace<A, O, D, S>
+impl<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+> LazyWorkspace<A, O, D, S>
 {
     /// Freezes selected namespace records without reading file bodies.
     pub async fn prepare_selected_import(

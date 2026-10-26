@@ -1,4 +1,4 @@
-async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn apply_mutation<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     value: wire::Mutation,
 ) -> Result<(), Status> {
@@ -18,7 +18,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-async fn create_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn create_entry<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     value: wire::mutation::Mutation,
     cancellation: &CancellationToken,
@@ -75,7 +75,7 @@ async fn create_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .map_err(|failure| status(&failure.error))
 }
 
-async fn change_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn change_range<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     value: wire::mutation::Mutation,
     cancellation: &CancellationToken,
@@ -132,7 +132,7 @@ async fn change_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .map_err(|failure| status(&failure.error))
 }
 
-async fn replace_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn replace_metadata<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     value: wire::mutation::Mutation,
     cancellation: &CancellationToken,
@@ -165,7 +165,7 @@ async fn replace_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .map_err(|failure| status(&failure.error))
 }
 
-async fn change_content<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn change_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     value: wire::mutation::Mutation,
     cancellation: &CancellationToken,

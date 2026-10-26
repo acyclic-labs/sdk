@@ -1,7 +1,7 @@
 use super::*;
 
 /// Cheap immutable reader over one authenticated pinned checkout candidate.
-pub struct PinnedReader<A, O> {
+pub struct PinnedReader<A: 'static, O: 'static> {
     pub(super) volume: Volume<A, O>,
     pub(super) generation_root: ObjectId,
     pub(super) root: PinnedReaderRoot,
@@ -30,7 +30,7 @@ impl std::ops::Deref for PinnedReaderRoot {
     }
 }
 
-impl<A, O> Clone for PinnedReader<A, O> {
+impl<A: 'static, O: 'static> Clone for PinnedReader<A, O> {
     fn clone(&self) -> Self {
         Self {
             volume: self.volume.clone(),
@@ -40,7 +40,7 @@ impl<A, O> Clone for PinnedReader<A, O> {
     }
 }
 
-impl<A, O> Checkout<A, O> {
+impl<A: 'static, O: 'static> Checkout<A, O> {
     /// Creates an immutable reader for this checkout's current private candidate.
     #[must_use]
     pub fn snapshot_reader(&self) -> PinnedReader<A, O> {

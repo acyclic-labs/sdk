@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFile<A, O> {
     /// Reads one logical regular-file range without another namespace lookup.
     pub async fn read_range<W: FsWork>(
         &self,
@@ -28,7 +28,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedReader<A, O> {
     pub(super) async fn read_range_record(
         &self,
         record: FileRecord,
@@ -210,7 +210,7 @@ pub(super) async fn read_symbolic_link_record_with_accounting<
     })
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Reads the same symbolic-link target, preserving producer-owned capacity.
     pub async fn read_symbolic_link<W: FsWork>(
         &mut self,
@@ -472,7 +472,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFile<A, O> {
     /// Reads the same detached target while retaining producer-owned capacity.
     pub(crate) async fn read_symbolic_link<W: FsWork>(
         &self,

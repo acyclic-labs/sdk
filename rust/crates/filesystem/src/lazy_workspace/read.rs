@@ -1,8 +1,12 @@
 use super::*;
 use crate::kernel::OwnedSourceChunk;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
-    LazyWorkspace<A, O, D, S>
+impl<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+> LazyWorkspace<A, O, D, S>
 {
     /// Reads a complete regular file under an explicit byte bound.
     pub async fn read(

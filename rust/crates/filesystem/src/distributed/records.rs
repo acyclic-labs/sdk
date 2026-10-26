@@ -180,7 +180,7 @@ pub(super) fn generation_from_payload(
     Ok(Some(GenerationId::new(digest)))
 }
 #[cfg(test)]
-pub(super) async fn read_one<P: acyclic_stream::StreamProvider>(
+pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(
     provider: &P,
     path: acyclic_stream::StreamPath,
     from: u64,

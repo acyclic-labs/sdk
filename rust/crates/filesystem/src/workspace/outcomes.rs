@@ -1,7 +1,7 @@
 use super::*;
 
 /// Terminal outcome of advancing one fork onto its source workspace.
-pub enum WorkspaceRebase<A, O> {
+pub enum WorkspaceRebase<A: 'static, O: 'static> {
     /// A new rebased generation became durable.
     Rebased(Generation<A, O>),
     /// The identical retry was already durable.
@@ -46,7 +46,7 @@ pub struct ApplyOptions {
 }
 
 /// Terminal semantic join outcome.
-pub enum JoinOutcome<A, O> {
+pub enum JoinOutcome<A: 'static, O: 'static> {
     /// A new target generation became durable.
     Applied(JoinApplication<A, O>),
     /// The same exact application was already durable.
@@ -69,7 +69,7 @@ pub enum JoinOutcome<A, O> {
 }
 
 /// One durable join result together with its exact conflict-resolution input.
-pub struct JoinApplication<A, O> {
+pub struct JoinApplication<A: 'static, O: 'static> {
     /// The durable joined generation.
     pub generation: Generation<A, O>,
     /// Digest of the applied conflict resolutions.
@@ -102,7 +102,7 @@ pub struct WorkspacePathConflict {
 }
 
 /// Terminal outcome of applying a generation delta to selected paths.
-pub enum WorkspacePathApply<A, O> {
+pub enum WorkspacePathApply<A: 'static, O: 'static> {
     /// A new generation became durable.
     Applied(Generation<A, O>),
     /// The exact idempotent application was already durable.

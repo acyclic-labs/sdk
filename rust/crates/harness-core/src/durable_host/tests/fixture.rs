@@ -10,8 +10,8 @@ use acyclic_fs::{
 #[doc(hidden)]
 pub struct Fixture<
     P: StreamProvider = MemoryStream,
-    A = MemoryAuthorityBackend,
-    O = MemoryObjectBackend,
+    A: 'static = MemoryAuthorityBackend,
+    O: 'static = MemoryObjectBackend,
 > {
     pub stream: Arc<P>,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

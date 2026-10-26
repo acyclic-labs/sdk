@@ -16,6 +16,9 @@ use acyclic_stream::ProviderTask;
 use bytes::Bytes;
 use thiserror::Error;
 
+mod owner;
+pub use owner::{PublicationCache, PublicationOwner};
+
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::kernel::closure::CachedProofs;
 use crate::kernel::closure::ProofGuard;
@@ -66,6 +69,9 @@ pub struct PublishGenerationRequest {
 /// Context, evidence and authorization for one publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationIntent {
+    /// Exact path preconditions for independent composition. Without these,
+    /// the immutable generation is an opaque, exact-head replacement.
+    pub(crate) preconditions: Option<PublicationPreconditions>,
     /// Optional semantic operation context.
     pub operation_context: Option<Digest>,
     /// Original operation evidence retained through publication.
@@ -80,12 +86,25 @@ impl PublicationIntent {
     /// Creates an intent without original evidence or a prior permit.
     pub const fn guarded(operation_context: Option<Digest>, permit: PublicationPermit) -> Self {
         Self {
+            preconditions: None,
             operation_context,
             original_evidence: None,
             fingerprint_permit: None,
             permit,
         }
     }
+}
+
+/// Authenticated base and captured reads of one proposed generation delta.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PublicationPreconditions {
+    /// Original generation whose file table the proposal changes.
+    pub base: ObjectId,
+    pub config: crate::VolumeConfig,
+    /// Authority head actually observed for the immutable base.
+    pub head: Head,
+    /// Exact traversal, observation and mutation preconditions against that base.
+    pub reads: super::CheckoutDependencies,
 }
 
 /// Canonical semantic fact stored in one generation-publication authority record.
@@ -117,6 +136,9 @@ pub enum PublicationError {
     /// Complete namespace changes exceeded the caller's admitted work.
     #[error("publication change paths exceed the admitted traversal bound")]
     ChangeLimit,
+    /// A member disappeared or rejected preparation before the atomic seal.
+    #[error("publication group was aborted before sealing")]
+    GroupAborted,
     /// Namespace change facts could not be authenticated.
     #[error("publication change validation failed: {0}")]
     ChangeValidation(#[source] Box<crate::FsError>),
@@ -164,13 +186,20 @@ mod codec;
 pub(crate) use codec::decode_publication_evidence_with_accounting;
 pub use codec::decode_published_generation;
 use codec::*;
+mod combiner;
+#[cfg(any(test, feature = "distributed"))]
+pub(crate) use combiner::Volume as AuthorityActor;
+pub(crate) use combiner::authority_actor;
 mod construction;
 pub(crate) use construction::contextual_publication_fingerprint;
 use construction::*;
+mod authenticate;
 mod engine;
 mod projection;
 use engine::*;
 mod api;
+#[cfg(not(target_arch = "wasm32"))]
+mod seals;
 pub use api::publish_generation;
 pub(crate) use api::publish_generation_async_guarded;
 #[cfg(not(target_arch = "wasm32"))]

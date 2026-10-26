@@ -112,7 +112,7 @@ pub struct RecursiveForkConfig {
 }
 
 /// Actual selected-provider binding and canonical immutable request.
-pub struct RetainedSourceBinding<A, O> {
+pub struct RetainedSourceBinding<A: 'static, O: 'static> {
     /// Exact current caller snapshot; never a root binding reused for descendants.
     pub preparer: Arc<FilesystemForkPreparer<A, O>>,
     /// Original request to retain before allocation/publication.

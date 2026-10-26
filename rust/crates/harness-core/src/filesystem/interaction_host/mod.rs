@@ -22,7 +22,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
-pub struct FilesystemInteractionHost<P, A, O> {
+pub struct FilesystemInteractionHost<P, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     verifier: AuthorityVerifier,

@@ -96,7 +96,7 @@ use capture::capture;
 pub use invocation::Invocation;
 
 /// Optional provider for one retained task command. Construction launches nothing.
-pub struct NativeProcessProvider<P, A, O> {
+pub struct NativeProcessProvider<P, A: 'static, O: 'static> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
     plan: TaskEffectPlan,

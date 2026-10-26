@@ -1,8 +1,42 @@
+// The ordinary append builder contributes at most nine transaction items;
+// every member can additionally carry the three source-policy fences.
+pub(crate) const MAX_AUTHORITY_GROUP_MEMBERS: usize = acyclic_stream::MAX_ITEMS / 12;
+
 use super::*;
+mod cost;
+pub use cost::AuthorityGroupCost;
+
+/// Atomic submission of an already composed, dense authority history.
+pub enum AppendGroupOutcome {
+    /// Every member was admitted by one provider transaction.
+    Published {
+        /// One outcome per member in authority order.
+        receipts: Vec<AppendOutcome>,
+        /// Retain this allocation until the result vector is destroyed.
+        allocation: AuthorityAllocation,
+    },
+    /// No prefix was published; this member needs recovery or rebase.
+    Rejected {
+        /// Member whose precondition failed.
+        index: usize,
+        /// Canonical single-append result for that member.
+        outcome: AppendOutcome,
+        /// Authenticated durable head observed when admitting this group.
+        /// This excludes its uncommitted prefix and may precede concurrent
+        /// appends; callers must not replace it with a later head probe.
+        observed: Head,
+    },
+}
 
 contract! {
 /// Nonblocking authority-store contract.
 pub trait AsyncAuthorityStore: ProviderPlatform {
+    /// Transfers a group to its actual owner. An absent task means its terminal
+    /// reply has already been delivered, including unsupported dispatch.
+    fn own_group<G: OwnedAuthorityGuard>(&self, group: OwnedAuthorityGroup<G>) -> Option<OwnedAuthorityTask> {
+        drop(group);
+        None
+    }
     /// Live ownership of this backend owner, preserved by forwarding adapters.
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims;
     /// Backend guarantee used to keep authorization and publication on one cut.
@@ -180,6 +214,33 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         _guard: Option<&mut G>,
     ) -> impl Future<Output = Result<AppendOutcome, AuthorityError<G::Error>>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired.into()))
+    }
+
+    /// Whether this adapter exposes the canonical atomic authority-group path.
+    fn supports_atomic_group_commit(&self) -> bool {
+        false
+    }
+
+    /// Quotes this proposal using the canonical append builder, without publication.
+    /// The cost includes the caller's maximum payload growth during composition.
+    fn quote_group_append(&self, _request: &GuardedAppend, _payload_growth: usize, _work: &mut AuthorityWork<'_>)
+        -> impl Future<Output = Result<Option<AuthorityGroupCost>, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Ok(None))
+    }
+
+    /// Submits a precomposed serial authority history as one atomic transaction.
+    /// Unsupported adapters fail closed; they must never emulate atomicity by
+    /// appending a prefix and then discovering that a later member conflicts.
+    fn compare_and_append_group<G: AuthorityGuard>(
+        &self,
+        _requests: &[GuardedAppend],
+        _cuts: &[crate::PolicyCut],
+        _work: &mut AuthorityWork<'_>,
+        _guard: Option<&mut G>,
+    ) -> impl Future<Output = Result<AppendGroupOutcome, AuthorityError<G::Error>>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
+            "authority adapter does not support atomic groups",
+        ).into()))
     }
 
     /// Reads an existing reservation for the exact operation identity.

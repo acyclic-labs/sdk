@@ -384,10 +384,12 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
     if options.database_name.is_empty() || options.maximum_object_bytes == 0 {
         return Err(js_error("browser filesystem options are invalid"));
     }
-    let authority =
-        IndexedDbAuthorityStore::open(&options.database_name, options.maximum_object_bytes)
-            .await
-            .map_err(JsValue::from)?;
+    let authority = acyclic_fs::browser::open_authority(
+        &options.database_name,
+        acyclic_stream::BrowserStreamLimits::default(),
+    )
+    .await
+    .map_err(js_error)?;
     let object_cache = browser_object_cache_options(&options.object_cache);
     let (objects, immutable_objects) = match options.object_acceleration {
         Acceleration::Indexeddb => (
@@ -411,7 +413,7 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         ),
     };
     let engine = Fs::new(
-        BrowserAuthority::IndexedDb(authority),
+        authority,
         CachedObjectStore::new(objects, object_cache).map_err(js_error)?,
         EmbeddedCapabilities { durable: true },
     );
@@ -459,7 +461,8 @@ pub(in crate::bindings) fn memory_engine(
     maximum_memory_bytes: u64,
     cache: ObjectCacheOptions,
 ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
-    let streams = Arc::new(acyclic_stream::MemoryStream::default());
+    let streams: Arc<dyn acyclic_stream::StreamProvider> =
+        Arc::new(acyclic_stream::MemoryStream::default());
     if maximum_object_bytes == 0
         || maximum_object_bytes > maximum_memory_bytes
         || usize::try_from(maximum_object_bytes).is_err()
@@ -479,7 +482,7 @@ pub(in crate::bindings) fn memory_engine(
     )
     .map_err(js_error)?;
     Ok(Fs::new(
-        BrowserAuthority::Memory(StreamAuthorityStore::new(streams)),
+        StreamAuthorityStore::new(streams),
         CachedObjectStore::new(
             BrowserObjects::Memory(
                 LogicalObjectStore::new(Arc::new(objects), bucket)

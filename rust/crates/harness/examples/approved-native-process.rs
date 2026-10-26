@@ -49,7 +49,7 @@ async fn run(mcp: Option<&'static str>) -> std::result::Result<(), Box<dyn std::
     run_on(mcp, Arc::new(MemoryStream::default()), None, false).await
 }
 
-struct Evidence<A, O> {
+struct Evidence<A: 'static, O: 'static> {
     restart: Restart,
     directory: tempfile::TempDir,
     _preparation_directory: tempfile::TempDir,
@@ -101,7 +101,7 @@ async fn run_on<P: StreamProvider>(
 
 type ExampleResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-struct ExampleStorage<A, O> {
+struct ExampleStorage<A: 'static, O: 'static> {
     files: Arc<Files<A, O>>,
     agent: AgentId,
     source: VolumeRef,
@@ -114,13 +114,13 @@ struct ExampleStorage<A, O> {
     scope: Scope,
 }
 
-struct ExampleTask<P, A, O> {
+struct ExampleTask<P, A: 'static, O: 'static> {
     storage: ExampleStorage<A, O>,
     runtime: Runtime<P, A, O>,
     fence: LeaseFence,
 }
 
-struct ExampleView<P, A, O> {
+struct ExampleView<P, A: 'static, O: 'static> {
     task: ExampleTask<P, A, O>,
     directory: tempfile::TempDir,
     preparation_directory: tempfile::TempDir,
@@ -130,14 +130,14 @@ struct ExampleView<P, A, O> {
     custody: acyclic_fs::NativeAllocation,
 }
 
-struct ApprovedPlan<P, A, O> {
+struct ApprovedPlan<P, A: 'static, O: 'static> {
     content: Arc<FilesystemContentVerifier<A, O>>,
     results: Arc<FilesystemContentPublisher<A, O>>,
     plan: TaskEffectPlan,
     approvals: Arc<FilesystemExecutionJournal<P, A, O>>,
 }
 
-struct ExampleProcess<P, A, O> {
+struct ExampleProcess<P, A: 'static, O: 'static> {
     prepared: ExampleView<P, A, O>,
     request: NativeProcessRequest,
     approved: ApprovedPlan<P, A, O>,

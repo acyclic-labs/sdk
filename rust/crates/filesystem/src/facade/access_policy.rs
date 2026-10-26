@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Selects the shared policy program using this checkout's authenticated
     /// metadata revision. A head movement alone never invalidates its paths.
     /// The first caller pays compilation work; subsequent callers pay only the
@@ -298,7 +298,7 @@ macro_rules! policy_revision {
     }};
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> crate::Workspace<A, O> {
     /// Reads the current policy revision without constructing a checkout.
     /// Returns None if publication overtakes the metadata read.
     pub async fn current_access_policy_revision<W: FsWork>(

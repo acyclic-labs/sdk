@@ -219,39 +219,18 @@ where
                 AssistantExchange::Call { sequence, call } => (sequence, call),
             };
             let started = exchanges.started.remove(&call.call_id);
-            let (publication, content) = match started {
-                Some(crate::executor::ExecutionRecord {
-                    sequence,
-                    event: ExecutionEvent::ToolStarted { invocation, .. },
-                    ..
-                }) => (format!("conversation-tool:{sequence}"), invocation),
+            let (publication, content) = if let Some(crate::executor::ExecutionRecord {
+                sequence,
+                event: ExecutionEvent::ToolStarted { invocation, .. },
+                ..
+            }) = started
+            {
+                (format!("conversation-tool:{sequence}"), invocation)
+            } else {
                 // A call refused before dispatch has no start: its exact invocation is the
                 // model's own call, staged once under its model record.
-                _ => {
-                    let invocation = crate::tool::RecordedInvocation {
-                        invocation: crate::tool::ToolInvocation::for_model_call(
-                            operation_id,
-                            step,
-                            call.call_id.clone(),
-                            call.name.clone(),
-                            call.arguments.clone(),
-                            None,
-                        )?,
-                        metadata: call.metadata.clone(),
-                    };
-                    let bytes = crate::contract::canonical_json_bytes(&invocation)?;
-                    let path = format!("turns/{operation_id}/tool-calls/{sequence}.json");
-                    let file = self
-                        .stage_conversation(
-                            operation_id,
-                            &path,
-                            &bytes,
-                            "application/json",
-                            "invocation.json",
-                        )
-                        .await?;
-                    (format!("conversation-tool-call:{sequence}"), file)
-                }
+                self.stage_model_tool_call(operation_id, step, sequence, &call)
+                    .await?
             };
             let id = self
                 .publish_tool_message(
@@ -327,6 +306,38 @@ where
             ));
         }
         Ok(())
+    }
+
+    async fn stage_model_tool_call(
+        &self,
+        operation_id: OperationId,
+        step: u32,
+        sequence: u64,
+        call: &crate::model::ToolCall,
+    ) -> Result<(String, FileRef)> {
+        let invocation = crate::tool::RecordedInvocation {
+            invocation: crate::tool::ToolInvocation::for_model_call(
+                operation_id,
+                step,
+                call.call_id.clone(),
+                call.name.clone(),
+                call.arguments.clone(),
+                None,
+            )?,
+            metadata: call.metadata.clone(),
+        };
+        let bytes = crate::contract::canonical_json_bytes(&invocation)?;
+        let path = format!("turns/{operation_id}/tool-calls/{sequence}.json");
+        let file = self
+            .stage_conversation(
+                operation_id,
+                &path,
+                &bytes,
+                "application/json",
+                "invocation.json",
+            )
+            .await?;
+        Ok((format!("conversation-tool-call:{sequence}"), file))
     }
 
     async fn publish_reasoning(

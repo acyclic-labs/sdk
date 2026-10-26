@@ -131,8 +131,8 @@ async fn bind_memory_conversation<P: StreamProvider>(
 /// filesystem backends are selected through [`MemoryHarnessStorage::from_providers`].
 pub struct MemoryHarnessStorage<
     P = MemoryStream,
-    A = MemoryAuthorityBackend,
-    O = MemoryObjectBackend,
+    A: 'static = MemoryAuthorityBackend,
+    O: 'static = MemoryObjectBackend,
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,

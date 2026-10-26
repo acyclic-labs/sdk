@@ -146,7 +146,7 @@ fn encode_chunks(
     Ok(output)
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) fn publication_changes(
         &self,
         authority: AuthorityId,

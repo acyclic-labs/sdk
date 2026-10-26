@@ -114,7 +114,10 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-pub(super) async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn change_attribute<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     volume: &Volume<A, O>,
     mut metadata: FileMetadata,
     name: &AttributeName,
@@ -317,7 +320,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Reads one exact named attribute by path or stable identity.
     pub async fn read_named_attribute<F: ContentFile, W: FsWork>(
         &mut self,
@@ -445,7 +448,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFile<A, O> {
     /// Reads one exact named attribute from this detached file.
     pub async fn read_named_attribute<W: FsWork>(
         &self,
@@ -557,7 +560,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 }
 
-async fn attribute_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn attribute_root<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     volume: &Volume<A, O>,
     attributes: MetadataField<ObjectId>,
     mode: Option<NamedAttributeWriteMode>,

@@ -144,7 +144,9 @@ async fn check(
     );
     Ok(())
 }
-async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(transaction: &mut Transaction<A, O>) {
+async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    transaction: &mut Transaction<A, O>,
+) {
     value!(transaction.commit::<WorkspaceError, _, _>(
         None,
         PublicationPermit::Unrestricted,

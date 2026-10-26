@@ -15,10 +15,7 @@ use crate::{
     runtime::{RuntimeScope, TaskRunLimits, TaskStateProvider},
     scheduler::SessionLimits,
 };
-use acyclic_fs::{
-    EmbeddedCapabilities, Fs,
-    browser::{IndexedDbAuthorityStore, IndexedDbObjectStore},
-};
+use acyclic_fs::{EmbeddedCapabilities, Fs, browser::IndexedDbObjectStore};
 use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, SystemUnixMillisClock};
 use js_sys::Function;
 use serde::{Deserialize, Serialize};
@@ -27,9 +24,15 @@ use std::sync::Arc;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
-type BrowserRuntime =
-    FilesystemTaskRuntime<BrowserStream, IndexedDbAuthorityStore, IndexedDbObjectStore>;
-type BrowserFilesystem = FilesystemHost<IndexedDbAuthorityStore, IndexedDbObjectStore>;
+type BrowserRuntime = FilesystemTaskRuntime<
+    BrowserStream,
+    acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>,
+    IndexedDbObjectStore,
+>;
+type BrowserFilesystem = FilesystemHost<
+    acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>,
+    IndexedDbObjectStore,
+>;
 
 fn to_js<T: serde::Serialize>(value: &T) -> std::result::Result<JsValue, JsValue> {
     value
@@ -234,9 +237,9 @@ impl WasmTaskRuntime {
             .map_err(js_error)?
             .with_run_limits(options.run_limits, &mut None)
             .map_err(js_error)?;
-        let authority = IndexedDbAuthorityStore::open(
+        let authority = acyclic_fs::browser::open_authority(
             &options.filesystem_database,
-            options.maximum_object_bytes,
+            BrowserStreamLimits::default(),
         )
         .await
         .map_err(|error| js_error(Error::Storage(error.to_string())))?;
@@ -659,7 +662,7 @@ impl WasmTaskRuntime {
         crate::filesystem::FilesystemTaskCommands<
             '_,
             BrowserStream,
-            IndexedDbAuthorityStore,
+            acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>,
             IndexedDbObjectStore,
         >,
     > {

@@ -1,7 +1,7 @@
 use super::*;
 
 /// One child returned from an authenticated directory page, resolved by the
-pub struct ResolvedDirectoryEntry<A, O> {
+pub struct ResolvedDirectoryEntry<A: 'static, O: 'static> {
     /// Exact canonical child name.
     pub name: LogicalName,
     /// Generation-scoped child handle with authenticated metadata.
@@ -9,7 +9,7 @@ pub struct ResolvedDirectoryEntry<A, O> {
 }
 
 /// One bounded authenticated directory page with reader-scoped child handles.
-pub struct ResolvedDirectoryPage<A, O> {
+pub struct ResolvedDirectoryPage<A: 'static, O: 'static> {
     /// Ordered children strictly after the supplied cursor.
     pub entries: Vec<ResolvedDirectoryEntry<A, O>>,
     /// Whether at least one additional child exists.
@@ -45,7 +45,7 @@ pub struct PathMetadataLookup {
     pub metadata: FileMetadata,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedReader<A, O> {
     /// Returns an exact cursor page and its original-owned names/vector claim.
     pub async fn list_directory_records<W: FsWork>(
         &self,
@@ -334,7 +334,7 @@ pub(super) async fn attach_directory_records_to_file_root_with_accounting<
     Ok((result.0, result.1))
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Returns one directory page with all child records fetched in one shared
     pub async fn list_directory_records<W: FsWork>(
         &mut self,

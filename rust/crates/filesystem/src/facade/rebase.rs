@@ -1,5 +1,23 @@
 use super::*;
 
+pub(super) struct RebaseAdoption<'a> {
+    pub(super) object: ObjectId,
+    pub(super) head: Head,
+    pub(super) classified: Decided,
+    pub(super) root: Owned<GenerationRoot>,
+    pub(super) prepared: super::candidates::PreparedCheckoutRoots,
+    pub(super) settled: Option<crate::kernel::Settled<'a>>,
+    pub(super) certificate: Option<super::rebase_footprint::DisjointChanges>,
+}
+
+struct ClassifiedRebase<'a> {
+    object: ObjectId,
+    head: Head,
+    decision: Decided,
+    settled: Option<crate::kernel::Settled<'a>>,
+    certificate: Option<super::rebase_footprint::DisjointChanges>,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     #[allow(
         clippy::too_many_lines,
@@ -137,8 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
             .map_err(WorkspaceError::engine)?;
         let publication = publish_generation(
-            &self.inner.objects,
-            &self.inner.authority,
+            self.clone(),
             PublishGenerationRequest {
                 authority_id: volume_authority_id(target.id),
                 volume_id: target.id,
@@ -177,7 +194,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Reclassifies exact dependencies under the supplied work limits.
     pub async fn rebase_head<W: FsWork>(
         &mut self,
@@ -210,7 +227,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ),
         FsError,
     > {
-        use crate::kernel::Owned;
         accounting.check()?;
         if self.prepared_merge_parent.is_some() {
             return Err(FsError::PreparedMergePending);
@@ -225,46 +241,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .volume
             .resolve_head_generation(accounting, cancellation)
             .await?;
-        let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
-            &self.volume.fs.inner.objects,
-            probe_limits(self.volume.config),
-            accounting,
-        )?;
-        let probe = (probe, probe_allocation);
-        // The proof snapshot is an Arc share, not a copied map or name graph.
+        // The captured proof snapshot shares its map and owned names.
         let dependencies = self.dependencies.proof().dependencies.clone();
-        let working = crate::kernel::WorkingRebaseProbe {
-            probe: &probe.0,
-            working: self.root.file_table,
+        if maximum_conflicts == 0 && candidate_object != self.root.base {
+            return Err(FsError::Rebase(RebaseError::ZeroConflictLimit));
+        }
+        let certificate = if candidate_object == self.root.base {
+            None
+        } else {
+            self.head_changes_disjoint(
+                candidate_object,
+                candidate_head,
+                &dependencies,
+                accounting,
+                cancellation,
+            )
+            .await?
         };
-        let classified = crate::kernel::classify_rebase_settling_with_accounting(
-            &working,
-            GenerationId::new(self.root.base.digest),
-            GenerationId::new(candidate_object.digest),
-            &dependencies,
-            maximum_conflicts,
-            accounting,
-            cancellation,
-        )
-        .await
-        .map_err(|error| match error {
-            crate::kernel::ClassifyRebaseFailure::Probe(error)
-            | crate::kernel::ClassifyRebaseFailure::Accounting(error) => error,
-            crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit => {
-                FsError::Rebase(RebaseError::ZeroConflictLimit)
-            }
-        });
-        let retired = {
-            let (probe, _allocation) = probe;
-            probe.retire_with_accounting(accounting)
-        };
-        let (decision, allocation, settled) = match (retired, classified) {
-            (Ok(()), classified) => classified?,
-            (Err(error), Ok((_, _, Some(settled)))) => {
-                settled.retire(accounting)?;
-                return Err(error);
-            }
-            (Err(error), _) => return Err(error),
+        let disjoint = certificate.is_some();
+        let (decision, allocation, settled) = if disjoint {
+            (
+                RebaseDecision::Safe {
+                    generation: GenerationId::new(candidate_object.digest),
+                },
+                accounting.claim_owned(0, 0)?,
+                None,
+            )
+        } else {
+            self.probe_rebase_head(
+                candidate_object,
+                &dependencies,
+                maximum_conflicts,
+                accounting,
+                cancellation,
+            )
+            .await?
         };
         let classified = (decision, allocation);
         if matches!(classified.0, RebaseDecision::Conflicted { .. }) {
@@ -274,54 +285,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if candidate_object == self.root.base {
             cancellation.check()?;
             self.authority_head = Some(candidate_head);
+            self.observed_generation.refresh(
+                GenerationId::new(candidate_object.digest),
+                candidate_head.sequence,
+            );
             return Ok(classified);
         }
-        let (candidate_root, allocation) = crate::kernel::read_generation_root_with_accounting(
-            &self.volume.fs.inner.objects,
-            candidate_object,
-            self.volume.config,
+        self.prepare_rebase_adoption(
+            ClassifiedRebase {
+                object: candidate_object,
+                head: candidate_head,
+                decision: classified,
+                settled,
+                certificate,
+            },
+            maximum_conflicts,
             accounting,
             cancellation,
         )
-        .await?;
-        let candidate_bytes = root_parent_bytes(&candidate_root)?;
-        let candidate = Owned::new(candidate_root, allocation, candidate_bytes);
-        let outcome = async {
-            if candidate.value.volume_id != self.volume.id {
-                return Err(FsError::VolumeMismatch);
-            }
-            let Some((root, allocation)) = self
-                .rebase_private_candidate_with_accounting(
-                    candidate_object,
-                    &candidate.value,
-                    maximum_conflicts,
-                    accounting,
-                    cancellation,
-                )
-                .await?
-            else {
-                return Ok(None);
-            };
-            let bytes = root_parent_bytes(&root)?;
-            let rebased = Owned::new(root, allocation, bytes);
-            let staged = self.prepare_root_replacement(
-                &candidate.value,
-                &rebased.value,
+        .await
+    }
+
+    async fn prepare_rebase_adoption(
+        &mut self,
+        classified: ClassifiedRebase<'_>,
+        maximum_conflicts: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Decided, FsError> {
+        let ClassifiedRebase {
+            object,
+            head,
+            decision: classified,
+            settled,
+            certificate,
+        } = classified;
+        let outcome = self
+            .prepare_rebased_head(
+                object,
+                maximum_conflicts,
+                certificate.as_ref(),
                 accounting,
                 cancellation,
-                None,
-            );
-            let prepared = match staged {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    rebased.retire(accounting)?;
-                    return Err(error);
-                }
-            };
-            Ok::<_, FsError>(Some((rebased, prepared)))
-        }
-        .await;
-        let outcome = candidate.retire(accounting).and(outcome);
+            )
+            .await;
         let merged = match (outcome, settled) {
             (Ok(Some(merged)), settled) => (merged, settled),
             // A merge that did not merge what a replacement settled reports
@@ -338,9 +345,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(error);
             }
         };
-        let ((rebased, prepared), settled) = merged;
-        #[cfg(not(target_arch = "wasm32"))]
-        let (mut rebased, mut prepared) = (rebased, prepared);
+        let ((root, prepared), settled) = merged;
+        self.adopt_rebased_head(
+            RebaseAdoption {
+                object,
+                head,
+                classified,
+                root,
+                prepared,
+                settled,
+                certificate,
+            },
+            accounting,
+            cancellation,
+        )
+    }
+
+    pub(super) fn adopt_rebased_head(
+        &mut self,
+        adoption: RebaseAdoption<'_>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Decided, FsError> {
+        let RebaseAdoption {
+            object,
+            head,
+            classified,
+            root: rebased,
+            prepared,
+            settled,
+            certificate,
+        } = adoption;
         let settled = match cancellation.check() {
             Ok(()) => settled,
             Err(error) => {
@@ -351,31 +386,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(error.into());
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
-                &mut rebased.allocation
-            else {
-                unreachable!("native root has original custody");
-            };
-            if let Err(error) = self.prepare_root_working_control_with_native_work(
-                &rebased.value,
-                guard,
-                &mut prepared,
-                original,
-                cancellation,
-            ) {
-                if let Some(settled) = settled {
-                    settled.retire(accounting)?;
-                }
-                rebased.retire(accounting)?;
-                return Err(error);
-            }
-        }
         // The followed ledger is built from the ledger as it is now, under
         // its lock, so nothing recorded since classification is lost.
         let ledger = Arc::clone(&self.dependencies.proof);
         let mut proof = ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(certificate) = certificate {
+            let preserved = certificate.preserves(&proof.dependencies, accounting);
+            certificate.retire(accounting)?;
+            if !preserved? {
+                rebased.retire(accounting)?;
+                crate::kernel::retire_allocation(classified.1, 0, accounting)?;
+                return Err(FsError::Rebase(RebaseError::DependenciesChanged));
+            }
+        }
         let followed = match followed_ledger(
             &proof.dependencies,
             &self.dependencies.data_custody,
@@ -394,14 +417,241 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         };
         // Working-root transfer is the final fallible step. No operation
-        self.install_root_replacement(candidate_object, rebased.value, prepared);
+        self.install_root_replacement(object, rebased.value, prepared)?;
         if let Some(followed) = followed {
             proof.dependencies = followed;
         }
         drop(proof);
-        self.generation_root = candidate_object;
-        self.authority_head = Some(candidate_head);
+        self.generation_root = object;
+        self.authority_head = Some(head);
+        self.observed_generation
+            .refresh(GenerationId::new(object.digest), head.sequence);
         Ok(classified)
+    }
+
+    pub(super) async fn prepare_rebased_head(
+        &self,
+        candidate_object: ObjectId,
+        maximum_conflicts: u32,
+        certificate: Option<&super::rebase_footprint::DisjointChanges>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        Option<(
+            Owned<GenerationRoot>,
+            super::candidates::PreparedCheckoutRoots,
+        )>,
+        FsError,
+    > {
+        let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
+        let (future, _) = crate::heap_future::in_heap_admitted(
+            &mut frame,
+            |frame, bytes| frame.admit(bytes),
+            |frame| async move {
+                self.prepare_rebased_head_inner(
+                    candidate_object,
+                    maximum_conflicts,
+                    certificate,
+                    frame.accounting(),
+                    cancellation,
+                )
+                .await
+            },
+        )?;
+        let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
+        let result = future.as_mut().await;
+        drop(future);
+        frame.finish(result)
+    }
+
+    async fn prepare_rebased_head_inner(
+        &self,
+        candidate_object: ObjectId,
+        maximum_conflicts: u32,
+        certificate: Option<&super::rebase_footprint::DisjointChanges>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        Option<(
+            Owned<GenerationRoot>,
+            super::candidates::PreparedCheckoutRoots,
+        )>,
+        FsError,
+    > {
+        let (candidate_root, allocation) = crate::kernel::read_generation_root_with_accounting(
+            &self.volume.fs.inner.objects,
+            candidate_object,
+            self.volume.config,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        let candidate_bytes = root_parent_bytes(&candidate_root)?;
+        let candidate = Owned::new(candidate_root, allocation, candidate_bytes);
+        let outcome = async {
+            if candidate.value.volume_id != self.volume.id {
+                return Err(FsError::VolumeMismatch);
+            }
+            let rebased = if let Some(certificate) = certificate {
+                Some(
+                    certificate
+                        .compose(
+                            &self.volume.fs.inner.objects,
+                            candidate_object,
+                            &candidate.value,
+                            DecodeLimits::for_volume(self.volume.config),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?,
+                )
+            } else {
+                self.rebase_private_candidate_with_accounting(
+                    candidate_object,
+                    &candidate.value,
+                    maximum_conflicts,
+                    accounting,
+                    cancellation,
+                )
+                .await?
+            };
+            let Some((root, allocation)) = rebased else {
+                return Ok(None);
+            };
+            let bytes = root_parent_bytes(&root)?;
+            let rebased = Owned::new(root, allocation, bytes);
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut rebased = rebased;
+            let staged = self.prepare_root_replacement(
+                &candidate.value,
+                &rebased.value,
+                accounting,
+                cancellation,
+                None,
+            );
+            let prepared = match staged {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    rebased.retire(accounting)?;
+                    return Err(error);
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut prepared = prepared;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
+                    &mut rebased.allocation
+                else {
+                    unreachable!("native root has original custody");
+                };
+                if let Err(error) = self.prepare_root_working_control_with_native_work(
+                    &rebased.value,
+                    guard,
+                    &mut prepared,
+                    original,
+                    cancellation,
+                ) {
+                    rebased.retire(accounting)?;
+                    return Err(error);
+                }
+            }
+            Ok::<_, FsError>(Some((rebased, prepared)))
+        }
+        .await;
+        candidate.retire(accounting).and(outcome)
+    }
+
+    pub(super) async fn probe_rebase_head<'d>(
+        &self,
+        candidate_object: ObjectId,
+        dependencies: &'d CheckoutDependencies,
+        maximum_conflicts: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            RebaseDecision,
+            KernelOwnedAllocation,
+            Option<crate::kernel::Settled<'d>>,
+        ),
+        FsError,
+    > {
+        let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
+        let (future, _) = crate::heap_future::in_heap_admitted(
+            &mut frame,
+            |frame, bytes| frame.admit(bytes),
+            |frame| async move {
+                self.probe_rebase_head_inner(
+                    candidate_object,
+                    dependencies,
+                    maximum_conflicts,
+                    frame.accounting(),
+                    cancellation,
+                )
+                .await
+            },
+        )?;
+        let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
+        let result = future.as_mut().await;
+        drop(future);
+        frame.finish(result)
+    }
+
+    async fn probe_rebase_head_inner<'d>(
+        &self,
+        candidate_object: ObjectId,
+        dependencies: &'d CheckoutDependencies,
+        maximum_conflicts: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            RebaseDecision,
+            KernelOwnedAllocation,
+            Option<crate::kernel::Settled<'d>>,
+        ),
+        FsError,
+    > {
+        let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
+            &self.volume.fs.inner.objects,
+            probe_limits(self.volume.config),
+            accounting,
+        )?;
+        let probe = (probe, probe_allocation);
+        let working = crate::kernel::WorkingRebaseProbe {
+            probe: &probe.0,
+            working: self.root.file_table,
+        };
+        let classified = crate::kernel::classify_rebase_settling_with_accounting(
+            &working,
+            GenerationId::new(self.root.base.digest),
+            GenerationId::new(candidate_object.digest),
+            dependencies,
+            maximum_conflicts,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(|error| match error {
+            crate::kernel::ClassifyRebaseFailure::Probe(error)
+            | crate::kernel::ClassifyRebaseFailure::Accounting(error) => error,
+            crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit => {
+                FsError::Rebase(RebaseError::ZeroConflictLimit)
+            }
+        });
+        let retired = {
+            let (probe, _allocation) = probe;
+            probe.retire_with_accounting(accounting)
+        };
+        match (retired, classified) {
+            (Ok(()), classified) => classified,
+            (Err(error), Ok((_, _, Some(settled)))) => {
+                settled.retire(accounting)?;
+                Err(error)
+            }
+            (Err(error), _) => Err(error),
+        }
     }
 
     pub(super) async fn rebase_private_candidate_with_accounting(

@@ -11,7 +11,7 @@ pub(super) fn held_owned_bytes(held: &Held) -> u64 {
         Held::Checkout { working, .. } => {
             working.parents.capacity() * std::mem::size_of::<crate::GenerationId>()
         }
-        Held::Record { .. } => 0,
+        Held::Record { .. } | Held::Generation { .. } => 0,
     };
     crate::foundation::usize_to_u64(std::mem::size_of::<Slot>() + parents)
 }
@@ -40,7 +40,7 @@ pub(crate) fn clone_generation_root(
                 owner,
                 native_sink
                     .as_ref()
-                    .expect("native owner has an admitted sink"),
+                    .ok_or(crate::FsError::HandleAllocationFailed)?,
             )?,
         _ => return Err(crate::FsError::HandleAllocationFailed),
     };

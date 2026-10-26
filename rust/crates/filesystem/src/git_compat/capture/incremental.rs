@@ -10,8 +10,8 @@ pub async fn capture_git_compatible_generation_incremental<A, O>(
     operation_id: OperationId,
 ) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let live = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())

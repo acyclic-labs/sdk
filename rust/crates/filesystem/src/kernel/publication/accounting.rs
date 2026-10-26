@@ -9,11 +9,7 @@ pub(super) fn accept_backend(
     accounting: &mut KernelAccounting<'_>,
     more: WorkCounters,
 ) -> Result<(), crate::FsError> {
-    let (allocations, work, budget, _) =
-        accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-    *work = work.with_backend(more, allocations.live_bytes())?;
-    work.verify(budget)?;
-    Ok(())
+    accounting.accept_backend(more)
 }
 
 pub(super) fn accept_step<T, E: From<crate::FsError>>(

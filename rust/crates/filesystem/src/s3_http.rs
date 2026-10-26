@@ -157,7 +157,7 @@ impl<P: acyclic_stream::StreamProvider> StreamBackedAuthority for StreamAuthorit
 
 /// One authenticated credential resolved to one exact workspace.
 #[derive(Clone)]
-pub struct FilesystemS3Principal<A, O> {
+pub struct FilesystemS3Principal<A: 'static, O: 'static> {
     /// Secret used only by the `SigV4` verifier.
     pub secret_key: SecretKey,
     /// Opaque bucket coordinate issued for this workspace.
@@ -264,8 +264,8 @@ impl<R, A, O> FilesystemS3Adapter<R, A, O> {
 impl<R, A, O> FilesystemS3Adapter<R, A, O>
 where
     R: FilesystemS3Resolver<A, O>,
-    A: StreamBackedAuthority,
-    O: AsyncObjectStore,
+    A: StreamBackedAuthority + 'static,
+    O: AsyncObjectStore + 'static,
 {
     async fn authenticated_access_key<'a, T>(
         &self,

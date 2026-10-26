@@ -350,7 +350,7 @@ pub(crate) fn merge_added_metadata_fields(
 fn is_directory(record: Option<FileRecord>) -> bool {
     matches!(record, Some(record) if record.kind == super::FileKind::Directory)
 }
-fn directory_entries(record: Option<FileRecord>) -> Option<ObjectId> {
+pub(crate) fn directory_entries(record: Option<FileRecord>) -> Option<ObjectId> {
     match record?.payload {
         FilePayload::Directory { entries } => Some(entries),
         _ => None,

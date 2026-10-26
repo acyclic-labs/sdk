@@ -295,8 +295,14 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
     Ok(())
 }
 
+/// Encoded command bytes, using the same wire encoder as request validation.
+#[must_use]
+pub fn commit_encoded_len(request: &CommitRequest) -> usize {
+    crate::wire_codec::requests::commit_len(request)
+}
+
 fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
-    command_size(crate::wire_codec::requests::commit_len(request))
+    command_size(commit_encoded_len(request))
 }
 
 pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {

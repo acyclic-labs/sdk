@@ -1,6 +1,10 @@
 use super::*;
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
-    LazyWorkspace<A, O, D, S>
+impl<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+> LazyWorkspace<A, O, D, S>
 {
     /// Materializes one visible subtree through bounded SDK transactions.
     pub async fn exactify(

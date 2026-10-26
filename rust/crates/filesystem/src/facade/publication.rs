@@ -1,4 +1,5 @@
 use super::*;
+mod prepare;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct LastCommit {
@@ -10,7 +11,7 @@ pub(super) struct LastCommit {
 // Single-use custody from the original authenticated publication.
 pub(crate) type PublicationClosure<A, O> = Arc<Mutex<Option<VerifiedPublication<A, O>>>>;
 
-pub(crate) struct VerifiedPublication<A, O> {
+pub(crate) struct VerifiedPublication<A: 'static, O: 'static> {
     pub(super) filesystem: Fs<A, O>,
     pub(super) generation_root: ObjectId,
     pub(super) volume_id: VolumeId,
@@ -26,7 +27,7 @@ impl<A, O> VerifiedPublication<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) async fn publish_pending_against<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
@@ -50,20 +51,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .check()
             .map_err(|error| OperationFailure::before_work(E::from(FsError::from(error))))?;
         self.publication_closure = None;
+        let (_read_fence, preconditions) = self
+            .publication_dependencies()
+            .map_err(|error| OperationFailure::before_work(E::from(error)))?;
         let checkpoint = self
             .checkpoint_root(budget, cancellation)
             .await
             .map_err(|failure| failure.map_error(E::from))?;
         let checkpoint_root = checkpoint.value;
         let mut work = checkpoint.work;
-        let request = PublishGenerationRequest {
-            authority_id: volume_authority_id(self.volume.id),
-            volume_id: self.volume.id,
-            epoch: expected.epoch,
-            expected,
-            operation_id,
-            generation_root: checkpoint_root,
-        };
+        let request = self.publication_request(operation_id, expected, checkpoint_root);
         let custody_bytes = crate::foundation::usize_to_u64(
             std::mem::size_of::<Mutex<Option<VerifiedPublication<A, O>>>>()
                 + 2 * std::mem::size_of::<usize>(),
@@ -88,25 +85,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut prepared_roots = None;
         let publication = {
             let mut prepare_roots = |root: &GenerationRoot, budget| {
-                let mut accounting = KernelAccounting::standalone(budget, cancellation);
-                let prepared = measured(
-                    self.prepare_root_replacement(
-                        root,
-                        root,
-                        &mut accounting,
-                        cancellation,
-                        producer_custody,
-                    ),
-                    &accounting,
-                )
-                .map_err(|failure| failure.map_error(E::from))?;
-                let bytes = root_parent_bytes(&prepared.value.base.0)
-                    .and_then(|bytes| match &prepared.value.held {
-                        Some((root, _)) => bytes
-                            .checked_add(root_parent_bytes(root)?)
-                            .ok_or(FsError::Work(WorkError::Overflow)),
-                        None => Ok(bytes),
-                    })
+                let prepared = self
+                    .prepare_published_roots(root, budget, cancellation, producer_custody)
+                    .map_err(|failure| failure.map_error(E::from))?;
+                let bytes = prepare::root_storage_bytes(&prepared.value)
                     .map_err(|error| OperationFailure::new(E::from(error), prepared.work))?;
                 prepared_roots = Some(prepared.value);
                 Ok(OperationReceipt {
@@ -115,17 +97,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 })
             };
             crate::kernel::publish_generation_async_guarded(
-                &self.volume.fs.inner.objects,
-                &self.volume.fs.inner.authority,
+                self.volume.fs.clone(),
                 request,
                 PublicationIntent {
+                    preconditions,
                     operation_context,
                     original_evidence: operation_evidence.clone(),
                     fingerprint_permit: original_fingerprint_permit,
                     permit,
                 },
                 closure_limits(self.volume.config),
-                Some(&self.volume.fs.inner.publication_proof),
+                Some(&self.volume.fs.inner.publication_proof.inner),
                 publication_budget,
                 cancellation,
                 before_publication,
@@ -143,14 +125,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         drop(operation_evidence);
         work = merge_simultaneous_work(work, publication.work, custody_bytes, budget)
             .map_err(|failure| failure.map_error(E::from))?;
-        let outcome = self.apply_publication(
-            checkpoint_root,
-            operation_id,
-            (publication, KernelOwnedAllocation::Standalone),
-            proven_at,
-            publication_slot,
-            prepared_roots,
-        );
+        let outcome = self
+            .apply_publication(
+                operation_id,
+                (publication, KernelOwnedAllocation::Standalone),
+                proven_at,
+                publication_slot,
+                prepared_roots,
+            )
+            .map_err(|error| OperationFailure::new(E::from(error), work))?;
         Ok(OperationReceipt {
             value: outcome,
             work,
@@ -291,32 +274,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(FsError::from)
                 .map_err(E::from)?;
             self.publication_closure = None;
+            let (_read_fence, preconditions) = self.publication_dependencies().map_err(E::from)?;
             let checkpoint_root = self
                 .checkpoint_root(original, cancellation)
                 .await
                 .map_err(E::from)?;
-            let request = PublishGenerationRequest {
-                authority_id: volume_authority_id(self.volume.id),
-                volume_id: self.volume.id,
-                epoch: expected.epoch,
-                expected,
-                operation_id,
-                generation_root: checkpoint_root,
-            };
-            let custody_bytes = crate::foundation::usize_to_u64(
-                std::mem::size_of::<Mutex<Option<VerifiedPublication<A, O>>>>()
-                    + 2 * size_of::<usize>(),
-            );
-            // This actual slot is admitted before Arc's allocator. Its guard is
-            let mut slot_allocation = original
-                .claim(
-                    custody_bytes,
-                    u64::from((custody_bytes) != 0),
-                    crate::WorkCounters::UNCHARGED,
-                )
-                .map_err(FsError::from)
-                .map_err(E::from)?;
-            let publication_slot = Arc::new(Mutex::new(None));
+            let request = self.publication_request(operation_id, expected, checkpoint_root);
+            let (publication_slot, mut slot_allocation) =
+                VerifiedPublication::<A, O>::native_slot(original).map_err(E::from)?;
             let proven_at = self.volume.fs.inner.objects.collection_sweeps();
             let mut prepared_roots = None;
             let mut publication = {
@@ -324,38 +289,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     |root: &GenerationRoot,
                      proof_guard: &mut crate::NativeAllocation,
                      original: &crate::NativeMaterializationWork| {
-                        let mut prepared = self
-                            .prepare_root_replacement(
+                        let prepared = self
+                            .prepare_published_native_roots(
                                 root,
-                                root,
-                                &mut KernelAccounting::native(original, cancellation),
+                                proof_guard,
+                                original,
                                 cancellation,
                                 producer_custody,
                             )
                             .map_err(E::from)?;
-                        self.prepare_root_working_control_with_native_work(
-                            root,
-                            proof_guard,
-                            &mut prepared,
-                            original,
-                            cancellation,
-                        )
-                        .map_err(E::from)?;
                         prepared_roots = Some(prepared);
                         Ok(())
                     };
                 crate::kernel::publish_generation_async_guarded_with_native_work(
-                    &self.volume.fs.inner.objects,
-                    &self.volume.fs.inner.authority,
+                    self.volume.fs.clone(),
                     request,
                     PublicationIntent {
+                        preconditions,
                         operation_context,
                         original_evidence: operation_evidence.clone(),
                         fingerprint_permit: original_fingerprint_permit,
                         permit,
                     },
                     closure_limits(self.volume.config),
-                    Some(&self.volume.fs.inner.publication_proof),
+                    Some(&self.volume.fs.inner.publication_proof.inner),
                     original,
                     cancellation,
                     before_publication,
@@ -374,28 +331,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 publication.0,
                 KernelOwnedAllocation::NativeOriginal(publication.1),
             );
-            Ok(self.apply_publication(
-                checkpoint_root,
+            self.apply_publication(
                 operation_id,
                 retained,
                 proven_at,
                 publication_slot,
                 prepared_roots,
-            ))
+            )
+            .map_err(E::from)
         };
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (create, &mut frame_custody),
             |(_, custody), bytes| {
-                **custody = Some(
-                    original
-                        .claim(
-                            bytes,
-                            u64::from((bytes) != 0),
-                            crate::WorkCounters::UNCHARGED,
-                        )
-                        .map_err(FsError::from)
-                        .map_err(E::from)?,
-                );
+                **custody = Some(prepare::native_frame(original, bytes).map_err(E::from)?);
                 Ok::<(), E>(())
             },
             |(create, _)| create(),
@@ -446,16 +394,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let Some(commit) = resolved else {
             return Ok(None);
         };
-        let previous_sequence = commit
-            .sequence
-            .get()
-            .checked_sub(1)
-            .ok_or_else(|| E::from(FsError::InvalidAuthorityHistory))?;
-        let expected = Head {
-            epoch: commit.epoch,
-            sequence: Sequence::new(previous_sequence),
-            digest: commit.previous_digest,
-        };
+        let expected = original_publication_head(
+            &commit,
+            &mut KernelAccounting::native(original, cancellation),
+        )
+        .map_err(E::from)?;
         self.publish_pending_against_with_native_work(
             operation_id,
             operation_context,
@@ -485,14 +428,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     pub(super) fn apply_publication(
         &mut self,
-        checkpoint_root: ObjectId,
         operation_id: OperationId,
         mut retained: (PublicationReceipt, KernelOwnedAllocation),
         proven_at: u64,
         publication_slot: PublicationClosure<A, O>,
         mut prepared_roots: Option<PreparedCheckoutRoots>,
-    ) -> LivePublicationObservation {
+    ) -> Result<LivePublicationObservation, FsError> {
         let generation_id = retained.0.proof.generation_id;
+        let checkpoint_root = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: generation_id.digest(),
+        };
         self.publication_closure = if matches!(
             retained.0.outcome,
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_)
@@ -519,19 +465,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 | LivePublicationObservation::AlreadyCommitted { .. }
         ) {
             drop(retained.0.proof);
-            return outcome;
+            return Ok(outcome);
         }
         if let LivePublicationObservation::Committed { head, .. }
         | LivePublicationObservation::AlreadyCommitted { head, .. } = outcome
         {
-            self.generation_root = checkpoint_root;
             self.install_root_replacement(
                 checkpoint_root,
                 retained.0.proof.root,
-                prepared_roots
-                    .take()
-                    .expect("publication prepared its owned root copies"),
-            );
+                prepared_roots.take().ok_or(FsError::InvalidDiff)?,
+            )?;
+            self.generation_root = checkpoint_root;
             self.authority_head = Some(head);
             self.prepared_merge_parent = None;
             self.dependencies.proof().clear();
@@ -541,7 +485,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 head,
             });
         }
-        outcome
+        Ok(outcome)
     }
 
     pub(crate) async fn retry_stale_commit<E, F, Fut>(
@@ -590,14 +534,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         work: resolved.work,
                     });
                 };
-                let previous_sequence = commit.sequence.get().checked_sub(1).ok_or_else(|| {
-                    OperationFailure::new(E::from(FsError::InvalidAuthorityHistory), resolved.work)
-                })?;
-                let expected = Head {
-                    epoch: commit.epoch,
-                    sequence: Sequence::new(previous_sequence),
-                    digest: commit.previous_digest,
-                };
+                let mut decoded = KernelAccounting::standalone(
+                    remaining(resolved.work, budget)
+                        .map_err(|failure| failure.map_error(E::from))?,
+                    cancellation,
+                );
+                let expected =
+                    original_publication_head(&commit, &mut decoded).map_err(|error| {
+                        OperationFailure::new(
+                            E::from(error),
+                            resolved
+                                .work
+                                .checked_add(decoded.spent())
+                                .unwrap_or(resolved.work),
+                        )
+                    })?;
+                let resolved_work = add(resolved.work, decoded.spent())
+                    .map_err(|failure| failure.map_error(E::from))?;
                 let retried = self
                     .publish_pending_against(
                         operation_id,
@@ -606,7 +559,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         original_fingerprint_permit,
                         permit,
                         expected,
-                        remaining(resolved.work, budget)
+                        remaining(resolved_work, budget)
                             .map_err(|failure| failure.map_error(E::from))?,
                         cancellation,
                         before_publication,
@@ -615,15 +568,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     )
                     .await
                     .map_err(|mut failure| {
-                        *failure.work = resolved
-                            .work
+                        *failure.work = resolved_work
                             .checked_add(*failure.work)
-                            .unwrap_or(resolved.work);
+                            .unwrap_or(resolved_work);
                         failure
                     })?;
                 Ok(OperationReceipt {
                     value: Some(retried.value),
-                    work: add(resolved.work, retried.work)
+                    work: add(resolved_work, retried.work)
                         .map_err(|failure| failure.map_error(E::from))?,
                 })
             },
@@ -720,4 +672,29 @@ pub(crate) fn closure_limits(config: VolumeConfig) -> ClosureLimits {
         hard_links: config.hard_links,
         sparse_files: config.sparse_files,
     }
+}
+
+fn original_publication_head(
+    record: &DurableCommit,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Head, FsError> {
+    let decoded = crate::kernel::decode_publication_evidence_with_accounting(
+        &record.payload,
+        MAXIMUM_VOLUME_EVENT_BYTES,
+        accounting,
+    )?;
+    Ok(decoded.origin.map_or(
+        Head {
+            epoch: record.epoch,
+            sequence: Sequence::new(
+                record
+                    .sequence
+                    .get()
+                    .checked_sub(1)
+                    .ok_or(FsError::InvalidAuthorityHistory)?,
+            ),
+            digest: record.previous_digest,
+        },
+        |origin| origin.expected,
+    ))
 }

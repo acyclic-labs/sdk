@@ -75,7 +75,7 @@ fn observe_publication(
 }
 
 #[test]
-fn publication_rebase_error_and_cancellation_notify_after_unlocking()
+fn rejected_private_composition_notifies_only_after_successful_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::atomic::AtomicUsize;
     for abandon in [false, true] {
@@ -86,8 +86,8 @@ fn publication_rebase_error_and_cancellation_notify_after_unlocking()
         let mut guard = move |_: &crate::NativeMaterializationWork| {
             let calls = Arc::clone(&calls);
             async move {
-                // Memory authority seals only an append that can succeed, so
-                // reaching this guard follows the conflicting-head rebase.
+                // Preparation can compose an independent head privately. A
+                // rejected seal must not expose that unpublished composition.
                 calls.fetch_add(1, Ordering::AcqRel);
                 if abandon {
                     std::future::pending::<()>().await;
@@ -109,12 +109,16 @@ fn publication_rebase_error_and_cancellation_notify_after_unlocking()
                 &mut acknowledged,
             ));
             if abandon {
-                assert!(futures::poll!(publication.as_mut()).is_pending());
-                assert_eq!(
-                    entered.load(Ordering::Acquire),
-                    1,
-                    "publication must be rebased before cancellation"
-                );
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(publication.as_mut(), cx).is_pending());
+                    if entered.load(Ordering::Acquire) == 0 {
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(())
+                    }
+                })
+                .await;
+                assert_eq!(entered.load(Ordering::Acquire), 1);
                 drop(publication);
             } else {
                 assert!(matches!(
@@ -124,6 +128,11 @@ fn publication_rebase_error_and_cancellation_notify_after_unlocking()
             }
             Ok(())
         })?;
+        assert!(
+            !observer.completed.load(Ordering::Acquire),
+            "an unpublished private composition became visible"
+        );
+        source.sync()?;
         assert!(observer.completed.load(Ordering::Acquire));
         assert!(source.lookup(&native_test_path("remote"))?.is_some());
         assert!(source.lookup(&native_test_path("local"))?.is_some());

@@ -39,10 +39,11 @@ fn committed(sequence: u64) -> AppendOutcome {
 /// Proves each committed generation in order and checks it against a full walk.
 ///
 /// A generation whose `published` flag is false stands for a failed append:
-/// its proof is dropped, so the next proof must be a full walk.
+/// its proof is dropped. Only an earlier published proof may seed the next delta.
 async fn check(
     transactions: Vec<Vec<Change>>,
     published: Vec<bool>,
+    reuse_baseline: bool,
 ) -> Result<u64, Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("proof-cache"))?;
@@ -99,7 +100,7 @@ async fn check(
     let cache = Mutex::new(CachedProofs::default());
     let (mut claimed, mut live_full, mut live_listed) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-    let (mut increments, mut previous_published) = (0, false);
+    let (mut increments, mut has_published) = (0, false);
     for (index, generation) in generations.iter().copied().enumerate() {
         let root = ObjectId {
             kind: ObjectKind::GenerationRoot,
@@ -108,7 +109,14 @@ async fn check(
         let cancellation = CancellationToken::new();
         let meter = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)?;
         let (proof, guard, pending) = ProofContext::new(store, limits, meter)
-            .prove_cached(root, Some(&cache))
+            .prove_cached_from(
+                root,
+                Some(&cache),
+                reuse_baseline.then(|| ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: settled.id().digest(),
+                }),
+            )
             .await?;
         let full =
             prove_generation_closure(store, root, limits, WorkBudget::UNBOUNDED, &cancellation)
@@ -128,8 +136,8 @@ async fn check(
             claimed = full_set.clone();
         } else {
             assert!(
-                previous_published,
-                "only a published parent's proof is reused"
+                has_published,
+                "an unpublished proof was reused without a published baseline"
             );
             increments += 1;
             claimed.extend(listed.iter().copied());
@@ -143,9 +151,10 @@ async fn check(
         live_listed.extend(listed);
         assert_eq!(live_full, live_listed);
         drop(guard);
-        previous_published = published.get(index).copied().unwrap_or(true);
+        let publish = published.get(index).copied().unwrap_or(true);
         let pending = pending.ok_or("a cached publication proof must yield a ticket")?;
-        if previous_published {
+        if publish {
+            has_published = true;
             pending.publish(&committed(index as u64 + 1));
             if index != 0 && published.get(index - 1).copied().unwrap_or(true) {
                 let older = ObjectId {
@@ -172,7 +181,7 @@ async fn check(
 fn run(transactions: Vec<Vec<Change>>, published: Vec<bool>) -> Result<u64, Box<dyn Error>> {
     tokio::runtime::Builder::new_current_thread()
         .build()?
-        .block_on(check(transactions, published))
+        .block_on(check(transactions, published, false))
 }
 
 #[test]
@@ -187,6 +196,28 @@ fn appended_files_reuse_the_published_parent_proof() -> Result<(), Box<dyn Error
         })
         .collect();
     assert_eq!(run(writes, Vec::new())?, 4);
+    Ok(())
+}
+
+#[test]
+fn composed_prefixes_reuse_only_the_published_baseline() -> Result<(), Box<dyn Error>> {
+    let writes = (0..4)
+        .map(|file| {
+            vec![Change::Write {
+                file,
+                bytes: 16,
+                seed: 7,
+            }]
+        })
+        .collect();
+    // The three intermediate proofs are never published. Each later proof
+    // must validate its complete delta against the settled baseline instead.
+    assert_eq!(
+        tokio::runtime::Builder::new_current_thread()
+            .build()?
+            .block_on(check(writes, vec![true, false, false, false, true], true))?,
+        4
+    );
     Ok(())
 }
 

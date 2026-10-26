@@ -221,7 +221,7 @@ impl ModelBinding {
 }
 
 /// Stock command adapters over the runtime's existing executors and journal.
-pub struct FilesystemTaskCommands<'a, P, A, O> {
+pub struct FilesystemTaskCommands<'a, P, A: 'static, O: 'static> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
     model: Option<ModelBinding>,
     effects: Option<Arc<crate::effect_host::ConversationEffectHost<P>>>,

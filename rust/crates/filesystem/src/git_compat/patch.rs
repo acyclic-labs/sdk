@@ -34,7 +34,7 @@ struct UnifiedHunk {
 }
 
 /// Applies a bounded UTF-8 patch under one writer permit.
-pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn apply_git_patch<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     patch: &[u8],
     idempotency_key: IdempotencyKey,
@@ -52,14 +52,30 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     {
         return Ok(TransactionCommit::AlreadyCommitted(generation));
     }
-    let patches = parse_unified_patch(patch)?;
     let head = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
+    apply_git_patch_at(workspace, patch, &head, idempotency_key, permit).await
+}
+
+// The preimage generation is also the transaction base. A concurrent writer
+// between head acquisition and checkout must enter the normal rebase fence.
+pub(super) async fn apply_git_patch_at<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    workspace: &Workspace<A, O>,
+    patch: &[u8],
+    head: &Generation<A, O>,
+    idempotency_key: IdempotencyKey,
+    permit: crate::PublicationPermit,
+) -> Result<TransactionCommit<A, O>, GitPatchError> {
+    let patches = parse_unified_patch(patch)?;
     let mut transaction = workspace
-        .begin_transaction(
+        .begin_transaction_at(
+            head,
             idempotency_key,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

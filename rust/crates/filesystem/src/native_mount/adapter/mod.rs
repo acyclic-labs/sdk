@@ -60,7 +60,7 @@ pub(super) struct CaptureSourceGate {
 }
 
 /// Blocking native callback adapter over one async canonical checkout.
-pub struct CheckoutMountSource<A, O> {
+pub struct CheckoutMountSource<A: 'static, O: 'static> {
     checkout: Arc<SharedCheckout<A, O>>,
     root: NamespacePath,
     config: VolumeConfig,

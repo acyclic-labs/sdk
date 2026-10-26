@@ -131,7 +131,7 @@ impl<S> WorkspaceGraph<S> {
 
 impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     /// Registers a root workspace with no publication parent.
-    pub async fn register_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn register_root<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
         &self,
         workspace: &Workspace<A, O>,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
@@ -172,7 +172,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     }
 
     /// Forks a real SDK workspace and durably records its direct parent.
-    pub async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn fork<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
         &self,
         parent: &Workspace<A, O>,
         destination: impl AsRef<str>,
@@ -255,7 +255,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     }
 
     /// Registers a child created by another SDK-owned fork façade.
-    pub async fn register_existing_child<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn register_existing_child<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    >(
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
@@ -278,8 +281,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
 
     /// Registers an existing child after it has advanced beyond its initial
     pub async fn register_existing_child_at_generation<
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     >(
         &self,
         parent: &Workspace<A, O>,

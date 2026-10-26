@@ -13,7 +13,7 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use std::sync::Arc;
 
 /// Owner-bound content staging through the existing Filesystem publication path.
-pub struct FilesystemContentPublisher<A, O> {
+pub struct FilesystemContentPublisher<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     grant: ContentGrant,

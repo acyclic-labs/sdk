@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Creates one directory with canonical metadata.
     pub async fn create_directory<W: crate::facade::FsWork>(
         &mut self,

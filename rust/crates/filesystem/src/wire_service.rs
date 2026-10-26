@@ -29,7 +29,7 @@ pub const DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// Default maximum page size advertised by the hosted Filesystem service.
 pub const DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS: u32 = 1_024;
 
-enum JoinTargetHead<A, O> {
+enum JoinTargetHead<A: 'static, O: 'static> {
     Expected {
         head: crate::Head,
         existing_operation: bool,
@@ -220,7 +220,7 @@ pub trait FilesystemSourceProvider: Send + Sync + 'static {
 /// Deployments wrap this adapter with authentication, quota, credential
 /// issuance, and transport policy. Filesystem semantics stay here.
 #[derive(Clone)]
-pub struct FilesystemWireService<A, O> {
+pub struct FilesystemWireService<A: 'static, O: 'static> {
     filesystem: Fs<A, O>,
     limits: FilesystemWireLimits,
     credential_issuer: Option<Arc<dyn FilesystemCredentialIssuer>>,
@@ -273,7 +273,7 @@ impl<A, O> FilesystemWireService<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemWireService<A, O> {
     async fn workspace(
         &self,
         reference: Option<wire::WorkspaceRef>,

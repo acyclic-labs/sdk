@@ -1,5 +1,7 @@
 //! Process-local exclusion shared by every adapter of one provider owner.
 
+mod resources;
+
 struct Node {
     key: [u8; 48],
     next: Option<Box<Node>>,
@@ -10,6 +12,7 @@ pub struct OperationClaims {
     owner: [u8; 16],
     active: crate::query_sync::SyncMutex<Option<Box<Node>>>,
     released: crate::query_sync::watch::Sender<()>,
+    resources: resources::Resources,
 }
 
 impl Default for OperationClaims {
@@ -18,6 +21,7 @@ impl Default for OperationClaims {
             owner: crate::new_identity(),
             active: crate::query_sync::SyncMutex::new(None),
             released: crate::query_sync::watch::channel(()).0,
+            resources: resources::Resources::default(),
         }
     }
 }
@@ -30,6 +34,31 @@ pub struct OperationClaim<'a, H> {
 }
 
 impl OperationClaims {
+    /// Returns the sole resource of this type retained by this provider owner.
+    /// Forwarding adapters therefore share it even when constructed separately.
+    ///
+    /// `admit` funds the exact registry node before allocation; `create` returns
+    /// an already funded resource. Initialization runs under the owner lock and
+    /// must not recursively access this registry. The resource must not retain
+    /// its provider owner; use a weak reference when it needs such a handle.
+    ///
+    /// # Errors
+    /// Returns a visit, admission or initialization error without changing the
+    /// registry or discarding any previously initialized resource.
+    pub fn shared_resource<T, H, E, C>(
+        &self,
+        context: &mut C,
+        visit: impl FnMut(&mut C) -> Result<(), E>,
+        admit: impl FnOnce(u64, &mut C) -> Result<H, E>,
+        create: impl FnOnce(&mut C) -> Result<std::sync::Arc<T>, E>,
+    ) -> Result<std::sync::Arc<T>, E>
+    where
+        T: Send + Sync + 'static,
+        H: Send + Sync + 'static,
+    {
+        self.resources.get(context, visit, admit, create)
+    }
+
     /// Stable process-local identity shared by adapters of this provider owner.
     /// This value identifies live exclusion state; it conveys no authority.
     #[must_use]

@@ -276,3 +276,136 @@ fn stopped_parent_prevents_commit_through_either_linked_child() {
     );
     assert_eq!(installed, 1);
 }
+
+#[test]
+fn measured_waiter_credit_follows_the_last_node_alias_after_detach()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::AllocationLedger;
+    let token = CancellationToken::new();
+    let mut ledger = AllocationLedger::default();
+    let mut work = crate::WorkCounters::UNCHARGED;
+    let budget = crate::WorkBudget::UNBOUNDED;
+    drop(ledger.retain(0, &mut work, budget)?);
+    let baseline = ledger.live_bytes();
+    for cancel in [false, true] {
+        let future = token.prepare_cancelled_measured(&mut ledger, &mut work, budget)?;
+        let alias = Arc::clone(future.waiter.as_ref().ok_or("registered node")?);
+        let funded = ledger.live_bytes();
+        assert!(funded > baseline);
+        if cancel {
+            token.cancel();
+        }
+        drop(future);
+        assert_eq!(
+            ledger.live_bytes(),
+            funded,
+            "node alias lost original allocation credit"
+        );
+        drop(alias);
+        assert_eq!(
+            ledger.live_bytes(),
+            baseline,
+            "detached measured waiter leaked original credit"
+        );
+    }
+    Ok(())
+}
+
+struct ObserveMeasuredWakerDrop {
+    ledger: Arc<std::sync::Mutex<crate::kernel::allocation::AllocationLedger>>,
+    baseline: u64,
+    observed: Arc<AtomicBool>,
+    wakes: Arc<AtomicUsize>,
+}
+
+impl Wake for ObserveMeasuredWakerDrop {
+    fn wake(self: Arc<Self>) {
+        self.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for ObserveMeasuredWakerDrop {
+    fn drop(&mut self) {
+        self.observed.store(
+            self.ledger
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .live_bytes()
+                > self.baseline,
+            Ordering::Release,
+        );
+    }
+}
+
+#[test]
+fn measured_waiter_waker_destruction_keeps_original_node_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ledger = Arc::new(std::sync::Mutex::new(
+        crate::kernel::allocation::AllocationLedger::default(),
+    ));
+    let mut work = crate::WorkCounters::UNCHARGED;
+    let budget = crate::WorkBudget::UNBOUNDED;
+    drop(
+        ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(0, &mut work, budget)?,
+    );
+    let baseline = ledger
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .live_bytes();
+    let token = CancellationToken::new();
+    let mut future = token.prepare_cancelled_measured(
+        &mut ledger.lock().unwrap_or_else(PoisonError::into_inner),
+        &mut work,
+        budget,
+    )?;
+    let observed = Arc::new(AtomicBool::new(false));
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let waker = Waker::from(Arc::new(ObserveMeasuredWakerDrop {
+        ledger: Arc::clone(&ledger),
+        baseline,
+        observed: Arc::clone(&observed),
+        wakes: Arc::clone(&wakes),
+    }));
+    assert!(
+        Pin::new(&mut future)
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert_eq!(wakes.load(Ordering::Relaxed), 0);
+    drop(waker);
+    drop(future);
+    assert!(
+        observed.load(Ordering::Acquire),
+        "waker destruction outlived original node funding"
+    );
+    assert_eq!(
+        ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live_bytes(),
+        baseline
+    );
+    Ok(())
+}
+
+#[test]
+fn measured_waiter_rejected_promotion_releases_unpublished_node_credit() {
+    let token = CancellationToken::new();
+    let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = crate::WorkCounters::UNCHARGED;
+    let budget = crate::WorkBudget {
+        allocation_operations: 1,
+        ..crate::WorkBudget::UNBOUNDED
+    };
+    assert!(
+        token
+            .prepare_cancelled_measured(&mut ledger, &mut work, budget)
+            .is_err()
+    );
+    assert_eq!(waiter_count(&token), 0);
+    assert_eq!(ledger.live_bytes(), 0);
+    assert_eq!(work.allocation_operations, 1);
+}

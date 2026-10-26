@@ -19,14 +19,14 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// One signed parent binding.
-pub struct FilesystemProjectWorkspaces<A, O> {
+pub struct FilesystemProjectWorkspaces<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     project: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
 }
 
-impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
+impl<A: 'static, O: 'static> Clone for FilesystemProjectWorkspaces<A, O> {
     fn clone(&self) -> Self {
         Self {
             host: Arc::clone(&self.host),
@@ -37,7 +37,7 @@ impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
     }
 }
 
-impl<A, O> FilesystemProjectWorkspaces<A, O> {
+impl<A: 'static, O: 'static> FilesystemProjectWorkspaces<A, O> {
     /// Admits only the bound conversation's agent and project volume.
     pub fn new(
         host: &Arc<FilesystemHost<A, O>>,
@@ -144,7 +144,7 @@ where
     }
 }
 
-struct FilesystemProjectJoinPlan<A, O> {
+struct FilesystemProjectJoinPlan<A: 'static, O: 'static> {
     binding: FilesystemProjectWorkspaces<A, O>,
     plan: ParentMergePlan<A, O>,
     child: Authority,

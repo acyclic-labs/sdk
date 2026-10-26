@@ -15,7 +15,7 @@ use std::sync::Arc;
 mod verify;
 
 /// Creator-only project selection within one configured service graph.
-pub struct FsRootProjectSourceProvider<A, O> {
+pub struct FsRootProjectSourceProvider<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Authority,
     graph_root: TaskId,

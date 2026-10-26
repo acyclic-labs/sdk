@@ -220,8 +220,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             return Err(WorkspaceError::ForeignGeneration);
         }
         let publication = publish_generation(
-            &self.inner.objects,
-            &self.inner.authority,
+            self.clone(),
             PublishGenerationRequest {
                 authority_id: volume_authority_id(workspace.id),
                 volume_id: workspace.id,
@@ -383,7 +382,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) async fn stage_authored_blob_with_accounting(
         &self,
         content: acyclic_stream::OwnedBytes,

@@ -72,11 +72,12 @@ impl DemandWork {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }
-        self.cancellation
-            .check()
-            .map_err(|_| DemandError::Cancelled)?;
         if let Some(view) = self.native_invocation.as_ref().and_then(Weak::upgrade) {
-            view.check()?;
+            view.check_cancellation(&self.cancellation)?;
+        } else {
+            self.cancellation
+                .check()
+                .map_err(|_| DemandError::Cancelled)?;
         }
         if self
             .capture_custody
@@ -236,13 +237,12 @@ impl DemandWork {
             bytes,
             |state| {
                 let mut work = state.work;
-                let mut ledger = state.allocations;
                 work.charge(&delta, &state.budget)?;
-                ledger
+                state
+                    .allocations
                     .claim_bytes(bytes, operations, &mut work, state.budget)
                     .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 state.work = work;
-                state.allocations = ledger;
                 if let Some(capture) = state.capture_custody() {
                     capture.claim(bytes);
                 }

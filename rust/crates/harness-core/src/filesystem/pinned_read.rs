@@ -3,7 +3,7 @@ use super::*;
 // A successful authenticated read owns either its exact immutable generation
 // or proof that the original accounting context has already retained it. No
 // mutable head is consulted when the caller requests retention.
-pub(super) struct PinnedRead<A, O> {
+pub(super) struct PinnedRead<A: 'static, O: 'static> {
     bytes: acyclic_stream::OwnedBytes,
     pending: Option<Generation<A, O>>,
 }

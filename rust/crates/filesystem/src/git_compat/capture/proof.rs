@@ -1,7 +1,7 @@
 use super::*;
 
 /// Immutable ignore-aware capture and its represented paths.
-pub struct GitCapturedGeneration<A, O> {
+pub struct GitCapturedGeneration<A: 'static, O: 'static> {
     /// Captured compatibility generation.
     pub generation: Generation<A, O>,
     /// Eligible non-directory paths.
@@ -9,7 +9,7 @@ pub struct GitCapturedGeneration<A, O> {
     pub(super) origin: Option<(Generation<A, O>, GenerationId)>,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> GitCapturedGeneration<A, O> {
     /// Authenticates the capture's SDK fork and registers its durable lineage.
     pub async fn authenticated_proof<S: crate::WorkspaceLineageStore>(
         &self,

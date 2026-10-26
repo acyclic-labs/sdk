@@ -7,14 +7,22 @@ use futures::StreamExt as _;
 /// while close/expiry atomically advances it to tail 2 with the window CAS.
 /// A generation publication conditioned on tail 1 therefore linearizes
 /// exactly against fencing.
-#[derive(Clone)]
 #[cfg(any(test, feature = "distributed"))]
-pub struct StreamOperationWindowStore<P> {
+pub struct StreamOperationWindowStore<P: ?Sized> {
     provider: Arc<P>,
 }
 
 #[cfg(any(test, feature = "distributed"))]
-impl<P> StreamOperationWindowStore<P> {
+impl<P: ?Sized> Clone for StreamOperationWindowStore<P> {
+    fn clone(&self) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "distributed"))]
+impl<P: ?Sized> StreamOperationWindowStore<P> {
     /// Binds operation windows to the exact provider used by filesystem
     /// authority publication.
     #[must_use]
@@ -36,7 +44,9 @@ pub enum StreamOperationWindowStoreError {
 }
 
 #[cfg(any(test, feature = "distributed"))]
-impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperationWindowStore<P> {
+impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
+    for StreamOperationWindowStore<P>
+{
     type Error = StreamOperationWindowStoreError;
 
     async fn load(

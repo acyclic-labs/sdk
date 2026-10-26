@@ -10,7 +10,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 /// One exact semantic region whose state can affect a checkout.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DependencyRegion {
     /// Complete path-independent file record, including kind and payload roots.
     FileRecord(FileId),
@@ -259,6 +259,9 @@ pub struct RebaseReceipt {
 /// Safe-rebase classification failures.
 #[derive(Debug, Error)]
 pub enum RebaseError<E: std::error::Error> {
+    /// A concurrent observer added a precondition outside the prepared proof.
+    #[error("checkout dependencies changed during rebase preparation")]
+    DependenciesChanged,
     /// Cooperative cancellation occurred before the next region probe.
     #[error("safe rebase classification was cancelled")]
     Cancelled,
@@ -305,6 +308,8 @@ pub enum DependencyError {
 mod classification;
 mod custody;
 mod dependencies;
+mod footprint;
+mod ordering;
 use super::{allocation, persistent_btree, persistent_io, persistent_point, tree_mutation};
 #[cfg(test)]
 pub(crate) use classification::classify_rebase_with_accounting;
@@ -314,6 +319,7 @@ pub(crate) use classification::{
 };
 pub use classification::{classify_rebase, classify_rebase_async};
 pub(crate) use custody::{ProofDataClaim, ProofDataCustody};
+pub(crate) use footprint::CommitFootprint;
 
 #[cfg(test)]
 #[path = "../tests/rebase.rs"]

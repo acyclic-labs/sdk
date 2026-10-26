@@ -2,8 +2,8 @@ use super::*;
 
 impl<A, O, R> MultiRootPublisher for WorkspaceMultiRootPublisher<A, O, R>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     R: WorkspaceResolver<A, O>,
 {
     type Error = WorkspaceMultiRootPublisherError<R::Error>;

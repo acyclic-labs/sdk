@@ -42,7 +42,7 @@ impl Case {
 
 // This portable driver also owns a composed policy/fork operation. Keep its
 // concrete filesystem future behind a boundary before collect awaits it.
-fn fork<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>(
+fn fork<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     source: &'a Workspace<A, O>,
     name: &'a str,
 ) -> acyclic_stream::BoxProviderFuture<'a, Result<Workspace<A, O>, acyclic_fs::WorkspaceError>> {
@@ -103,7 +103,7 @@ fn revoked_policy() -> TestResult<Vec<u8>> {
     Ok(serde_json::to_vec(&policy)?)
 }
 
-pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>(
+pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     mut recipe: serde_json::Value,
     filesystem: Fs<A, O>,
 ) -> TestResult<Observation> {

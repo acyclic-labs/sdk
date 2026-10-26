@@ -8,6 +8,73 @@ use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
 
+#[tokio::test]
+async fn simulation_owned_group_dispatch_preserves_fault_interception()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::retained::Retained;
+    let simulation = Simulation::default();
+    let (authority, _) = simulation.stores();
+    let authority = Arc::new(authority);
+    let cancel = CancellationToken::new();
+    let id = AuthorityId::from_bytes([97; 16]);
+    let mut work = AuthorityWork::new(B, &cancel);
+    authority
+        .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    simulation.schedule(ScheduledSimulationFault {
+        operation: SimulationOperation::AuthorityAppend,
+        occurrence: 1,
+        fault: SimulationFault::RejectBefore,
+    })?;
+    let mut accounting = KernelAccounting::standalone(B, &cancel);
+    let mut requests =
+        crate::kernel::Owned::<Vec<crate::GuardedAppend>>::allocate(1, &mut accounting)?;
+    requests.value.push(crate::GuardedAppend {
+        authority_id: id,
+        epoch: Epoch::GENESIS,
+        expected: Head::genesis(Epoch::GENESIS),
+        commit: proposal(98, 99),
+        permit: crate::PublicationPermit::Unrestricted,
+    });
+    let requests = Retained::from_owned(requests, &mut accounting)?;
+    let cuts = crate::kernel::Owned::<Vec<crate::PolicyCut>>::allocate(0, &mut accounting)?;
+    let cuts = Retained::from_owned(cuts, &mut accounting)?;
+    let (send, receive) = futures::channel::oneshot::channel();
+    let batch = crate::OwnedAuthorityGroup::new(
+        requests,
+        cuts,
+        &mut accounting,
+        &cancel,
+        None::<()>,
+        move |result, completed| {
+            let _ = send.send((result, completed));
+        },
+    )?;
+    if let Some(task) = authority.own_group(batch) {
+        acyclic_stream::runtime::PlatformExecutor.spawn_owned(task);
+    }
+    let (result, completed) = receive.await?;
+    completed.restore(&mut accounting)?;
+    assert!(
+        matches!(
+            result,
+            Err(crate::AuthorityError::Authority(
+                AuthorityStoreError::RejectedStatic("scheduled rejection")
+            ))
+        ),
+        "owned dispatch bypassed the simulation adapter"
+    );
+    assert!(
+        authority
+            .inner
+            .find_operation(id, OperationId::from_bytes([98; 16]), &mut work)
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
 macro_rules! work {
     ($store:expr, $method:ident($($arg:expr),*), $budget:expr, $cancel:expr) => {
         async {

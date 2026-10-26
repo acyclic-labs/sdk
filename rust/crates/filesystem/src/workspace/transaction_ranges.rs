@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Clones one immutable logical range without reading content bytes.
     pub async fn clone_range<W: crate::facade::FsWork>(
         &mut self,

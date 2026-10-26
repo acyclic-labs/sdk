@@ -54,7 +54,7 @@ pub use mounted::NativeMountedVolume;
 pub use publication::NativeViewPublicationError;
 
 /// Selection of one exact generation and publication permit.
-pub struct BorrowedNativeVolumeBinding<'a, A, O> {
+pub struct BorrowedNativeVolumeBinding<'a, A: 'static, O: 'static> {
     /// Filesystem provider.
     pub host: &'a FilesystemHost<A, O>,
     /// Authorized volume.
@@ -77,14 +77,14 @@ pub struct BorrowedNativeVolumeBinding<'a, A, O> {
     pub publication: PublicationPermit,
 }
 
-struct PreparedVolume<A, O> {
+struct PreparedVolume<A: 'static, O: 'static> {
     view: VolumeView<A, O>,
     publication: PublicationPermit,
     work: NativeMaterializationWork,
     callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
 }
 
-enum VolumeView<A, O> {
+enum VolumeView<A: 'static, O: 'static> {
     Directory(Box<NativeWorkingSet<A, O>>),
     Mounted {
         owner: Arc<dyn NativeMountedVolume>,
@@ -93,7 +93,7 @@ enum VolumeView<A, O> {
 }
 
 /// SDK namespace and its protected original preparation.
-pub struct NativeVolumeView<A, O> {
+pub struct NativeVolumeView<A: 'static, O: 'static> {
     volumes: Vec<PreparedVolume<A, O>>,
     preparation: preparation_record::Intent,
     custody: NativeAllocation,

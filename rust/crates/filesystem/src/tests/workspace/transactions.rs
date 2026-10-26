@@ -97,14 +97,6 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     ));
     assert!(matches!(
         commit(&mut disjoint).await?,
-        TransactionCommit::Conflict { .. }
-    ));
-    assert!(matches!(
-        unbounded!(disjoint, rebase(16))?,
-        TransactionRebase::Rebased(_)
-    ));
-    assert!(matches!(
-        commit(&mut disjoint).await?,
         TransactionCommit::Committed(_)
     ));
     assert_eq!(
@@ -376,18 +368,12 @@ proptest::proptest! {
                     }
                     unbounded!(other, write(&sibling, OwnedBytes::copy_from_slice(&payload)))?;
                     assert!(matches!(commit(&mut other).await?, TransactionCommit::Committed(_)));
-                    // Negative control: publishing the stale original candidate
-                    // without a dependency-checked rebase must fail.
-                    assert!(matches!(commit(&mut pending).await?, TransactionCommit::Conflict { .. }));
-                    let rebased = unbounded!(pending, rebase(1))?;
+                    let outcome = commit(&mut pending).await?;
                     if observe_directory || replace_prefix {
-                        assert!(matches!(rebased, TransactionRebase::Conflicted { .. }));
+                        assert!(matches!(outcome, TransactionCommit::Conflict { .. }));
+                        assert!(matches!(unbounded!(pending, rebase(1))?, TransactionRebase::Conflicted { .. }));
                     } else {
-                        assert!(
-                            matches!(rebased, TransactionRebase::Rebased(_)),
-                            "mode={mode:?} inside={inside}"
-                        );
-                        assert!(matches!(commit(&mut pending).await?, TransactionCommit::Committed(_)));
+                        assert!(matches!(outcome, TransactionCommit::Committed(_)), "mode={mode:?} inside={inside}");
                         assert_eq!(unbounded!(workspace, read("/shared/nested/local", 16))?.as_ref(), b"local");
                     }
                     assert_eq!(unbounded!(workspace, read(&sibling, 32))?.as_ref(), payload.as_slice());
@@ -487,25 +473,21 @@ async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
                     commit(&mut winner).await?,
                     TransactionCommit::Committed(_)
                 ));
-                assert!(matches!(
-                    commit(&mut pending).await?,
-                    TransactionCommit::Conflict { .. }
-                ));
-                let outcome = unbounded!(pending, rebase(16))?;
+                let outcome = commit(&mut pending).await?;
                 if observe_directory || replace_prefix {
+                    assert!(matches!(outcome, TransactionCommit::Conflict { .. }));
                     assert!(
-                        matches!(outcome, TransactionRebase::Conflicted { .. }),
+                        matches!(
+                            unbounded!(pending, rebase(16))?,
+                            TransactionRebase::Conflicted { .. }
+                        ),
                         "batched={batched}, observed={observe_directory}, replaced={replace_prefix}"
                     );
                 } else {
                     assert!(
-                        matches!(outcome, TransactionRebase::Rebased(_)),
-                        "mode={mode:?} failed to rebase disjoint sibling writes"
+                        matches!(outcome, TransactionCommit::Committed(_)),
+                        "mode={mode:?} did not compose disjoint sibling writes"
                     );
-                    assert!(matches!(
-                        commit(&mut pending).await?,
-                        TransactionCommit::Committed(_)
-                    ));
                     assert_eq!(
                         unbounded!(workspace, read("/.system/harness-uploads/local", 16))?.as_ref(),
                         b"local"

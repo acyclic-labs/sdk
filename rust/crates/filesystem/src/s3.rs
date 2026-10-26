@@ -131,7 +131,7 @@ impl S3ListCursor {
 }
 
 /// A zero-state S3 mapping over one workspace.
-pub struct S3Workspace<A, O> {
+pub struct S3Workspace<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
 }
 
@@ -154,14 +154,14 @@ impl Default for S3MultipartOptions {
 }
 
 /// One unpublished multipart candidate.
-pub struct S3MultipartUpload<A, O> {
+pub struct S3MultipartUpload<A: 'static, O: 'static> {
     transaction: crate::Transaction<A, O>,
     key: String,
     options: S3MultipartOptions,
     parts: BTreeMap<u32, crate::StagedContent>,
 }
 
-impl<A, O> Clone for S3Workspace<A, O> {
+impl<A: 'static, O: 'static> Clone for S3Workspace<A, O> {
     fn clone(&self) -> Self {
         Self {
             workspace: self.workspace.clone(),
@@ -179,7 +179,7 @@ impl<A, O> Workspace<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> S3Workspace<A, O> {
     async fn disclose<T>(&self, result: Result<T, S3Error>) -> Result<T, S3Error> {
         #[cfg(test)]
         if access_tests::omitted() {
@@ -772,7 +772,7 @@ fn direct_child_seek(
     clippy::too_many_lines,
     reason = "one merge of directory-page bounds and object keys needs the query, frontier, and prefix state together"
 )]
-async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     checkout: &mut crate::Checkout<A, O>,
     options: &S3ListOptions,
     limits: crate::model::VolumeLimits,
@@ -982,7 +982,7 @@ fn listing_frontier(
     ))
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> S3MultipartUpload<A, O> {
     /// Stages or replaces one positive part number without publishing it.
     pub async fn upload_part(&mut self, part_number: u32, bytes: Bytes) -> Result<(), S3Error> {
         if part_number == 0 {
@@ -1144,7 +1144,10 @@ fn validate_list_options(options: &S3ListOptions) -> Result<(), S3Error> {
     Ok(())
 }
 
-pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn create_parent_directories<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     transaction: &mut crate::Transaction<A, O>,
     key: &str,
 ) -> Result<(), S3Error> {

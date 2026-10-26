@@ -26,6 +26,217 @@ fn checkout_hold() -> Held {
     }
 }
 
+#[test]
+fn checkout_root_replacement_rejects_mismatched_hold_before_changing_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    for registered in [false, true] {
+        let collection = Arc::new(Collection::default());
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting =
+            KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancellation);
+        let Held::Checkout {
+            working, config, ..
+        } = checkout_hold()
+        else {
+            unreachable!()
+        };
+        let initial = working.clone();
+        let mut roots = CheckoutRoots::new(
+            registered.then_some(&collection),
+            config,
+            object(1),
+            (working, crate::kernel::ProofDataClaim::default()),
+            &mut accounting,
+            None,
+        )?;
+        let mut replacement = initial.clone();
+        replacement.file_table = object(9);
+        let invalid_hold = (!registered).then(|| {
+            (
+                replacement.clone(),
+                crate::kernel::ProofDataClaim::default(),
+            )
+        });
+        assert!(matches!(
+            roots.set(
+                object(7),
+                (
+                    replacement.clone(),
+                    crate::kernel::ProofDataClaim::default(),
+                ),
+                invalid_hold,
+            ),
+            Err(crate::FsError::InvalidDiff)
+        ));
+        assert_eq!(roots.base, object(1));
+        assert_eq!(roots.working, initial);
+        assert_eq!(collection.held().len(), usize::from(registered));
+        if let Some(Held::Checkout { base, working, .. }) = collection.held().first() {
+            assert_eq!(*base, object(1));
+            assert_eq!(*working, initial);
+        }
+
+        let held = registered.then(|| {
+            (
+                replacement.clone(),
+                crate::kernel::ProofDataClaim::default(),
+            )
+        });
+        roots.set(
+            object(7),
+            (
+                replacement.clone(),
+                crate::kernel::ProofDataClaim::default(),
+            ),
+            held,
+        )?;
+        assert_eq!(roots.base, object(7));
+        assert_eq!(roots.working, replacement);
+        if let Some(Held::Checkout { base, working, .. }) = collection.held().first() {
+            assert_eq!(*base, object(7));
+            assert_eq!(*working, replacement);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_generation_pin_hands_sweep_admission_to_the_root_registry()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
+    for native in [false, true] {
+        let collection = Arc::new(Collection::default());
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting =
+            KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancellation);
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = crate::NativeMaterializationWork::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            accounting = KernelAccounting::native(&original, &cancellation);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if native {
+            continue;
+        }
+        let Held::Checkout {
+            working, config, ..
+        } = checkout_hold()
+        else {
+            unreachable!()
+        };
+        let proof = crate::kernel::GenerationProof {
+            root: working,
+            generation_id: crate::GenerationId::new(object(7).digest),
+            file_count: 1,
+            logical_file_bytes: 0,
+            objects: vec![object(1), object(2)],
+            work: WorkCounters::UNCHARGED,
+        };
+        // Admit the owner's shared control before measuring per-hold credit.
+        // The control remains live until the accounting owner retires.
+        drop(
+            crate::kernel::allocation::retained::RetainedAllocation::claim(0, 0, &mut accounting)?,
+        );
+        let baseline = accounting
+            .standalone_parts()
+            .map(|(ledger, _, _, _)| ledger.live_bytes());
+        let collecting = collection.begin().await;
+        let pin = collection
+            .hold_generation_with_accounting(&proof, config, collection.sweeps(), &mut accounting)
+            .await?;
+        let held = collection.held();
+        assert!(
+            matches!(held.as_slice(), [Held::Generation { root, config: actual }]
+            if root.digest == proof.generation_id.digest() && *actual == config)
+        );
+        // Registering an ordinary root must not retain the global sweep gate.
+        let (gate, sweepable) = collecting
+            .sweepable(vec![object(1), object(2), object(3)])
+            .await;
+        assert_eq!(
+            sweepable,
+            vec![object(3)],
+            "new root pin lost its active-collection admission"
+        );
+        drop(gate);
+        drop(collecting);
+        drop(pin);
+        assert!(collection.held().is_empty());
+        assert_eq!(
+            accounting
+                .standalone_parts()
+                .map(|(ledger, _, _, _)| ledger.live_bytes()),
+            baseline,
+            "root-pin retirement lost its original allocation credit"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn collection_hold_retirement_preserves_the_original_accounting_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let collection = Arc::new(Collection::default());
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    drop(crate::kernel::allocation::retained::RetainedAllocation::claim(0, 0, &mut accounting)?);
+    let baseline = accounting
+        .standalone_parts()
+        .ok_or("missing ledger")?
+        .0
+        .live_bytes();
+    let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
+    let record = crate::kernel::FileRecord {
+        file_id: crate::FileId::new(),
+        kind: crate::kernel::FileKind::Regular,
+        link_count: 1,
+        metadata: ObjectId {
+            kind: ObjectKind::Metadata,
+            ..object(4)
+        },
+        payload: crate::kernel::FilePayload::InlineRegular(crate::kernel::InlineFileData::new(
+            b"x",
+        )?),
+    };
+    let holds = [
+        collection.register_with_accounting(checkout_hold(), &mut accounting)?,
+        collection.register_with_accounting(
+            Held::Generation {
+                root: object(9),
+                config,
+            },
+            &mut accounting,
+        )?,
+        Collection::hold_record_with_accounting(
+            Some(&collection),
+            record,
+            config,
+            &mut accounting,
+        )?
+        .ok_or("missing record hold")?,
+    ];
+    assert_eq!(collection.held().len(), 3);
+    drop(holds);
+    assert!(collection.held().is_empty());
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("missing ledger")?
+            .0
+            .live_bytes(),
+        baseline,
+        "retired collection holds retained their producer's credit"
+    );
+    Ok(())
+}
+
 #[cfg(feature = "native-mount")]
 #[test]
 fn file_table_replacement_rejects_a_missing_checkout_registration()

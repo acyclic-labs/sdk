@@ -201,7 +201,7 @@ async fn one_matching_plan_with_unrelated_entries_stays_live()
     Ok(())
 }
 
-struct Fixture<O = MemoryObjectBackend> {
+struct Fixture<O: 'static = MemoryObjectBackend> {
     host: Arc<FilesystemHost<MemoryAuthorityBackend, O>>,
     source: FilesystemFileQuery<MemoryStream, O>,
     reader: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, O>>,

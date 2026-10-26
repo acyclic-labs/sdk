@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) async fn write<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn write<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     path: &str,
     bytes: acyclic_stream::OwnedBytes,

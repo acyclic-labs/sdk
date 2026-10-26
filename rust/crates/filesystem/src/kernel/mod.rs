@@ -23,6 +23,14 @@ mod file_read;
 mod file_table;
 mod file_table_mutation;
 mod generation;
+mod generation_delta;
+mod generation_diff;
+mod generation_frontier;
+pub(crate) use generation_delta::apply_generation_delta;
+pub(crate) use generation_diff::diff_generation_file_tables;
+pub use generation_diff::{DirectoryBindingChange, FileRecordChange, GenerationDiff};
+pub(crate) use generation_frontier::{FrontierRequest, GenerationFrontier, generation_frontier};
+
 mod generation_mutation;
 mod historical_evidence;
 mod list;
@@ -90,7 +98,9 @@ pub(crate) use probe::WorkingRebaseProbe;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
-pub(crate) use rebase::{ClassifyRebaseFailure, Settled, classify_rebase_settling_with_accounting};
+pub(crate) use rebase::{
+    ClassifyRebaseFailure, CommitFootprint, Settled, classify_rebase_settling_with_accounting,
+};
 pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 
@@ -204,11 +214,15 @@ pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
-pub(crate) use publication::contextual_publication_fingerprint;
+#[cfg(any(test, feature = "distributed"))]
+pub(crate) use publication::AuthorityActor;
+pub(crate) use publication::authority_actor;
 pub use publication::{
-    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt,
-    PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation,
+    PublicationCache, PublicationError, PublicationFailure, PublicationIntent, PublicationOwner,
+    PublicationReceipt, PublishGenerationRequest, PublishedGeneration, decode_published_generation,
+    publish_generation,
 };
+pub(crate) use publication::{PublicationPreconditions, contextual_publication_fingerprint};
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,
 };

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Provider-side proof for a parent-published project merge receipt.
-pub struct FilesystemProjectMergeVerifier<A, O> {
+pub struct FilesystemProjectMergeVerifier<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<acyclic_fs::NativeAllocation>,

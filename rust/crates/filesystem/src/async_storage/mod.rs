@@ -29,9 +29,13 @@ mod work;
 pub use work::NativeAuthorityGuard;
 #[cfg(any(test, feature = "distributed"))]
 pub(crate) use work::authority_error;
+pub(crate) use work::authority_parts;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
 mod authority;
-pub use authority::AsyncAuthorityStore;
+mod owned_group;
+pub(crate) use authority::MAX_AUTHORITY_GROUP_MEMBERS;
+pub use authority::{AppendGroupOutcome, AsyncAuthorityStore, AuthorityGroupCost};
+pub use owned_group::{OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask};
 mod policy;
 pub use policy::{PolicyCut, PolicyOwner};
 mod objects;

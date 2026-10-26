@@ -10,7 +10,7 @@ pub(super) trait HandlePolicy: Send + Sync {
     ) -> Result<(), MountSourceError>;
 }
 
-struct CurrentPolicy<A, O> {
+struct CurrentPolicy<A: 'static, O: 'static> {
     checkout: Arc<SharedCheckout<A, O>>,
     view: Arc<crate::access::AccessView>,
     cancellation: CancellationToken,

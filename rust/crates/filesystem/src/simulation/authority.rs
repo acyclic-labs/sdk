@@ -35,9 +35,60 @@ fn lost_authority_acknowledgement(operation: &'static str) -> AuthorityStoreErro
     }
 }
 
-impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
+impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A> {
+    fn own_group<G: crate::OwnedAuthorityGuard>(
+        &self,
+        group: crate::OwnedAuthorityGroup<G>,
+    ) -> Option<crate::OwnedAuthorityTask> {
+        group.bind(Self {
+            state: Arc::clone(&self.state),
+            inner: Arc::clone(&self.inner),
+        })
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
+    }
+
+    fn supports_atomic_group_commit(&self) -> bool {
+        self.inner.supports_atomic_group_commit()
+    }
+
+    async fn quote_group_append(
+        &self,
+        request: &crate::GuardedAppend,
+        growth: usize,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError> {
+        self.inner.quote_group_append(request, growth, work).await
+    }
+
+    async fn compare_and_append_group<G: crate::AuthorityGuard>(
+        &self,
+        requests: &[crate::GuardedAppend],
+        cuts: &[crate::PolicyCut],
+        work: &mut crate::AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<crate::AppendGroupOutcome, crate::AuthorityError<G::Error>> {
+        let fault =
+            select_authority_fault(&self.state, SimulationOperation::AuthorityAppend, work)?;
+        if let Some(first) = requests.first()
+            && matches!(fault, Some(SimulationFault::FenceBeforeAuthorityAppend))
+        {
+            self.inner
+                .fence(first.authority_id, first.expected, work)
+                .await?;
+        }
+        let outcome = self
+            .inner
+            .compare_and_append_group(requests, cuts, work, guard)
+            .await?;
+        if matches!(&outcome, crate::AppendGroupOutcome::Published { .. })
+            && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
+        {
+            return Err(lost_authority_acknowledgement("compare-and-append-group").into());
+        }
+        Ok(outcome)
     }
 
     async fn create_first_record<G: crate::AuthorityGuard>(
@@ -282,8 +333,8 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
                     .capacity()
                     .checked_mul(std::mem::size_of::<DurableCommit>())
                     .ok_or(crate::WorkError::Overflow)? as u64;
-                let (mut replacement, mut _replacement_allocation) = work.vec_owned(count)?;
-                replacement.append(&mut records);
+                let mut replacement = work.vec_owned(count)?;
+                replacement.value.append(&mut records);
                 drop(records);
                 if let Err(error) = work.charge(WorkCounters {
                     bytes_copied: copied - std::mem::size_of::<DurableCommit>() as u64,
@@ -293,13 +344,16 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
                     return Err(error);
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let (Some(held), Some(new)) = (&mut allocation, &mut _replacement_allocation)
+                if let (
+                    Some(held),
+                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(new),
+                ) = (&mut allocation, &mut replacement.allocation)
                     && let Err(error) = held.release(_old_bytes).and_then(|()| held.absorb(new))
                 {
                     drop(replacement);
                     return Err(error.into());
                 }
-                records = replacement;
+                records = replacement.value;
             }
             let last = records
                 .last()

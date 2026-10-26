@@ -94,7 +94,7 @@ pub(in crate::native_mount) fn require_open(
     }
 }
 
-impl<A, O> CheckoutMountSource<A, O> {
+impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
     pub(in crate::native_mount) fn mutation_deadline(
         &self,
     ) -> Result<Option<u64>, MountSourceError> {

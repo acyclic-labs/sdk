@@ -45,7 +45,7 @@ async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
     let mut files = Vec::new();
     for (id, record) in [(target_id, target), (stored_id, corrupt)] {
         let paths = context_paths(&namespace, id);
-        std::fs::create_dir_all(paths.directory()).unwrap();
+        std::fs::create_dir_all(paths.directory().unwrap()).unwrap();
         write_journaled(&paths, &record).unwrap();
         files.push((
             paths.current.clone(),
@@ -172,10 +172,10 @@ async fn context_discard_checks_child_count_before_reading_bucket() {
     .await;
 
     let count = count_paths(&namespace, child_id);
-    std::fs::create_dir_all(count.directory()).unwrap();
+    std::fs::create_dir_all(count.directory().unwrap()).unwrap();
     write_journaled(&count, &10_000_u64).unwrap();
     let bucket = children_paths(&namespace, child_id);
-    std::fs::create_dir_all(bucket.directory()).unwrap();
+    std::fs::create_dir_all(bucket.directory().unwrap()).unwrap();
     std::fs::write(&bucket.current, b"not-json").unwrap();
 
     assert_eq!(
@@ -201,10 +201,10 @@ async fn context_discard_bounds_bucket_bytes_before_deserialization() {
     .await;
 
     let count = count_paths(&namespace, child_id);
-    std::fs::create_dir_all(count.directory()).unwrap();
+    std::fs::create_dir_all(count.directory().unwrap()).unwrap();
     write_journaled(&count, &1_u64).unwrap();
     let bucket = children_paths(&namespace, child_id);
-    std::fs::create_dir_all(bucket.directory()).unwrap();
+    std::fs::create_dir_all(bucket.directory().unwrap()).unwrap();
     std::fs::write(&bucket.current, vec![b' '; 1_000_000]).unwrap();
 
     assert!(matches!(
@@ -239,7 +239,7 @@ async fn context_discard_never_rebuilds_a_missing_index() {
         ),
     ] {
         let paths = context_paths(&namespace, context.context_id);
-        std::fs::create_dir_all(paths.directory()).unwrap();
+        std::fs::create_dir_all(paths.directory().unwrap()).unwrap();
         write_journaled(&paths, &context).unwrap();
     }
     std::fs::write(context_paths(&namespace, unrelated_id).current, b"not-json").unwrap();

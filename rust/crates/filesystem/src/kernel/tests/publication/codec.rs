@@ -26,6 +26,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             volume_id,
             root,
             evidence.map(|data| (data, original_evidence_digest(data))),
+            None,
         );
         let length = bytes.len() as u64;
         let decoded = decode_publication_evidence::<CanonicalDecodeError>(&bytes, length, accept)?;
@@ -85,6 +86,70 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
                 Err(CanonicalDecodeError::ObjectTooLarge { .. })
             ));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn composed_publication_retains_the_original_retry_request() -> TestResult {
+    let volume = VolumeId::from_bytes([71; 16]);
+    let effective = ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: Digest::from_bytes([72; 32]),
+    };
+    let origin = PublicationOrigin {
+        expected: Head {
+            epoch: Epoch::GENESIS,
+            sequence: crate::Sequence::new(17),
+            digest: Digest::from_bytes([73; 32]),
+        },
+        generation_root: ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes([74; 32]),
+        },
+    };
+    for evidence in [None, Some(b"original evidence".as_slice())] {
+        let mut bytes = Vec::new();
+        write_publication_payload(
+            &mut bytes,
+            volume,
+            effective,
+            evidence.map(|data| (data, original_evidence_digest(data))),
+            Some(origin),
+        );
+        assert_eq!(
+            bytes.len(),
+            publication_payload_length_with_evidence(evidence, Some(origin))?
+        );
+        let decoded = decode_publication_evidence::<CanonicalDecodeError>(
+            &bytes,
+            bytes.len() as u64,
+            accept,
+        )?;
+        assert_eq!(decoded.publication.generation_root, effective);
+        assert_eq!(decoded.origin, Some(origin));
+        assert_eq!(decoded.original_evidence, evidence);
+        for length in 0..bytes.len() {
+            assert!(
+                decode_publication_evidence::<CanonicalDecodeError>(
+                    &bytes[..length],
+                    u64::MAX,
+                    accept
+                )
+                .is_err()
+            );
+        }
+        let mut invalid_epoch = bytes.clone();
+        invalid_epoch[publication_payload_length()..publication_payload_length() + 8].fill(0);
+        assert!(
+            decode_publication_evidence::<CanonicalDecodeError>(&invalid_epoch, u64::MAX, accept)
+                .is_err()
+        );
+        bytes.push(0);
+        assert!(matches!(
+            decode_publication_evidence::<CanonicalDecodeError>(&bytes, u64::MAX, accept),
+            Err(CanonicalDecodeError::TrailingBytes)
+        ));
     }
     Ok(())
 }

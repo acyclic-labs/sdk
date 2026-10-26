@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn head_payload_checked<const RECHECK: bool>(
         &self,
         authority: AuthorityId,

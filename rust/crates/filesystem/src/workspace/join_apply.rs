@@ -17,7 +17,7 @@ pub enum DrivenJoinError {
     UnsupportedResolution(ConflictKey),
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     /// Runs merge drivers and publishes only while the supplied writer permit remains valid.
     pub async fn apply_with_drivers<C: MergeResolutionCache>(
         &self,

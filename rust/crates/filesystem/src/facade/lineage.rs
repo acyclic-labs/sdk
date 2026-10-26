@@ -6,7 +6,7 @@ pub(crate) struct WorkspaceCommonAncestor {
     pub volume_id: VolumeId,
 }
 
-pub(crate) struct WorkspaceRebaseRequest<'a, A, O> {
+pub(crate) struct WorkspaceRebaseRequest<'a, A: 'static, O: 'static> {
     pub target: &'a Volume<A, O>,
     pub operation_id: OperationId,
     pub maximum_generations: u32,
@@ -15,7 +15,7 @@ pub(crate) struct WorkspaceRebaseRequest<'a, A, O> {
 }
 
 /// Where a fork stands against the parent it was forked from.
-pub(super) struct RebaseLineage<A, O> {
+pub(super) struct RebaseLineage<A: 'static, O: 'static> {
     pub(super) target_object: ObjectId,
     pub(super) target_head: Head,
     pub(super) target_root: GenerationRoot,

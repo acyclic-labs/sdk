@@ -107,7 +107,10 @@ pub(super) fn conflict_finish_operation_id(
     OperationId::from_bytes(bytes)
 }
 
-pub(super) async fn generation_descends_from<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn generation_descends_from<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     workspace: &Workspace<A, O>,
     descendant: GenerationId,
     ancestor: GenerationId,

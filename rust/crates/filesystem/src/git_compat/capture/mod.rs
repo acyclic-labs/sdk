@@ -8,8 +8,8 @@ pub async fn capture_git_compatible_generation<A, O>(
     operation_id: OperationId,
 ) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let live = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -28,8 +28,8 @@ pub async fn capture_git_compatible_generation_at<A, O>(
     operation_id: OperationId,
 ) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let live = workspace
         .generation(generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -52,8 +52,8 @@ pub async fn git_generation_with_paths_from<A, O>(
     operation_id: OperationId,
 ) -> Result<Generation<A, O>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     if paths.is_empty() {
         return Ok(source.clone());

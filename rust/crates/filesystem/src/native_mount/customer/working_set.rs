@@ -1,7 +1,7 @@
 use super::*;
 
 /// SDK capture and publication owner for one pinned native directory.
-pub struct NativeWorkingSet<A, O> {
+pub struct NativeWorkingSet<A: 'static, O: 'static> {
     pub(super) source: Arc<CheckoutMountSource<A, O>>,
     pub(super) workspace: Workspace<A, O>,
     pub(super) source_root: PathBuf,

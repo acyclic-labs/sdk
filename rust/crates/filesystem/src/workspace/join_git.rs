@@ -40,7 +40,7 @@ pub(super) struct ReplacedFile {
 /// The record that `name` in directory `directory` binds in `view`, if any.
 /// The directory is found by identity, so a renamed or moved directory still
 /// names the same binding in every generation, as the kernel sees it.
-async fn bound_in_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     view: &Generation<A, O>,
     directory: FileId,
     name: &str,
@@ -67,7 +67,7 @@ async fn bound_in_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// The record `path` binds in `view`, if any.
-async fn bound_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn bound_record<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     view: &Generation<A, O>,
     path: &str,
 ) -> Result<Option<WorkspaceStat>, WorkspaceError> {
@@ -81,7 +81,7 @@ async fn bound_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     /// Finds a conflicted file whose identity exactly one side replaced at
     /// `path` with a single-link regular file it created.
     ///

@@ -7,6 +7,165 @@ use std::error::Error;
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[tokio::test]
+async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> TestResult {
+    crate::initialize_test_native_io();
+    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let fs = Fs::new(
+        store.clone(),
+        MemoryObjectStore::default(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("owned-roots", crate::performance::BOUNDARY_BUDGET, &cancel)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let authority = AuthorityId::from_bytes(workspace.id().into_bytes());
+    for published in [false, true] {
+        if published {
+            workspace.write("/file", Bytes::from_static(b"new")).await?;
+        }
+        let (head, root) = fixture_publication_root(&store, authority, &cancel).await?;
+        let request = crate::kernel::PublishGenerationRequest {
+            authority_id: authority,
+            volume_id: workspace.id().volume_id(),
+            epoch: head.epoch,
+            expected: head,
+            operation_id: OperationId::new(),
+            generation_root: root,
+        };
+        for native in [false, true] {
+            let original =
+                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
+                    .map_err(|(error, _)| error)?;
+            let mut accounting = if native {
+                crate::kernel::KernelAccounting::native(&original, &cancel)
+            } else {
+                crate::kernel::KernelAccounting::standalone(
+                    crate::performance::BOUNDARY_BUDGET,
+                    &cancel,
+                )
+            };
+            assert_eq!(
+                PublicationChanges::current_root(&store, request, &mut accounting, &cancel).await?,
+                (head, root)
+            );
+            assert_eq!(
+                accounting.spent().authority_records_read,
+                0,
+                "proposal normalization resampled its receipt-owned publication root"
+            );
+            let actor = crate::kernel::authority_actor(
+                store.operation_claims(),
+                authority,
+                &mut accounting,
+            )?;
+            assert!(
+                actor
+                    .publication_root(crate::kernel::PublishGenerationRequest {
+                        volume_id: crate::VolumeId::new(),
+                        ..request
+                    })
+                    .is_none(),
+                "a publication root escaped its volume identity"
+            );
+            let mut future = request;
+            future.expected.sequence = head.sequence.checked_next()?;
+            assert!(
+                actor.publication_root(future).is_none(),
+                "an older projection replaced the caller's newer observation"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn fixture_publication_root(
+    store: &StreamAuthorityStore<MemoryStream>,
+    authority: AuthorityId,
+    cancel: &CancellationToken,
+) -> Result<(Head, ObjectId), Box<dyn Error>> {
+    let mut setup = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, cancel);
+    let ((head, payload), _custody) = store
+        .head_payload(authority, STREAM_RECORD_LIMIT, &mut setup)
+        .await?;
+    let payload = payload.ok_or("publication payload missing")?;
+    let root = if head.sequence == Sequence::new(1) {
+        crate::kernel::decode_volume_created(&payload, STREAM_RECORD_LIMIT, &mut |_| {
+            Ok::<_, crate::FsError>(())
+        })?
+        .initial_generation_root
+    } else {
+        crate::kernel::decode_published_generation(&payload, STREAM_RECORD_LIMIT, &mut |_| {
+            Ok::<_, crate::FsError>(())
+        })?
+        .generation_root
+    };
+    Ok((head, root))
+}
+
+#[tokio::test]
+async fn publication_changes_keep_original_credit_until_the_last_retained_seal_drops() -> TestResult
+{
+    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let fs = Fs::new(
+        store.clone(),
+        MemoryObjectStore::default(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let cancel = CancellationToken::new();
+    let volume = fs
+        .create_volume(
+            VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|error| error.error)?
+        .value;
+    let mut backend = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    let ((_, payload), _) = store
+        .head_payload(
+            volume_authority_id(volume.id()),
+            STREAM_RECORD_LIMIT,
+            &mut backend,
+        )
+        .await?;
+    let creation = crate::kernel::decode_volume_created(
+        payload.as_ref().ok_or("creation missing")?,
+        STREAM_RECORD_LIMIT,
+        &mut |_| Ok::<_, crate::FsError>(()),
+    )?;
+    let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+    let mut work = WorkCounters::UNCHARGED;
+    let seal = {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        );
+        PublicationChanges::initial(fs.objects(), creation, &mut accounting, &cancel).await?
+    };
+    let retained = ledger.live_bytes();
+    assert!(retained > 0);
+    let second = seal.clone();
+    drop(seal);
+    assert_eq!(
+        ledger.live_bytes(),
+        retained,
+        "one clone retired shared publication backing"
+    );
+    drop(second);
+    assert!(
+        ledger.live_bytes() < retained,
+        "last seal leaked its original standalone credit"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn published_changes_share_the_authority_commit_and_filter_before_follow() -> TestResult {
     let streams = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(streams.clone());

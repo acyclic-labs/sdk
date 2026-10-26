@@ -9,7 +9,7 @@ struct ListFilesInput {
     maximum_entries: u32,
 }
 
-pub(super) struct LocalListFilesTool<A, O> {
+pub(super) struct LocalListFilesTool<A: 'static, O: 'static> {
     pub(super) verifier: Arc<FilesystemContentVerifier<A, O>>,
     pub(super) volume: VolumeRef,
     pub(super) maximum_bytes: u64,

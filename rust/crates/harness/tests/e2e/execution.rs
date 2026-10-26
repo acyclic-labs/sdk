@@ -30,7 +30,8 @@ pub(super) async fn run(case: Scenario) -> TestResult {
 }
 
 /// A checked scenario's journal, kept for cross-provider comparison.
-pub(super) struct Outcome<P, A = MemoryAuthorityBackend, O = MemoryObjectBackend> {
+pub(super) struct Outcome<P, A: 'static = MemoryAuthorityBackend, O: 'static = MemoryObjectBackend>
+{
     storage: MemoryHarnessStorage<P, A, O>,
     operation: OperationId,
 }

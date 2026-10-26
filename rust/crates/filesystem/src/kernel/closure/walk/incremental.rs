@@ -15,7 +15,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             } => {
                 let mut accounting =
                     crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                let (diff, allocation) = crate::facade::diff_generation_file_tables(
+                let (diff, allocation) = crate::kernel::diff_generation_file_tables(
                     self.store,
                     before,
                     after,
@@ -40,7 +40,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                     remaining,
                     cancellation,
                 );
-                let result = crate::facade::diff_generation_file_tables(
+                let result = crate::kernel::diff_generation_file_tables(
                     self.store,
                     before,
                     after,
@@ -63,14 +63,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         drop(_allocation);
-        let bytes = (diff.files.capacity() * size_of::<crate::FileRecordChange>())
-            .checked_add(diff.bindings.capacity() * size_of::<crate::DirectoryBindingChange>())
-            .and_then(|bytes| {
-                diff.bindings.iter().try_fold(bytes, |bytes, binding| {
-                    bytes.checked_add(binding.name.retained_bytes())
-                })
-            })
-            .ok_or(WorkError::Overflow)? as u64;
+        let bytes = diff.retained_bytes()?;
         self.meter.owned(|accounting| {
             let allocation = accounting.claim_owned(bytes, 0)?;
             Ok((diff, allocation, bytes))

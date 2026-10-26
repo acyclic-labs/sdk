@@ -36,7 +36,7 @@ fn allow<E>(
     }))
 }
 
-async fn fork_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn fork_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     source: &Workspace<A, O>,
     name: &str,
     options: ForkOptions<A, O>,
@@ -55,7 +55,7 @@ async fn fork_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     )
 }
 
-async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
 ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
     value!(
@@ -72,6 +72,7 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 mod access_policy;
+mod append_segments;
 mod change_sets;
 mod content_equality;
 mod projection_policy;

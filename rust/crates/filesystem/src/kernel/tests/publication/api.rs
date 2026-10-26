@@ -2,8 +2,8 @@ use super::*;
 
 #[tokio::test]
 async fn complete_generation_publishes_and_retries_exactly() -> TestResult {
-    let objects = MemoryObjectStore::default();
-    let authority = MemoryAuthorityStore::default();
+    let objects = std::sync::Arc::new(MemoryObjectStore::default());
+    let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([2; 16]);
     let authority_id = volume_authority_id(volume_id);
     let head = initialized(&objects, &authority, volume_id).await?;
@@ -18,8 +18,11 @@ async fn complete_generation_publishes_and_retries_exactly() -> TestResult {
     let cancellation = CancellationToken::new();
     let publish = |request| {
         publish_generation(
-            &objects,
-            &authority,
+            crate::Fs::new(
+                authority.clone(),
+                objects.clone(),
+                crate::EmbeddedCapabilities::MEMORY,
+            ),
             request,
             PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             limits(),
@@ -88,8 +91,8 @@ async fn complete_generation_publishes_and_retries_exactly() -> TestResult {
 #[tokio::test]
 async fn invalid_and_foreign_closures_never_mutate_authority() -> TestResult {
     for (volume, root_volume, operation) in [(6, None, 7), (51, Some(52), 53)] {
-        let objects = MemoryObjectStore::default();
-        let authority = MemoryAuthorityStore::default();
+        let objects = std::sync::Arc::new(MemoryObjectStore::default());
+        let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
         let volume_id = VolumeId::from_bytes([volume; 16]);
         let authority_id = volume_authority_id(volume_id);
         let expected = created(&authority, authority_id).await?;
@@ -101,8 +104,11 @@ async fn invalid_and_foreign_closures_never_mutate_authority() -> TestResult {
             },
         };
         let failure = publish_generation(
-            &objects,
-            &authority,
+            crate::Fs::new(
+                authority.clone(),
+                objects.clone(),
+                crate::EmbeddedCapabilities::MEMORY,
+            ),
             PublishGenerationRequest {
                 authority_id,
                 volume_id,
@@ -141,8 +147,8 @@ async fn invalid_and_foreign_closures_never_mutate_authority() -> TestResult {
 #[tokio::test]
 async fn mismatched_authority_and_precancellation_are_inert() -> TestResult {
     for cancelled in [false, true] {
-        let objects = MemoryObjectStore::default();
-        let authority = MemoryAuthorityStore::default();
+        let objects = std::sync::Arc::new(MemoryObjectStore::default());
+        let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
         let volume_id = VolumeId::from_bytes([if cancelled { 22 } else { 41 }; 16]);
         let authority_id = if cancelled {
             volume_authority_id(volume_id)
@@ -167,8 +173,11 @@ async fn mismatched_authority_and_precancellation_are_inert() -> TestResult {
             cancellation.cancel();
         }
         let failure = publish_generation(
-            &objects,
-            &authority,
+            crate::Fs::new(
+                authority.clone(),
+                objects.clone(),
+                crate::EmbeddedCapabilities::MEMORY,
+            ),
             PublishGenerationRequest {
                 authority_id,
                 volume_id,
@@ -204,8 +213,8 @@ async fn mismatched_authority_and_precancellation_are_inert() -> TestResult {
 
 #[tokio::test]
 async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation() -> TestResult {
-    let objects = MemoryObjectStore::default();
-    let authority = MemoryAuthorityStore::default();
+    let objects = std::sync::Arc::new(MemoryObjectStore::default());
+    let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([45; 16]);
     let authority_id = volume_authority_id(volume_id);
     let head = created(&authority, authority_id).await?;
@@ -247,8 +256,11 @@ async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutati
             _ => return Err("unknown test counter".into()),
         }
         let failure = publish_generation(
-            &objects,
-            &authority,
+            crate::Fs::new(
+                authority.clone(),
+                objects.clone(),
+                crate::EmbeddedCapabilities::MEMORY,
+            ),
             request,
             PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             limits(),
@@ -269,14 +281,17 @@ async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutati
 
 #[tokio::test]
 async fn missing_creation_record_returns_change_validation_without_appending() -> TestResult {
-    let objects = MemoryObjectStore::default();
-    let authority = MemoryAuthorityStore::default();
+    let objects = std::sync::Arc::new(MemoryObjectStore::default());
+    let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([94; 16]);
     let authority_id = volume_authority_id(volume_id);
     let expected = created(&authority, authority_id).await?;
     let failure = publish_generation(
-        &objects,
-        &authority,
+        crate::Fs::new(
+            authority.clone(),
+            objects.clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
         PublishGenerationRequest {
             authority_id,
             volume_id,

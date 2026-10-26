@@ -94,7 +94,7 @@ impl<A, O> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) fn checkout_custody(
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -293,14 +293,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         generation: ObjectId,
         working: GenerationRoot,
         prepared: PreparedCheckoutRoots,
-    ) {
-        let control = prepared.working_control.unwrap_or_else(|| {
-            Self::root_control_claim(&working, prepared.producer.as_ref())
-                .expect("an admitted generation-root vector has a representable capacity")
-        });
-        self.root.set(generation, working, control, prepared.held);
-        self.base_root = prepared.base.0;
-        self.dependencies.base_root_control = prepared.base.1;
+    ) -> Result<(), FsError> {
+        // Keep the incoming root before its producer custody on every error.
+        let mut replacement = (working, prepared);
+        let control = match replacement.1.working_control.take() {
+            Some(control) => control,
+            None => Self::root_control_claim(&replacement.0, replacement.1.producer.as_ref())?,
+        };
+        self.root
+            .set(generation, (replacement.0, control), replacement.1.held)?;
+        self.base_root = replacement.1.base.0;
+        self.dependencies.base_root_control = replacement.1.base.1;
+        Ok(())
     }
 
     #[cfg(feature = "native-mount")]

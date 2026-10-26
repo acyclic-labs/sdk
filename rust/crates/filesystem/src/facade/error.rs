@@ -13,6 +13,9 @@ pub enum FsError {
     /// Retained policy handles occupy the host's bounded policy-cache budget.
     #[error("access policy cache capacity exhausted")]
     AccessPolicyCacheCapacity,
+    /// The request transferred its work budget to an owned authority task.
+    #[error("filesystem work accounting is owned by an in-flight authority task")]
+    AccountingHandoffActive,
     /// Operation was cancelled before further facade work began.
     #[error(transparent)]
     Cancelled(#[from] CancellationError),

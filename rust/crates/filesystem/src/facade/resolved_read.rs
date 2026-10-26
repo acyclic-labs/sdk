@@ -58,7 +58,7 @@ pub struct FileDescription {
 ///     file.record.file_id = acyclic_fs::FileId::new();
 /// }
 /// ```
-pub struct ResolvedFile<A, O> {
+pub struct ResolvedFile<A: 'static, O: 'static> {
     pub(super) reader: PinnedReader<A, O>,
     pub(super) record: FileRecord,
     pub(super) description: FileDescription,
@@ -79,14 +79,14 @@ impl<A, O> ResolvedFile<A, O> {
 }
 
 /// One range requested from a reader-scoped resolved file.
-pub struct ResolvedFileRangeReadRequest<'a, A, O> {
+pub struct ResolvedFileRangeReadRequest<'a, A: 'static, O: 'static> {
     /// Exact resolved file handle.
     pub file: &'a ResolvedFile<A, O>,
     /// Exact logical byte range returned.
     pub range: ByteRange,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedReader<A, O> {
     /// Resolves ordered paths into native-reader handles for later range reads.
     pub async fn resolve_files<W: FsWork>(
         &self,

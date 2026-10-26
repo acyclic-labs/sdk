@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Publishes this private candidate under the supplied limits and seal.
     pub async fn commit<E, F, Fut>(
         &mut self,
@@ -243,7 +243,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 }
 
 /// Terminal result of one atomic workspace transaction publication.
-pub enum TransactionCommit<A, O> {
+pub enum TransactionCommit<A: 'static, O: 'static> {
     /// This call published the generation.
     Committed(Generation<A, O>),
     /// The same key and transaction were already durable.
@@ -260,7 +260,7 @@ pub enum TransactionCommit<A, O> {
 }
 
 /// Observation-safe advancement of one retained transaction candidate.
-pub enum TransactionRebase<A, O> {
+pub enum TransactionRebase<A: 'static, O: 'static> {
     /// The current head is now the candidate's immutable base and its sparse
     Rebased(Generation<A, O>),
     /// One or more exact observed or mutated regions changed upstream.

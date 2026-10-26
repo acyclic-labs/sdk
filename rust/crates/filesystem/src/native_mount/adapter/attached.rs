@@ -1,4 +1,4 @@
-struct CheckoutAttachedFile<A, O> {
+struct CheckoutAttachedFile<A: 'static, O: 'static> {
     checkout: Arc<SharedCheckout<A, O>>,
     file_id: FileId,
     deadline: Option<u64>,

@@ -7,7 +7,7 @@ use crate::wire::ErrorCode;
 
 type ModelJournal<P, A, O> = Option<Arc<FilesystemExecutionJournal<P, A, O>>>;
 
-struct ModelExecution<P, A, O> {
+struct ModelExecution<P, A: 'static, O: 'static> {
     context: Arc<TaskContext>,
     command: ModelExecutionInput,
     pipeline: ContextPipeline,

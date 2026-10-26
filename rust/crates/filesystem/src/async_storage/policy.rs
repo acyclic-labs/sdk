@@ -41,7 +41,7 @@ mod tests {
 }
 
 /// An authenticated backend cut. Only the backend can construct its evidence.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PolicyCut {
     #[cfg(any(test, feature = "distributed"))]
     pub(crate) owner: [u8; 16],

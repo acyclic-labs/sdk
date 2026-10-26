@@ -1,6 +1,46 @@
 use super::*;
 
 impl<'a> KernelAccounting<'a> {
+    fn ensure_active(&self) -> Result<(), crate::FsError> {
+        match self {
+            Self::Standalone { allocations, .. } => allocations.ensure_active(),
+            Self::BorrowedStandalone { allocations, .. } => allocations.ensure_active(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { .. } => Ok(()),
+        }
+    }
+
+    pub(crate) fn cancellation_wait(
+        &mut self,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::cancellation::Cancelled<'static>, crate::FsError> {
+        self.ensure_active()?;
+        let result = match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, .. } => {
+                cancellation.prepare_cancelled_with_native_work(work)
+            }
+            _ => {
+                let (allocations, work, budget, _) =
+                    self.standalone_parts().ok_or(WorkError::Overflow)?;
+                cancellation.prepare_cancelled_measured(allocations, work, budget)
+            }
+        };
+        result.map_err(|error| match error {
+            crate::cancellation::CancellationWaitError::Accounting(error) => error,
+            crate::cancellation::CancellationWaitError::Work(error) => error.into(),
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::cancellation::CancellationWaitError::Native(error) => error.into(),
+        })
+    }
+
+    pub(crate) fn accept_backend(&mut self, more: WorkCounters) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
+        let (allocations, work, budget, _) = self.standalone_parts().ok_or(WorkError::Overflow)?;
+        *work = work.with_backend(more, allocations.live_bytes())?;
+        work.verify(budget)?;
+        Ok(())
+    }
     pub(crate) fn standalone(
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
@@ -95,6 +135,7 @@ impl<'a> KernelAccounting<'a> {
         bytes: u64,
         operations: u64,
     ) -> Result<KernelOwnedAllocation, crate::FsError> {
+        self.ensure_active()?;
         self.check()?;
         match self {
             Self::Standalone {
@@ -135,6 +176,7 @@ impl<'a> KernelAccounting<'a> {
         &mut self,
         bytes: u64,
     ) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
+        self.ensure_active()?;
         match self {
             Self::Standalone {
                 allocations,
@@ -288,6 +330,7 @@ impl<'a> KernelAccounting<'a> {
     }
 
     pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
         match self {
             Self::Standalone {
                 work,
@@ -321,6 +364,7 @@ impl<'a> KernelAccounting<'a> {
     /// Records and checks bounded work.
     #[inline]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
         #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
         charge_tests::redundant_allocation();
         match self {
@@ -388,6 +432,7 @@ impl<'a> KernelAccounting<'a> {
 
     /// Charges an examined-item count without constructing or summing zero fields.
     pub(crate) fn charge_items(&mut self, count: u64) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
         match self {
             Self::Standalone {
                 work,
@@ -419,6 +464,7 @@ impl<'a> KernelAccounting<'a> {
     /// Checks work before performing it.
     #[inline]
     pub fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
         match self {
             Self::Standalone {
                 work,
@@ -452,6 +498,7 @@ impl<'a> KernelAccounting<'a> {
 
     /// Returns the remaining bounded allowances.
     pub fn remaining(&self) -> Result<WorkBudget, crate::FsError> {
+        self.ensure_active()?;
         self.check()?;
         match self {
             Self::Standalone {

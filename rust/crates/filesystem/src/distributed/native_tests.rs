@@ -5,6 +5,40 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 #[test]
+fn request_cleanup_cannot_retire_a_persistent_owner() -> TestResult {
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &cancellation);
+    let owned = work.vec_owned::<u8>(127)?;
+    let owned =
+        crate::kernel::allocation::retained::Retained::from_owned(owned, &mut work.accounting())?;
+    let retained = work.allocations.live_bytes();
+    work.hold_opaque(73)?;
+    assert!(
+        work.release_request().is_ok(),
+        "request cleanup attempted to retire a retained owner"
+    );
+    assert_eq!(
+        work.allocations.live_bytes(),
+        retained,
+        "request cleanup stole persistent credit"
+    );
+    assert!(
+        work.allocations.release(retained).is_err(),
+        "ordinary release retired a separately owned lease"
+    );
+    drop(owned);
+    assert_eq!(work.allocations.live_bytes(), retained - 127);
+    // The accounting branch can end before provider-owned values, too.
+    let owned = work.vec_owned::<u8>(23)?;
+    let owned =
+        crate::kernel::allocation::retained::Retained::from_owned(owned, &mut work.accounting())?;
+    work.release_request()?;
+    drop(work);
+    drop(owned);
+    Ok(())
+}
+
+#[test]
 fn meter_metadata_is_admitted_once_and_released_with_operation() -> TestResult {
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;

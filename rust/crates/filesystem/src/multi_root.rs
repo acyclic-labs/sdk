@@ -272,7 +272,7 @@ pub trait MultiRootPublisher: Send + Sync {
 }
 
 /// Resolves one authenticated workspace identity for core publication.
-pub trait WorkspaceResolver<A, O>: Send + Sync {
+pub trait WorkspaceResolver<A: 'static, O: 'static>: Send + Sync {
     /// Resolver failure.
     type Error: std::error::Error + Send + Sync + 'static;
 

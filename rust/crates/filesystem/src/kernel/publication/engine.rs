@@ -1,15 +1,15 @@
 use super::*;
+use crate::{AsyncAuthorityStore, AsyncObjectStore};
 
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
-pub(super) async fn publish_generation_async_inner<O, A, E, F, Fut, G, Dispatch, R>(
-    objects: &O,
-    authority: &A,
+pub(super) async fn publish_generation_async_inner<P, E, F, Fut, G, Dispatch, R>(
+    owner: &P,
     request: PublishGenerationRequest,
-    intent: PublicationIntent,
+    mut intent: PublicationIntent,
     closure_limits: ClosureLimits,
     cache: Option<&Mutex<CachedProofs>>,
     cancellation: &CancellationToken,
@@ -18,10 +18,10 @@ pub(super) async fn publish_generation_async_inner<O, A, E, F, Fut, G, Dispatch,
     dispatch: &mut G,
     resolved: Option<crate::foundation::DurableCommit>,
     prepare_roots: &mut R,
+    batch_seal: Option<combiner::SharedSeal>,
 ) -> Result<(PublicationReceipt, ProofGuard), E>
 where
-    O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
+    P: PublicationOwner,
     E: From<crate::FsError> + Send,
     F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
     Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
@@ -34,6 +34,8 @@ where
         &mut KernelAccounting<'_>,
     ) -> Result<(), E>,
 {
+    let objects = owner.objects();
+    let authority = owner.authority();
     let expected_authority = volume_authority_id(request.volume_id);
     if request.authority_id != expected_authority {
         return Err(E::from(crate::FsError::Publication(
@@ -49,74 +51,61 @@ where
         .map_err(crate::FsError::from)
         .map_err(E::from)?;
     accounting.check().map_err(E::from)?;
-    let proven_at = objects.collection_sweeps();
-    let (proof, guard, pending) = match accounting {
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { work: original, .. } => {
-            crate::kernel::closure::ProofContext::new(
-                objects,
-                closure_limits,
-                crate::kernel::closure::ProofMeter::Native {
-                    original,
-                    cancellation,
-                },
-            )
-            .prove_cached(request.generation_root, cache)
-            .await
-            .map_err(E::from)?
+    let mut candidate = if let Some(record) = resolved.as_ref() {
+        let decoded = decode_publication_evidence_with_accounting(
+            &record.payload,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            accounting,
+        )
+        .map_err(E::from)?;
+        combiner::Candidate {
+            root: decoded.publication.generation_root,
+            expected: request.expected,
+            predecessor: None,
+            ticket: None,
         }
-        _ => {
-            let (_, work, budget, _) = accounting
-                .standalone_parts()
-                .ok_or_else(|| E::from(crate::FsError::Work(WorkError::Overflow)))?;
-            if request.generation_root.kind != ObjectKind::GenerationRoot {
-                *work = WorkCounters::UNCHARGED;
-                return Err(E::from(crate::FsError::Closure(
-                    ClosureError::WrongObjectKind,
-                )));
-            }
-            if closure_limits.maximum_objects == 0 {
-                *work = WorkCounters::UNCHARGED;
-                return Err(E::from(crate::FsError::Closure(
-                    ClosureError::TooManyObjects {
-                        observed: 1,
-                        maximum: 0,
-                    },
-                )));
-            }
-            let meter = crate::kernel::closure::ProofMeter::standalone(budget, cancellation)
-                .map_err(|error| {
-                    *work = WorkCounters::UNCHARGED;
-                    E::from(crate::FsError::Closure(
-                        crate::kernel::closure::closure_error(error),
-                    ))
-                })?;
-            match crate::kernel::closure::ProofContext::new(objects, closure_limits, meter.clone())
-                .prove_cached(request.generation_root, cache)
-                .await
-            {
-                Ok((proof, guard, pending)) => {
-                    *work = proof.work;
-                    (proof, guard, pending)
-                }
-                Err(failure) => {
-                    *work = meter.work();
-                    return Err(E::from(crate::FsError::Closure(
-                        crate::kernel::closure::closure_error(failure),
-                    )));
-                }
-            }
-        }
+    } else {
+        combiner::prepare(
+            owner,
+            request,
+            &mut intent,
+            closure_limits,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(E::from)?
     };
+    let proven_at = objects.collection_sweeps();
+    let prepared_authentication = candidate
+        .ticket
+        .as_ref()
+        .map(|ticket| ticket.take_authentication(candidate.root, accounting))
+        .transpose()
+        .map_err(E::from)?
+        .flatten();
+    let authenticated = if let Some(authenticated) = prepared_authentication {
+        authenticated
+    } else {
+        authenticate::prove(
+            objects,
+            candidate.root,
+            candidate
+                .ticket
+                .as_ref()
+                .map(combiner::Ticket::authority_root),
+            closure_limits,
+            cache,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(E::from)?
+    };
+    let (proof, guard) = (authenticated.proof, authenticated.guard);
+    let mut pending = authenticated.pending;
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = (proof, guard);
-    match &output.1 {
-        ProofGuard::Standalone { .. } => {
-            retain(accounting, output.1.retained_bytes()).map_err(E::from)?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        ProofGuard::Native(_) => {}
-    }
     if output.0.root.volume_id != request.volume_id {
         return Err(E::from(crate::FsError::Publication(
             PublicationError::VolumeMismatch {
@@ -131,6 +120,7 @@ where
             .map_err(E::from)?;
     let mut commit = prepare_publication_commit(
         request,
+        Some(candidate.root),
         operation_context,
         intent.original_evidence,
         accounting,
@@ -166,16 +156,27 @@ where
             output.1,
         ));
     }
-    commit.publication = crate::PublicationChanges::between(
-        objects,
-        authority,
-        request,
-        &output.0.root,
-        accounting,
-        cancellation,
-    )
-    .await
-    .map_err(E::from)?;
+    commit.publication = if let Some(ticket) = candidate.ticket.as_ref() {
+        Some(ticket.changes(candidate.root).map_err(E::from)?)
+    } else {
+        crate::PublicationChanges::between(
+            objects,
+            authority,
+            crate::publication_changes::PublicationBasis {
+                request: PublishGenerationRequest {
+                    generation_root: candidate.root,
+                    expected: candidate.expected,
+                    ..request
+                },
+                predecessor: candidate.predecessor,
+            },
+            &output.0.root,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(E::from)?
+    };
     // The lease spans validation and the authority CAS. It excludes new physical
     // projections; existing projections admit only candidates preserving policy.
     let (_projection_fence, projected) =
@@ -186,7 +187,11 @@ where
             objects,
             authority,
             projection::Candidate {
-                request,
+                request: PublishGenerationRequest {
+                    expected: candidate.expected,
+                    generation_root: candidate.root,
+                    ..request
+                },
                 root: &output.0.root,
                 lease: &_projection_fence,
             },
@@ -232,7 +237,7 @@ where
     let append = crate::GuardedAppend {
         authority_id: request.authority_id,
         epoch: request.epoch,
-        expected: request.expected,
+        expected: candidate.expected,
         commit,
         permit: intent.permit,
     };
@@ -253,11 +258,44 @@ where
         _ => Some(accounting.remaining().map_err(E::from)?),
     };
     let changes = append.commit.publication.clone();
-    let appended = accept_step(accounting, dispatch(append, allowance).await);
+    let appended = if let Some(ticket) = candidate.ticket.as_mut() {
+        ticket
+            .submit(owner, append, batch_seal, accounting, cancellation)
+            .await
+            .map_err(E::from)
+    } else {
+        accept_step(accounting, dispatch(append, allowance).await)
+    };
     if let Some(changes) = changes {
         changes.retire(accounting).map_err(E::from)?;
     }
     let appended = appended?;
+    if let AppendOutcome::AlreadyCommitted(record) = &appended {
+        let decoded = decode_publication_evidence_with_accounting(
+            &record.payload,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            accounting,
+        )
+        .map_err(E::from)?;
+        let root = decoded.publication.generation_root;
+        if root.digest != output.0.generation_id.digest() {
+            authenticate::retire(output, accounting).map_err(E::from)?;
+            let authenticated = authenticate::prove(
+                objects,
+                root,
+                None,
+                closure_limits,
+                cache,
+                accounting,
+                cancellation,
+            )
+            .await
+            .map_err(E::from)?;
+            output = (authenticated.proof, authenticated.guard);
+            pending = authenticated.pending;
+            prepare_roots(&output.0.root, &mut output.1, accounting)?;
+        }
+    }
     // Only a durable generation's proof may stand in for its closure later.
     if let Some(pending) = pending {
         pending.publish(&appended);

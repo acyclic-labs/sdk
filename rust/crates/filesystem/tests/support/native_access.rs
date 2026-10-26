@@ -119,7 +119,7 @@ pub async fn checkout_view<
     Ok(Arc::new(AccessView::new(view)))
 }
 
-struct SelectionOwner<A, O> {
+struct SelectionOwner<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
 }
 

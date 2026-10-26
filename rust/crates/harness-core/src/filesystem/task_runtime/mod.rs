@@ -260,7 +260,7 @@ impl WorkerContext {
 }
 
 /// Composes caller-owned persistent providers without creating another scheduler or registry.
-pub struct FilesystemTaskRuntime<P, A, O> {
+pub struct FilesystemTaskRuntime<P, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<CoordinatorTaskHost<P>>,
     harness: Arc<AgentHarness>,

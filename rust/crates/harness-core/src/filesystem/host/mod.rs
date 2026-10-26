@@ -3,7 +3,7 @@ use super::*;
 use crate::conversation::{PublicationDomain, PublicationWitness};
 
 /// Adapter over any embedded, local, or distributed Filesystem provider pair.
-pub struct FilesystemHost<A, O> {
+pub struct FilesystemHost<A: 'static, O: 'static> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
     publication_domain: Arc<PublicationDomain>,

@@ -81,7 +81,7 @@ mod backend;
 mod operation_windows;
 mod write;
 
-use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
+use super::{IndexedDbObjectStore, OpfsAcceleratedObjectStore};
 use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,

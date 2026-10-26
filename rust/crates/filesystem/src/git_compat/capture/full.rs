@@ -7,8 +7,8 @@ pub(crate) async fn capture_git_compatible_generation_from<A, O>(
     operation_id: OperationId,
 ) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let (mut entries, nested_policies) = scan_git_capture_entries(&live).await?;
     entries.sort_by(|left, right| {

@@ -101,6 +101,13 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker.record(&record).await.map_err(mark_error)?;
                     }
+                    crate::collection::Held::Generation { root, config } => {
+                        marker.set_limits(DecodeLimits::for_volume(config));
+                        marker
+                            .generation(GenerationId::new(root.digest))
+                            .await
+                            .map_err(mark_error)?;
+                    }
                 }
             }
             marker.set_limits(shadow_limits);

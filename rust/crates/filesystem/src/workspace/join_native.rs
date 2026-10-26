@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     /// Applies exact resolutions on the original invocation and publication seal.
     pub async fn apply_with_native_work<'original, F, Fut, E>(
         &self,

@@ -1,6 +1,121 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+/// Evidence retained from the authenticated authority record. A locator is
+/// authoritative only when Streams published both records in the same commit.
+pub(super) struct OperationRecordProof {
+    sequence: u64,
+    digest: Digest,
+    commit_id: acyclic_stream::CommitId,
+    committed_at_micros: u64,
+}
+
+impl OperationRecordProof {
+    pub(super) fn new(
+        durable: crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+        record: &acyclic_stream::Record,
+        work: &AuthorityWork<'_>,
+    ) -> Result<Self, AuthorityStoreError> {
+        if durable.sequence.get() != record.sequence || record.sequence == 0 {
+            return Err(authority_corrupt(
+                "operation record has an invalid sequence",
+                work,
+            ));
+        }
+        Ok(Self {
+            sequence: record.sequence,
+            digest: durable.digest,
+            commit_id: record.commit_id,
+            committed_at_micros: record.committed_at_micros,
+        })
+    }
+
+    fn verify(
+        &self,
+        locator: &acyclic_stream::Record,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        let location = work.decode_fixed::<40>(
+            &locator.value,
+            OPERATION_LOCATOR_DOMAIN,
+            "invalid operation locator",
+        )?;
+        if location[..8] != self.sequence.to_le_bytes()
+            || &location[8..] != self.digest.as_bytes()
+            || locator.sequence != 0
+            || locator.commit_id != self.commit_id
+            || locator.committed_at_micros != self.committed_at_micros
+        {
+            return Err(authority_corrupt(
+                "operation locator does not bind its authority record",
+                work,
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+    pub(super) async fn verify_recovered_operation(
+        &self,
+        authority: AuthorityId,
+        operation: OperationId,
+        proof: &OperationRecordProof,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        let path = work.operation_path(authority, operation)?;
+        if !work.is_native() {
+            work.admit(WorkCounters {
+                authority_records_read: 2,
+                authority_bytes_read: STREAM_RECORD_LIMIT.saturating_mul(2),
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            work.charge(WorkCounters {
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        let stream = self
+            .authority_read(
+                acyclic_stream::ReadRequest {
+                    path,
+                    from: 0,
+                    limit: 2,
+                },
+                work,
+            )
+            .await;
+        let mut stream = match stream {
+            Err(error) if authority_missing(&error) && proof.sequence == 1 => return Ok(()),
+            Err(error) if authority_missing(&error) => {
+                return Err(authority_corrupt(
+                    "recovered operation locator is missing",
+                    work,
+                ));
+            }
+            result => result?,
+        };
+        let locator = stream.next(work).await?;
+        let Some(locator) = locator else {
+            return if proof.sequence == 1 {
+                Ok(())
+            } else {
+                Err(authority_corrupt(
+                    "recovered operation locator is missing",
+                    work,
+                ))
+            };
+        };
+        proof.verify(&locator.0, work)?;
+        if stream.next(work).await?.is_some() {
+            return Err(authority_corrupt(
+                "operation locator has an invalid record count",
+                work,
+            ));
+        }
+        work.check()
+    }
+
     /// The locator and its authority record are one conditional Stream commit.
     /// Its absent condition admits exactly one successful semantic operation,
     /// independently of any rejected compare-and-append attempt keys.
@@ -114,19 +229,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             result => result?,
         };
         let durable = authority_decode_borrowed(authority, &record.0.value, work)?;
-        if durable.operation_id != operation
-            || durable.sequence.get() != sequence
-            || record.0.sequence != sequence
-            || locator.0.sequence != 0
-            || durable.digest.as_bytes() != &location[8..]
-            || record.0.commit_id != locator.0.commit_id
-            || record.0.committed_at_micros != locator.0.committed_at_micros
-        {
+        if durable.operation_id != operation || durable.sequence.get() != sequence {
             return Err(authority_corrupt(
                 "operation locator does not bind its authority record",
                 work,
             ));
         }
+        OperationRecordProof::new(durable, &record.0, work)?.verify(&locator.0, work)?;
         let payload = work.bytes(durable.payload)?;
         let commit = durable_commit(durable, record.0.committed_at_micros, payload);
         work.check()?;

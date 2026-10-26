@@ -48,6 +48,10 @@ pub(crate) enum Held {
         record: crate::kernel::FileRecord,
         config: crate::model::VolumeConfig,
     },
+    Generation {
+        root: ObjectId,
+        config: crate::model::VolumeConfig,
+    },
 }
 
 #[must_use = "a publication holds this until its record is written"]

@@ -2,8 +2,8 @@ use super::*;
 
 impl<A, O, R, M> MultiRootPublisher for MaterializingWorkspaceMultiRootPublisher<A, O, R, M>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     R: WorkspaceResolver<A, O>,
     M: MultiRootMaterializer<A, O>,
 {

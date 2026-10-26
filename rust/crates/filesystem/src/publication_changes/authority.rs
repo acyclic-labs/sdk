@@ -1,7 +1,7 @@
 //! Backend buffers are decoded and dropped before another read can allocate.
 use super::*;
 
-type Base = (Head, ObjectId, Option<VolumeConfig>);
+pub(super) type Base = (Head, ObjectId, Option<VolumeConfig>);
 
 pub(super) async fn facts<A: AsyncAuthorityStore>(
     authority: &A,
@@ -9,7 +9,14 @@ pub(super) async fn facts<A: AsyncAuthorityStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<(Head, ObjectId, VolumeConfig)>, FsError> {
-    let Some((head, root, config)) = base(authority, request, accounting, cancellation).await?
+    let Some((head, root, config)) = base(
+        authority,
+        request,
+        Some(request.expected),
+        accounting,
+        cancellation,
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -36,9 +43,10 @@ fn backend_work<'a>(
     }
 }
 
-async fn base<A: AsyncAuthorityStore>(
+pub(super) async fn base<A: AsyncAuthorityStore>(
     authority: &A,
     request: PublishGenerationRequest,
+    expected: Option<Head>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<Base>, FsError> {
@@ -54,7 +62,7 @@ async fn base<A: AsyncAuthorityStore>(
     drop(work);
     merge_backend(accounting, spent)?;
     let ((head, payload), _custody) = observed?;
-    if head != request.expected {
+    if expected.is_some_and(|expected| head != expected) {
         return Ok(None);
     }
     let payload = payload.ok_or(FsError::InvalidDiff)?;

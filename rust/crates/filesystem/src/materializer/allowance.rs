@@ -17,7 +17,7 @@ pub(crate) struct NativeResourceAllowance {
 pub(super) struct NativeResourceState {
     work: WorkCounters,
     pending: WorkCounters,
-    allocations: crate::kernel::allocation::AllocationLedger,
+    allocations: crate::kernel::allocation::AllocationBytes,
     poisoned: bool,
 }
 // Admission holds every ancestor until the original operation commits. A

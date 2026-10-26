@@ -1,6 +1,6 @@
 use super::*;
 
-struct ForkPublication<'a, A, O> {
+struct ForkPublication<'a, A: 'static, O: 'static> {
     source: &'a crate::Generation<A, O>,
     destination_id: crate::WorkspaceId,
     fork_root: &'a VerifiedPublication<A, O>,

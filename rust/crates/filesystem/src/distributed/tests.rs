@@ -4,6 +4,7 @@ use acyclic_stream::{
     ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MemoryStream,
     ReadRequest, RecordStream, StreamBounds, StreamError, StreamProvider,
 };
+use futures::TryStreamExt;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 #[cfg(not(target_arch = "wasm32"))]
 mod operation_tests;
@@ -11,6 +12,63 @@ mod operation_tests;
 mod policy_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_io_failure_preserves_the_real_cause_with_and_without_original_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(cause, _)| cause)?;
+    for code in [2, 5, 13, 28] {
+        let ordinary = AuthorityWork::new(BUDGET, &cancellation);
+        let AuthorityStoreError::Io(error) =
+            ordinary.native_io_failure(std::io::Error::from_raw_os_error(code))
+        else {
+            panic!("missing original funding must retain the I/O error");
+        };
+        assert_eq!(error.raw_os_error(), Some(code));
+        let native = AuthorityWork::native(&original, &cancellation);
+        let AuthorityStoreError::NativeOriginal(crate::NativeTreeMaterializationError::Io(error)) =
+            native.native_io_failure(std::io::Error::from_raw_os_error(code))
+        else {
+            panic!("native funding must retain the original typed I/O failure");
+        };
+        assert_eq!(error.raw_os_error(), Some(code));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_read_meter_rejects_missing_original_funding_before_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let mut ordinary = AuthorityWork::new(BUDGET, &cancellation);
+    let before = ordinary.spent();
+    assert!(matches!(
+        ordinary.native_meter(),
+        Err(AuthorityStoreError::NativeOriginalUnsupported)
+    ));
+    assert_eq!(ordinary.spent(), before);
+
+    let original =
+        crate::NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut native = AuthorityWork::native(&original, &cancellation);
+    let bytes = native.bytes(b"retained native bytes")?;
+    let alias = bytes.clone();
+    drop(native);
+    assert!(original.live_allocation_bytes() > baseline);
+    drop(bytes);
+    assert_eq!(alias.as_ref(), b"retained native bytes");
+    assert!(original.live_allocation_bytes() > baseline);
+    drop(alias);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
 
 fn proposed(id: u8) -> ProposedCommit {
     ProposedCommit {
@@ -567,10 +625,13 @@ struct ReleaseSpy {
     cancel_inspect: Option<CancellationToken>,
     lose_ack: bool,
     corrupt_observation: u8,
-    before_commit: Option<crate::GuardedAppend>,
+    before_commit: Vec<crate::GuardedAppend>,
     before_gate_release: Option<PublicationReservation>,
     before_lease_close: Option<StreamPath>,
     race_once: AtomicBool,
+    deny_probes_after_commit: bool,
+    after_conflict: Option<crate::GuardedAppend>,
+    corrupt_recovered_locator: Option<(StreamPath, u8)>,
 }
 
 impl ReleaseSpy {
@@ -582,10 +643,13 @@ impl ReleaseSpy {
             cancel_inspect: None,
             lose_ack: false,
             corrupt_observation: 0,
-            before_commit: None,
+            before_commit: Vec::new(),
             before_gate_release: None,
             before_lease_close: None,
             race_once: AtomicBool::new(true),
+            deny_probes_after_commit: false,
+            after_conflict: None,
+            corrupt_recovered_locator: None,
         }
     }
     async fn interleave(&self) -> Result<(), StreamError> {
@@ -605,8 +669,8 @@ impl ReleaseSpy {
                     .await?;
             }
         }
-        if let Some(winner) = &self.before_commit {
-            if self.race_once.swap(false, SeqCst) {
+        if !self.before_commit.is_empty() && self.race_once.swap(false, SeqCst) {
+            for winner in &self.before_commit {
                 let token = CancellationToken::new();
                 let mut work = AuthorityWork::new(BUDGET, &token);
                 let outcome = StreamAuthorityStore::new(self.inner.clone())
@@ -627,6 +691,23 @@ impl ReleaseSpy {
             }
         }
         Ok(())
+    }
+    async fn finish_commit(&self, result: CommitOutcome) -> Result<CommitOutcome, StreamError> {
+        if matches!(&result, CommitOutcome::Conflict(_))
+            && let Some(next) = &self.after_conflict
+        {
+            let token = CancellationToken::new();
+            let mut work = AuthorityWork::new(BUDGET, &token);
+            StreamAuthorityStore::new(self.inner.clone())
+                .compare_and_append(next.clone(), &mut work, None::<&mut ()>)
+                .await
+                .map_err(|_| StreamError::InvalidArgument)?;
+        }
+        if self.lose_ack {
+            Err(StreamError::Unavailable)
+        } else {
+            Ok(result)
+        }
     }
 }
 
@@ -677,10 +758,35 @@ impl StreamProvider for ReleaseSpy {
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.reads.store(true, SeqCst);
+        if self.deny_probes_after_commit && self.writes.load(SeqCst) {
+            return Err(StreamError::InvalidArgument);
+        }
         self.inner.tail(path).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.reads.store(true, SeqCst);
+        if self.writes.load(SeqCst)
+            && let Some((path, corruption)) = &self.corrupt_recovered_locator
+            && &request.path == path
+        {
+            if *corruption == 1 {
+                return Err(StreamError::NotFound);
+            }
+            let mut records: Vec<_> = self.inner.read(request).await?.try_collect().await?;
+            let locator = records.first_mut().ok_or(StreamError::NotFound)?;
+            match corruption {
+                2 => locator.value = acyclic_stream::OwnedBytes::from_static(b"invalid locator"),
+                3 => locator.commit_id = CommitId::from_bytes([0xff; 32]),
+                4 => locator.committed_at_micros = locator.committed_at_micros.wrapping_add(1),
+                5 => {
+                    let mut duplicate = locator.clone();
+                    duplicate.sequence = 1;
+                    records.push(duplicate);
+                }
+                _ => return Err(StreamError::InvalidArgument),
+            }
+            return Ok(Box::pin(futures::stream::iter(records.into_iter().map(Ok))));
+        }
         let records = self.inner.read(request).await?;
         if self.corrupt_observation == 11 {
             return Ok(Box::pin(records.map(|record| {
@@ -695,12 +801,9 @@ impl StreamProvider for ReleaseSpy {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.interleave().await?;
         let result = self.inner.commit(request).await?;
-        if self.lose_ack {
-            Err(StreamError::Unavailable)
-        } else {
-            Ok(result)
-        }
+        self.finish_commit(result).await
     }
+
     async fn commit_before(
         &self,
         request: CommitRequest,
@@ -708,12 +811,9 @@ impl StreamProvider for ReleaseSpy {
     ) -> Result<CommitOutcome, StreamError> {
         self.interleave().await?;
         let result = self.inner.commit_before(request, deadline).await?;
-        if self.lose_ack {
-            Err(StreamError::Unavailable)
-        } else {
-            Ok(result)
-        }
+        self.finish_commit(result).await
     }
+
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
         self.inner.bounds(path).await
     }
@@ -734,6 +834,198 @@ impl StreamProvider for ReleaseSpy {
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await
     }
+}
+
+fn competing_requests(
+    authority: AuthorityId,
+    grouped: bool,
+) -> Result<Vec<crate::GuardedAppend>, Box<dyn std::error::Error>> {
+    let mut losers = super::append::group_tests::requests(authority, if grouped { 2 } else { 1 })?;
+    for (index, request) in losers.iter_mut().enumerate() {
+        request.commit = proposed(
+            u8::try_from(index)?
+                .checked_add(90)
+                .ok_or("operation overflow")?,
+        );
+    }
+    // Recompute the dense loser history after giving it distinct operation
+    // identities. The second member is only a prepared, non-durable root.
+    let mut expected = Head::genesis(Epoch::GENESIS);
+    for request in &mut losers {
+        request.expected = expected;
+        expected.sequence = expected.sequence.checked_next()?;
+        expected.digest = authority_commit_digest(
+            authority,
+            expected.epoch,
+            expected.sequence,
+            request.commit.operation_id,
+            request.commit.fingerprint,
+            request.expected.digest,
+            &request.commit.payload,
+        );
+    }
+    Ok(losers)
+}
+
+#[tokio::test]
+async fn rejected_single_and_group_appends_keep_the_reply_head_without_probing() -> TestResult {
+    for grouped in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let plain = StreamAuthorityStore::new(stream.clone());
+        let authority = AuthorityId::from_bytes([93; 16]);
+        let token = CancellationToken::new();
+        let mut work = AuthorityWork::new(BUDGET, &token);
+        plain
+            .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await?;
+        let winners = super::append::group_tests::requests(authority, 2)?;
+        let first = winners.first().ok_or("missing first winner")?.clone();
+        let second = winners.get(1).ok_or("missing later winner")?.clone();
+        let observed = second.expected;
+        let mut spy = ReleaseSpy::new(stream.clone());
+        spy.before_commit = vec![first];
+        spy.after_conflict = Some(second);
+        spy.deny_probes_after_commit = true;
+        let store = StreamAuthorityStore::new(Arc::new(spy));
+        let mut losers = competing_requests(authority, grouped)?;
+        if grouped {
+            let crate::AppendGroupOutcome::Published {
+                receipts,
+                allocation,
+            } = store
+                .compare_and_append_group(&losers, &[], &mut work, None::<&mut ()>)
+                .await?
+            else {
+                return Err("group failed before the injected race".into());
+            };
+            assert_eq!(receipts.len(), 2);
+            assert!(receipts.iter().all(|outcome| matches!(outcome, FsAppendOutcome::Conflict { actual } if *actual == observed)),
+                "group members did not share the failed append's observation");
+            drop(receipts);
+            drop(allocation);
+        } else {
+            assert!(
+                matches!(store.compare_and_append(losers.remove(0), &mut work, None::<&mut ()>).await?,
+                FsAppendOutcome::Conflict { actual } if actual == observed),
+                "single append probed a later head"
+            );
+        }
+        assert_eq!(
+            plain.head(authority, &mut work).await?.sequence,
+            Sequence::new(2)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_append_recovers_operation_identity_from_the_same_suffix() -> TestResult {
+    for wrong_fingerprint in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let plain = StreamAuthorityStore::new(stream.clone());
+        let authority = AuthorityId::from_bytes([94; 16]);
+        let token = CancellationToken::new();
+        let mut work = AuthorityWork::new(BUDGET, &token);
+        plain
+            .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await?;
+        let winners = super::append::group_tests::requests(authority, 2)?;
+        let winner = winners.last().ok_or("missing winning retry")?.clone();
+        let mut request = winner.clone();
+        request.expected = Head::genesis(Epoch::GENESIS);
+        if wrong_fingerprint {
+            request.commit.fingerprint = Digest::from_bytes([95; 32]);
+        }
+        let mut spy = ReleaseSpy::new(stream);
+        spy.before_commit = winners;
+        spy.deny_probes_after_commit = true;
+        let store = StreamAuthorityStore::new(Arc::new(spy));
+        let outcome = store
+            .compare_and_append(request, &mut work, None::<&mut ()>)
+            .await?;
+        if wrong_fingerprint {
+            assert!(
+                matches!(outcome, FsAppendOutcome::IdempotencyConflict { committed_fingerprint } if committed_fingerprint == winner.commit.fingerprint)
+            );
+        } else {
+            assert!(
+                matches!(outcome, FsAppendOutcome::AlreadyCommitted(existing) if existing.operation_id == winner.commit.operation_id && existing.fingerprint == winner.commit.fingerprint)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_single_and_group_appends_require_atomic_operation_locator_proof() -> TestResult {
+    for grouped in [false, true] {
+        for corruption in 1..=5 {
+            let stream = Arc::new(MemoryStream::default());
+            let plain = StreamAuthorityStore::new(stream.clone());
+            let authority = AuthorityId::from_bytes([96; 16]);
+            let token = CancellationToken::new();
+            let mut work = AuthorityWork::new(BUDGET, &token);
+            plain
+                .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+                .await?;
+            let winners = super::append::group_tests::requests(authority, 2)?;
+            let winner = winners.last().ok_or("missing winning retry")?;
+            let operation = winner.commit.operation_id;
+            let mut requests = competing_requests(authority, grouped)?;
+            let first = requests.first_mut().ok_or("missing losing proposal")?;
+            first.commit = winner.commit.clone();
+            // Distinct attempt keys force CAS conflict recovery rather than a
+            // replay of the winner's successful Streams transaction.
+            first.commit.fingerprint = Digest::from_bytes([97; 32]);
+            if grouped {
+                let first = requests.first().ok_or("missing first proposal")?;
+                let next = Head {
+                    epoch: first.epoch,
+                    sequence: Sequence::new(1),
+                    digest: authority_commit_digest(
+                        authority,
+                        first.epoch,
+                        Sequence::new(1),
+                        first.commit.operation_id,
+                        first.commit.fingerprint,
+                        first.expected.digest,
+                        &first.commit.payload,
+                    ),
+                };
+                requests
+                    .get_mut(1)
+                    .ok_or("missing second proposal")?
+                    .expected = next;
+            }
+            let path = work.operation_path(authority, operation)?;
+            let mut spy = ReleaseSpy::new(stream);
+            spy.before_commit = winners;
+            spy.deny_probes_after_commit = true;
+            spy.corrupt_recovered_locator = Some((path, corruption));
+            let store = StreamAuthorityStore::new(Arc::new(spy));
+            let error = if grouped {
+                store
+                    .compare_and_append_group(&requests, &[], &mut work, None::<&mut ()>)
+                    .await
+                    .err()
+            } else {
+                store
+                    .compare_and_append(requests.remove(0), &mut work, None::<&mut ()>)
+                    .await
+                    .err()
+            };
+            assert!(
+                matches!(
+                    error,
+                    Some(AuthorityError::Authority(
+                        AuthorityStoreError::Corrupt(_) | AuthorityStoreError::CorruptStatic(_)
+                    ))
+                ),
+                "recovery accepted malformed locator {corruption}, grouped={grouped}: {error:?}"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -757,7 +1049,7 @@ async fn rejected_append_attempt_does_not_poison_operation_retry_or_lost_ack() -
     let mut winner = request.clone();
     winner.commit = proposed(43);
     let mut spy = ReleaseSpy::new(stream.clone());
-    spy.before_commit = Some(winner);
+    spy.before_commit = vec![winner];
     let racing = StreamAuthorityStore::new(Arc::new(spy));
     let FsAppendOutcome::Conflict { actual } = racing
         .compare_and_append(request.clone(), &mut work, None::<&mut ()>)

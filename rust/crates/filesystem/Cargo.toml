@@ -39,6 +39,16 @@ path = "tests/mount_qualification.rs"
 name = "package-install"
 path = "tests/package_install.rs"
 
+[[test]]
+name = "fs_concurrency_bench"
+path = "tests/fs_concurrency_bench.rs"
+required-features = ["memory", "distributed"]
+
+[[test]]
+name = "browser_commit"
+path = "tests/browser_commit.rs"
+required-features = ["memory", "browser"]
+
 [[bench]]
 name = "lease_paths"
 harness = false
@@ -109,6 +119,7 @@ base64 = { version = "0.23.1", optional = true }
 crc-fast = { version = "1.10.0", optional = true }
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
@@ -196,14 +207,13 @@ native-watch = ["dep:notify"]
 native-mount = ["dep:dirs", "native-watch", "dep:fuser", "dep:nix"]
 s3-http = ["distributed", "dep:base64", "dep:crc-fast", "dep:s3s", "dep:serde_urlencoded", "dep:subtle", "dep:sync_wrapper", "dep:time", "dep:urlencoding"]
 distributed = ["dep:acyclic-objects"]
-browser = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+browser = ["distributed", "acyclic-stream/wasm", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
-acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["local"] }
 loom = "0.7.2"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

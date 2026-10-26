@@ -86,7 +86,7 @@ impl ObservedGeneration {
 }
 
 /// Immutable generation-fenced checkout admitted by the embedded facade.
-pub struct Checkout<A, O> {
+pub struct Checkout<A: 'static, O: 'static> {
     pub(super) volume: Volume<A, O>,
     pub(super) generation_root: ObjectId,
     pub(super) base_root: GenerationRoot,
@@ -390,13 +390,23 @@ impl<A, O> Checkout<A, O> {
         self.root.file_table != self.base_root.file_table || self.prepared_merge_parent.is_some()
     }
 
+    /// A head is a delta base only when this exact generation was observed there.
+    /// Exact checkouts may carry a newer head solely for writer fencing.
+    pub(super) fn base_authority_head(&self) -> Option<Head> {
+        self.authority_head.filter(|head| {
+            self.observed_generation
+                .position(GenerationId::new(self.root.base.digest))
+                == Some(head.sequence)
+        })
+    }
+
     /// Whether reads retain exact observations for safe rebase and commit.
     pub(super) fn tracks_observations(&self) -> bool {
         self.mode.consistency != ConsistencyMode::Pinned || self.dependencies.observing
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Discards a private candidate and reauthenticates its immutable base.
     pub async fn discard(
         &mut self,
@@ -475,7 +485,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             let prepared =
                 self.prepare_root_replacement(&root, &root, accounting, cancellation, None)?;
-            self.install_root_replacement(generation_root, root, prepared);
+            self.install_root_replacement(generation_root, root, prepared)?;
         }
         self.generation_root = generation_root;
         self.dependencies.proof().clear();

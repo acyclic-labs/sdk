@@ -33,7 +33,7 @@ mod ranges;
 #[path = "support/content_context.rs"]
 mod context;
 
-struct Fixture<O = acyclic_fs::MemoryObjectBackend> {
+struct Fixture<O: 'static = acyclic_fs::MemoryObjectBackend> {
     fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, O>>,
     issuer: AuthorityRoot,

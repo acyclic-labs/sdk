@@ -63,7 +63,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
     }
 }
 
-struct Preparation<'a, P: StreamProvider, A, O> {
+struct Preparation<'a, P: StreamProvider, A: 'static, O: 'static> {
     owner: &'a Arc<TaskJournalOwner<P>>,
     guards: &'a [Arc<crate::runtime::TaskContext>],
     allocation: &'a NativePreparationRoot,
@@ -77,7 +77,7 @@ type SelectedGeneration<A, O> = (
     NativeMaterializationWork,
 );
 
-struct Selection<'a, A, O> {
+struct Selection<'a, A: 'static, O: 'static> {
     mappings: Vec<NativeVolumeMapping>,
     generations: Vec<SelectedGeneration<A, O>>,
     selected: Vec<acyclic_fs::MaterializationPreparationSelection>,

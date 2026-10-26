@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Changes content by namespace path or stable file identity.
     pub async fn change_content<F: ContentFile, W: FsWork>(
         &mut self,
@@ -184,7 +184,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFile<A, O> {
     /// Applies one content change and, when `metadata` is given, replaces
     pub async fn change_content<W: FsWork>(
         &mut self,

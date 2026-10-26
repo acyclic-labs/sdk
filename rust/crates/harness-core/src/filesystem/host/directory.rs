@@ -288,7 +288,7 @@ fn filter_page(
     (removed, successor)
 }
 
-struct DirectorySelection<'io, A, O> {
+struct DirectorySelection<'io, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     generation: acyclic_fs::Generation<A, O>,
     view: super::super::access::CompiledAccess<'io>,

@@ -41,7 +41,7 @@ macro_rules! accounted {
 }
 
 /// A source-backed workspace whose unresolved paths remain outside its authored generation.
-pub struct LazyWorkspace<A, O, D, S> {
+pub struct LazyWorkspace<A: 'static, O: 'static, D, S> {
     workspace: Workspace<A, O>,
     source: Arc<D>,
     store: S,
@@ -49,7 +49,7 @@ pub struct LazyWorkspace<A, O, D, S> {
     _allocation: Option<crate::NativeAllocation>,
 }
 
-impl<A, O, D, S: Clone> LazyWorkspace<A, O, D, S> {
+impl<A: 'static, O: 'static, D, S: Clone> LazyWorkspace<A, O, D, S> {
     /// Funds the shared handle before allocating it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn share(&self, ctx: &mut KernelAccounting<'_>) -> Result<Arc<Self>, LazyWorkspaceError> {

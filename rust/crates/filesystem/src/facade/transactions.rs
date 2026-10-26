@@ -123,7 +123,7 @@ pub struct AuthoredLiveMutationResult {
     pub outcome: LiveMutationOutcome,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     /// Compiles and atomically applies one complete caller-authored transaction.
     pub async fn apply_authored_transaction(
         &mut self,

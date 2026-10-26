@@ -8,10 +8,31 @@ pub(super) struct DependencyLedger {
     pub(super) base_root_control: ProofDataClaim,
 }
 
-#[derive(Clone)]
 pub(super) struct Proof {
     pub(super) dependencies: CheckoutDependencies,
     pub(super) control: ProofDataClaim,
+    publication: bool,
+}
+
+impl Clone for Proof {
+    fn clone(&self) -> Self {
+        Self {
+            dependencies: self.dependencies.clone(),
+            control: self.control.clone(),
+            publication: false,
+        }
+    }
+}
+
+pub(super) struct PublicationFreeze(Arc<Mutex<Proof>>);
+
+impl Drop for PublicationFreeze {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .publication = false;
+    }
 }
 
 impl Proof {
@@ -19,6 +40,7 @@ impl Proof {
         Self {
             dependencies,
             control: ProofDataClaim::default(),
+            publication: false,
         }
     }
     pub(super) fn clear(&mut self) {
@@ -48,6 +70,7 @@ impl DependencyLedger {
             Proof {
                 dependencies,
                 control,
+                publication: false,
             },
             data_custody,
         )
@@ -63,6 +86,38 @@ impl DependencyLedger {
     }
     pub(super) fn proof(&self) -> MutexGuard<'_, Proof> {
         self.proof.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn freeze_publication(&self) -> Result<PublicationFreeze, FsError> {
+        let mut proof = self.proof();
+        if proof.publication {
+            return Err(FsError::PendingLiveMutation);
+        }
+        proof.publication = true;
+        Ok(PublicationFreeze(Arc::clone(&self.proof)))
+    }
+    pub(super) fn publication_snapshot(
+        &self,
+        base: ObjectId,
+        config: VolumeConfig,
+        head: Option<Head>,
+    ) -> Result<
+        (
+            PublicationFreeze,
+            Option<crate::kernel::PublicationPreconditions>,
+        ),
+        FsError,
+    > {
+        let freeze = self.freeze_publication()?;
+        // Stateless generation checkouts have no authenticated authority base.
+        // They remain exact-head replacements until explicit rebase establishes one.
+        let preconditions = head.map(|head| crate::kernel::PublicationPreconditions {
+            base,
+            config,
+            head,
+            reads: self.proof().dependencies.clone(),
+        });
+        Ok((freeze, preconditions))
     }
     #[cfg(feature = "native-mount")]
     pub(super) fn observing_with_custody(&self, data_custody: Arc<ProofDataCustody>) -> Self {
@@ -88,6 +143,9 @@ impl DependencyLedger {
     ) -> Result<(), FsError> {
         let _ = &staged;
         let mut proof = self.proof();
+        if proof.publication {
+            return Err(FsError::Rebase(RebaseError::DependenciesChanged));
+        }
         let extension = proof
             .dependencies
             .prepare_observations(dependencies, maximum)?;
@@ -129,54 +187,54 @@ impl DependencyLedger {
                         .release(live - retained)
                         .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
                 }
-                let mut next_ledger = *ledger;
-                let mut next_work = *work;
-                next_work.charge_items(items, &budget)?;
-                next_work.charge(
-                    &WorkCounters {
-                        bytes_copied: copied,
-                        ..WorkCounters::UNCHARGED
-                    },
-                    &budget,
-                )?;
-                let earlier_peak = next_work.peak_allocation_bytes;
-                next_work.peak_allocation_bytes = 0;
-                let external = self.data_custody.operation_cache_bytes();
-                let peak = next_ledger
-                    .live_bytes()
-                    .checked_sub(standing)
-                    .and_then(|live| live.checked_add(bytes))
-                    .and_then(|live| live.checked_add(external))
-                    .ok_or(WorkError::Overflow)?;
-                if peak > budget.peak_allocation_bytes {
-                    return Err(WorkError::BudgetExceeded {
-                        counter: "peak_allocation_bytes",
-                        observed: peak,
-                        maximum: budget.peak_allocation_bytes,
+                ledger.transaction(|next_ledger| {
+                    let mut next_work = *work;
+                    next_work.charge_items(items, &budget)?;
+                    next_work.charge(
+                        &WorkCounters {
+                            bytes_copied: copied,
+                            ..WorkCounters::UNCHARGED
+                        },
+                        &budget,
+                    )?;
+                    let earlier_peak = next_work.peak_allocation_bytes;
+                    next_work.peak_allocation_bytes = 0;
+                    let external = self.data_custody.operation_cache_bytes();
+                    let peak = next_ledger
+                        .live_bytes()
+                        .checked_sub(standing)
+                        .and_then(|live| live.checked_add(bytes))
+                        .and_then(|live| live.checked_add(external))
+                        .ok_or(WorkError::Overflow)?;
+                    if peak > budget.peak_allocation_bytes {
+                        return Err(WorkError::BudgetExceeded {
+                            counter: "peak_allocation_bytes",
+                            observed: peak,
+                            maximum: budget.peak_allocation_bytes,
+                        }
+                        .into());
                     }
-                    .into());
-                }
-                let mut allowance = budget;
-                allowance.peak_allocation_bytes = budget
-                    .peak_allocation_bytes
-                    .checked_sub(external)
-                    .ok_or(WorkError::Overflow)?
-                    .saturating_add(standing);
-                next_ledger
-                    .claim_bytes(bytes, operations, &mut next_work, allowance)
-                    .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
-                next_work.peak_allocation_bytes = earlier_peak.max(peak);
-                next_work.verify(budget)?;
-                self.data_custody.record_data_work(WorkCounters {
-                    items_examined: items,
-                    bytes_copied: copied,
-                    allocation_operations: operations,
-                    peak_allocation_bytes: peak,
-                    ..WorkCounters::default()
-                })?;
-                *ledger = next_ledger;
-                *work = next_work;
-                Ok(())
+                    let mut allowance = budget;
+                    allowance.peak_allocation_bytes = budget
+                        .peak_allocation_bytes
+                        .checked_sub(external)
+                        .ok_or(WorkError::Overflow)?
+                        .saturating_add(standing);
+                    next_ledger
+                        .claim_bytes(bytes, operations, &mut next_work, allowance)
+                        .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
+                    next_work.peak_allocation_bytes = earlier_peak.max(peak);
+                    next_work.verify(budget)?;
+                    self.data_custody.record_data_work(WorkCounters {
+                        items_examined: items,
+                        bytes_copied: copied,
+                        allocation_operations: operations,
+                        peak_allocation_bytes: peak,
+                        ..WorkCounters::default()
+                    })?;
+                    *work = next_work;
+                    Ok(())
+                })
             },
         )
     }

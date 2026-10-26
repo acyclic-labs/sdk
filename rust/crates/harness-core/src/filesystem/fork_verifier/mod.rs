@@ -1,7 +1,7 @@
 use super::*;
 
 /// Filesystem portion of the fork-publication admission barrier.
-pub struct FilesystemForkVerifier<A, O> {
+pub struct FilesystemForkVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) maximum_inherited_bytes: u64,
     pub(in crate::filesystem) maximum_total_reference_bytes: u64,
@@ -9,7 +9,7 @@ pub struct FilesystemForkVerifier<A, O> {
     pub(in crate::filesystem) native_binding: Option<Arc<FilesystemContentVerifier<A, O>>>,
 }
 
-pub(in crate::filesystem) struct FilesystemForkPublicationGuard<A, O> {
+pub(in crate::filesystem) struct FilesystemForkPublicationGuard<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     reservation: Option<PublicationReservation>,
     #[cfg(not(target_arch = "wasm32"))]

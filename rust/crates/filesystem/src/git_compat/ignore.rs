@@ -29,8 +29,8 @@ impl GitIgnorePolicy {
         already_tracked: &BTreeSet<String>,
     ) -> Result<BTreeSet<String>, GitCaptureError>
     where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         // Joins bind host namespaces by their ignore rules alone, exactly as
         // before they were kept out of the repository view: the

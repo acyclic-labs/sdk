@@ -23,8 +23,8 @@ pub async fn git_compatible_diff_counts<A, O>(
     cancellation: &CancellationToken,
 ) -> Result<GitDiffCounts, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let diff = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
@@ -109,8 +109,8 @@ pub async fn git_restore_paths<A, O>(
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let changes = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
@@ -148,8 +148,8 @@ pub async fn git_paths_preserving_reserved<A, O>(
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let mut candidates = paths
         .into_iter()
@@ -190,8 +190,8 @@ async fn kind_at<A, O>(
     cancellation: &CancellationToken,
 ) -> Result<Option<FileKind>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     match generation
         .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
@@ -227,8 +227,8 @@ pub async fn git_tracked_paths_after<A, O>(
     cancellation: &CancellationToken,
 ) -> Result<BTreeSet<String>, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     let changes = before
         .diff_to(
@@ -294,8 +294,8 @@ async fn repository_root<A, O>(
     repository: &GitIgnorePolicy,
 ) -> Result<GitIgnorePolicy, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     load_git_ignore_policy(generation, policies, "").await?;
     Ok(policies
@@ -312,8 +312,8 @@ pub(super) async fn git_path_eligible_with_root_at<A, O>(
     already_tracked: &BTreeSet<String>,
 ) -> Result<bool, GitCaptureError>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     if root.reserves(path) {
         return Ok(false);

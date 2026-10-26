@@ -16,14 +16,14 @@ mod projection;
 use projection::{Selection, generation};
 
 /// An authorized query of ordinary agent or project files and their original history.
-pub struct FilesystemFileQuery<P, O> {
+pub struct FilesystemFileQuery<P: 'static, O: 'static> {
     reader: Arc<FilesystemContentVerifier<StreamAuthorityStore<P>, O>>,
     volume: VolumeRef,
     budget: WorkBudget,
     policy: Arc<acyclic_fs::access::AccessView>,
 }
 
-struct FileCut<P, O> {
+struct FileCut<P: 'static, O: 'static> {
     workspace: acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
     current: acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
     cursor: Cursor,
@@ -33,7 +33,7 @@ struct FileCut<P, O> {
     permissions: Arc<acyclic_fs::access::PathTrie>,
 }
 
-impl<P, O> Clone for FilesystemFileQuery<P, O> {
+impl<P: 'static, O: 'static> Clone for FilesystemFileQuery<P, O> {
     fn clone(&self) -> Self {
         Self {
             reader: self.reader.clone(),

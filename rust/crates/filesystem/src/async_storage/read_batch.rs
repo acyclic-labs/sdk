@@ -60,7 +60,7 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
                     })?;
                 batch.work.verify(batch.budget)?;
             }
-            values.0.push(read?);
+            values.value.push(read?);
         }
         batch.check().map_err(crate::ObjectStoreError::from)?;
         batch
@@ -75,7 +75,7 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     if !context.is_native() {
         context.work.try_add_assign(&batch.spent())?;
     }
-    result
+    result.map(authority_parts)
 }
 
 impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {

@@ -29,7 +29,7 @@ const _: () = assert!(!MACHINES_SUITE.is_empty(), "conformance inventory is empt
 pub const STREAM_SUITE: &[u8] = acyclic_stream::conformance::SUITE;
 
 /// Exercises the minimum customer-level filesystem semantics.
-pub async fn filesystem_smoke<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn filesystem_smoke<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     provider: &Fs<A, O>,
 ) -> Result<(), String> {
     let workspace = provider

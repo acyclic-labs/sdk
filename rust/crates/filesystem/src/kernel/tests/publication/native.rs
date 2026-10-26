@@ -86,8 +86,8 @@ async fn native_request(
 #[tokio::test]
 async fn native_publication_owner_stale_after_await_fails_before_actual_cas() -> TestResult {
     use std::sync::atomic::{AtomicU64, Ordering};
-    let objects = MemoryObjectStore::default();
-    let authority = MemoryAuthorityStore::default();
+    let objects = std::sync::Arc::new(MemoryObjectStore::default());
+    let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([32; 16]);
     let root = native_fixture(&objects, volume_id).await?;
     let request = native_request(&objects, &authority, volume_id, root).await?;
@@ -126,8 +126,11 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
         }
     };
     let publication = publish_generation_async_guarded_with_native_work(
-        &objects,
-        &authority,
+        crate::Fs::new(
+            authority.clone(),
+            objects.clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
         request,
         PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
@@ -162,8 +165,8 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
 #[tokio::test]
 async fn native_publication_partial_closure_and_allocation_denials_release_owned_evidence()
 -> TestResult {
-    let objects = MemoryObjectStore::default();
-    let authority = MemoryAuthorityStore::default();
+    let objects = std::sync::Arc::new(MemoryObjectStore::default());
+    let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([33; 16]);
     let root = native_fixture(&objects, volume_id).await?;
     let request = native_request(&objects, &authority, volume_id, root).await?;
@@ -188,8 +191,11 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
             admitted.maximum_objects = 3;
         }
         let failure = publish_generation_async_guarded_with_native_work(
-            &objects,
-            &authority,
+            crate::Fs::new(
+                authority.clone(),
+                objects.clone(),
+                crate::EmbeddedCapabilities::MEMORY,
+            ),
             request,
             PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             admitted,
@@ -236,8 +242,8 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
 async fn native_publication_lost_ack_reopens_original_without_resealing_or_second_append()
 -> TestResult {
     use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
-    let objects = MemoryObjectStore::default();
-    let authority = MemoryAuthorityStore::default();
+    let objects = std::sync::Arc::new(MemoryObjectStore::default());
+    let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([34; 16]);
     let root = native_fixture(&objects, volume_id).await?;
     let changed_root = fixture(&objects, volume_id).await?;
@@ -256,6 +262,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
             .expect("fresh evidence has fully initialized unique backing");
     let intent = PublicationIntent {
+        preconditions: None,
         operation_context: Some(Digest::from_bytes([59; 32])),
         original_evidence: Some(evidence),
         fingerprint_permit: None,
@@ -265,8 +272,11 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         std::future::ready(Ok::<(), NativePublicationTestError>(()))
     };
     let failure = publish_generation_async_guarded_with_native_work(
-        &objects,
-        &authority,
+        crate::Fs::new(
+            authority.clone(),
+            objects.clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
         request,
         intent.clone(),
         limits(),
@@ -328,8 +338,11 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         assert_eq!(fingerprint, commit.fingerprint);
     }
     let later = publish_generation_async_guarded_with_native_work(
-        &objects,
-        &authority,
+        crate::Fs::new(
+            authority.clone(),
+            objects.clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
         PublishGenerationRequest {
             expected: Head {
                 epoch: commit.epoch,
@@ -358,8 +371,11 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         std::future::ready(Err::<(), _>(NativePublicationTestError::OwnerStale))
     };
     let changed = publish_generation_async_guarded_with_native_work(
-        &objects,
-        &authority,
+        crate::Fs::new(
+            authority.clone(),
+            objects.clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
         PublishGenerationRequest {
             generation_root: changed_root,
             expected: predecessor,
@@ -380,8 +396,11 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         AppendOutcome::IdempotencyConflict { .. }
     ));
     let publication = publish_generation_async_guarded_with_native_work(
-        &objects,
-        &authority,
+        crate::Fs::new(
+            authority.clone(),
+            objects.clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
         PublishGenerationRequest {
             expected: predecessor,
             ..request

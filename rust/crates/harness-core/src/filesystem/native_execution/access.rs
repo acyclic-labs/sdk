@@ -5,7 +5,7 @@ use acyclic_fs::{
     native_mount::{NativeAccessOwner, NativeMountCallbackFuture, NativeMountError},
 };
 
-struct PolicyOwner<A, O> {
+struct PolicyOwner<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     scope: Scope,
     verifier: AuthorityVerifier,
@@ -16,7 +16,7 @@ struct PolicyOwner<A, O> {
     _custody: NativeAllocation,
 }
 
-async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     scope: &Scope,
     ceiling: &crate::Capabilities,
@@ -171,8 +171,8 @@ pub(super) fn mount_capabilities<A, O>(
     writable: bool,
 ) -> Result<crate::Capabilities>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     use acyclic_fs::access::{ActionSet, Capability};
     let actions = if writable {
@@ -396,7 +396,10 @@ impl WorkspaceAccess {
 
 /// Check a verified scope and caller ceiling before exposing a raw workspace.
 /// The caller must authenticate the scope before invoking this admission check.
-pub async fn require_unrestricted_volume_access<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn require_unrestricted_volume_access<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     workspace: &acyclic_fs::Workspace<A, O>,
     volume: &VolumeRef,
     signed: &Scope,
@@ -439,7 +442,10 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
 }
 
 /// Verify a scope before exposing read-only raw checkout context.
-pub async fn require_unrestricted_workspace_read<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn require_unrestricted_workspace_read<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     workspace: &acyclic_fs::Workspace<A, O>,
     verifier: &AuthorityVerifier,
     scope: &Scope,

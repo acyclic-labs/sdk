@@ -10,13 +10,13 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// One independently configured checkout mounted into a composed view.
-pub struct MountedCheckout<A, O> {
+pub struct MountedCheckout<A: 'static, O: 'static> {
     mount_id: MountId,
     path: PortablePath,
     checkout: Checkout<A, O>,
 }
 
-impl<A, O> MountedCheckout<A, O> {
+impl<A: 'static, O: 'static> MountedCheckout<A, O> {
     /// Stable identity of this mount-table entry.
     #[must_use]
     pub const fn mount_id(&self) -> MountId {
@@ -49,7 +49,7 @@ impl<A, O> MountedCheckout<A, O> {
 }
 
 /// One resolved operation route into a volume-relative namespace.
-pub struct RoutedCheckout<'a, A, O> {
+pub struct RoutedCheckout<'a, A: 'static, O: 'static> {
     /// Stable selected mount identity.
     pub mount_id: MountId,
     /// Canonical path relative to the selected volume root.
@@ -59,11 +59,11 @@ pub struct RoutedCheckout<'a, A, O> {
 }
 
 /// Deterministic longest-prefix router that owns independently configured checkouts.
-pub struct MountedView<A, O> {
+pub struct MountedView<A: 'static, O: 'static> {
     bindings: BTreeMap<PortablePath, MountedCheckout<A, O>>,
 }
 
-impl<A, O> MountedView<A, O> {
+impl<A: 'static, O: 'static> MountedView<A, O> {
     /// Starts constructing an empty mounted view.
     #[must_use]
     pub fn builder() -> MountedViewBuilder<A, O> {
@@ -153,11 +153,11 @@ impl<A, O> MountedView<A, O> {
 }
 
 /// Builder that rejects ambiguous mount tables.
-pub struct MountedViewBuilder<A, O> {
+pub struct MountedViewBuilder<A: 'static, O: 'static> {
     bindings: BTreeMap<PortablePath, MountedCheckout<A, O>>,
 }
 
-impl<A, O> Default for MountedViewBuilder<A, O> {
+impl<A: 'static, O: 'static> Default for MountedViewBuilder<A, O> {
     fn default() -> Self {
         Self {
             bindings: BTreeMap::new(),
@@ -165,7 +165,7 @@ impl<A, O> Default for MountedViewBuilder<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> MountedViewBuilder<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MountedViewBuilder<A, O> {
     /// Adds one checkout at a distinct canonical path.
     ///
     /// # Errors

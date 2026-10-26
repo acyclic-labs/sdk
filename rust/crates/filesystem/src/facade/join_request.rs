@@ -15,7 +15,7 @@ pub(crate) enum WorkspaceJoinOutcome {
     IdempotencyConflict,
 }
 
-pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
+pub(crate) struct WorkspaceJoinRequest<'a, A: 'static, O: 'static> {
     pub target: &'a Volume<A, O>,
     pub base: WorkspaceCommonAncestor,
     pub source: &'a crate::Generation<A, O>,

@@ -74,7 +74,7 @@ impl MountedRemovals {
     }
 }
 
-struct DetachedIdentity<A, O> {
+struct DetachedIdentity<A: 'static, O: 'static> {
     file: Arc<CheckoutDetachedFile<A, O>>,
     ready: bool,
     published_epoch: u64,
@@ -88,13 +88,13 @@ type OpenIdentityHandles = Arc<Mutex<BTreeMap<FileId, Vec<WeakOpenFile>>>>;
 
 type DirtyDetachedRecord = (FileRecord, FileMetadata, u64);
 
-struct SourceConstructorInputs<A, O, D, S> {
+struct SourceConstructorInputs<A: 'static, O: 'static, D, S> {
     lazy: Arc<LazyWorkspace<A, O, D, S>>,
     root: String,
     allocation: Option<crate::NativeAllocation>,
 }
 
-struct SourceChangeRecorder<A, O, D, S> {
+struct SourceChangeRecorder<A: 'static, O: 'static, D, S> {
     lazy: Weak<LazyWorkspace<A, O, D, S>>,
     authored: Weak<CheckoutMountSource<A, O>>,
     constructor_inputs: Mutex<Option<SourceConstructorInputs<A, O, D, S>>>,
@@ -113,7 +113,7 @@ fn linked(node: &SourceNode) -> bool {
 }
 
 /// One native callback adapter over a source-backed sparse workspace.
-pub struct LazyMountSource<A, O, D, S> {
+pub struct LazyMountSource<A: 'static, O: 'static, D, S> {
     // Drain source callbacks before releasing the stores they borrow.
     source_watch: Option<NativeMountSourceWatchOwner>,
     pub(in crate::native_mount) lazy: Arc<LazyWorkspace<A, O, D, S>>,
@@ -129,7 +129,7 @@ pub struct LazyMountSource<A, O, D, S> {
     native_allocation: Option<crate::NativeAllocation>,
 }
 
-struct LazyOpenFile<A, O, D, S> {
+struct LazyOpenFile<A: 'static, O: 'static, D, S> {
     lazy: Arc<LazyWorkspace<A, O, D, S>>,
     authored: Arc<CheckoutMountSource<A, O>>,
     runtime: Arc<CallbackRuntime>,
@@ -144,7 +144,7 @@ struct LazyOpenFile<A, O, D, S> {
     _allocation: crate::NativeAllocation,
 }
 
-struct ViewBoundOpenFile<A, O> {
+struct ViewBoundOpenFile<A: 'static, O: 'static> {
     inner: Arc<dyn MountOpenFile>,
     runtime: Arc<CallbackRuntime>,
     source_view: Arc<ViewGate>,

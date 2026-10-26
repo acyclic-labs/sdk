@@ -1,4 +1,4 @@
-impl<A, O> CheckoutMountSource<A, O> {
+impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
     fn query_history(
         &self,
         path: &MountPath,

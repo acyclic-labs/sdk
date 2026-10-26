@@ -40,4 +40,11 @@ macro_rules! contract {
         }
         contract!(@methods $($rest)*);
     };
+    (@methods $(#[$doc:meta])* fn $name:ident <$g:ident: $bound:path>
+        (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty $body:block $($rest:tt)*) => {
+        fn $name<$g: $bound>(&$receiver $(, $arg: $ty)*) -> $out {
+            (**$receiver).$name($($arg),*)
+        }
+        contract!(@methods $($rest)*);
+    };
 }

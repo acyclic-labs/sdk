@@ -24,11 +24,11 @@ struct Allow;
 #[error("test resolver failed")]
 struct ResolverError;
 
-struct Resolver<A, O> {
+struct Resolver<A: 'static, O: 'static> {
     workspaces: Mutex<BTreeMap<WorkspaceId, Workspace<A, O>>>,
 }
 
-impl<A: AsyncAuthorityStore + Send + Sync, O: AsyncObjectStore + Send + Sync>
+impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>
     WorkspaceResolver<A, O> for Resolver<A, O>
 {
     type Error = ResolverError;

@@ -161,7 +161,7 @@ fn merge_conflict(value: MergeConflict) -> wire::Conflict {
     }
 }
 
-fn rebase_message<A, O>(value: WorkspaceRebase<A, O>) -> wire::RebaseResponse {
+fn rebase_message<A: 'static, O: 'static>(value: WorkspaceRebase<A, O>) -> wire::RebaseResponse {
     match value {
         WorkspaceRebase::Rebased(generation) => wire::RebaseResponse {
             status: wire::RebaseStatus::Rebased as i32,

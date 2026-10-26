@@ -6,9 +6,18 @@ pub(crate) struct NativeInvocationView {
     pub(super) self_ref: Weak<Self>,
     pub(super) metadata: NativeAllocation,
     pub(super) read_credit: NativeResourceCredit,
+    authority: Option<crate::kernel::allocation::retained::AuthorityLifetime>,
 }
 impl NativeInvocationView {
-    pub(crate) fn check(&self) -> Result<(), crate::DemandError> {
+    pub(crate) fn check_cancellation(
+        &self,
+        original: &crate::CancellationToken,
+    ) -> Result<(), crate::DemandError> {
+        self.authority
+            .as_ref()
+            .map_or(original, |owner| owner.cancellation())
+            .check()
+            .map_err(|_| crate::DemandError::Cancelled)?;
         self.cancellation
             .check()
             .map_err(|_| crate::DemandError::Cancelled)
@@ -48,6 +57,26 @@ impl NativeSourceExecutionView {
     }
 }
 impl NativeMaterializationWork {
+    /// Keeps the original window, resource ceilings and ledger, transferring
+    /// cancellation custody only for the owned publication continuation.
+    pub(crate) fn authority_publication_view(
+        &self,
+        lifetime: &crate::kernel::allocation::retained::AuthorityLifetime,
+    ) -> Result<Self, NativeTreeMaterializationError> {
+        self.admit(crate::WorkCounters::UNCHARGED)?;
+        let mut work = self.allocation_work();
+        let credit = self
+            .invocation
+            .as_ref()
+            .map_or(NativeResourceCredit::ReadBytes, |view| view.read_credit);
+        work.bind_invocation_owner(
+            lifetime.cancellation().clone(),
+            credit,
+            Some(lifetime.clone()),
+        )?;
+        self.retain_source(work)
+    }
+
     /// Adds invocation cancellation on the existing ledger.
     pub fn invocation_view(
         &self,
@@ -63,6 +92,19 @@ impl NativeMaterializationWork {
         cancellation: crate::CancellationToken,
         read_credit: NativeResourceCredit,
     ) -> Result<(), NativeTreeMaterializationError> {
+        let authority = self
+            .invocation
+            .as_ref()
+            .and_then(|view| view.authority.clone());
+        self.bind_invocation_owner(cancellation, read_credit, authority)
+    }
+
+    fn bind_invocation_owner(
+        &mut self,
+        cancellation: crate::CancellationToken,
+        read_credit: NativeResourceCredit,
+        authority: Option<crate::kernel::allocation::retained::AuthorityLifetime>,
+    ) -> Result<(), NativeTreeMaterializationError> {
         let bytes = const {
             match crate::arc_layout::allocation_bytes(
                 std::alloc::Layout::new::<NativeInvocationView>(),
@@ -77,6 +119,7 @@ impl NativeMaterializationWork {
             metadata,
             self_ref: self_ref.clone(),
             read_credit,
+            authority,
         }));
         Ok(())
     }

@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) async fn capture_mutation_dependencies_with_accounting(
         &self,
         operations: &[Mutation],
@@ -485,8 +485,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 Self::root_control_claim(&working.0, Some(producer))?
             }
         };
-        // No fallible work follows the transfer into the actual root producer.
-        self.root.set(self.root.base, working.0, control, held);
+        // Refuse invalid root custody before publishing the prepared proof.
+        self.root.set(self.root.base, (working.0, control), held)?;
         self.dependencies.proof().dependencies = prepared_dependencies;
         Ok(())
     }

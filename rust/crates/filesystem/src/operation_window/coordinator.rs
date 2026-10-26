@@ -148,7 +148,10 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
     ///
     /// This also covers a parent tool that finishes after the child's last
     /// overlapping tool: the child need not open another tool to catch up.
-    pub async fn parent_advanced_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn parent_advanced_workspace<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    >(
         &self,
         workspace: &Workspace<A, O>,
         parent: GenerationId,
@@ -331,7 +334,10 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
     /// Successful, current, and conflicted outcomes are terminal and release
     /// the window. Stale, fenced, and idempotency-conflicted outcomes retain the
     /// durable reconciliation ticket so recovery can retry or inspect it.
-    pub async fn finish_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn finish_workspace<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    >(
         &self,
         workspace: &Workspace<A, O>,
         lease: &OperationWindowLease,
@@ -394,7 +400,10 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
     /// This split form lets adapters fence a lease before capturing its mount,
     /// then publish the capture and finish the core rebase without reopening a
     /// race for another tool window.
-    pub async fn reconcile_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn reconcile_workspace<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    >(
         &self,
         workspace: &Workspace<A, O>,
         reconcile: OperationWindowReconcile,
@@ -444,7 +453,10 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
 
     /// Claims and completes reconciliation left behind by expired leases or a
     /// crashed adapter. Returns `None` when no recovery work exists.
-    pub async fn recover_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub async fn recover_workspace<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    >(
         &self,
         workspace: &Workspace<A, O>,
         now_millis: u64,

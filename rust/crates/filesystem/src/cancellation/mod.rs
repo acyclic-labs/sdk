@@ -20,6 +20,7 @@ struct CancellationState {
     parent: Option<CancellationToken>,
     // Acquired alone; parent registration is destroyed after releasing it.
     parent_waiter: Mutex<Option<Cancelled<'static>>>,
+    _authority_allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_allocation: Option<crate::NativeAllocation>,
 }
@@ -34,8 +35,7 @@ struct CancellationWaiter {
     // Head may precede cleanup; links and waker guards never span cleanup.
     cleanup: parking_lot::Mutex<Option<crate::materializer::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    _native_allocation: Option<crate::NativeAllocation>,
+    _allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
 }
 
 /// Cloneable, monotonic cancellation source and observation token.
@@ -116,6 +116,22 @@ impl std::task::Wake for ChildCancellationWake {
 }
 
 impl CancellationToken {
+    pub(crate) fn for_authority(
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let bytes =
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationState>())
+                .map_err(|_| crate::WorkError::Overflow)? as u64;
+        let allocation =
+            crate::kernel::allocation::retained::RetainedAllocation::claim(bytes, 1, accounting)?;
+        Ok(Self {
+            state: Arc::new(CancellationState {
+                _authority_allocation: Some(allocation),
+                ..CancellationState::default()
+            }),
+        })
+    }
+
     /// Creates one live token.
     #[must_use]
     pub fn new() -> Self {
@@ -157,10 +173,7 @@ impl CancellationToken {
         })?;
         let mut registered = parent
             .prepare_cancelled_with_native_work(original)
-            .map_err(|error| match error {
-                CancellationWaitError::Native(error) => error,
-                CancellationWaitError::Work(error) => error.into(),
-            })?;
+            .map_err(CancellationWaitError::into_native)?;
         let allocation = original.claim(
             std::mem::size_of::<CancellationState>() as u64,
             1,
@@ -357,12 +370,9 @@ impl CancellationToken {
             token: self.clone(),
             waiter: None,
             meter: None,
-            waiter_bytes: 0,
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn prepare_cancelled_measured(
         &self,
         allocations: &mut crate::kernel::allocation::AllocationLedger,
@@ -396,10 +406,8 @@ impl CancellationToken {
 pub struct CancellationError;
 
 mod wait;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use wait::CancellationWaitError;
 pub use wait::Cancelled;
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
 use wait::WaitMeter;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

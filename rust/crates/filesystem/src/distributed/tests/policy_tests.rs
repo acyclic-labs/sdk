@@ -8,7 +8,7 @@ fn filesystem() -> crate::Fs<StreamAuthorityStore<ReleaseSpy>, crate::MemoryObje
     )
 }
 
-async fn fork<A: AsyncAuthorityStore, O: crate::AsyncObjectStore>(
+async fn fork<A: AsyncAuthorityStore + 'static, O: crate::AsyncObjectStore + 'static>(
     source: &crate::Workspace<A, O>,
     name: &str,
 ) -> Result<crate::Workspace<A, O>, crate::WorkspaceError> {

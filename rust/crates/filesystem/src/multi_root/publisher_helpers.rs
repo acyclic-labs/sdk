@@ -2,8 +2,8 @@ use super::*;
 
 impl<A, O, R> WorkspaceMultiRootPublisher<A, O, R>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     R: WorkspaceResolver<A, O>,
 {
     pub(super) async fn reserve_operation(

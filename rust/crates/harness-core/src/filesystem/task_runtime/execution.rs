@@ -145,7 +145,7 @@ where
 }
 
 /// A stock executor and its mandatory task-owned journal.
-pub struct FilesystemTaskExecution<P, A, O> {
+pub struct FilesystemTaskExecution<P, A: 'static, O: 'static> {
     pub(super) operation_id: OperationId,
     pub(super) executor: StockExecutor,
     pub(super) journal: FilesystemExecutionJournal<P, A, O>,

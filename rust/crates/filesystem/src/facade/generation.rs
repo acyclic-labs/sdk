@@ -3,13 +3,13 @@ use super::*;
 pub(super) const MAXIMUM_VOLUME_EVENT_BYTES: u64 = 4 * 1024;
 
 /// One independently configured volume handle reconstructed from authority.
-pub struct Volume<A, O> {
+pub struct Volume<A: 'static, O: 'static> {
     pub(crate) fs: Fs<A, O>,
     pub(crate) id: VolumeId,
     pub(crate) config: VolumeConfig,
 }
 
-impl<A, O> Clone for Volume<A, O> {
+impl<A: 'static, O: 'static> Clone for Volume<A, O> {
     fn clone(&self) -> Self {
         Self {
             fs: self.fs.clone(),

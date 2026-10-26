@@ -90,7 +90,7 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     .map_err(|error| OperationFailure::new(error, original.receipt()))
 }
 
-pub(super) enum GenerationSource<'a, A, O> {
+pub(super) enum GenerationSource<'a, A: 'static, O: 'static> {
     Standalone(&'a mut Checkout<A, O>),
     Original(&'a PinnedReader<A, O>),
 }

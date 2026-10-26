@@ -72,7 +72,7 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
     result
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(crate) async fn stage_empty_tree_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -278,13 +278,5 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             page.work = accounting.spent();
             (page, allocation)
         })
-    }
-}
-
-pub(super) fn directory_entries(record: Option<FileRecord>) -> Option<ObjectId> {
-    let record = record?;
-    match record.payload {
-        FilePayload::Directory { entries } => Some(entries),
-        _ => None,
     }
 }

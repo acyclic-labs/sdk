@@ -1,5 +1,5 @@
 /// Serialization and publication boundary for a canonical checkout.
-pub struct SharedCheckout<A, O> {
+pub struct SharedCheckout<A: 'static, O: 'static> {
     volume: crate::Volume<A, O>,
     volume_id: VolumeId,
     clock: crate::native_mount::clock::Clock,
@@ -16,18 +16,18 @@ pub struct SharedCheckout<A, O> {
 }
 
 /// Exclusive access that excludes native callbacks.
-pub struct SharedCheckoutGuard<'a, A, O> {
+pub struct SharedCheckoutGuard<'a, A: 'static, O: 'static> {
     _view: ViewWriteLease,
     state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
 }
 
-pub(super) struct SharedCheckoutObservation<'a, A, O> {
+pub(super) struct SharedCheckoutObservation<'a, A: 'static, O: 'static> {
     _view: ViewReadLease,
     state: tokio::sync::RwLockReadGuard<'a, SharedCheckoutState<A, O>>,
 }
 
 /// Locked checkout state. Dereferencing reaches the canonical checkout while
-pub struct SharedCheckoutState<A, O> {
+pub struct SharedCheckoutState<A: 'static, O: 'static> {
     checkout: Checkout<A, O>,
     publication_operation: Option<OperationId>,
     publication_evidence: Option<(
@@ -42,7 +42,7 @@ pub struct SharedCheckoutState<A, O> {
     recorded_view: ObjectId,
 }
 
-impl<A, O> SharedCheckout<A, O> {
+impl<A: 'static, O: 'static> SharedCheckout<A, O> {
     /// Creates the sole shared adapter boundary for one canonical checkout.
     #[must_use]
     pub fn new(checkout: Checkout<A, O>) -> Self {
@@ -231,7 +231,7 @@ impl<A, O> SharedCheckout<A, O> {
     }
 }
 
-impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {
+impl<A: 'static, O: 'static> Deref for SharedCheckoutGuard<'_, A, O> {
     type Target = SharedCheckoutState<A, O>;
 
     fn deref(&self) -> &Self::Target {
@@ -245,7 +245,7 @@ impl<A, O> DerefMut for SharedCheckoutGuard<'_, A, O> {
     }
 }
 
-impl<A, O> Drop for SharedCheckoutGuard<'_, A, O> {
+impl<A: 'static, O: 'static> Drop for SharedCheckoutGuard<'_, A, O> {
     fn drop(&mut self) {
         if self.state.checkout.root().file_table != self.state.recorded_view {
             self.state.ledger.notify_everything();
@@ -254,7 +254,7 @@ impl<A, O> Drop for SharedCheckoutGuard<'_, A, O> {
     }
 }
 
-impl<A, O> Deref for SharedCheckoutObservation<'_, A, O> {
+impl<A: 'static, O: 'static> Deref for SharedCheckoutObservation<'_, A, O> {
     type Target = SharedCheckoutState<A, O>;
 
     fn deref(&self) -> &Self::Target {
@@ -262,7 +262,7 @@ impl<A, O> Deref for SharedCheckoutObservation<'_, A, O> {
     }
 }
 
-impl<A, O> Deref for SharedCheckoutState<A, O> {
+impl<A: 'static, O: 'static> Deref for SharedCheckoutState<A, O> {
     type Target = Checkout<A, O>;
 
     fn deref(&self) -> &Self::Target {

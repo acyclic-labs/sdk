@@ -5,7 +5,7 @@ mod moved;
 mod paths;
 
 /// Immutable semantic delta between two exact generations.
-pub struct ChangeSet<A, O> {
+pub struct ChangeSet<A: 'static, O: 'static> {
     pub(super) from: Generation<A, O>,
     pub(super) to: Generation<A, O>,
     pub(super) changes: GenerationDiff,
@@ -121,7 +121,9 @@ trait NamespaceEndpoints: acyclic_stream::ProviderPlatform {
     + ProviderTask;
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NamespaceEndpoints for ChangeSet<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NamespaceEndpoints
+    for ChangeSet<A, O>
+{
     async fn search(
         &self,
         before: bool,
@@ -213,7 +215,7 @@ async fn complete_between<O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
     let [from, to] = &endpoints;
-    let changes = crate::facade::diff_generation_file_tables(
+    let changes = crate::kernel::diff_generation_file_tables(
         to.objects,
         from.root.file_table,
         to.root.file_table,
@@ -411,7 +413,7 @@ fn retain_changed_paths(
     Ok(paths)
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<A, O> {
     /// Resolves changed paths while retaining their actual result allocation.
     pub async fn changed_paths<W: crate::facade::FsWork>(
         &self,

@@ -1,4 +1,4 @@
-impl<A, O> SharedCheckoutState<A, O> {
+impl<A: 'static, O: 'static> SharedCheckoutState<A, O> {
     fn publishes_at_native_boundary(&self) -> bool {
         self.publication != MountPublication::Manual
     }

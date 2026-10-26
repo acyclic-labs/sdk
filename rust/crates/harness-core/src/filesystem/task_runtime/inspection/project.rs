@@ -18,7 +18,7 @@ pub(super) type OwnerWork = Option<acyclic_fs::NativeMaterializationWork>;
 #[cfg(target_arch = "wasm32")]
 pub(super) type OwnerWork = ();
 
-pub(super) struct ProjectSourceReader<P, A, O> {
+pub(super) struct ProjectSourceReader<P, A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Arc<TaskJournalOwner<P>>,
     handle: ProjectSourceReadHandle,

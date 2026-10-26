@@ -1,23 +1,11 @@
-//! `IndexedDB` authority and immutable-object persistence.
+//! `IndexedDB` immutable-object persistence.
 
-use super::authority_codec::{
-    COMMIT_PREFIX_BYTES, GATE_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord,
-    PublicationGateRecord, authority_key, commit_key, decode_commit_owned, decode_head,
-    decode_operation, decode_publication_gate, encode_commit, encode_head, encode_operation,
-    encode_publication_gate, free_publication_gate, operation_key,
-};
-use crate::storage::{FenceOutcome, ObjectWrite};
+use crate::storage::ObjectWrite;
 use crate::{
-    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
-    CancellationToken, CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GuardedAppend,
-    Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectRead, ObjectReadRetention,
-    ObjectStoreError, OperationId, ProposedCommit, PublicationPermit, PublicationReservation,
-    ReplayLimit, ReservationOutcome, Sequence, WorkBudget, WorkCounters, WorkspaceForkCommit,
-    WorkspaceForkOutcome, authority_commit_digest, object_digest,
+    AsyncObjectStore, AuthorityStoreError, CancellationToken, OBJECT_DIGEST_ENVELOPE_BYTES,
+    ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, WorkCounters, object_digest,
 };
 use acyclic_stream::OwnedBytes;
-#[cfg(test)]
-use bytes::Bytes;
 use indexed_db_futures::database::Database;
 use indexed_db_futures::prelude::*;
 use indexed_db_futures::transaction::{
@@ -32,22 +20,9 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
-const DATABASE_VERSION: u32 = 1;
+const DATABASE_VERSION: u32 = 2;
 const OBJECTS: &str = "objects";
-const AUTHORITY_HEADS: &str = "authority_heads";
-const AUTHORITY_COMMITS: &str = "authority_commits";
-const AUTHORITY_OPERATIONS: &str = "authority_operations";
-const AUTHORITY_GATES: &str = "authority_gates";
-const OPERATION_WINDOWS: &str = "operation_windows";
-const MAXIMUM_WINDOW_BYTES: u64 = 64 * 1024;
 const OBJECT_KEY_BYTES: u64 = 66;
-const AUTHORITY_STORES: &[&str] = &[
-    AUTHORITY_HEADS,
-    AUTHORITY_COMMITS,
-    AUTHORITY_OPERATIONS,
-    AUTHORITY_GATES,
-    OPERATION_WINDOWS,
-];
 
 /// Browser database initialization failures.
 #[derive(Debug, Error)]
@@ -70,7 +45,7 @@ impl From<IndexedDbOpenError> for JsValue {
     }
 }
 
-async fn open_database(name: &str) -> Result<Database, IndexedDbOpenError> {
+pub(super) async fn open_database(name: &str) -> Result<Database, IndexedDbOpenError> {
     Database::open(name)
         .with_version(DATABASE_VERSION)
         .with_on_upgrade_needed(|event, db| {
@@ -79,16 +54,7 @@ async fn open_database(name: &str) -> Result<Database, IndexedDbOpenError> {
                     "unsupported filesystem schema",
                 )));
             }
-            for name in [
-                OBJECTS,
-                AUTHORITY_HEADS,
-                AUTHORITY_COMMITS,
-                AUTHORITY_OPERATIONS,
-                AUTHORITY_GATES,
-                OPERATION_WINDOWS,
-            ] {
-                db.create_object_store(name).build()?;
-            }
+            db.create_object_store(OBJECTS).build()?;
             Ok(())
         })
         .await
@@ -150,256 +116,6 @@ fn object_error(error: AuthorityStoreError) -> ObjectStoreError {
         AuthorityStoreError::Missing => ObjectStoreError::Missing,
         AuthorityStoreError::Corrupt(_) => ObjectStoreError::Corrupt,
         error => ObjectStoreError::Rejected(error.to_string()),
-    }
-}
-
-fn authority_fixed_read_work(length: usize) -> WorkCounters {
-    let bytes = length as u64;
-    WorkCounters {
-        backend_read_operations: 1,
-        bytes_copied: bytes,
-        allocation_operations: u64::from(bytes != 0),
-        peak_allocation_bytes: bytes,
-        ..Default::default()
-    }
-}
-fn authority_fixed_write_work(length: usize, operations: u64) -> WorkCounters {
-    let bytes = length as u64;
-    WorkCounters {
-        backend_write_operations: operations,
-        bytes_copied: bytes,
-        bytes_encoded: bytes,
-        allocation_operations: u64::from(bytes != 0),
-        peak_allocation_bytes: bytes * 2,
-        ..Default::default()
-    }
-}
-fn authority_commit_read_work(encoded: u64, payload: u64) -> WorkCounters {
-    WorkCounters {
-        authority_records_read: 1,
-        authority_bytes_read: payload,
-        bytes_hashed: payload,
-        bytes_copied: encoded * 2,
-        allocation_operations: 2 * u64::from(encoded != 0),
-        peak_allocation_bytes: encoded * 2,
-        ..Default::default()
-    }
-}
-
-/// Transactional browser-local authority persistence.
-#[derive(Clone)]
-pub struct IndexedDbAuthorityStore {
-    operation_claims: std::rc::Rc<acyclic_stream::OperationClaims>,
-    database: Database,
-    maximum_payload_bytes: u64,
-}
-impl IndexedDbAuthorityStore {
-    /// Opens the canonical version-1 filesystem database.
-    pub async fn open(name: &str, maximum_payload_bytes: u64) -> Result<Self, IndexedDbOpenError> {
-        if name.is_empty()
-            || maximum_payload_bytes == 0
-            || maximum_payload_bytes > u64::from(u32::MAX) - COMMIT_PREFIX_BYTES as u64
-        {
-            return Err(IndexedDbOpenError::InvalidOptions);
-        }
-        Ok(Self {
-            database: open_database(name).await?,
-            maximum_payload_bytes,
-            operation_claims: std::rc::Rc::new(acyclic_stream::OperationClaims::default()),
-        })
-    }
-    fn payload(&self, blob: &Blob) -> Result<u64, AuthorityStoreError> {
-        let size = work::blob_length(blob)?;
-        let payload = size
-            .checked_sub(COMMIT_PREFIX_BYTES as u64)
-            .ok_or_else(|| corrupt("invalid commit Blob size"))?;
-        if payload > self.maximum_payload_bytes {
-            return Err(corrupt("oversized commit"));
-        }
-        Ok(payload)
-    }
-    fn validate(&self, commit: &ProposedCommit) -> Result<(), AuthorityStoreError> {
-        if commit.payload.len() as u64 > self.maximum_payload_bytes {
-            return Err(AuthorityStoreError::PayloadTooLarge {
-                observed: commit.payload.len() as u64,
-                maximum: self.maximum_payload_bytes,
-            });
-        }
-        Ok(())
-    }
-    async fn decode(
-        &self,
-        io: &mut crate::AuthorityWork<'_>,
-        authority: AuthorityId,
-        blob: &Blob,
-        retained: u64,
-    ) -> Result<DurableCommit, AuthorityStoreError> {
-        let payload = self.payload(blob)?;
-        let encoded = payload + COMMIT_PREFIX_BYTES as u64;
-        let mut delta = authority_commit_read_work(encoded, payload);
-        delta.peak_allocation_bytes += retained;
-        work::charge(io, delta)?;
-        let bytes = io.blob_bytes(blob, encoded).await?;
-        decode_commit_owned(authority, bytes, self.maximum_payload_bytes).map_err(corrupt)
-    }
-    async fn window(
-        &self,
-        io: &mut crate::AuthorityWork<'_>,
-        tx: &Transaction<'_>,
-        workspace: crate::WorkspaceId,
-    ) -> Result<Option<crate::OperationWindowSnapshot>, AuthorityStoreError> {
-        work::charge(io, authority_fixed_read_work(0))?;
-        let Some(value) = io
-            .get(
-                tx,
-                OPERATION_WINDOWS,
-                &authority_key(AuthorityId::from_bytes(workspace.into_bytes())),
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let array = value
-            .dyn_into::<Uint8Array>()
-            .map_err(|_| corrupt("invalid window buffer"))?;
-        let length = u64::from(array.length());
-        let maximum = self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES);
-        if length > maximum {
-            return Err(AuthorityStoreError::PayloadTooLarge {
-                observed: length,
-                maximum,
-            });
-        }
-        work::charge(
-            io,
-            WorkCounters {
-                bytes_copied: length,
-                allocation_operations: length + 1,
-                peak_allocation_bytes: length * 128,
-                items_examined: length,
-                ..Default::default()
-            },
-        )?;
-        let snapshot: crate::OperationWindowSnapshot =
-            serde_json::from_slice(&array.to_vec()).map_err(corrupt)?;
-        if !snapshot.is_valid_for(workspace) {
-            return Err(corrupt("invalid operation window"));
-        }
-        Ok(Some(snapshot))
-    }
-    fn prepare(
-        &self,
-        io: &mut crate::AuthorityWork<'_>,
-        authority: AuthorityId,
-        actual: Head,
-        commit: ProposedCommit,
-    ) -> Result<(DurableCommit, Vec<u8>), AuthorityStoreError> {
-        self.validate(&commit)?;
-        let sequence = actual.sequence.checked_next().map_err(backend)?;
-        let payload = commit.payload.len() as u64;
-        let encoded = payload + COMMIT_PREFIX_BYTES as u64;
-        let fixed = (HEAD_BYTES + OPERATION_BYTES) as u64;
-        work::charge(
-            io,
-            WorkCounters {
-                authority_records_appended: 1,
-                authority_bytes_written: payload,
-                backend_write_operations: 3,
-
-                bytes_hashed: payload,
-                bytes_copied: encoded * 2 + fixed,
-                bytes_encoded: encoded + fixed,
-                allocation_operations: 6,
-                peak_allocation_bytes: encoded * 3 + fixed * 2,
-                ..Default::default()
-            },
-        )?;
-        let digest = authority_commit_digest(
-            authority,
-            actual.epoch,
-            sequence,
-            commit.operation_id,
-            commit.fingerprint,
-            actual.digest,
-            &commit.payload,
-        );
-        let durable = DurableCommit {
-            settled_at_micros: None,
-            epoch: actual.epoch,
-            sequence,
-            operation_id: commit.operation_id,
-            fingerprint: commit.fingerprint,
-            previous_digest: actual.digest,
-            digest,
-            payload: commit.payload,
-        };
-        let encoded = encode_commit(&durable).map_err(backend)?;
-        Ok((durable, encoded))
-    }
-    async fn write(
-        &self,
-        io: &crate::AuthorityWork<'_>,
-        tx: &Transaction<'_>,
-        authority: AuthorityId,
-        durable: &DurableCommit,
-        encoded: &[u8],
-    ) -> Result<(), AuthorityStoreError> {
-        let blob = create_blob(encoded).map_err(|e| backend(js_message(&e)))?;
-        io.insert(
-            tx,
-            AUTHORITY_COMMITS,
-            &commit_key(authority, durable.sequence),
-            blob.into(),
-        )
-        .await?;
-        let operation = encode_operation(OperationRecord {
-            sequence: durable.sequence,
-            fingerprint: durable.fingerprint,
-        });
-        io.insert(
-            tx,
-            AUTHORITY_OPERATIONS,
-            &operation_key(authority, durable.operation_id),
-            Uint8Array::from(operation.as_slice()).into(),
-        )
-        .await?;
-        io.set(
-            tx,
-            AUTHORITY_HEADS,
-            &authority_key(authority),
-            &encode_head(Head {
-                epoch: durable.epoch,
-                sequence: durable.sequence,
-                digest: durable.digest,
-            }),
-        )
-        .await
-    }
-    async fn first(
-        &self,
-        io: &mut crate::AuthorityWork<'_>,
-        tx: &Transaction<'_>,
-        authority: AuthorityId,
-        commit: ProposedCommit,
-    ) -> Result<(), AuthorityStoreError> {
-        self.validate(&commit)?;
-        work::charge(
-            io,
-            WorkCounters {
-                durability_operations: 0,
-                ..authority_fixed_write_work(GATE_BYTES, 1)
-            },
-        )?;
-        io.insert(
-            tx,
-            AUTHORITY_GATES,
-            &authority_key(authority),
-            Uint8Array::from(encode_publication_gate(free_publication_gate()).as_slice()).into(),
-        )
-        .await?;
-        let (durable, encoded) =
-            self.prepare(io, authority, Head::genesis(Epoch::GENESIS), commit)?;
-        self.write(io, tx, authority, &durable, &encoded).await
     }
 }
 
@@ -478,9 +194,6 @@ impl IndexedDbObjectStore {
         })
     }
 }
-#[cfg(test)]
-mod tests;
 
-mod authority;
 mod objects;
 mod work;

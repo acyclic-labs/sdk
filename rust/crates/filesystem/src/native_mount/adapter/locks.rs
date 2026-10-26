@@ -1,4 +1,4 @@
-impl<A, O> CheckoutMountSource<A, O> {
+impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
     fn binding_lease(
         &self,
         expected_epoch: Option<u64>,

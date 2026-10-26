@@ -163,7 +163,7 @@ impl WorkflowIdentities<'_> {
 }
 
 /// One workflow's atomic transition ledger; Streams never carry state or command bodies.
-pub struct FilesystemWorkflowJournal<P, A, O> {
+pub struct FilesystemWorkflowJournal<P, A: 'static, O: 'static> {
     stream: std::sync::Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     path: String,

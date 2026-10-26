@@ -191,7 +191,7 @@ where
     }
 }
 
-async fn check_export_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn check_export_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &crate::Workspace<A, O>,
 ) -> Result<(), Status> {
     #[cfg(test)]
@@ -207,7 +207,7 @@ async fn check_export_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|error| status(&error))
 }
 
-struct ExportState<A, O> {
+struct ExportState<A: 'static, O: 'static> {
     filesystem: Fs<A, O>,
     workspace: Workspace<A, O>,
     manifest: Option<wire::ExportChunk>,
@@ -220,7 +220,7 @@ struct ExportState<A, O> {
     maximum_bytes: u64,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ExportState<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ExportState<A, O> {
     async fn next(mut self) -> Result<Option<(wire::ExportChunk, Self)>, Status> {
         check_export_workspace(&self.workspace).await?;
         if let Some(chunk) = self.manifest.take() {

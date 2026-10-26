@@ -1,7 +1,7 @@
 use super::*;
 
 /// One named mutable filesystem head.
-pub struct Workspace<A, O> {
+pub struct Workspace<A: 'static, O: 'static> {
     pub(crate) name: WorkspaceName,
     pub(crate) id: WorkspaceId,
     pub(crate) volume: Volume<A, O>,
@@ -10,7 +10,7 @@ pub struct Workspace<A, O> {
     pub(crate) source: Option<crate::Source<A, O>>,
 }
 
-impl<A, O> Clone for Workspace<A, O> {
+impl<A: 'static, O: 'static> Clone for Workspace<A, O> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),

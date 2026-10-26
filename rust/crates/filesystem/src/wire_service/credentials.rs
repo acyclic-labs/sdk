@@ -1,4 +1,4 @@
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemWireService<A, O> {
     async fn issue_credential(
         &self,
         request: Request<wire::CredentialRequest>,

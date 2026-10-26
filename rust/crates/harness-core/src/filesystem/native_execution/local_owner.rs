@@ -5,7 +5,10 @@ use super::*;
 mod tests;
 
 /// Create or recover an embedded native workspace with explicit initial policy.
-pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub async fn local_owner_workspace<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     filesystem: &acyclic_fs::Fs<A, O>,
     name: &str,
 ) -> Result<acyclic_fs::Workspace<A, O>> {

@@ -76,7 +76,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 // atomic replacement. The acknowledged current image remains
                 // durable throughout preparation and every incomplete write.
                 let host = crate::native_host::PreparedMaterializationRecord::prepare(
-                    paths.directory(),
+                    paths.directory()?,
                     Path::new(
                         paths
                             .current

@@ -19,7 +19,7 @@ type CommittedPublication = (
     Option<crate::OperationId>,
 );
 type MountedRecords = BTreeMap<FileId, (FileRecord, FileMetadata)>;
-struct PreparedPublication<'a, A, O, E> {
+struct PreparedPublication<'a, A: 'static, O: 'static, E> {
     _records: Vec<(FileRecord, FileMetadata)>,
     _effects: E,
     changes: Option<Vec<NamespacePath>>,

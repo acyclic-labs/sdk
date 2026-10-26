@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Creates or replaces one complete UTF-8 file.
     pub async fn write_text(&mut self, path: &str, text: &str) -> Result<(), WorkspaceError> {
         self.write(
