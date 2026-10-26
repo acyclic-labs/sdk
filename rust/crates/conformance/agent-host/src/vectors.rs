@@ -1,5 +1,6 @@
 use crate::{
     Backend, Result,
+    fixtures::{Driver, adopted, request, sender},
     observe::{Fault, Observed},
 };
 use acyclic_actors::{
@@ -12,32 +13,6 @@ use std::sync::Arc;
 
 pub(crate) fn intent(value: &str) -> Result<IntentId> {
     Ok(IntentId::try_from(value)?)
-}
-
-pub(crate) fn adopted() -> ForkAdopted {
-    ForkAdopted {
-        agent: AgentId::from_bytes([1; 16]),
-        parent: None,
-        forked_at: 0,
-        conversation_tail: 0,
-        volumes: Vec::new(),
-        brief: None,
-        policy: None,
-    }
-}
-
-pub(crate) fn sender() -> Sender {
-    Sender::User {
-        principal: "conformance".into(),
-    }
-}
-
-pub(crate) fn request(id: &str) -> Result<InboxRecord> {
-    Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: AgentPath::root(&AgentId::from_bytes([1; 16]))
-            .child(&AgentId::from_bytes([2; 16]))?,
-        id: intent(id)?,
-    }))
 }
 
 pub(crate) fn limits() -> Result<ActorLimits> {
@@ -69,35 +44,6 @@ pub(crate) fn hosting(
         Arc::new(SystemClock),
         composer,
     )?)
-}
-
-struct Driver;
-impl TurnDriver for Driver {
-    fn step<'a>(
-        &'a self,
-        _agent: &'a AgentState,
-        _cursor: u64,
-        input: Option<TurnInput>,
-    ) -> TurnFuture<'a> {
-        Box::pin(async move {
-            let Some(TurnInput::ApprovalRequested { id, .. }) = input else {
-                return Err(Error::Record("unexpected conformance input"));
-            };
-            let mut outs = vec![Out::Conversation(id.as_str().as_bytes().to_vec())];
-            if matches!(id.as_str(), "spawn" | "respawn") {
-                outs.push(Out::Spawn {
-                    intent: IntentId::try_from("child")?,
-                    brief: (id.as_str() == "respawn").then(|| b"different prompt".to_vec()),
-                    volumes: Vec::new(),
-                });
-            }
-            Ok(TurnStep {
-                checkpoint: None,
-                outs,
-                wait: Wait::Input,
-            })
-        })
-    }
 }
 
 pub(crate) async fn drain(host: &AgentHost<Observed>) -> Result {
@@ -140,13 +86,23 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     drain(&host).await?;
     let record = request("once")?;
     let delivered = host.send(&root, &sender(), &record).await?;
-    drain(&host).await?;
+    host.drain(&root).await?;
     if host.send(&root, &sender(), &record).await? != delivered {
         return Err("send replay changed receipt".into());
     }
-    drain(&host).await?;
+    host.drain(&root).await?;
     if values(&*provider, root.conversation()?).await? != [b"once".to_vec()] {
         return Err("turn did not commit exactly once".into());
+    }
+    let Delivered::Committed { inbox } = host.send(&root, &sender(), &request("again")?).await?
+    else {
+        return Err("second input was refused".into());
+    };
+    host.drain(&root).await?;
+    let statuses = values(&*provider, root.status()?).await?;
+    let status = StatusRecord::decode(statuses.last().ok_or("settled turn omitted its status")?)?;
+    if status.phase != Phase::Idle || status.cursor <= inbox {
+        return Err("settled turn status does not cover its consumed input".into());
     }
     let mut changed = adopted();
     changed.brief = Some(prompt()?);

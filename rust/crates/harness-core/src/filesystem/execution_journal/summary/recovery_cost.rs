@@ -126,7 +126,7 @@ async fn check_full_fold<P, A, O>(
     io: &PreparationIo,
 ) -> Result<()>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

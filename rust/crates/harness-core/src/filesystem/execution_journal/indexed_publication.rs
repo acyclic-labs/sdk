@@ -7,7 +7,7 @@ use checkpoint::{IndexState, Recovery};
 
 mod pages;
 
-async fn condition<P: StreamProvider>(
+async fn condition<P: StreamProvider + ?Sized>(
     provider: &Arc<P>,
     path: &StreamPath,
     expected: u64,
@@ -82,7 +82,7 @@ fn confirms(
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

@@ -1,10 +1,10 @@
 /// Handle to one permanent Stream path.
-pub struct Stream<P> {
+pub struct Stream<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
 }
 
-impl<P> Clone for Stream<P> {
+impl<P: ?Sized> Clone for Stream<P> {
     fn clone(&self) -> Self {
         Self {
             provider: Arc::clone(&self.provider),
@@ -13,7 +13,7 @@ impl<P> Clone for Stream<P> {
     }
 }
 
-impl<P: StreamProvider> Stream<P> {
+impl<P: StreamProvider + ?Sized> Stream<P> {
     /// Binds a provider to one validated path.
     pub fn new(provider: Arc<P>, path: impl AsRef<str>) -> Result<Self, StreamError> {
         Ok(Self {
@@ -127,13 +127,13 @@ impl<P: StreamProvider> Stream<P> {
 }
 
 /// Gapless, paged replay of one stream up to its tail.
-pub struct Replay<P> {
+pub struct Replay<P: ?Sized> {
     stream: Stream<P>,
     next: u64,
     done: bool,
 }
 
-impl<P: StreamProvider> Replay<P> {
+impl<P: StreamProvider + ?Sized> Replay<P> {
     /// The next page in order, or `None` once the tail is reached.
     pub async fn next_page(&mut self) -> Result<Option<Vec<Record>>, StreamError> {
         use futures::TryStreamExt as _;

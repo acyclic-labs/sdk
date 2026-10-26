@@ -4,7 +4,7 @@ use crate::{executor::with_history_io, store::history::HistoryIo, wire_codec::Co
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

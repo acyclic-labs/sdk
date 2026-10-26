@@ -122,7 +122,7 @@ pub async fn canonical_checkpoint_for_operation(
 }
 
 /// Imports a checkpoint and returns its owning selection's consumed history bytes.
-pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
+pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider + ?Sized>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     limits: Limits,
@@ -220,7 +220,7 @@ pub(super) fn validate_checkpoint_json_reference(
     Ok(())
 }
 
-async fn validate_checkpoint_cut<P: acyclic_stream::StreamProvider>(
+async fn validate_checkpoint_cut<P: acyclic_stream::StreamProvider + ?Sized>(
     history: &crate::store::HistoryReader<P>,
     cursor: &crate::store::HistoryCursor,
     io: Option<&PreparationIo>,

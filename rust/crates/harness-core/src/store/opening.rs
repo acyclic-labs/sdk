@@ -4,7 +4,7 @@ use crate::{
     wire_codec::CodecQuota,
 };
 
-impl<P: StreamProvider> StreamAggregate<P> {
+impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
     /// Restores an authenticated aggregate at a bounded committed cut.
     pub async fn open(
         client: &Arc<P>,
@@ -101,7 +101,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 }
 
-async fn replay_suffix<P: StreamProvider>(
+async fn replay_suffix<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     reducer: &mut Reducer,

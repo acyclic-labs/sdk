@@ -72,7 +72,7 @@ const packages = {
   },
   inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {
-    cargo: ["-p", "acyclic-harness-providers", "--features", "browser"],
+    cargo: ["-p", "acyclic-harness-providers", "--features", "wasm-journal"],
     artifact: "acyclic_harness_providers",
     outName: "acyclic_harness_wasm",
     postprocess: stripHarnessClosureShims,

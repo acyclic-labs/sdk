@@ -324,7 +324,7 @@ pub struct TurnLimits {
 
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
-pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
+pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityRoot,
@@ -339,7 +339,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -644,7 +644,7 @@ async fn select(
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

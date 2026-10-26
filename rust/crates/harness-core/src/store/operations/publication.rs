@@ -98,7 +98,7 @@ impl IndexedPublication {
         Ok(())
     }
 
-    pub(crate) async fn request<'a, 'b, P: StreamProvider>(
+    pub(crate) async fn request<'a, 'b, P: StreamProvider + ?Sized>(
         &self,
         client: &Arc<P>,
         key: IdempotencyKey,

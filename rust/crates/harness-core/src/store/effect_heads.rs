@@ -43,11 +43,11 @@ fn right(effect: EffectId, bit: u8) -> bool {
     u128::from_be_bytes(effect.into_bytes()).rotate_left(u32::from(bit)) >> 127 != 0
 }
 
-pub(super) struct Tree<'a, P> {
+pub(super) struct Tree<'a, P: ?Sized> {
     pub(super) client: &'a Arc<P>,
     pub(super) authority: &'a Authority,
 }
-impl<P: StreamProvider> Tree<'_, P> {
+impl<P: StreamProvider + ?Sized> Tree<'_, P> {
     pub(super) async fn root_at(
         &self,
         verifier: &AuthorityVerifier,
@@ -257,7 +257,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         Ok(replacement)
     }
 }
-pub(super) async fn publication<P: StreamProvider>(
+pub(super) async fn publication<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     reducer: &crate::core::Reducer,
     event: &Event,

@@ -364,7 +364,7 @@ pub struct HistoryPage {
 }
 
 /// An owner-bound Stream handle, with no reducer, history cache or replay on open.
-pub struct HistoryReader<P> {
+pub struct HistoryReader<P: ?Sized> {
     client: std::sync::Arc<P>,
     pub(in crate::store) path: StreamPath,
     pub(in crate::store) verifier: AuthorityVerifier,

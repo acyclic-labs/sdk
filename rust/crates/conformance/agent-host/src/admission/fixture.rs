@@ -17,7 +17,7 @@ impl Fixture {
         let raw = storage.open().await?;
         let scheduler = Arc::new(Observed::new(raw.clone()));
         let provider = Arc::new(Observed::new(raw));
-        let mut adopted = vectors::adopted();
+        let mut adopted = crate::fixtures::adopted();
         let path = AgentPath::root(&adopted.agent);
         let reference = ProviderRef::new(
             "conformance".into(),
@@ -42,8 +42,12 @@ impl Fixture {
         adopted.volumes.push(binding.clone());
         let host = vectors::host(backend, scheduler.clone())?;
         host.create(&vectors::intent("create")?, adopted).await?;
-        host.send(&path, &vectors::sender(), &vectors::request("history")?)
-            .await?;
+        host.send(
+            &path,
+            &crate::fixtures::sender(),
+            &crate::fixtures::request("history")?,
+        )
+        .await?;
         vectors::drain(&host).await?;
         drop(host);
         Ok(Self {
@@ -89,8 +93,12 @@ impl Fixture {
         )?))?;
         let host = vectors::hosting(self.scheduler.clone(), handler, None)?;
         host.host(&self.path)?;
-        host.send(&self.path, &vectors::sender(), &vectors::request("next")?)
-            .await?;
+        host.send(
+            &self.path,
+            &crate::fixtures::sender(),
+            &crate::fixtures::request("next")?,
+        )
+        .await?;
         if host.runtime().drain().await.is_empty() {
             return Err(format!("{label} did not reach the admission/history sentinel").into());
         }

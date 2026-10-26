@@ -1,5 +1,5 @@
 use super::*;
-pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
+pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -21,7 +21,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     .map(|(event, bytes)| (event.map(|(event, _)| event), bytes))
 }
 
-pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
+pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -81,7 +81,7 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     Ok((Some(event), bytes))
 }
 
-pub(in crate::store) async fn verify_operation_locator<P: StreamProvider>(
+pub(in crate::store) async fn verify_operation_locator<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -161,7 +161,7 @@ impl From<uuid::Uuid> for MessageKey {
     }
 }
 
-pub(crate) async fn find_message_with_work<P: StreamProvider>(
+pub(crate) async fn find_message_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -256,7 +256,7 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
     Ok((Some(message), bytes))
 }
 
-async fn index_record<P: StreamProvider>(
+async fn index_record<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     at: Option<u64>,
@@ -310,7 +310,7 @@ fn validate_message_location(
     Ok(())
 }
 
-async fn message_index_path<P: StreamProvider>(
+async fn message_index_path<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     authority: &Authority,
     key: &MessageKey,

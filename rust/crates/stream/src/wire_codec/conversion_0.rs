@@ -6,7 +6,10 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     feature = "grpc",
     feature = "local",
     all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
     value.map(IdempotencyKey::new).transpose()
@@ -228,7 +231,10 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
     feature = "grpc",
     feature = "local",
     all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 /// Decodes an append request from its generated wire representation.
 pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
@@ -248,7 +254,10 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
     feature = "grpc",
     feature = "local",
     all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 /// Decodes a fork request from its generated wire representation.
 pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
