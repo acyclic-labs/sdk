@@ -255,7 +255,10 @@ fn historical_targets(
 }
 
 fn library_target(package: &Package) -> Option<&cargo_metadata::Target> {
-    package.targets.iter().find(|target| is_library_target(target))
+    package
+        .targets
+        .iter()
+        .find(|target| is_library_target(target))
 }
 
 fn compile_historical_profiles(
@@ -266,7 +269,7 @@ fn compile_historical_profiles(
     cargo: &Path,
     (plan, releases): (&historical::Plan, &[sdk_docs::historical::ReleasedPackage]),
 ) -> Result<Vec<ExecutedProfile>, CliError> {
-    use sdk_docs::rustdoc_profiles::{CargoExecutionContext, RustdocTarget, execute_profile};
+    use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
