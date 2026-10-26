@@ -2,9 +2,9 @@
 //! authority over the agent's private volume; its executor comes from the host's
 //! [`TurnExecutors`] for that agent and authority, per turn.
 //!
-//! The model context of a turn is the agent's own conversation stream: the last
-//! settled turns (inherited ones included) as user/assistant messages, then the
-//! turn's input. The host binds exactly that selection into the turn's journal,
+//! The model context of a turn is the host's system prompt, then the agent's
+//! own conversation stream: the last settled turns as user/assistant messages,
+//! then the turn's input. The host binds exactly that selection into the turn's journal,
 //! so the executor can dispatch no other history.
 
 use super::{
@@ -335,6 +335,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
+    prompt: Option<Arc<str>>,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -364,7 +365,16 @@ where
             limits,
             approvers: Default::default(),
             goals: Some(Default::default()),
+            prompt: None,
         }
+    }
+
+    /// Opens every turn's model context with `prompt` as its system message;
+    /// `None` sends none.
+    #[must_use]
+    pub fn with_prompt(mut self, prompt: Option<&str>) -> Self {
+        self.prompt = prompt.map(Arc::from);
+        self
     }
 
     /// Continues each agent's active goal within `goals`; `None` runs no goals.
@@ -570,20 +580,38 @@ fn message_id(turn: OperationId, role: ModelRole) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// The selection of `history` plus the current `input`: one user and one
-/// assistant message per settled turn, assistant text read from its staged output.
+/// Stable message identity of the system `prompt`.
+fn prompt_id(prompt: &str) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.prompt.v1");
+    hasher.update(prompt.as_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// The selection of the system `prompt`, `history` and the current `input`:
+/// one user and one assistant message per settled turn, assistant text read
+/// from its staged output. Without either there is no selection.
 async fn select(
     agent: &AgentState,
     journal: &dyn ExecutionJournal,
+    prompt: Option<&str>,
     history: Vec<ConversationEntry>,
     turn: OperationId,
     input: &ModelContent,
 ) -> Result<Option<SelectedModelContext>> {
-    if history.is_empty() {
+    if history.is_empty() && prompt.is_none() {
         return Ok(None);
     }
-    let mut messages = Vec::with_capacity(2 * history.len() + 1);
+    let mut messages = Vec::with_capacity(2 * history.len() + 2);
     let mut message_ids = Vec::with_capacity(messages.capacity());
+    if let Some(prompt) = prompt {
+        messages.push(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(prompt.to_owned()),
+        });
+        message_ids.push(prompt_id(prompt));
+    }
     for entry in history {
         let settled = crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?;
         let bytes = journal.load(&entry.output, None)?.await?;
@@ -685,7 +713,15 @@ where
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
-            let selected = select(agent, &journal, history, turn, input).await?;
+            let selected = select(
+                agent,
+                &journal,
+                self.prompt.as_deref(),
+                history,
+                turn,
+                input,
+            )
+            .await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
                 None => journal,

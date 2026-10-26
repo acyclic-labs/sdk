@@ -161,7 +161,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 }
 
 #[tokio::test]
-async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result {
+async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else() -> Result {
     let path = AgentPath::root(&id(3));
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new([
@@ -169,21 +169,24 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
         ScriptedTurn::Text("two".into()),
     ]));
     let (host, binding) = private(&path).await?;
-    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-        stream.clone(),
-        host,
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
-        TurnAdmission::LocalRoot,
-        executors(model.clone())?,
-        LIMITS,
-    ));
+    let driver = ExecutorDriver::new(
+        FilesystemTurnHost::new(
+            stream.clone(),
+            host,
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors(model.clone())?,
+            LIMITS,
+        )
+        .with_prompt(Some("You write code.")),
+    );
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption);
@@ -235,6 +238,12 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
         .find(|message| message.role == ModelRole::Assistant)
         .ok_or("no assistant history")?;
     assert_eq!(assistant.content, ModelContent::Text("one".into()));
+    // The host's prompt opens every turn's context, with or without history.
+    for request in &requests {
+        let first = request.messages.first().ok_or("empty request")?;
+        assert_eq!(first.role, ModelRole::System);
+        assert_eq!(first.content, ModelContent::Text("You write code.".into()));
+    }
     Ok(())
 }
 
@@ -471,5 +480,86 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
         let calls = run(issued, given, agent, grant).await?;
         assert_eq!(calls, 0, "{case}: refused before any stream IO");
     }
+    Ok(())
+}
+
+/// Effects recorded in memory, once per call.
+#[derive(Default)]
+struct Recorded(std::sync::Mutex<std::collections::BTreeMap<String, TurnEffect>>);
+
+impl TurnEffects for Recorded {
+    fn record<'a>(
+        &'a self,
+        call: &'a str,
+        effect: &'a TurnEffect,
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
+        let mut recorded = self.0.lock().expect("effects");
+        let first = recorded
+            .entry(call.to_owned())
+            .or_insert_with(|| effect.clone());
+        let first = first.clone();
+        Box::pin(async move { Ok(first) })
+    }
+
+    fn recorded(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
+        let recorded = self.0.lock().expect("effects").values().cloned().collect();
+        Box::pin(async move { Ok(recorded) })
+    }
+}
+
+/// A writer that names the agent's private volume; spawn stages nothing.
+struct Writer(VolumeRef);
+
+impl acyclic_harness_core::conversation::ContentPublisher for Writer {
+    fn volume(&self) -> &VolumeRef {
+        &self.0
+    }
+}
+
+#[tokio::test]
+async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
+    use acyclic_harness_core::tool::ToolExecutor as _;
+    let path = AgentPath::root(&id(9));
+    let (_, binding) = private(&path).await?;
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(9)));
+    state.open_children.insert(path.child(&id(10))?);
+    // Each spawn call in order, under `limit`: which ones the tool refused.
+    let refused = |limit: Option<u32>| {
+        let (state, volume) = (state.clone(), binding.volume.clone());
+        async move {
+            let effects = Arc::new(Recorded::default());
+            let mut tools = ToolRegistry::default();
+            acyclic_harness_core::tools::bind_agent_tools(
+                &mut tools,
+                &state,
+                effects.clone(),
+                Arc::new(Writer(volume)),
+                1024,
+                limit,
+            )?;
+            let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
+            let mut refused = Vec::new();
+            for (call, name) in [(1, "b"), (2, "b"), (3, "c")] {
+                let result = spawn
+                    .executor
+                    .execute(
+                        acyclic_harness_core::tool::ToolInvocation {
+                            operation_id: OperationId::from_bytes([call; 16]),
+                            call_id: format!("call-{call}"),
+                            name: "spawn".into(),
+                            arguments: serde_json::json!({"task": "work", "name": name}),
+                        },
+                        None,
+                    )
+                    .await?;
+                refused.push(result.value.get("error").is_some());
+            }
+            Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
+        }
+    };
+    // One open child and a limit of two: `b` fits (twice, as one child), `c` does not.
+    assert_eq!(refused(Some(2)).await?, (vec![false, false, true], 2));
+    // Control: without a limit every spawn is recorded.
+    assert_eq!(refused(None).await?, (vec![false, false, false], 3));
     Ok(())
 }

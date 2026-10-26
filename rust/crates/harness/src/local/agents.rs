@@ -112,6 +112,7 @@ impl TurnExecutors for Executors {
                     Arc::clone(effects),
                     Arc::clone(writer),
                     local.limits.file_bytes,
+                    local.max_children,
                 )?;
             }
             let executor = StockExecutor::new(
@@ -245,7 +246,8 @@ impl LocalHarness {
                 limits,
             )
             .with_approvers(self.approval_models.clone())
-            .with_goals(self.goal_continuations),
+            .with_goals(self.goal_continuations)
+            .with_prompt(self.prompt.as_deref()),
         );
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;

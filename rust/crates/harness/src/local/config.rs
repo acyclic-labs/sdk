@@ -45,7 +45,12 @@ pub struct LocalHarnessConfig {
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
-    pub(super) default_tools: bool,
+    /// Standard tools enabled, by name.
+    pub(super) default_tools: Vec<String>,
+    /// System prompt of every agent turn.
+    pub(super) prompt: Option<String>,
+    /// Open children each agent may have at once.
+    pub(super) max_children: Option<u32>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
     pub(super) approval_issuer: Option<AuthorityRoot>,
     pub(super) approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
@@ -94,7 +99,7 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn native_host(workspace: impl Into<PathBuf>) -> Self {
         let mut config = Self::configuration(workspace.into(), None);
-        config.default_tools = false;
+        config.default_tools.clear();
         config.hermetic = true;
         config.goal_continuations = None;
         config.compaction = Some(crate::context::CompactionPolicy::Disabled);
@@ -112,7 +117,9 @@ impl LocalHarnessConfig {
             model,
             context_manifest: None,
             tools: Vec::new(),
-            default_tools: true,
+            default_tools: crate::tools::default_names(),
+            prompt: None,
+            max_children: None,
             approval_policy: Default::default(),
             approval_issuer: None,
             approval_models: Default::default(),
@@ -268,12 +275,14 @@ impl LocalHarnessConfig {
         self.approval_models.insert(selection.into(), model);
         self
     }
-    /// Applies `preset`'s tool selection, step limit and approval policy. Its model is
+    /// Applies `preset`'s prompt, tool selection, limits and approval policy. Its model is
     /// resolved by the caller's provider registry and bound with [`Self::new`].
     /// Web tools need the `search-http` feature.
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
-        self.default_tools = preset.default_tools;
+        self.default_tools.clone_from(&preset.tools);
+        self.prompt.clone_from(&preset.prompt);
+        self.max_children = preset.max_children;
         #[cfg(feature = "search-http")]
         {
             self.web_tools = preset.web_tools;
@@ -287,7 +296,7 @@ impl LocalHarnessConfig {
     /// Disables the default set, retaining every custom tool.
     #[must_use]
     pub fn without_default_tools(mut self) -> Self {
-        self.default_tools = false;
+        self.default_tools.clear();
         self
     }
     /// Adds one custom tool to the enabled default set.

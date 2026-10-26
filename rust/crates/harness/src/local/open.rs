@@ -57,7 +57,7 @@ impl Opening {
         let mut config = config.prepare_state()?;
         let state_location = config.state_location()?;
         let passive = config.model.is_none();
-        if passive && (config.default_tools || !config.tools.is_empty()) {
+        if passive && (!config.default_tools.is_empty() || !config.tools.is_empty()) {
             return Err(Error::Invalid(
                 "native host coordination cannot register tools".into(),
             ));
@@ -393,6 +393,8 @@ impl Opening {
             approval_models: self.config.approval_models,
             agent: self.config.model,
             context_manifest: self.config.context_manifest,
+            prompt: self.config.prompt,
+            max_children: self.config.max_children,
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
             #[cfg(test)]
@@ -525,15 +527,14 @@ impl PrivateVolumes {
 
 fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
     let mut tools = ToolRegistry::default();
-    if config.default_tools {
-        crate::tools::bind_defaults(
-            &mut tools,
-            &mut Vec::new(),
-            None,
-            true,
-            cfg!(any(test, feature = "native-execution")),
-        )?;
-    }
+    crate::tools::bind_defaults(
+        &mut tools,
+        &mut Vec::new(),
+        None,
+        &config.default_tools,
+        true,
+        cfg!(any(test, feature = "native-execution")),
+    )?;
     for tool in std::mem::take(&mut config.tools) {
         tools.register((tool, None), &mut None, None)?;
     }

@@ -8,7 +8,7 @@ mod agent_selection;
 pub mod shell;
 pub use shell::ShellInput;
 mod defaults;
-pub use defaults::defaults;
+pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
 mod command;

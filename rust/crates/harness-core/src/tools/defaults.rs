@@ -3,19 +3,37 @@ use crate::{Result, runtime::RuntimeScope, tool::ToolRegistry};
 /// The standard coding toolset. Custom tools can be added to this registry.
 pub fn defaults() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::default();
-    bind_defaults(&mut registry, &mut Vec::new(), None, true, true)?;
+    bind_defaults(&mut registry, &mut Vec::new(), None, &names(), true, true)?;
     Ok(registry)
 }
 
+/// Names of every standard tool, in catalog order.
+#[must_use]
+pub fn names() -> Vec<String> {
+    super::catalog().map(|spec| spec.name.to_owned()).collect()
+}
+
+/// Binds the standard tools `names` selects that the task's resources can
+/// back. A name outside the catalog is refused.
 #[doc(hidden)]
 pub fn bind_defaults(
     registry: &mut ToolRegistry,
     grants: &mut Vec<String>,
     bound: Option<&RuntimeScope>,
+    names: &[String],
     volume: bool,
     workspace: bool,
 ) -> Result<()> {
+    if let Some(unknown) = names
+        .iter()
+        .find(|name| !super::catalog().any(|spec| spec.name == name.as_str()))
+    {
+        return Err(crate::Error::Invalid(format!("unknown tool {unknown}")));
+    }
     for spec in super::catalog() {
+        if !names.iter().any(|name| name == spec.name) {
+            continue;
+        }
         let available = match spec.binding {
             super::ToolBinding::Volume => volume,
             super::ToolBinding::Workspace => workspace,
