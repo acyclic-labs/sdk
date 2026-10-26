@@ -192,28 +192,30 @@ impl OutputTail {
                 }
             }
         }
-        self.next = view.next_sequence();
+        let next = view.next_sequence();
         let Some((newest, _)) = chunks.last() else {
+            self.next = next;
             return Ok(());
         };
-        if self.call.as_ref() != Some(newest) {
-            self.call = Some(newest.clone());
-            self.text.clear();
-        }
         let newest = newest.clone();
+        // Stage the display and commit it with the cursor only after every
+        // announced read settles: a failed or cancelled absorb changes
+        // nothing, so a retry reads the same announcements exactly once.
+        let mut text = if self.call.as_ref() == Some(&newest) {
+            self.text.clone()
+        } else {
+            String::new()
+        };
         for (call, path) in chunks {
             if call == newest {
                 let bytes = self.output.read(&path, CHUNK_BYTES as u64).await?;
-                self.text.push_str(&String::from_utf8_lossy(&bytes));
+                text.push_str(&String::from_utf8_lossy(&bytes));
+                keep_tail(&mut text);
             }
         }
-        if self.text.len() > TAIL_BYTES {
-            let mut cut = self.text.len() - TAIL_BYTES;
-            while !self.text.is_char_boundary(cut) {
-                cut += 1;
-            }
-            self.text.drain(..cut);
-        }
+        self.next = next;
+        self.call = Some(newest);
+        self.text = text;
         Ok(())
     }
 
@@ -221,5 +223,16 @@ impl OutputTail {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+}
+
+/// Bounds the staged display to its last [`TAIL_BYTES`] on a char boundary.
+fn keep_tail(text: &mut String) {
+    if text.len() > TAIL_BYTES {
+        let mut cut = text.len() - TAIL_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        text.drain(..cut);
     }
 }
