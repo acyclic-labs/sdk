@@ -16,6 +16,7 @@ fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
 
 fn transition(value: u8, alarm: AlarmChange) -> Transition {
     Transition {
+        composition: None,
         checkpoint: Checkpoint {
             codec: CodecIdentity {
                 name: "counter".into(),
@@ -58,7 +59,7 @@ async fn place<P: StreamProvider + ?Sized>(
     for effect in store.create(address, inbox(address)?, None)? {
         prepared.join(effect)?;
     }
-    let created = store.provider().commit(prepared.into_request()).await?;
+    let created = store.provider().commit(prepared.into_request()?).await?;
     PreparedPublish::settle(&created)?;
     store
         .claim(&store.load(address).await?, 1, key("place")?)

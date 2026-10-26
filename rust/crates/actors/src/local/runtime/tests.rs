@@ -256,7 +256,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
             records: vec![Bytes::from_static(b"spawned").into()],
         },
     })?;
-    PreparedPublish::settle(&provider.commit(prepared.into_request()).await?)?;
+    PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     PreparedPublish::settle(
         &provider
             .commit(CommitRequest {
@@ -365,7 +365,7 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
                 records: vec![Bytes::from_static(b"emit").into()],
             },
         })?;
-        PreparedPublish::settle(&provider.commit(prepared.into_request()).await?)?;
+        PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     }
     for index in 0..count {
         let address = actor(&format!("a{index}"))?;
@@ -424,7 +424,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             records: vec![Bytes::from_static(b"emit").into()],
         },
     })?;
-    PreparedPublish::settle(&provider.commit(prepared.into_request()).await?)?;
+    PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
@@ -486,7 +486,7 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
                 .collect(),
         },
     })?;
-    PreparedPublish::settle(&store.provider().commit(prepared.into_request()).await?)?;
+    PreparedPublish::settle(&store.provider().commit(prepared.into_request()?).await?)?;
     Ok(address)
 }
 

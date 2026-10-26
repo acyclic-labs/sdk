@@ -16,6 +16,8 @@ use acyclic_stream::{
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod composition;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fault {
     None,
@@ -130,6 +132,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
         0 => Some((
             record(0),
             Transition {
+                composition: None,
                 checkpoint: checkpoint(1),
                 alarm: AlarmChange::Set {
                     deadline_unix_ms: 10,
@@ -143,6 +146,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                 now_unix_ms: 10,
             },
             Transition {
+                composition: None,
                 checkpoint: checkpoint(2),
                 alarm: AlarmChange::Keep,
                 effects: vec![output(1, b"a1")?],
@@ -151,6 +155,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
         2 => Some((
             record(1),
             Transition {
+                composition: None,
                 checkpoint: checkpoint(3),
                 alarm: AlarmChange::Clear,
                 effects: vec![
@@ -283,7 +288,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
             ],
         },
     })?;
-    PreparedPublish::settle(&provider.inner.commit(create.into_request()).await?)?;
+    PreparedPublish::settle(&provider.inner.commit(create.into_request()?).await?)?;
     setup
         .claim(
             &setup.load(&actor).await?,
@@ -313,7 +318,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
             Shape::Split => {
                 let request = store
                     .prepare_publish(&snapshot, 1, &trigger, transition, key("state")?)?
-                    .into_request();
+                    .into_request()?;
                 let own = |path: &StreamPath| path == &snapshot.path;
                 let (state_conditions, effect_conditions): (Vec<_>, Vec<_>) = request
                     .conditions

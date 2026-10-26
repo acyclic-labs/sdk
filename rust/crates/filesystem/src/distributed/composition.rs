@@ -25,9 +25,9 @@ pub struct FilesystemCommit {
     authorities: Vec<AuthorityId>,
     contributions: Vec<Contribution>,
     holds: Vec<crate::PublicationHold>,
-    /// Set once the request was fenced and sent: retries resend these exact
+    /// Set once the request was fenced: retries resend these exact
     /// bytes and key, never a request re-fenced under a newer policy cut.
-    submitted: bool,
+    sealed: bool,
 }
 
 /// Terminal and nonterminal results of one composed submission.
@@ -56,11 +56,12 @@ impl FilesystemCommit {
             authorities: Vec::new(),
             contributions: Vec::new(),
             holds: Vec::new(),
-            submitted: false,
+            sealed: false,
         }
     }
 
-    /// The composed request as it will be submitted.
+    /// The composed request. Call [`StreamAuthorityStore::seal`] before
+    /// submitting it through an external provider.
     #[must_use]
     pub fn request(&self) -> &CommitRequest {
         &self.request
@@ -68,10 +69,10 @@ impl FilesystemCommit {
 
     /// Adds caller conditions or mutations. Filesystem contributions own their
     /// own entries; changing those makes the commit fail its conditions.
-    /// Returns `None` once the commit was submitted: its sent bytes and key
+    /// Returns `None` once the commit was sealed: its bytes and key
     /// are fixed so an exact retry replays the original receipt.
     pub fn request_mut(&mut self) -> Option<&mut CommitRequest> {
-        (!self.submitted).then_some(&mut self.request)
+        (!self.sealed).then_some(&mut self.request)
     }
 
     /// Volume authorities this commit creates.
@@ -85,12 +86,27 @@ impl FilesystemCommit {
     }
 
     fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
+        if self.sealed {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "a sealed filesystem commit cannot accept contributions",
+            ));
+        }
         if self.authorities.contains(&authority) {
             return Err(AuthorityStoreError::RejectedStatic(
                 "a composed commit names one authority twice",
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn ensure_sealed(&self) -> Result<(), AuthorityStoreError> {
+        if self.sealed {
+            Ok(())
+        } else {
+            Err(AuthorityStoreError::RejectedStatic(
+                "filesystem commit was not sealed before submission",
+            ))
+        }
     }
 
     /// Guards a multi-part preparation: unless disarmed after every part
@@ -268,19 +284,31 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .await
     }
 
-    /// Submits a composed commit once, through this store's provider.
+    /// Fences the active access-policy cut once and freezes the request.
+    ///
+    /// External submitters must call this before sending [`FilesystemCommit::request`].
+    /// Repeated calls preserve the captured conditions and idempotency key,
+    /// even if the current policy cut changes before an exact retry.
+    pub fn seal(
+        &self,
+        commit: &mut FilesystemCommit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        if !commit.sealed {
+            let request = self.with_policy_cuts(commit.request.clone(), &[], work)?;
+            commit.request = request;
+            commit.sealed = true;
+        }
+        Ok(())
+    }
+
+    /// Seals and submits a composed commit once, through this store's provider.
     pub async fn submit(
         &self,
         mut commit: FilesystemCommit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        // The first submission fences the active access-policy cut, as every
-        // filesystem publication does, and keeps the fenced request. Retries
-        // after `Unknown` resend exactly those bytes and that key.
-        if !commit.submitted {
-            commit.request = self.with_policy_cuts(commit.request.clone(), &[], work)?;
-            commit.submitted = true;
-        }
+        self.seal(&mut commit, work)?;
         let result = self
             .commit(commit.request.clone(), None, work, None::<&mut ()>)
             .await;
@@ -307,6 +335,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         outcome: CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
+        commit.ensure_sealed()?;
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
                 self.refresh_committed(commit, envelope.commit_id, work)

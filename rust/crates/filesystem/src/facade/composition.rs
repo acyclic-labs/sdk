@@ -222,6 +222,25 @@ where
         Ok(id)
     }
 
+    /// Fences the active policy cut and freezes a caller-submitted commit.
+    /// Call this before sending its request through an external provider.
+    /// Repeated sealing preserves the exact request and key.
+    pub fn seal_commit(
+        &self,
+        commit: &mut FilesystemCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = (|| {
+            let mut authority = authority_work(&accounting, cancellation)?;
+            let result = self.inner.authority.seal(commit, &mut authority);
+            record_authority_work(&mut accounting, &authority)?;
+            result.map_err(FsError::from)
+        })();
+        measured(result, &accounting)
+    }
+
     /// Submits a composed commit once. On `Unknown`, resubmit the returned
     /// commit unchanged; its key replays the original receipt.
     pub async fn submit_commit(
@@ -251,6 +270,9 @@ where
         cancellation: &CancellationToken,
     ) -> FsResult<FilesystemCommitOutcome> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        if let Err(error) = commit.ensure_sealed() {
+            return measured(Err(FsError::from(error)), &accounting);
+        }
         let settled = match outcome {
             // The outcome is decided before any check this call makes: a
             // committed request keeps its receipt even when cancellation or

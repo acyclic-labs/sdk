@@ -1,7 +1,7 @@
 //! Durable record handlers shared by native packages and guest execution adapters.
 use super::{Checkpoint, CodecIdentity, GuestFuture};
 use crate::{addressing::ActorReference, domain};
-use acyclic_stream::{CommitCondition, CommitMutation, Record};
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, Record};
 
 /// Immutable deployment metadata; resource selection is explicit, never inherited.
 pub struct Manifest {
@@ -86,6 +86,19 @@ pub struct Transition {
     pub alarm: AlarmChange,
     /// Committed effects, never an independent best-effort dispatch path.
     pub effects: Vec<Effect>,
+    /// Custody of one joined participant through sealing and the exact outcome.
+    pub composition: Option<Box<dyn Composition>>,
+}
+
+/// One participant in the actor's sole publication, independent of its host.
+/// The runtime retains it with the sealed request while acknowledgement is unknown.
+pub trait Composition: Send + 'static {
+    /// Extend and fence the joined request once, before its first submission.
+    /// The actor's original conditions and mutations must remain intact.
+    fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest>;
+
+    /// Release or adopt custody from the exact terminal provider outcome.
+    fn settle<'a>(self: Box<Self>, outcome: &'a CommitOutcome) -> GuestFuture<'a, ()>;
 }
 
 /// The sole durable record-handler contract, independent of host and OS.

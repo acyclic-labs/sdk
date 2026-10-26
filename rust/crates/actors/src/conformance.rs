@@ -147,6 +147,7 @@ impl Handler for Package {
                 ledger.published += 1;
             }
             Ok(Transition {
+                composition: None,
                 checkpoint: Checkpoint {
                     codec: codec(),
                     bytes: serde_json::to_vec(&ledger).map_err(guest)?.into(),
@@ -256,7 +257,7 @@ impl<'a, T: Target + ?Sized> Fixture<'a, T> {
         })?;
         let outcome = store
             .provider()
-            .commit(prepared.into_request())
+            .commit(prepared.into_request()?)
             .await
             .map_err(Error::from)?;
         PreparedPublish::settle(&outcome)?;

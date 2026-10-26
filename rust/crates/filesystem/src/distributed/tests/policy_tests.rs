@@ -1,5 +1,88 @@
 use super::*;
 
+async fn external_composition_policy_fence(seal: bool) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    let authority = AuthorityId::from_bytes([101; 16]);
+    store
+        .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
+    let cut = store.policy_cut(authority, &mut work).await?;
+    let effect = StreamPath::new("harness/approval-answer")?;
+    let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
+        conditions: vec![acyclic_stream::CommitCondition::Absent {
+            path: effect.clone(),
+        }],
+        mutations: vec![acyclic_stream::CommitMutation::Append {
+            path: effect.clone(),
+            records: vec![b"approved".to_vec().into()],
+        }],
+        idempotency_key: IdempotencyKey::new(b"approval-composition".to_vec())?,
+    });
+    if seal {
+        cut.scope(async { store.seal(&mut commit, &mut work) })
+            .await?;
+        assert!(commit.request_mut().is_none());
+    }
+    // A different policy head wins after the caller's original admission.
+    let head = store.head(authority, &mut work).await?;
+    let changed = store
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority,
+                epoch: head.epoch,
+                expected: head,
+                commit: proposed(102),
+                permit: PublicationPermit::Unrestricted,
+            },
+            &mut work,
+            None::<&mut ()>,
+        )
+        .await?;
+    assert!(matches!(changed, FsAppendOutcome::Committed(_)));
+    if seal {
+        let request = commit.request().clone();
+        let newer = store.policy_cut(authority, &mut work).await?;
+        newer
+            .scope(async { store.seal(&mut commit, &mut work) })
+            .await?;
+        assert_eq!(commit.request().conditions, request.conditions);
+        assert_eq!(commit.request().idempotency_key, request.idempotency_key);
+    }
+    let outcome = provider.commit(commit.request().clone()).await?;
+    if seal {
+        assert!(matches!(outcome, CommitOutcome::Conflict(_)));
+        assert_eq!(provider.tail(effect).await, Err(StreamError::NotFound));
+        assert!(matches!(
+            store.settle(commit, outcome, &mut work).await?,
+            crate::FilesystemCommitOutcome::Rejected(_)
+        ));
+    } else {
+        // Negative control: omitting the real seal allows the stale effect.
+        assert!(matches!(outcome, CommitOutcome::Committed(_)));
+        assert_eq!(provider.tail(effect).await?, 1);
+        assert!(matches!(
+            store.settle(commit, outcome, &mut work).await,
+            Err(AuthorityStoreError::RejectedStatic(
+                "filesystem commit was not sealed before submission"
+            ))
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_composition_seal_fences_revocation_and_preserves_retry_identity() -> TestResult {
+    external_composition_policy_fence(true).await
+}
+
+#[tokio::test]
+async fn external_composition_without_seal_is_a_stale_publication_control() -> TestResult {
+    external_composition_policy_fence(false).await
+}
+
 fn filesystem() -> crate::Fs<StreamAuthorityStore<ReleaseSpy>, crate::MemoryObjectBackend> {
     crate::Fs::new(
         StreamAuthorityStore::new(Arc::new(ReleaseSpy::new(Arc::new(MemoryStream::default())))),

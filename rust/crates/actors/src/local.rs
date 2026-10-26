@@ -5,7 +5,7 @@ mod runtime;
 pub use runtime::{Clock, Runtime, SystemClock};
 
 use crate::addressing::ActorReference;
-use crate::guest::{AlarmChange, Checkpoint, Effect, GuestError, Transition, Trigger};
+use crate::guest::{AlarmChange, Checkpoint, Composition, Effect, GuestError, Transition, Trigger};
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
     ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -20,6 +20,23 @@ pub enum Error {
     /// Canonical provider failure, including uncertain acknowledgement.
     #[error(transparent)]
     Stream(#[from] StreamError),
+    /// The provider did not establish an outcome. Retry this exact publication;
+    /// its request and participant custody remain together.
+    #[error("actor publication acknowledgement is unknown: {source}")]
+    Unknown {
+        /// The sealed publication to pass back to [`Store::submit`].
+        publication: Box<PreparedPublish>,
+        /// The original provider refusal or transport failure.
+        source: StreamError,
+    },
+    /// Publication has a terminal outcome, but participant settlement failed.
+    #[error("actor participant settlement failed: {source}")]
+    Settlement {
+        /// The already decided provider outcome, never replaced by this error.
+        outcome: CommitOutcome,
+        /// Why local participant settlement failed.
+        source: GuestError,
+    },
     /// Durable state encoding failed.
     #[error(transparent)]
     Codec(#[from] serde_json::Error),
@@ -131,6 +148,17 @@ impl Snapshot {
 pub struct PreparedPublish {
     own: Option<StreamPath>,
     request: CommitRequest,
+    composition: Option<Box<dyn Composition>>,
+    sealed: bool,
+}
+impl std::fmt::Debug for PreparedPublish {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedPublish")
+            .field("sealed", &self.sealed)
+            .field("has_composition", &self.composition.is_some())
+            .finish_non_exhaustive()
+    }
 }
 impl PreparedPublish {
     /// An empty commit for a caller that is not this actor (a client, or a
@@ -138,6 +166,8 @@ impl PreparedPublish {
     pub fn foreign(key: IdempotencyKey) -> Self {
         Self {
             own: None,
+            composition: None,
+            sealed: false,
             request: CommitRequest {
                 conditions: Vec::new(),
                 mutations: Vec::new(),
@@ -153,7 +183,10 @@ impl PreparedPublish {
     /// and merging appends to the same path in order. The actor's own state
     /// stream cannot be named; disagreeing cuts on one path are refused.
     pub fn join(&mut self, effect: Effect) -> Result<(), Error> {
-        let Self { own, request } = self;
+        if self.sealed {
+            return Err(Error::Invalid("sealed actor publication cannot accept effects"));
+        }
+        let Self { own, request, .. } = self;
         let touches_own = |path: &StreamPath| own.as_ref() == Some(path);
         for condition in effect.conditions {
             let path = condition_path(&condition);
@@ -199,8 +232,11 @@ impl PreparedPublish {
         Ok(())
     }
     /// Take the request to submit it through another commit owner.
-    pub fn into_request(self) -> CommitRequest {
-        self.request
+    pub fn into_request(self) -> Result<CommitRequest, Error> {
+        if self.composition.is_some() {
+            return Err(Error::Invalid("composed publication must retain participant custody"));
+        }
+        Ok(self.request)
     }
     /// Interpret the provider's outcome for this exact request.
     pub const fn settle(outcome: &CommitOutcome) -> Result<(), Error> {
@@ -410,11 +446,45 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
         let state = next(owned(previous, epoch)?, trigger, &transition)?;
-        self.prepare(previous, &state, transition.effects, key)
+        let mut prepared = self.prepare(previous, &state, transition.effects, key)?;
+        prepared.composition = transition.composition;
+        Ok(prepared)
     }
 
-    async fn submit(&self, prepared: PreparedPublish) -> Result<(), Error> {
-        PreparedPublish::settle(&self.provider.commit(prepared.request).await?)
+    /// Seal and submit once. An unknown acknowledgement returns the whole
+    /// publication in [`Error::Unknown`]; retries preserve its bytes and custody.
+    pub async fn submit(&self, mut prepared: PreparedPublish) -> Result<(), Error> {
+        if !prepared.sealed {
+            if let Some(composition) = &mut prepared.composition {
+                let original = &prepared.request;
+                let request = composition.seal(original.clone()).await?;
+                if !original.conditions.iter().all(|entry| request.conditions.contains(entry))
+                    || !original.mutations.iter().all(|entry| request.mutations.contains(entry))
+                    || prepared.own.as_ref().is_some_and(|own| {
+                        request.mutations.iter().filter(|mutation| {
+                            matches!(mutation, CommitMutation::Append { path, .. } if path == own)
+                        }).count() != 1
+                    })
+                {
+                    return Err(Error::Invalid("composition changed the actor publication"));
+                }
+                prepared.request = request;
+            }
+            prepared.sealed = true;
+        }
+        let outcome = match self.provider.commit(prepared.request.clone()).await {
+            Ok(outcome) => outcome,
+            Err(source) => return Err(Error::Unknown {
+                publication: Box::new(prepared),
+                source,
+            }),
+        };
+        if let Some(composition) = prepared.composition {
+            if let Err(source) = composition.settle(&outcome).await {
+                return Err(Error::Settlement { outcome, source });
+            }
+        }
+        PreparedPublish::settle(&outcome)
     }
 
     fn prepare(
@@ -442,6 +512,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         };
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
+            composition: None,
+            sealed: false,
             request: CommitRequest {
                 conditions: vec![own],
                 mutations: vec![CommitMutation::Append {

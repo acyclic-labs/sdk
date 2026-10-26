@@ -5,7 +5,7 @@
 //! registration and a passive follow cursor per subscription that the
 //! dispatcher polls with that registration's waker.
 use super::ready::{ReadySet, Registration, Work};
-use super::{Error, Snapshot, State, Store};
+use super::{Error, PreparedPublish, Snapshot, State, Store};
 use crate::addressing::ActorReference;
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
@@ -69,6 +69,8 @@ struct Inner {
     follows: BTreeMap<String, RecordStream>,
     /// A record read from a follow but not yet consumed by a commit.
     held: BTreeMap<String, Record>,
+    /// The exact request and participant custody survive an unknown acknowledgement.
+    pending: Option<(Snapshot, PreparedPublish)>,
 }
 
 enum Event {
@@ -122,7 +124,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .actors
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if actors.contains_key(&actor) {
+        if let Some(slot) = actors.get(&actor) {
+            slot.waker.wake_by_ref();
             return Ok(());
         }
         let registration = self.ready.register(actor.clone())?;
@@ -297,6 +300,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     async fn deliver(&self, actor: &ActorReference, slot: &Slot) -> Result<(), Error> {
         let mut inner = slot.inner.lock().await;
         loop {
+            if let Some((snapshot, publication)) = inner.pending.take() {
+                match self.store.submit(publication).await {
+                    Ok(()) => continue,
+                    Err(Error::Unknown { publication, source }) => {
+                        inner.pending = Some((snapshot, *publication));
+                        return Err(Error::Stream(source));
+                    }
+                    Err(Error::Conflict)
+                        if self.store.load(actor).await?.tail != snapshot.tail => continue,
+                    Err(Error::Conflict) => {
+                        return Err(Error::Invalid("transition refused at an unchanged cut"));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             let snapshot = self.store.load(actor).await?;
             let Some(state) = snapshot.state() else {
                 return Ok(());
@@ -399,6 +417,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // stale trigger): retrying cannot succeed, so surface it.
                 Err(Error::Conflict) => {
                     return Err(Error::Invalid("transition refused at an unchanged cut"));
+                }
+                Err(Error::Unknown { publication, source }) => {
+                    inner.pending = Some((snapshot, *publication));
+                    return Err(Error::Stream(source));
                 }
                 Err(error) => return Err(error),
             }

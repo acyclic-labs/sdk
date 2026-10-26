@@ -113,7 +113,9 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         }
         Ok(Spawn {
             child: created.child,
-            request: publish.into_request(),
+            request: publish
+                .into_request()
+                .map_err(|_| Error::Record("agent creation lost publication custody"))?,
         })
     }
 
@@ -220,6 +222,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             cursor,
         };
         Ok(Transition {
+            composition: None,
             checkpoint: Checkpoint {
                 codec: codec(),
                 bytes: serde_json::to_vec(&saved)
