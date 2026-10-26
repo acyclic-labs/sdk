@@ -1,7 +1,7 @@
 use super::*;
 use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitMutation,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitMutation,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
     IdempotencyObservation, OperationClaims, ReadRequest, RecordStream, StreamBounds, StreamError,
     StreamPath, StreamProvider,
@@ -56,11 +56,11 @@ impl StreamProvider for Interleaved {
     ) -> std::result::Result<RecordStream, StreamError> {
         self.stream.follow(path, from, filter).await
     }
-    async fn children(
+    async fn children_page(
         &self,
-        request: ChildrenRequest,
-    ) -> std::result::Result<ChildStream, StreamError> {
-        self.stream.children(request).await
+        request: ChildrenPageRequest,
+    ) -> std::result::Result<ChildrenPage, StreamError> {
+        self.stream.children_page(request).await
     }
     async fn commit(
         &self,

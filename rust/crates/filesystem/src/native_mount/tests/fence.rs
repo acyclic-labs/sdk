@@ -464,6 +464,7 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
             |_| Ok(acyclic_native_runtime::ProcessInput::default()),
             None,
             None,
+            None,
         )?;
         if !output.status.success() {
             return Err(format!(

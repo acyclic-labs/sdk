@@ -329,6 +329,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
                         volume_id: crate::VolumeId::new(),
                         destination: Path::new("/not-mounted").to_path_buf(),
                         writable: false,
+                        shared: false,
                     },
                     None,
                     None,

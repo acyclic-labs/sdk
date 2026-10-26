@@ -350,6 +350,7 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
                 volume_id: crate::VolumeId::new(),
                 destination: Path::new("not-mounted").to_path_buf(),
                 writable: false,
+                shared: false,
             },
             None,
             None,
