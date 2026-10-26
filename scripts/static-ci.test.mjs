@@ -68,25 +68,47 @@ async function fixture(body) {
 }
 
 describe('release static policy', {concurrency: true}, () => {
- test('Bun refuses before launch and the captured old checker reaches a bounded recursion fence', () => fixture(async ({root, commit, check}) => {
+ test('Bun-hosted fixtures use one parser process and the captured old checker reaches a bounded recursion fence', () => fixture(async ({root, commit, check}) => {
   const old = readFileSync('scripts/fixtures/static-ci-b7333953cb.mjs.txt', 'utf8');
   const current = readFileSync(join(root, 'scripts/static-ci.mjs'), 'utf8');
+  const processLog = join(root, 'checker-processes');
+  const executionLog = join(root, 'checked-file-executed');
+  const extraEnv = {CHECKER_PROCESS_LOG: processLog, CHECKED_FILE_LOG: executionLog};
+  const audit = `import {appendFileSync as recordCheckerProcess} from 'node:fs';
+recordCheckerProcess(process.env.CHECKER_PROCESS_LOG, process.pid + '\\n');
+`;
+  const processes = () => readFileSync(processLog, 'utf8').trim().split('\n');
+  writeFileSync(join(root, 'a-self.mjs'), `import './a-self.mjs';
+import {appendFileSync} from 'node:fs';
+appendFileSync(process.env.CHECKED_FILE_LOG, process.pid + '\\n');
+`);
   const fence = `const depth = Number(process.env.STATIC_CI_TEST_DEPTH ?? 0);
 if (!Number.isSafeInteger(depth) || depth < 0 || depth >= 2) { console.error('BOUNDED_OLD_RECURSION'); process.exit(86); }
 process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
 `;
-  writeFileSync(join(root, 'scripts/static-ci.mjs'), fence + old);
+  writeFileSync(join(root, 'scripts/static-ci.mjs'), audit + fence + old);
   commit('captured original checker with test-only depth fence');
-  const negative = await check({runtime: 'bun', args: [], extraEnv: {STATIC_CI_TEST_DEPTH: '0'}});
+  const negative = await check({runtime: 'bun', args: [], extraEnv: {...extraEnv, STATIC_CI_TEST_DEPTH: '0'}});
   assert.notEqual(negative.status, 0);
   assert.match(negative.stderr, /BOUNDED_OLD_RECURSION/);
-  writeFileSync(join(root, 'scripts/static-ci.mjs'), current);
+  assert.equal(new Set(processes()).size, 3, 'old checker launches at depths zero, one and the bounded fence');
+  assert.ok(readFileSync(executionLog, 'utf8').length > 0, 'old checker executes the self-referencing input');
+  rmSync(processLog); rmSync(executionLog);
+  writeFileSync(join(root, 'scripts/static-ci.mjs'), audit + current);
   // Existing fixture Git history remains valid; the corrected parser must
   // refuse before consulting Git or executing a checked file.
-  const refused = await check({runtime: 'bun', args: []});
+  const refused = await check({runtime: 'bun', args: [], extraEnv});
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /step=javascript-syntax.*recovery command: node --experimental-vm-modules scripts\/static-ci.mjs/);
   assert.doesNotMatch(refused.stderr, /BOUNDED_OLD_RECURSION/);
+  assert.equal(processes().length, 1, 'Bun refusal starts exactly one checker process');
+  rmSync(processLog);
+  // This is the fixture's normal spawn, including when the suite itself runs
+  // under Bun: it always selects Node and the shared in-process parser.
+  const parsed = await check({extraEnv});
+  assert.equal(parsed.status, 0, parsed.stdout + parsed.stderr);
+  assert.equal(processes().length, 1, 'fixture parsing starts exactly one checker process');
+  assert.throws(() => readFileSync(executionLog), {code: 'ENOENT'}, 'neither corrected entry point executes checked input');
  }));
 
  test('release whitespace catches an earlier commit and cannot be hidden by a tag at HEAD', () => fixture(async ({root, tag, commit, check}) => {
