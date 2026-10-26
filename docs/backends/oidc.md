@@ -55,3 +55,7 @@ responses, hashes, capture time and container image provenance are retained in
 validated during capture; later executions start a fresh issuer and recapture.
 This proves local integration; it does not qualify a particular production IdP's
 configuration, discovery service, user interface or account lifecycle.
+
+Recorded bb2 qualification: complete native and guest-wire suite 2.96 seconds;
+complete host suite plus real Dex admission and scope deadline 2.403 seconds.
+All four captured body digests matched after transfer.

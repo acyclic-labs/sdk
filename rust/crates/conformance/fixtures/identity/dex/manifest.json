@@ -1,0 +1,34 @@
+{
+  "source": "bb2 isolated Dex v2.44.0; public disposable account; no production credentials",
+  "captured_at": "2026-10-26T21:24:55.592659+00:00",
+  "issuer": "http://127.0.0.1:15482/dex",
+  "audience": "conformance-turns",
+  "subject": "CiQwOGE4Njg0Yi1kYjg4LTRiNzMtOTBhOS0zY2QxNjYxZjU0NjYSBWxvY2Fs",
+  "jwks_uri": "http://127.0.0.1:15482/dex/keys",
+  "captures": {
+    "discovery": {
+      "file": "discovery.body",
+      "status": 200,
+      "url": "http://127.0.0.1:15482/dex/.well-known/openid-configuration",
+      "sha256": "2475b67d3d4af4374becc264c8a6b2e17a3419c3ca18ac68066eca7fba212d0f"
+    },
+    "jwks": {
+      "file": "jwks.body",
+      "status": 200,
+      "url": "http://127.0.0.1:15482/dex/keys",
+      "sha256": "e365582d4dc66eb1f7ae9adebbf5d2887780618de6ba1660d23806e52707af53"
+    },
+    "token": {
+      "file": "token.body",
+      "status": 200,
+      "url": "http://127.0.0.1:15482/dex/token",
+      "sha256": "737183e80c493a742c2dcff847077abde6f670f0858484d8797e93529406f88b"
+    },
+    "auth": {
+      "file": "auth.body",
+      "status": 401,
+      "url": "http://127.0.0.1:15482/dex/token",
+      "sha256": "344b29b4bf0e4d8f4903cefb0d66d9072e65ffa9ffa122a3b90b62a0bd764056"
+    }
+  }
+}
