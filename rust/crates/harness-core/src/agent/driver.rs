@@ -185,10 +185,28 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
             file: FileRef::clone(file),
             policy: FileProjectionPolicy::BoundedFull,
         }),
-        other => ModelContent::Text(
-            String::from_utf8(encode(other)?)
-                .map_err(|_| Error::Record("turn input is not text"))?,
-        ),
+        other => {
+            let text = String::from_utf8(encode(other)?)
+                .map_err(|_| Error::Record("turn input is not text"))?;
+            // A child's result file follows its report, so the parent's turn
+            // is granted and reads exactly that file.
+            match other {
+                TurnInput::ChildDone {
+                    done:
+                        super::ChildDone {
+                            outcome: AgentOutcome::Succeeded { result: Some(file) },
+                            ..
+                        },
+                } => ModelContent::Parts(vec![
+                    ModelContentPart::Text { text },
+                    ModelContentPart::File {
+                        file: FileRef::clone(file),
+                        policy: FileProjectionPolicy::BoundedFull,
+                    },
+                ]),
+                _ => ModelContent::Text(text),
+            }
+        }
     })
 }
 
