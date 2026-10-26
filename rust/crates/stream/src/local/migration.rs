@@ -44,13 +44,11 @@ impl LocalStream {
                 let mut header = [0_u8; HEADER_BYTES];
                 File::open(source.join(JOURNAL_FILE))?.read_exact(&mut header)?;
                 decode_header(&header, previous).ok_or(LocalStreamError::Corrupt)?;
-                let mut builder = std::fs::DirBuilder::new();
                 #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt as _;
-                    builder.mode(0o700);
-                }
-                builder.create(&copy_root)?;
+                std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+                    .create(&copy_root)?;
+                #[cfg(not(unix))]
+                std::fs::DirBuilder::new().create(&copy_root)?;
                 std::fs::copy(source.join(JOURNAL_FILE), copy_root.join(JOURNAL_FILE))?;
                 match std::fs::copy(source.join(SNAPSHOT_FILE), copy_root.join(SNAPSHOT_FILE)) {
                     Ok(_) => {}
