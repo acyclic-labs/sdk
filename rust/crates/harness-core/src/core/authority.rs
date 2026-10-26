@@ -470,6 +470,31 @@ impl AuthorityRoot {
         )
     }
 
+    /// The `harness:/` resource of this root's audience, which every
+    /// credential it issues is bound to.
+    pub fn audience_resource(&self) -> Result<String> {
+        workload::resource(&self.audience)
+    }
+
+    /// A credential to list and read the `fs:/` prefix `resource` under this
+    /// root's audience, derived from `parent`: it lives no longer than
+    /// `parent` and is revoked with it. Callers first check that `parent`
+    /// grants reading what `resource` names.
+    pub(crate) fn resource_read_credential(
+        &self,
+        parent: &Scope,
+        resource: &str,
+    ) -> Result<Vec<u8>> {
+        let capability = workload::verify(
+            &self.verifier(&mut None)?,
+            &self.audience,
+            parent,
+            workload::now(),
+            &mut None,
+        )?;
+        workload::resource_credential(self, &capability, resource, &["fs/list", "fs/read"])
+    }
+
     pub(in crate::core) fn issue_bound(
         &self,
         id: &str,

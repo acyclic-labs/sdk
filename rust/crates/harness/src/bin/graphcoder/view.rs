@@ -21,6 +21,8 @@ type Failure = Box<dyn std::error::Error>;
 
 /// Settled turns shown when a conversation reopens.
 const HISTORY: u64 = 64;
+/// Rows of the newest tool call's output shown while the agent works.
+const OUTPUT_ROWS: usize = 8;
 
 /// One transcript block: a prompt or an answer.
 struct Block {
@@ -179,19 +181,24 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
     let from = conversation.settled().await?.saturating_sub(HISTORY);
     let mut events = conversation.events(from).await?;
     let mut view = View::default();
+    // The newest tool call's output, shown while the agent works.
+    let mut output = conversation.tool_output().await?;
+    let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
     let mut viewport = Viewport::default();
     let start = Instant::now();
     loop {
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
-        input.busy = view.busy();
+        let busy = view.busy();
+        input.busy = busy;
         let back = view.back;
         let (areas, page) = {
             let status = Line::raw(view.status());
             let screen = Screen {
                 header: Line::styled("graphcoder", Style::default().add_modifier(Modifier::DIM)),
                 transcript: view.rows(size.width.saturating_sub(1)),
+                terminal: if busy { &output_rows[..] } else { &[] },
                 status,
                 ..Screen::default()
             };
@@ -204,6 +211,15 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
             (areas, usize::from(areas.transcript.height).max(1))
         };
         tokio::select! {
+            changed = output.changed() => {
+                changed?;
+                output.absorb().await?;
+                let lines = output.text().lines().collect::<Vec<_>>();
+                output_rows = lines[lines.len().saturating_sub(OUTPUT_ROWS)..]
+                    .iter()
+                    .map(|line| Line::raw((*line).to_owned()))
+                    .collect();
+            }
             event = events.next() => {
                 let event = event.ok_or("agent status follow ended")??;
                 view.apply(&conversation, event).await?;

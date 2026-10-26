@@ -54,6 +54,10 @@ pub use agent_turns::{
     TurnExecutors, TurnLimits, agent_authority,
 };
 mod fork_preparer;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod tool_output;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use tool_output::{TOOL_OUTPUT, ToolOutputFollow};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;

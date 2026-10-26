@@ -149,7 +149,7 @@ fn entropy() -> [u8; 32] {
     bytes[16..].copy_from_slice(crate::identity::fresh_uuid().as_bytes());
     bytes
 }
-fn resource(audience: &Authority) -> Result<String> {
+pub(super) fn resource(audience: &Authority) -> Result<String> {
     audience.validate_with_work(&mut None)?;
     let kind = match audience.kind {
         AggregateKind::Agent => "agents",
@@ -351,6 +351,54 @@ pub(super) fn issue(
     )
     .map_err(unauthorized)?;
     retain(scope, &capability, work)
+}
+/// A sealed credential for `actions` on the `fs:/` `prefix`, under
+/// `issuer`'s audience. Its certificate is bound to `parent`: it expires no
+/// later and is revoked with it.
+pub(super) fn resource_credential(
+    issuer: &AuthorityRoot,
+    parent: &VerifiedCapability,
+    prefix: &str,
+    actions: &[&str],
+) -> Result<Vec<u8>> {
+    let timestamp = now();
+    let grants = GrantSet {
+        grants: vec![Grant {
+            kind: GrantKind::Resource(ResourceGrant {
+                resource: ResourcePattern {
+                    name: prefix.into(),
+                    prefix: true,
+                },
+                actions: actions.iter().map(|action| (*action).into()).collect(),
+            }),
+        }],
+    };
+    let capability = signer_with_grants(
+        &issuer.id,
+        &issuer.runtime.workload,
+        timestamp,
+        grants.clone(),
+        Some(parent),
+    )?
+    .mint(
+        vec![
+            Caveat {
+                kind: CaveatKind::Grants(grants),
+            },
+            Caveat {
+                kind: CaveatKind::Audience(ResourcePattern {
+                    name: resource(&issuer.audience)?,
+                    prefix: false,
+                }),
+            },
+        ],
+        SigningKey::from_bytes(&entropy()),
+        &issuer.public_workload_trust()?,
+        timestamp,
+    )
+    .and_then(VerifiedCapability::seal)
+    .map_err(unauthorized)?;
+    Ok(capability.encode().to_vec())
 }
 pub(super) fn append(
     capability: &VerifiedCapability,

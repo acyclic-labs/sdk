@@ -50,7 +50,7 @@ terminal = []
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acyclic-stream/local", "acyclic-stream/session", "dep:dirs", "dep:getrandom", "dep:tempfile"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
