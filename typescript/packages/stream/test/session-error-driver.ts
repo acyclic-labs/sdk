@@ -25,6 +25,7 @@ import type { StreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 const statuses = {
   invalid_path: [Code.InvalidArgument, "invalid_path"],
   invalid_argument: [Code.InvalidArgument, "invalid_argument"],
+  invalid_response: [Code.DataLoss, "invalid_response"],
   limit_exceeded: [Code.InvalidArgument, "limit_exceeded"],
   not_found: [Code.NotFound, "missing stream"],
   already_exists: [Code.AlreadyExists, "destination exists"],

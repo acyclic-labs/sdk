@@ -489,9 +489,12 @@ impl NativeStreamClient {
 
     /// Uses a request-local credential while retaining the existing TLS channel.
     #[napi(js_name = "withCredential")]
-    pub fn with_credential(&self, token: &str) -> Result<Self> {
-        self.provider
-            .with_credential(token)
+    pub fn with_credential(&self, token: String) -> Result<Self> {
+        let client = self.provider.with_credential(&token);
+        // N-API requires an owned string. Release that raw credential before
+        // constructing the returned wrapper around the validated client.
+        drop(token);
+        client
             .map(Self::from_client)
             .map_err(|error| napi_error(&connect_error(&error)))
     }

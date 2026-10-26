@@ -122,8 +122,14 @@ message FollowRequest {
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
-message KeyRange { bytes start = 1; bytes end = 2; }
-message AttributeMatch { string name = 1; repeated bytes any_of = 2; }
+message KeyRange {
+  bytes start = 1;
+  bytes end = 2;
+}
+message AttributeMatch {
+  string name = 1;
+  repeated bytes any_of = 2;
+}
 // Flat conjunction keeps every authority ceiling intact across provider hops.
 // all_keys applies to opaque records; typed changes project individual entries.
 message SessionFilterClause {
@@ -355,14 +361,65 @@ message CreateTokenRequest {
 }
 
 service StreamService {
-  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.idempotency-resources" }; }
-  rpc Append(AppendRequest) returns (AppendResponse) { option (acyclic.validation.v1.auth) = { action: "streams/append" resource: "streams:/{path}" }; }
-  rpc Tail(TailRequest) returns (TailResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
-  rpc Fork(ForkRequest) returns (ForkReceipt) { option (acyclic.validation.v1.auth) = { action: "streams/fork" resource: "streams:/{source}" }; option (acyclic.validation.v1.auth) = { action: "streams/create" resource: "streams:/{destination}" }; }
-  rpc Read(ReadRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
-  rpc Follow(FollowRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" resource: "streams:/{path}" }; }
-  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" extractor: "streams.delivery-resource" }; }
-  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) { option (acyclic.validation.v1.auth) = { action: "streams/list" extractor: "streams.list-visible-children" }; }
-  rpc Commit(CommitRequest) returns (CommitResponse) { option (acyclic.validation.v1.auth) = { extractor: "streams.transaction" }; }
-  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.commit-resources" }; }
+  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      extractor: "streams.idempotency-resources"
+    };
+  }
+  rpc Append(AppendRequest) returns (AppendResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/append"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Tail(TailRequest) returns (TailResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Fork(ForkRequest) returns (ForkReceipt) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/fork"
+      resource: "streams:/{source}"
+    };
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/create"
+      resource: "streams:/{destination}"
+    };
+  }
+  rpc Read(ReadRequest) returns (stream ReadResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Follow(FollowRequest) returns (stream ReadResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/follow"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/follow"
+      extractor: "streams.delivery-resource"
+    };
+  }
+  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/list"
+      extractor: "streams.list-visible-children"
+    };
+  }
+  rpc Commit(CommitRequest) returns (CommitResponse) {
+    option (acyclic.validation.v1.auth) = {extractor: "streams.transaction"};
+  }
+  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      extractor: "streams.commit-resources"
+    };
+  }
 }

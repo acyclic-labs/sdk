@@ -16,7 +16,7 @@ const credentialAssignment = /\b(?:aws_secret_access_key|github_token|authorizat
 const fixtureDigests = new Map([
   ["typescript/packages/machines/test/fixtures/server-key.pem", "048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340"],
   ["typescript/packages/swarm/test/http.test.mjs", "daa0e6ba7f5f0ec32786a32ebcb5f7abc2903e8b24927c5de9a6c2b44a03f418"],
-  ["typescript/packages/stream/test/stream.test.ts", "7dac2ff0fb1055805b058c0237ccb752851f3e680e620f29227f93a681b6b3f2"],
+  ["typescript/packages/stream/test/stream.test.ts", "a8f1c3f65a5454d21b72848b569cada8df01cba2e59535f89ee44a31a848ea98"],
   ["typescript/packages/inference/test/client.test.ts", "a3ef1f09996032eeb1afd4d6862fef537a61103e479bf0b17234e9a4f89d4f69"],
   ["typescript/packages/inference/test/idle-kv.test.ts", "6ee7f3e2aaeb15ea681f5de19cd3be5ddfb5a9c9b699d0cd40178ee6e55def58"],
 ]);

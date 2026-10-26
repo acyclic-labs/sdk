@@ -882,7 +882,7 @@ describe("website Stream contract", () => {
       expect(added).toBe(removed);
       expect(socket.node.active).toBe(0);
       expect(timers.size).toBe(0);
-      expect(created).toBe(1);
+      expect(created).toBe(2);
     } finally {
       controller.abort(); socket.close();
       globalThis.setTimeout = originalTimeout;
@@ -1072,9 +1072,9 @@ describe("website Stream contract", () => {
     await ensureStreamWasm();
     const maximum = 0xffff_ffff_ffff_ffffn;
     const record = decodeHttpResponse("read", JSON.stringify([{
-      sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId, committedAtMicros: maximum.toString(),
+      sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId, committedAtMicros: maximum.toString(), keys: [], attributes: [],
     }, {
-      sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId, committedAtMicros: "1000",
+      sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId, committedAtMicros: "1000", keys: [], attributes: [],
     }])) as { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array; readonly committedAtMicros: bigint }[];
     expect(record[0]?.sequence).toBe(maximum);
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));

@@ -11,7 +11,7 @@ for (const broken of [false, true]) {
     expect(child.error).toBeUndefined();
     if (broken) {
       expect(child.status).not.toBe(0);
-      expect(child.stderr).toContain("JS transport must emit canonical Rust code: not_found");
+      expect(child.stderr).toContain("JS transport must emit canonical Rust code: invalid_response");
     } else {
       if (child.status !== 0) throw new Error(child.stderr || child.stdout);
       const result = JSON.parse(child.stdout);
