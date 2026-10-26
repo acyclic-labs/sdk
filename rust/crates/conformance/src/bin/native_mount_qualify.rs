@@ -1,5 +1,9 @@
 //! Real-kernel native-mount qualification with a machine-readable receipt.
 
+#[macro_use]
+#[path = "../../../filesystem/tests/support/unbounded.rs"]
+mod unbounded;
+
 use acyclic_fs::mount_qualification::COVERAGE;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};

@@ -30,31 +30,13 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
     for index in 0..RENAME_REPETITIONS {
         let renamed = format!("/after-{index}.txt");
         let replacement = format!("/replacement-{index}.txt");
-        if workspace
-            .read(
-                &renamed,
-                64,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        if unbounded!(workspace, read(&renamed, 64))?
             .as_ref()
             != format!("renamed-before-hydration-{index}").as_bytes()
         {
             return Err(format!("renamed content {index} was not published").into());
         }
-        if workspace
-            .read(
-                &replacement,
-                64,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        if unbounded!(workspace, read(&replacement, 64))?
             .as_ref()
             != format!("replacement-content-{index}").as_bytes()
         {
@@ -62,7 +44,7 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
         }
         #[cfg(windows)]
         if !matches!(
-            workspace.stat(&renamed, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.metadata.windows_attributes,
+            unbounded!(workspace, stat(&renamed))?.metadata.windows_attributes,
             Some(attributes) if attributes & 1 != 0
         ) {
             return Err(format!("renamed metadata {index} was not published").into());
@@ -97,37 +79,23 @@ pub(super) fn rename_hydration_child(mount: &Path) -> Result<(), Failure> {
 
 async fn prepare_rename_fixture(root: &Path) -> Result<LocalWorkspace, Failure> {
     let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
-    let workspace = engine
-        .create_workspace_with_config(
+    let workspace = unbounded!(
+        engine,
+        create_workspace_with_config(
             "rename-hydration",
             VolumeConfig::native(Lifecycle::Durable),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let mut fixture = workspace
-        .begin_transaction(
-            acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    )?;
+    let mut fixture = unbounded!(workspace, begin_transaction(acyclic_fs::IdempotencyKey::new()))?;
     for index in 0..RENAME_REPETITIONS {
-        fixture
-            .create_file(
+        unbounded!(
+            fixture,
+            create_file(
                 &format!("/before-{index}.txt"),
                 Bytes::from(format!("renamed-before-hydration-{index}")),
                 FileMetadata::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        )?;
     }
     match fixture
         .commit(

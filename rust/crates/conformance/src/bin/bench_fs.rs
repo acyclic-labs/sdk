@@ -1,5 +1,9 @@
 //! Compare identical public-API workloads under local durability policies.
 
+#[macro_use]
+#[path = "../../../filesystem/tests/support/unbounded.rs"]
+mod unbounded;
+
 use std::time::Instant;
 
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
@@ -67,15 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     if batch {
         let mut transaction = boxed(async {
-            workspace
-                .begin_transaction(
-                    IdempotencyKey::new(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
+            unbounded!(workspace, begin_transaction(IdempotencyKey::new()))
         })
         .await?;
         for index in 0..writes {
@@ -121,16 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let read_started = Instant::now();
     for index in 0..writes {
         let value = boxed(async {
-            workspace
-                .read(
-                    &format!("/entry-{index:04}"),
-                    64,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
+            unbounded!(workspace, read(&format!("/entry-{index:04}"), 64))
         })
         .await?;
         let expected = format!("value-{index}");
@@ -154,16 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cold_started = Instant::now();
     for index in 0..writes {
         let value = boxed(async {
-            workspace
-                .read(
-                    &format!("/entry-{index:04}"),
-                    64,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
+            unbounded!(workspace, read(&format!("/entry-{index:04}"), 64))
         })
         .await?;
         if value.as_ref() != format!("value-{index}").as_bytes() {
@@ -206,16 +184,13 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)?;
     let mut checkout = boxed(async {
-        workspace
-            .checkout(
+        unbounded!(
+            workspace,
+            checkout(
                 GenerationSelector::Head,
                 CheckoutMode::tracking_transaction(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+        )
     })
     .await?;
     let options = CaptureOptions {

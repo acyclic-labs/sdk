@@ -25,121 +25,73 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     fs::write(root.path().join("outside-guard"), b"outside-safe")?;
     let engine = Fs::local(LocalOptions::new(&store)).await?;
-    let workspace = engine
-        .create_workspace_with_config(
+    let workspace = unbounded!(
+        engine,
+        create_workspace_with_config(
             "native-matrix",
             VolumeConfig::native(Lifecycle::Durable),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(
-            acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .create_dir_all(
-            "/seed/nested",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .create_file(
+    )?;
+    let mut transaction = unbounded!(workspace, begin_transaction(acyclic_fs::IdempotencyKey::new()))?;
+    unbounded!(transaction, create_dir_all("/seed/nested"))?;
+    unbounded!(
+        transaction,
+        create_file(
             "/seed/nested/original.txt",
             Bytes::from_static(b"seed"),
             FileMetadata::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .create_file(
+    )?;
+    unbounded!(
+        transaction,
+        create_file(
             "/seed/nested/default-metadata.txt",
             Bytes::new(),
             FileMetadata::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .create_file(
+    )?;
+    unbounded!(
+        transaction,
+        create_file(
             "/seed/nested/default-read.txt",
             Bytes::from_static(b"read-only-observation"),
             FileMetadata::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .create_file(
+    )?;
+    unbounded!(
+        transaction,
+        create_file(
             "/seed/nested/rename-before-read.txt",
             Bytes::from_static(b"renamed-before-hydration"),
             FileMetadata::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .hard_link(
+    )?;
+    unbounded!(
+        transaction,
+        hard_link(
             "/seed/nested/original.txt",
             "/seed/nested/original-hard.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    transaction
-        .create_symbolic_link(
+    )?;
+    unbounded!(
+        transaction,
+        create_symbolic_link(
             "/seed/nested/original-link.txt",
             native_link_bytes("original.txt"),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    )?;
     add_large_windows_fixture(kind, &mut transaction).await?;
     if kind == "macos-nfs" {
-        transaction
-            .create_dir_all(
-                "/large-tree",
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        unbounded!(transaction, create_dir_all("/large-tree"))?;
         for index in 0..MACOS_NFS_LARGE_TREE_ENTRIES {
-            transaction
-                .create_file(
+            unbounded!(
+                transaction,
+                create_file(
                     &format!("/large-tree/entry-{index:04}.txt"),
                     Bytes::from_static(b"large-tree"),
                     FileMetadata::default(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+            )?;
         }
     }
     match transaction
@@ -165,15 +117,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         _ => return Err("fixture transaction was not committed".into()),
     }
     #[cfg(windows)]
-    let default_read_metadata = workspace
-        .stat(
-            "/seed/nested/default-read.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+    let default_read_metadata = unbounded!(workspace, stat("/seed/nested/default-read.txt"))?
         .metadata;
 
     let (watch_tx, watch_rx) = mpsc::channel();
@@ -230,15 +174,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     )?;
     parallel?;
     verify_published_mutations(&workspace, root.path()).await?;
-    let metadata = workspace
-        .stat(
-            "/nested/metadata.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+    let metadata = unbounded!(workspace, stat("/nested/metadata.txt"))?
         .metadata;
     #[cfg(windows)]
     {
@@ -248,15 +184,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         {
             return Err("Windows read-only metadata was not published".into());
         }
-        let timestamps = workspace
-            .stat(
-                "/nested/timestamps.txt",
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        let timestamps = unbounded!(workspace, stat("/nested/timestamps.txt"))?
             .metadata;
         if timestamps.modified_ns != Some(QUALIFICATION_MODIFIED_NS) {
             return Err(format!(
@@ -265,15 +193,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             )
             .into());
         }
-        let defaulted = workspace
-            .stat(
-                "/seed/nested/default-metadata.txt",
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        let defaulted = unbounded!(workspace, stat("/seed/nested/default-metadata.txt"))?
             .metadata;
         if defaulted
             .windows_attributes
@@ -285,15 +205,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             )
             .into());
         }
-        let observed = workspace
-            .stat(
-                "/seed/nested/default-read.txt",
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        let observed = unbounded!(workspace, stat("/seed/nested/default-read.txt"))?
             .metadata;
         if observed != default_read_metadata {
             return Err(format!(
@@ -334,53 +246,20 @@ async fn verify_published_mutations(
             "rename was not published",
         ),
     ] {
-        if workspace
-            .read(
-                path,
-                64,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        if unbounded!(workspace, read(path, 64))?
             .as_ref()
             != expected
         {
             return Err(failure.into());
         }
     }
-    if workspace
-        .stat(
-            "/nested/delete-me.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
+    if unbounded!(workspace, stat("/nested/delete-me.txt"))
         .is_ok()
     {
         return Err("delete was not published".into());
     }
-    let original = workspace
-        .stat(
-            "/nested/hard-source.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let linked = workspace
-        .stat(
-            "/nested/hard-link.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let original = unbounded!(workspace, stat("/nested/hard-source.txt"))?;
+    let linked = unbounded!(workspace, stat("/nested/hard-link.txt"))?;
     if original.file_id != linked.file_id || original.link_count < 2 {
         return Err("hard-link identity was not preserved".into());
     }
@@ -407,28 +286,17 @@ async fn add_large_windows_fixture(
     if kind != "windows-projfs" {
         return Ok(());
     }
-    transaction
-        .create_dir_all(
-            "/large",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    unbounded!(transaction, create_dir_all("/large"))?;
     for ordinal in 0..300_u16 {
         let extension = if ordinal % 10 == 0 { "rs" } else { "txt" };
-        transaction
-            .create_file(
+        unbounded!(
+            transaction,
+            create_file(
                 &format!("/large/entry-{ordinal:04}.{extension}"),
                 Bytes::from(format!("entry-{ordinal}")),
                 FileMetadata::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        )?;
     }
     Ok(())
 }
@@ -502,15 +370,7 @@ async fn verify_mount_isolation(workspace: &LocalWorkspace, root: &Path) -> Resu
     if fs::read(&escaped)? != b"host-only" {
         return Err("traversal mutation did not remain in the temporary host parent".into());
     }
-    if workspace
-        .stat(
-            "/escape-attempt.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
+    if unbounded!(workspace, stat("/escape-attempt.txt"))
         .is_ok()
     {
         return Err("traversal mutation escaped into workspace state".into());
