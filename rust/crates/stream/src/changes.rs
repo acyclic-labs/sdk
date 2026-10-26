@@ -1,6 +1,6 @@
 //! Canonical provider-authored change lists with entry-level follow projection.
 //!
-//! A change record stores each indexed key exactly once, in its value. Keys
+//! A v2 change record stores each indexed key exactly once, in its value. Keys
 //! are sorted and unique, so each one is stored as the length it shares with
 //! its predecessor followed by the rest of its bytes. In memory the record's
 //! headers carry the full keys for indexing and filtering; no wire or
@@ -11,6 +11,9 @@
 //! `context_len context count (shared suffix_len suffix op_len op meta_len meta)*`,
 //! where `shared` is the longest common prefix with the previous key, so one
 //! list has exactly one encoding.
+//!
+//! Retained v1 records use the original canonical protobuf ChangeRecord and
+//! indexed headers. Reading never rewrites either format or its retry identity.
 use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamError, wire};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -500,7 +503,7 @@ impl AppendRecord {
                 changes.entries.iter().map(|entry| entry.key.clone().into()).collect(),
                 self.headers.attributes().iter().map(crate::RecordAttribute::to_owned).collect(),
             )?;
-            let value = changes.encode_to_vec().into();
+            let value: OwnedBytes = changes.encode_to_vec().into();
             validate(&value, &headers)?;
             return Ok(Some(Self { value, headers }));
         }
