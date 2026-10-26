@@ -64,12 +64,7 @@ fn source_edit_baseline(include_plugin: bool) -> Fixture {
         "preview",
         true,
     );
-    assert!(
-        first.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&first.stdout),
-        String::from_utf8_lossy(&first.stderr)
-    );
+    assert!(first.status.success(), "{}", output_message(&first));
 
     fixture
 }
@@ -87,11 +82,7 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
 
     let drift = run_drift(&fixture);
     assert!(!drift.status.success());
-    let drift_message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&drift.stdout),
-        String::from_utf8_lossy(&drift.stderr)
-    );
+    let drift_message = output_message(&drift);
     assert!(
         drift_message.contains("source digest changed"),
         "{drift_message}"
@@ -111,11 +102,7 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
         true,
     );
     assert!(!stale.status.success());
-    let stale_message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&stale.stdout),
-        String::from_utf8_lossy(&stale.stderr)
-    );
+    let stale_message = output_message(&stale);
     assert!(
         stale_message.contains("matching source attestation"),
         "{stale_message}"
@@ -138,12 +125,7 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
         "preview",
         true,
     );
-    assert!(
-        refreshed.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&refreshed.stdout),
-        String::from_utf8_lossy(&refreshed.stderr)
-    );
+    assert!(refreshed.status.success(), "{}", output_message(&refreshed));
     let manifest: Value = serde_json::from_slice(
         &fs::read(refreshed_output.join("generation-manifest.v1.json")).unwrap(),
     )
@@ -201,11 +183,7 @@ fn unknown_generate_option_is_rejected_before_writes() {
         "accepted",
     ]));
     assert!(!result.status.success());
-    let message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let message = output_message(&result);
     assert!(message.contains("unknown option `--unknown`"), "{message}");
     assert!(
         !fixture.output.exists(),
@@ -229,11 +207,7 @@ fn unknown_drift_option_is_rejected_before_reads() {
         "accepted",
     ]));
     assert!(!result.status.success());
-    let message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let message = output_message(&result);
     assert!(message.contains("unknown option `--unknown`"), "{message}");
     assert!(
         !fixture.output.exists(),
@@ -253,11 +227,7 @@ fn source_state_tamper_is_rejected() {
     write_manifest(&fixture.output, &value);
     let result = run_drift(&fixture);
     assert!(!result.status.success());
-    let message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let message = output_message(&result);
     assert!(message.contains("source state"), "{message}");
 }
 
@@ -273,12 +243,7 @@ fn plugin_source_is_part_of_manifest_closure() {
         "preview",
         true,
     );
-    assert!(
-        result.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
+    assert!(result.status.success(), "{}", output_message(&result));
     let generated: Value = serde_json::from_slice(
         &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
     )
@@ -354,12 +319,7 @@ fn stale_source_attestation_is_rejected_before_generate() {
         "preview",
         true,
     );
-    assert!(
-        first.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&first.stdout),
-        String::from_utf8_lossy(&first.stderr)
-    );
+    assert!(first.status.success(), "{}", output_message(&first));
 
     fs::write(
         fixture.root.join("rust/crates/demo/src/lib.rs"),
@@ -376,11 +336,7 @@ fn stale_source_attestation_is_rejected_before_generate() {
         true,
     );
     assert!(!second.status.success());
-    let message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&second.stdout),
-        String::from_utf8_lossy(&second.stderr)
-    );
+    let message = output_message(&second);
     assert!(message.contains("matching source attestation"), "{message}");
     assert!(!second_output.join("generation-manifest.v1.json").exists());
 }
@@ -403,11 +359,7 @@ fn release_generation_requires_executed_profiles() {
         true,
     );
     assert!(!result.status.success());
-    let message = format!(
-        "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let message = output_message(&result);
     assert!(
         message.contains("release generation requires --execute-profiles"),
         "{message}"
