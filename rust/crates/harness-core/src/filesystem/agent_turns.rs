@@ -8,9 +8,9 @@
 //! so the executor can dispatch no other history.
 
 use super::{
-    agent_effects::FilesystemTurnEffects, agent_internal::AgentInternalFiles,
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost, FilesystemJournalBinding,
+    FilesystemHost, FilesystemJournalBinding, agent_effects::FilesystemTurnEffects,
+    agent_internal::AgentInternalFiles,
 };
 use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
@@ -84,7 +84,9 @@ pub(super) fn agent_authority<'v>(
     if private.volume.class() != VolumeClass::AgentPrivate
         || *private.volume.owner() != VolumeOwner::Agent(owner)
     {
-        return Err(Error::Unauthorized("private volume belongs to another agent".into()));
+        return Err(Error::Unauthorized(
+            "private volume belongs to another agent".into(),
+        ));
     }
     let issuer = issuer.with_audience(Authority {
         kind: AggregateKind::Conversation,
@@ -95,11 +97,22 @@ pub(super) fn agent_authority<'v>(
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
     for binding in volumes {
-        grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
-        grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
+        grants.push(
+            binding
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+        );
+        grants.push(
+            binding
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+        );
     }
     for file in external {
-        if !volumes.iter().any(|binding| binding.volume == *file.volume()) {
+        if !volumes
+            .iter()
+            .any(|binding| binding.volume == *file.volume())
+        {
             grants.push(file.read_capability(&mut None)?);
         }
     }

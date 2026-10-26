@@ -187,9 +187,10 @@ impl LocalHarness {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
-        let stream = self.agent_stream.clone().ok_or_else(|| {
-            Error::Unsupported("an embedded harness has no agent stream".into())
-        })?;
+        let stream = self
+            .agent_stream
+            .clone()
+            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
         let limits = TurnLimits {
             maximum_bytes: self.limits.file_bytes,
             max_steps: u32::try_from(self.limits.model_steps)

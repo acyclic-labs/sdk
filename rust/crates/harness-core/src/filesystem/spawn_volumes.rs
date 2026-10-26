@@ -295,7 +295,13 @@ where
             .planned
             .iter()
             .filter(|planned| planned.source.is_none())
-            .map(|planned| planned.brief.iter().map(|brief| (BRIEF, brief.clone())).collect())
+            .map(|planned| {
+                planned
+                    .brief
+                    .iter()
+                    .map(|brief| (BRIEF, brief.clone()))
+                    .collect()
+            })
             .collect();
         let mut files = files.iter();
         let mut creations = Vec::new();
@@ -316,7 +322,9 @@ where
                     initialization: self.host.volume_initialization(),
                     creation: acyclic_fs::CreationOperation::populated(
                         acyclic_fs::OperationId::from_bytes(planned.key),
-                        files.next().ok_or_else(|| guest("spawn creation missing"))?,
+                        files
+                            .next()
+                            .ok_or_else(|| guest("spawn creation missing"))?,
                     ),
                 }),
             }
