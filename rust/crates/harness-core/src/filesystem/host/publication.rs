@@ -298,7 +298,11 @@ pub(in crate::filesystem) fn decode_content_metadata<'a>(
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
     if bytes.trim_ascii_start().first() == Some(&b'{') {
-        return io.decode(PhantomData::<FileRef>, bytes, crate::wire::ErrorCode::Storage);
+        return io.decode(
+            PhantomData::<FileRef>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        );
     }
     let ((file, expected), mut hold) = io.decode(
         PhantomData::<(FileRef, Option<GenerationRef>)>,

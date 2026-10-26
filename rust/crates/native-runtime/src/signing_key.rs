@@ -162,7 +162,9 @@ fn stores(name: &str) -> io::Result<Vec<keyring::Entry>> {
         Ok(stores)
     }
     #[cfg(not(target_os = "linux"))]
-    Ok(vec![keyring::Entry::new(SERVICE, name).map_err(|_| unavailable())?])
+    Ok(vec![
+        keyring::Entry::new(SERVICE, name).map_err(|_| unavailable())?,
+    ])
 }
 
 #[cfg(test)]

@@ -8,8 +8,7 @@
 
 use super::{
     AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, Error, InboxRecord,
-    IntentId, Out,
-    TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
+    IntentId, Out, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
     OperationId,

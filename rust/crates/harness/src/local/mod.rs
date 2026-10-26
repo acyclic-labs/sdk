@@ -26,8 +26,8 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 mod admission;
-pub(crate) mod approvals;
 mod agents;
+pub(crate) mod approvals;
 mod bind;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;

@@ -23,12 +23,18 @@ pub async fn automatic_review(
 ) -> Result<ApprovalReviewFile> {
     let principal = match approver {
         Approver::Rules { principal, .. } | Approver::Llm { principal, .. } => principal,
-        _ => return Err(Error::Invalid("external approver requires a signed decision".into())),
+        _ => {
+            return Err(Error::Invalid(
+                "external approver requires a signed decision".into(),
+            ));
+        }
     };
     if expected.principal != *principal
         || expected.request_sha256 != super::chain::fingerprint(request.bytes())?
     {
-        return Err(Error::Conflict("automatic approval stage binding differs".into()));
+        return Err(Error::Conflict(
+            "automatic approval stage binding differs".into(),
+        ));
     }
     let (verdict, reason) = match approver {
         Approver::Rules {

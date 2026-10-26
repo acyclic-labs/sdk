@@ -151,17 +151,14 @@ pub(crate) enum PublishedApprovalDecision {
 impl PublishedApprovalDecision {
     pub(crate) fn decode(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
         if bytes.len() as u64 > maximum_bytes {
-            return Err(Error::Invalid("approval decision exceeds its file bound".into()));
+            return Err(Error::Invalid(
+                "approval decision exceeds its file bound".into(),
+            ));
         }
-        crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Invalid(error.to_string()))
+        crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    pub(crate) fn matches(
-        &self,
-        decision: &ApprovalDecisionFile,
-        legacy_request: bool,
-    ) -> bool {
+    pub(crate) fn matches(&self, decision: &ApprovalDecisionFile, legacy_request: bool) -> bool {
         match self {
             Self::Current(stored) => stored == decision,
             Self::Legacy(InteractionResponse::Approval { approved, reason }) => {

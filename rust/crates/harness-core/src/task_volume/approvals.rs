@@ -97,9 +97,10 @@ impl FileApproval {
             return Ok(None);
         }
         if self.request.is_legacy_approval()
-            && principal.as_str() == crate::interaction::ApprovalDecisionFile::principal_file(
-                crate::interaction::LEGACY_DECISION_PRINCIPAL,
-            )
+            && principal.as_str()
+                == crate::interaction::ApprovalDecisionFile::principal_file(
+                    crate::interaction::LEGACY_DECISION_PRINCIPAL,
+                )
         {
             // Display only: execution checks the original detail descriptor,
             // committed outcome and canonical durable receipt in its owner.
@@ -107,8 +108,12 @@ impl FileApproval {
                 crate::contract::json_from_slice(bytes)
                     .map_err(|error| crate::Error::Invalid(error.to_string()))?;
             return match response {
-                crate::interaction::InteractionResponse::Approval { approved, .. } => Ok(Some(approved)),
-                _ => Err(crate::Error::Invalid("not a legacy approval decision".into())),
+                crate::interaction::InteractionResponse::Approval { approved, .. } => {
+                    Ok(Some(approved))
+                }
+                _ => Err(crate::Error::Invalid(
+                    "not a legacy approval decision".into(),
+                )),
             };
         }
         let decision = crate::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64)?;

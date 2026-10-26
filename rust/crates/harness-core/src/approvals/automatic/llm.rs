@@ -42,7 +42,9 @@ pub(super) async fn review_model(
                 ModelMessage {
                     role: ModelRole::User,
                     content: ModelContent::Text(
-                        std::str::from_utf8(request.bytes()).map_err(storage)?.into(),
+                        std::str::from_utf8(request.bytes())
+                            .map_err(storage)?
+                            .into(),
                     ),
                 },
             ],
@@ -77,13 +79,8 @@ pub(super) async fn review_model(
     let started = serde_json::to_vec(&dispatch).map_err(storage)?;
     // Atomic creation decides the sole generator. Losing creators reconcile
     // the retained dispatch, including when both initially observed absence.
-    let created = super::super::files::create_exact(
-        files,
-        &path,
-        started,
-        request.maximum_bytes(),
-    )
-    .await?;
+    let created =
+        super::super::files::create_exact(files, &path, started, request.maximum_bytes()).await?;
     let events = if created {
         provider.generate(&prepared, dispatch)
     } else {

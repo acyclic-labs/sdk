@@ -9,7 +9,9 @@
 //! keyring, which this thread always possesses, so it is granted its
 //! permissions before it is reachable anywhere else.
 use keyring::{Error, credential::CredentialApi};
-use linux_keyutils::{Key, KeyError, KeyPermissionsBuilder, KeyRing, KeyRingIdentifier, Permission};
+use linux_keyutils::{
+    Key, KeyError, KeyPermissionsBuilder, KeyRing, KeyRingIdentifier, Permission,
+};
 
 /// One seed entry in the kernel keyrings.
 #[derive(Debug)]
@@ -28,7 +30,10 @@ impl KernelKey {
     /// when the kernel has one, attached to this thread so it is possessed.
     fn rings() -> Result<(KeyRing, Option<KeyRing>), Error> {
         let user = KeyRing::from_special_id(KeyRingIdentifier::User, false).map_err(failure)?;
-        Ok((user, KeyRing::get_persistent(KeyRingIdentifier::Thread).ok()))
+        Ok((
+            user,
+            KeyRing::get_persistent(KeyRingIdentifier::Thread).ok(),
+        ))
     }
 
     /// The key and the keyring it was found in, then the other keyring.

@@ -548,7 +548,11 @@ impl NativeRecoveryState {
                 )?;
             } else {
                 #[cfg(any(target_os = "macos", test))]
-                MountDestinationGuard::acquire_existing_canonical(destination, work, &mut self.guard)?;
+                MountDestinationGuard::acquire_existing_canonical(
+                    destination,
+                    work,
+                    &mut self.guard,
+                )?;
             }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

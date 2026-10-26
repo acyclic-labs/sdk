@@ -108,7 +108,10 @@ fn ui(directory: &str, name: &str) -> Result<files::FileKey> {
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    pub(crate) fn bind_local_approvals(&mut self, local: &crate::local::LocalHarness) -> Result<()> {
+    pub(crate) fn bind_local_approvals(
+        &mut self,
+        local: &crate::local::LocalHarness,
+    ) -> Result<()> {
         self.approvals = Some(Arc::new(local.human_approval_connection()?));
         Ok(())
     }

@@ -44,11 +44,15 @@ impl LocalHarness {
                     .parent
                     .as_ref()
                     .filter(|path| &path.id() == parent)
-                    .ok_or(crate::agent::Error::Record("approval responder is not the parent"))?;
+                    .ok_or(crate::agent::Error::Record(
+                        "approval responder is not the parent",
+                    ))?;
                 Sender::Agent { path: path.clone() }
             }
             _ => {
-                return Err(crate::agent::Error::Record("external approval role is required"));
+                return Err(crate::agent::Error::Record(
+                    "external approval role is required",
+                ));
             }
         };
         hosted
@@ -61,7 +65,9 @@ impl LocalHarness {
             .send(
                 agent,
                 &from,
-                &InboxRecord::Approval(Approval { id: request.clone() }),
+                &InboxRecord::Approval(Approval {
+                    id: request.clone(),
+                }),
             )
             .await
     }

@@ -173,10 +173,7 @@ where
 
     /// Transfers the approval signer into the runtime's interaction owner.
     /// Clients retain policy data and cannot issue principals or capabilities.
-    pub fn with_approval_authority(
-        mut self,
-        issuer: &crate::core::AuthorityRoot,
-    ) -> Result<Self> {
+    pub fn with_approval_authority(mut self, issuer: &crate::core::AuthorityRoot) -> Result<Self> {
         let owner = self
             .interaction_owner
             .as_mut()

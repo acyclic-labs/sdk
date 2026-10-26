@@ -12,11 +12,19 @@ else
   fmt_args=("${args[@]}")
 fi
 echo "GATE_LITE_START scope=$(tr -d '\r' < .gate-scope-mode) crates=$((${#args[@]} / 2))"
-cargo fmt "${fmt_args[@]}" -- --check; rc=$?
+if [ "${args[0]:-}" = --workspace ]; then
+  bash scripts/gate-rust-format.sh; rc=$?
+else
+  cargo fmt "${fmt_args[@]}" -- --check; rc=$?
+fi
 if [ "$rc" != 0 ]; then
-  printf 'GATE_LITE_FORMAT_FAILED rc=%s; recovery: cargo fmt' "$rc"
-  printf ' %q' "${fmt_args[@]}"
-  printf '\n'
+  if [ "${args[0]:-}" = --workspace ]; then
+    printf 'GATE_LITE_FORMAT_FAILED rc=%s; recovery: format the reported files and rerun bash scripts/gate-rust-format.sh\n' "$rc"
+  else
+    printf 'GATE_LITE_FORMAT_FAILED rc=%s; recovery: cargo fmt' "$rc"
+    printf ' %q' "${fmt_args[@]}"
+    printf '\n'
+  fi
   echo "GATE_LITE_WALL seconds=$((SECONDS-started)) rc=$rc"
   echo "GATE_DONE rc=$rc"
   exit "$rc"

@@ -62,7 +62,8 @@ pub(super) async fn next_stage_with_parent<'a>(
             ..
         }
         | crate::interaction::Interaction::Approval {
-            subject: crate::interaction::ApprovalSubject::Legacy {}, ..
+            subject: crate::interaction::ApprovalSubject::Legacy {},
+            ..
         } => &*HUMAN_POLICY,
         crate::interaction::Interaction::Approval { .. } => policy,
         _ => return Err(Error::Invalid("not an approval request".into())),
@@ -96,9 +97,16 @@ pub(super) async fn next_stage_with_parent<'a>(
             reason: None,
         };
         let retained_bytes = files
-            .read(&request.review_path(&expected.principal), request.maximum_bytes())
+            .read(
+                &request.review_path(&expected.principal),
+                request.maximum_bytes(),
+            )
             .await?;
-        let retained = retained_review(retained_bytes.as_deref(), &expected, request.maximum_bytes())?;
+        let retained = retained_review(
+            retained_bytes.as_deref(),
+            &expected,
+            request.maximum_bytes(),
+        )?;
         if !matches!(approver, Approver::Human { .. } | Approver::Parent)
             && let Some(review) = &retained
         {
@@ -166,24 +174,32 @@ pub async fn validate_agent_decision(
         || decision.expected_version != expected_version
         || decision.request_sha256 != fingerprint(request.bytes())?
     {
-        return Err(Error::Unauthorized("approval decision binding differs".into()));
+        return Err(Error::Unauthorized(
+            "approval decision binding differs".into(),
+        ));
     }
     let allowed = match next_stage(policy, digest, parent, request, files, 0).await? {
-        NextStage::Review { approver: Approver::Human { .. }, expected, .. } => {
-            matches!(responder, ApprovalResponder::Human(_)) && expected.principal == principal
-        }
-        NextStage::Review { approver: Approver::Parent, expected, .. } => {
-            matches!(responder, ApprovalResponder::Parent(_)) && expected.principal == principal
-        }
+        NextStage::Review {
+            approver: Approver::Human { .. },
+            expected,
+            ..
+        } => matches!(responder, ApprovalResponder::Human(_)) && expected.principal == principal,
+        NextStage::Review {
+            approver: Approver::Parent,
+            expected,
+            ..
+        } => matches!(responder, ApprovalResponder::Parent(_)) && expected.principal == principal,
         NextStage::Decided(review) => {
             let role_matches = match (policy.approvers.get(review.stage), responder) {
                 (Some(Approver::Rules { .. }), ApprovalResponder::Rules(_))
                 | (Some(Approver::Llm { .. }), ApprovalResponder::Llm(_)) => true,
-                (_, ApprovalResponder::Policy) => review.principal == "policy:exhausted"
-                    && review.verdict == RuleVerdict::Deny,
+                (_, ApprovalResponder::Policy) => {
+                    review.principal == "policy:exhausted" && review.verdict == RuleVerdict::Deny
+                }
                 _ => false,
             };
-            role_matches && review.principal == principal
+            role_matches
+                && review.principal == principal
                 && review.verdict != RuleVerdict::Ask
                 && (review.verdict == RuleVerdict::Allow) == decision.approved()
                 && review.reason == decision.reason
@@ -191,18 +207,17 @@ pub async fn validate_agent_decision(
         _ => false,
     };
     if !allowed {
-        return Err(Error::Unauthorized("principal is not the active approval stage".into()));
+        return Err(Error::Unauthorized(
+            "principal is not the active approval stage".into(),
+        ));
     }
     Ok(())
 }
 
 /// Digest binding to the exact immutable request bytes.
 pub fn fingerprint(bytes: &[u8]) -> Result<String> {
-    let descriptor = crate::conversation::FileDescriptor::from_bytes(
-        bytes,
-        "application/json",
-        &mut None,
-    )?;
+    let descriptor =
+        crate::conversation::FileDescriptor::from_bytes(bytes, "application/json", &mut None)?;
     Ok(ApprovalDecisionFile::new("binding", descriptor.sha256(), 1, false, None)?.request_sha256)
 }
 fn retained_review(
@@ -210,20 +225,21 @@ fn retained_review(
     expected: &ApprovalReviewFile,
     maximum_bytes: u64,
 ) -> Result<Option<ApprovalReviewFile>> {
-    bytes.map(|bytes| {
-        super::files::check_bound(bytes.len(), maximum_bytes)?;
-        let review: ApprovalReviewFile = crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if review.principal != expected.principal
-            || review.request_sha256 != expected.request_sha256
-            || review.policy_digest != expected.policy_digest
-            || review.stage != expected.stage
-        {
-            return Err(Error::Conflict("approval review binding changed".into()));
-        }
-        Ok(review)
-    })
-    .transpose()
+    bytes
+        .map(|bytes| {
+            super::files::check_bound(bytes.len(), maximum_bytes)?;
+            let review: ApprovalReviewFile = crate::contract::json_from_slice(bytes)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if review.principal != expected.principal
+                || review.request_sha256 != expected.request_sha256
+                || review.policy_digest != expected.policy_digest
+                || review.stage != expected.stage
+            {
+                return Err(Error::Conflict("approval review binding changed".into()));
+            }
+            Ok(review)
+        })
+        .transpose()
 }
 
 #[cfg(test)]

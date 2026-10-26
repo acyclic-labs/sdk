@@ -399,7 +399,10 @@ where
 
     /// Opens and settles approvals as files of the agent that `approvals` owns.
     #[must_use]
-    pub fn with_agent_approvals(mut self, approvals: Arc<crate::approvals::AgentApprovals>) -> Self {
+    pub fn with_agent_approvals(
+        mut self,
+        approvals: Arc<crate::approvals::AgentApprovals>,
+    ) -> Self {
         self.agent_approvals = Some(approvals);
         self
     }

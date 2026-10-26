@@ -108,9 +108,10 @@ where
             else {
                 continue;
             };
-            let child = parent
-                .path
-                .child(&crate::agent::AgentId::derive(&parent.path.id(), intent.as_str()))?;
+            let child = parent.path.child(&crate::agent::AgentId::derive(
+                &parent.path.id(),
+                intent.as_str(),
+            ))?;
             volumes.clear();
             for binding in &parent.volumes {
                 let (bound, created) = plan(&child, binding)?;
@@ -177,7 +178,9 @@ where
             match &planned.source {
                 Some(_) => forks.push(ForkSpec {
                     destination,
-                    source: sources.next().ok_or_else(|| guest("spawn source missing"))?,
+                    source: sources
+                        .next()
+                        .ok_or_else(|| guest("spawn source missing"))?,
                     paths: None,
                     idempotency_key: IdempotencyKey::from_bytes(planned.key),
                 }),
@@ -192,9 +195,14 @@ where
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| guest(failure.error))?;
-        fs.prepare_create_many(&creations, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(|failure| guest(failure.error))?;
+        fs.prepare_create_many(
+            &creations,
+            &mut commit,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| guest(failure.error))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| guest(failure.error))?;
         Ok(commit)

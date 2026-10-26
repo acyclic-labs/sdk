@@ -199,7 +199,11 @@ impl InteractionTicket {
         if self.kind != InteractionKind::Approval
             || detail.descriptor().media_type() != "application/json"
         {
-            return Err(boundary(work, Invalid, "approval decision artifact is invalid"));
+            return Err(boundary(
+                work,
+                Invalid,
+                "approval decision artifact is invalid",
+            ));
         }
         detail.validate(work)?;
         detail.descriptor().verify(bytes, work)?;
@@ -212,11 +216,14 @@ impl InteractionTicket {
             PublishedApprovalDecision::Current(decision) => {
                 self.decision_principal(resolution, None, decision, decoded.1.work())
             }
-            PublishedApprovalDecision::Legacy(InteractionResponse::Approval { approved, .. })
-                if matches!(resolution.outcome, InteractionOutcome::Approved {}) && *approved
-                    || matches!(resolution.outcome, InteractionOutcome::Declined {}) && !*approved =>
+            PublishedApprovalDecision::Legacy(InteractionResponse::Approval {
+                approved, ..
+            }) if matches!(resolution.outcome, InteractionOutcome::Approved {}) && *approved
+                || matches!(resolution.outcome, InteractionOutcome::Declined {}) && !*approved =>
             {
-                Ok(ApprovalDecisionFile::principal_digest(LEGACY_DECISION_PRINCIPAL))
+                Ok(ApprovalDecisionFile::principal_digest(
+                    LEGACY_DECISION_PRINCIPAL,
+                ))
             }
             _ => Err(boundary(
                 decoded.1.work(),
@@ -258,9 +265,7 @@ impl InteractionTicket {
                 "approval artifact disagrees with outcome",
             ));
         }
-        Ok(ApprovalDecisionFile::principal_digest(
-            &decision.principal,
-        ))
+        Ok(ApprovalDecisionFile::principal_digest(&decision.principal))
     }
 }
 

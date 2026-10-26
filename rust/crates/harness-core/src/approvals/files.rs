@@ -56,7 +56,9 @@ impl<'a> ApprovalRequest<'a> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
         {
-            return Err(Error::Invalid("approval request identity is not canonical".into()));
+            return Err(Error::Invalid(
+                "approval request identity is not canonical".into(),
+            ));
         }
         Ok(Self {
             id,
@@ -88,7 +90,9 @@ impl<'a> ApprovalRequest<'a> {
 
 pub(super) fn check_bound(length: usize, maximum_bytes: u64) -> Result<()> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX || length as u64 > maximum_bytes {
-        return Err(Error::Invalid("approval file exceeds its finite byte bound".into()));
+        return Err(Error::Invalid(
+            "approval file exceeds its finite byte bound".into(),
+        ));
     }
     Ok(())
 }

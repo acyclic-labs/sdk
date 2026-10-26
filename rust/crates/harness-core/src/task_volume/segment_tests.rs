@@ -31,7 +31,7 @@ async fn publication_uses_the_original_native_commit_and_deadline()
                 before,
                 &Write::new(FileKey::Goal, b"owned publication".to_vec()),
                 Vec::new(),
-                false,
+                Mode::Append,
                 Some(&work),
             )
             .await?

@@ -7,8 +7,8 @@
 //! A responder writes that file through [`decide`], then appends
 //! `InboxRecord::Approval { id }` so the waiting turn resumes; nothing polls.
 use super::{
-    ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalResponder, Approver,
-    NextStage, RuleVerdict,
+    ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalResponder, Approver, NextStage,
+    RuleVerdict,
 };
 use crate::{
     Error, InteractionId, Result,
@@ -122,7 +122,9 @@ impl AgentApprovals {
     /// Opens the request file of approval `id` exactly once.
     pub async fn open(&self, id: InteractionId, interaction: &Interaction) -> Result<()> {
         if !matches!(interaction, Interaction::Approval { .. }) {
-            return Err(Error::Unsupported("agents open only approval interactions".into()));
+            return Err(Error::Unsupported(
+                "agents open only approval interactions".into(),
+            ));
         }
         let request = request_id(id);
         let bytes = crate::contract::canonical_json_bytes(interaction)?;
@@ -226,7 +228,8 @@ pub async fn decide(
     };
     let descriptor =
         crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?;
-    let decision = ApprovalDecisionFile::new(&principal, descriptor.sha256(), VERSION, approved, reason)?;
+    let decision =
+        ApprovalDecisionFile::new(&principal, descriptor.sha256(), VERSION, approved, reason)?;
     super::validate_agent_decision(
         &policy.policy,
         policy.digest,

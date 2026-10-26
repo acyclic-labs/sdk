@@ -11,6 +11,7 @@ use super::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
     FilesystemHost, FilesystemJournalBinding,
 };
+use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, TurnStop},
@@ -21,7 +22,6 @@ use crate::{
     projection::SelectedModelContext,
     runtime::ContentBindings,
 };
-use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
 use futures::TryStreamExt;
@@ -367,7 +367,11 @@ where
             let (journal, mut authority, files) = self.journal(agent)?;
             let (policy, configured) = self.approvals(agent, &authority.content).await?;
             authority.approval = configured
-                .map(|policy| policy.bind().map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>))
+                .map(|policy| {
+                    policy
+                        .bind()
+                        .map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>)
+                })
                 .transpose()?;
             let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
             let journal = journal

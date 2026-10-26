@@ -258,7 +258,13 @@ where
             crate::filesystem::interaction_host::admit_interaction(&bytes, io)?;
         }
         let principal = with_history_io(io, |work| {
-            ticket.validate_published_decision_bytes(resolution, detail, &bytes, legacy_request, work)
+            ticket.validate_published_decision_bytes(
+                resolution,
+                detail,
+                &bytes,
+                legacy_request,
+                work,
+            )
         })?;
         // The validation above bound the file's verdict to this outcome.
         let approved = matches!(resolution.outcome, InteractionOutcome::Approved {});

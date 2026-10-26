@@ -25,7 +25,8 @@ pub fn next_stage<'a>(
     start: usize,
 ) -> Result<NextStage<'a>> {
     let request_id = request_id(request)?.as_str();
-    let request_view = ApprovalRequest::new(request_id, &request.bytes, Limits::default().file_bytes)?;
+    let request_view =
+        ApprovalRequest::new(request_id, &request.bytes, Limits::default().file_bytes)?;
     let snapshot = Snapshot { request, files };
     // Snapshot reads return Ready in their first poll: no storage, executor,
     // blocking or follow operation is admitted by this compatibility entry.
@@ -47,18 +48,28 @@ struct Snapshot<'a> {
     files: &'a BTreeMap<FileKey, FileValue>,
 }
 impl ApprovalFiles for Snapshot<'_> {
-    fn read<'a>(&'a self, path: &'a str, maximum_bytes: u64)
-        -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+        maximum_bytes: u64,
+    ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
         Box::pin(async move {
             let key = key(self.request, path)?;
-            self.files.get(&key).map(|file| {
-                super::files::check_bound(file.bytes.len(), maximum_bytes)?;
-                Ok(file.bytes.to_vec())
-            }).transpose()
+            self.files
+                .get(&key)
+                .map(|file| {
+                    super::files::check_bound(file.bytes.len(), maximum_bytes)?;
+                    Ok(file.bytes.to_vec())
+                })
+                .transpose()
         })
     }
-    fn create<'a>(&'a self, _: &'a str, _: Vec<u8>, _: u64)
-        -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
+    fn create<'a>(
+        &'a self,
+        _: &'a str,
+        _: Vec<u8>,
+        _: u64,
+    ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async { Err(Error::Unsupported("approval snapshot is read-only".into())) })
     }
 }
@@ -69,8 +80,10 @@ fn key(request: &FileValue, path: &str) -> Result<FileKey> {
     };
     let parsed = FileKey::parse(&format!(".tasks/{}/{path}", task.as_str()))?;
     match &parsed {
-        FileKey::Task { file: TaskFile::ApprovalReview { request: id, .. }, .. }
-            if id == request_id(request)? => Ok(parsed),
+        FileKey::Task {
+            file: TaskFile::ApprovalReview { request: id, .. },
+            ..
+        } if id == request_id(request)? => Ok(parsed),
         _ => Err(Error::Invalid("not an approval review path".into())),
     }
 }
@@ -109,19 +122,28 @@ struct Volume<'a, P: ?Sized> {
     request: &'a FileValue,
 }
 impl<P: StreamProvider + ?Sized> ApprovalFiles for Volume<'_, P> {
-    fn read<'a>(&'a self, path: &'a str, maximum_bytes: u64)
-        -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+        maximum_bytes: u64,
+    ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
         Box::pin(async move {
             let key = key(self.request, path)?;
             let snapshot = self.files.snapshot(&Query::File(key), 1).await?;
-            let Some(file) = snapshot.files.first() else { return Ok(None); };
+            let Some(file) = snapshot.files.first() else {
+                return Ok(None);
+            };
             super::files::check_bound(file.bytes.len(), maximum_bytes)?;
             crate::task_volume::publish_durable(&self.files.inner, file, None).await?;
             Ok(Some(file.bytes.to_vec()))
         })
     }
-    fn create<'a>(&'a self, path: &'a str, bytes: Vec<u8>, maximum_bytes: u64)
-        -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
+    fn create<'a>(
+        &'a self,
+        path: &'a str,
+        bytes: Vec<u8>,
+        maximum_bytes: u64,
+    ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
             super::files::check_bound(bytes.len(), maximum_bytes)?;
             let key = key(self.request, path)?;
@@ -135,11 +157,14 @@ impl<P: StreamProvider + ?Sized> ApprovalFiles for Volume<'_, P> {
                 }
                 match self.files.inner.create(snapshot.generation, &write).await {
                     Ok(_) => {
-                        crate::task_volume::publish_durable(&self.files.inner, &write, None).await?;
+                        crate::task_volume::publish_durable(&self.files.inner, &write, None)
+                            .await?;
                         return Ok(ApprovalCreate::Created);
                     }
-                    Err(crate::task_volume::Error::Conflict(_)
-                        | crate::task_volume::Error::ImmutableConflict(_)) => continue,
+                    Err(
+                        crate::task_volume::Error::Conflict(_)
+                        | crate::task_volume::Error::ImmutableConflict(_),
+                    ) => continue,
                     Err(error) => return Err(error.into()),
                 }
             }
