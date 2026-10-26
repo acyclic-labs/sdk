@@ -1,3 +1,6 @@
+#[path = "fixtures.rs"]
+mod fixtures;
+
 use super::*;
 
 #[tokio::test]
@@ -26,19 +29,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     base_tx.write_text("/file.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = base_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx)
         .await?
         .value
     else {
@@ -69,19 +60,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     child_tx.write_text("/file.txt", "child\n").await?;
-    let TransactionCommit::Committed(child_head) = child_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx)
         .await?
         .value
     else {
@@ -96,19 +75,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     parent_tx.write_text("/file.txt", "parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = parent_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx)
         .await?
         .value
     else {
@@ -197,19 +164,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     resolution.write_text("/file.txt", "resolved\n").await?;
-    resolution
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    fixtures::commit(&mut resolution)
         .await?
         .value;
     coordinator

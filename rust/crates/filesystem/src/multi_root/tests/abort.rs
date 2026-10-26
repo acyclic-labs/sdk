@@ -1,3 +1,6 @@
+#[path = "fixtures.rs"]
+mod fixtures;
+
 use super::*;
 
 #[tokio::test]
@@ -21,19 +24,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
         .await?
         .value;
     base_tx.write_text("/file.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = base_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx)
         .await?
         .value
     else {
@@ -66,19 +57,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
     child_tx
         .write_text("/file.txt", "discarded child\n")
         .await?;
-    let TransactionCommit::Committed(child_head) = child_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx)
         .await?
         .value
     else {
@@ -93,19 +72,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
         .await?
         .value;
     parent_tx.write_text("/file.txt", "kept parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = parent_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx)
         .await?
         .value
     else {
@@ -162,19 +129,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
     unrelated
         .write_text("/unrelated.txt", "preserved\n")
         .await?;
-    let TransactionCommit::Committed(_) = unrelated
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(_) = fixtures::commit(&mut unrelated)
         .await?
         .value
     else {
@@ -237,19 +192,7 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         .await?
         .value;
     base_tx.write_text("/keep.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = base_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx)
         .await?
         .value
     else {
@@ -280,19 +223,7 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         .await?
         .value;
     child_tx.write_text("/added.txt", "from child\n").await?;
-    let TransactionCommit::Committed(child_head) = child_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx)
         .await?
         .value
     else {
@@ -307,19 +238,7 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         .await?
         .value;
     parent_tx.write_text("/added.txt", "from parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = parent_tx
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
-        )
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx)
         .await?
         .value
     else {

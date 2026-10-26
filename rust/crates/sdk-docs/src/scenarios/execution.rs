@@ -10,28 +10,7 @@ pub fn compile_all(
 ) -> Result<(), Error> {
     let cargo = cargo_path.unwrap_or_else(|| Path::new("cargo"));
     for source in sources {
-        // Cargo resolves this beneath current_dir; do not pass Windows verbatim paths
-        // through build scripts to native tools such as protoc.
-        let manifest = Path::new("rust/crates")
-            .join(package_directory(&source.scenario))
-            .join("Cargo.toml");
-        let mut command = crate::command(cargo);
-        command
-            .current_dir(root)
-            .args(["check", "--quiet", "--locked", "--manifest-path"])
-            .arg(&manifest);
-        if source.scenario.family == "plugin" {
-            command.args(["--bin", source.scenario.example]);
-        } else {
-            command.args(["--example", source.scenario.example]);
-        }
-        if !source.scenario.features.is_empty() {
-            command
-                .arg("--features")
-                .arg(source.scenario.features.join(","));
-        }
-        sanitize_compiler_environment(&mut command);
-        let output = command
+        let output = scenario_command(root, source, cargo, false)
             .run_output()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
         if !output.status.success() {
@@ -57,54 +36,11 @@ pub fn execute_local(
         if source.scenario.mode != ScenarioMode::ExecuteLocal {
             continue;
         }
-        // Cargo resolves this beneath current_dir; do not pass Windows verbatim paths
-        // through build scripts to native tools such as protoc.
-        let manifest = Path::new("rust/crates")
-            .join(package_directory(&source.scenario))
-            .join("Cargo.toml");
         let cargo = cargo_path.unwrap_or_else(|| Path::new("cargo"));
-        let mut command = crate::command(cargo);
-        command
-            .current_dir(root)
-            .args(["run", "--quiet", "--locked", "--manifest-path"])
-            .arg(&manifest);
-        if source.scenario.family == "plugin" {
-            command.args(["--bin", source.scenario.example, "--", "--help"]);
-        } else {
-            command.args(["--example", source.scenario.example]);
-        }
-        if !source.scenario.features.is_empty() {
-            command
-                .arg("--features")
-                .arg(source.scenario.features.join(","));
-        }
-        sanitize_compiler_environment(&mut command);
-        let output = command
+        let output = scenario_command(root, source, cargo, true)
             .run_output()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
-        if !output.status.success() {
-            return Err(Error::Invalid(format!(
-                "scenario {} failed: {}",
-                source.scenario.id,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let stdout = String::from_utf8(output.stdout).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} stdout is not UTF-8: {error}",
-                source.scenario.id
-            ))
-        })?;
-        executions.push(ScenarioExecution {
-            scenario: source.scenario,
-            source_sha256: source.source_sha256.clone(),
-            stdout_sha256: digest_bytes(stdout.as_bytes()),
-            // Successful Cargo runs may emit compiler diagnostics only on the
-            // first build. They are toolchain/cache noise rather than
-            // scenario output, so keep the execution receipt deterministic.
-            stderr_sha256: digest_bytes(&[]),
-            stdout,
-        });
+        executions.push(execution(source, output, "")?);
     }
     executions.sort_by_key(|execution| {
         sources
@@ -153,26 +89,7 @@ pub fn execute_all(
         let output = command
             .run_output()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
-        if !output.status.success() {
-            return Err(Error::Invalid(format!(
-                "scenario {} fixture failed: {}",
-                source.scenario.id,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let stdout = String::from_utf8(output.stdout).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} fixture stdout is not UTF-8: {error}",
-                source.scenario.id
-            ))
-        })?;
-        executions.push(ScenarioExecution {
-            scenario: source.scenario,
-            source_sha256: source.source_sha256.clone(),
-            stdout_sha256: digest_bytes(stdout.as_bytes()),
-            stderr_sha256: digest_bytes(&[]),
-            stdout,
-        });
+        executions.push(execution(source, output, " fixture")?);
     }
     executions.sort_by_key(|execution| {
         sources
@@ -181,6 +98,66 @@ pub fn execute_all(
             .unwrap_or(usize::MAX)
     });
     Ok(executions)
+}
+
+fn scenario_command(root: &Path, source: &ScenarioSource, cargo: &Path, run: bool) -> Command {
+    // Cargo resolves this beneath current_dir; avoid Windows verbatim paths in build scripts.
+    let manifest = Path::new("rust/crates")
+        .join(package_directory(&source.scenario))
+        .join("Cargo.toml");
+    let mut command = crate::command(cargo);
+    command
+        .current_dir(root)
+        .args([
+            if run { "run" } else { "check" },
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+        ])
+        .arg(&manifest);
+    if source.scenario.family == "plugin" {
+        command.args(["--bin", source.scenario.example]);
+        if run {
+            command.args(["--", "--help"]);
+        }
+    } else {
+        command.args(["--example", source.scenario.example]);
+    }
+    if !source.scenario.features.is_empty() {
+        command
+            .arg("--features")
+            .arg(source.scenario.features.join(","));
+    }
+    sanitize_compiler_environment(&mut command);
+    command
+}
+
+fn execution(
+    source: &ScenarioSource,
+    output: std::process::Output,
+    label: &str,
+) -> Result<ScenarioExecution, Error> {
+    if !output.status.success() {
+        return Err(Error::Invalid(format!(
+            "scenario {}{label} failed: {}",
+            source.scenario.id,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        Error::Invalid(format!(
+            "scenario {}{label} stdout is not UTF-8: {error}",
+            source.scenario.id
+        ))
+    })?;
+    Ok(ScenarioExecution {
+        scenario: source.scenario,
+        source_sha256: source.source_sha256.clone(),
+        stdout_sha256: digest_bytes(stdout.as_bytes()),
+        // Compiler diagnostics depend on the cache, rather than the scenario output.
+        stderr_sha256: digest_bytes(&[]),
+        stdout,
+    })
 }
 
 fn sanitize_compiler_environment(command: &mut Command) {
