@@ -1,174 +1,46 @@
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness::{
-    Error, Result,
-    scheduler::LeaseFence,
-    search::{
-        SearchProvider, SearchRequest, SearchResponse, decode_search_http_response,
-        files::{SearchOutcome, drive_for_test},
-    },
-    task_volume::{Component, FileKey, FileValue, Query, TaskVolume},
-};
-use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamPath};
-use futures::StreamExt as _;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+    Error,
+    search::{SearchResponse, decode_search_http_response},
 };
 #[path = "oracle.rs"]
 mod oracle;
 
-struct Response {
-    bytes: Vec<u8>,
-    exa: bool,
-    calls: AtomicUsize,
-}
-impl SearchProvider for Response {
-    fn search<'a>(&'a self, _: &'a SearchRequest) -> BoxProviderFuture<'a, Result<SearchResponse>> {
-        Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &CancellationToken::new(),
-            )
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
-            let expected = oracle::expected(&self.bytes, self.exa);
-            let ordinary = decode_search_http_response(&self.bytes, 5, self.exa, None);
-            assert!(
-                oracle::agrees(&expected, ordinary.as_ref().map(|(response, _)| response)),
-                "ordinary codec disagrees with independent oracle: {ordinary:?}"
-            );
-            if let Ok((_, custody)) = &ordinary {
-                assert!(custody.is_none());
-            }
-            drop(ordinary);
-            let result = decode_search_http_response(&self.bytes, 5, self.exa, Some(&work));
-            assert!(
-                oracle::agrees(&expected, result.as_ref().map(|(response, _)| response)),
-                "codec disagrees with independent oracle: {result:?}"
-            );
-            match result {
-                Ok((response, custody)) => {
-                    assert!(custody.as_ref().unwrap().work().shares_ledger(&work));
-                    let encoded = serde_json::to_vec(&response).unwrap();
-                    let ordinary = serde_json::from_slice::<SearchResponse>(&encoded).unwrap();
-                    assert_eq!(ordinary, response);
-                    drop((response, custody));
-                    assert_eq!(work.live_allocation_bytes(), baseline);
-                    Ok(ordinary)
-                }
-                Err(error) => {
-                    assert!(matches!(error, Error::ToolRejected { .. }), "{error:?}");
-                    assert_eq!(work.live_allocation_bytes(), baseline);
-                    Err(error)
-                }
-            }
-        })
-    }
-}
-
-// The real task-volume worker must publish exactly the independently expected
-// outcome. Both same-owner replay and a replacement owner reuse the file result.
-pub async fn check(bytes: Vec<u8>, exa: bool) {
-    let expected = oracle::expected(&bytes, exa);
-    let backend = Arc::new(Response {
-        bytes,
-        exa,
-        calls: AtomicUsize::new(0),
-    });
-    let stream = Arc::new(MemoryStream::default());
-    let volume = TaskVolume::open(stream, StreamPath::new("codec-files").unwrap())
-        .await
-        .unwrap();
-    let task = Component::new("codec").unwrap();
-    let request = FileKey::parse(".tasks/codec/requests/search-codec.json").unwrap();
-    let result = FileKey::parse(".tasks/codec/requests/search-codec/result.json").unwrap();
-    let initial = volume
-        .snapshot(&Query::Task(task.clone()), 4)
-        .await
-        .unwrap();
-    let mut client = volume
-        .observe(Query::File(result.clone()), None, 1)
-        .await
-        .unwrap();
-    assert!(client.snapshot.take().unwrap().files.is_empty());
-    volume
-        .append(
-            initial.generation,
-            &FileValue::new(request, br#"{"query":"codec"}"#.as_slice()),
-        )
-        .await
-        .unwrap();
-    let mut fence = LeaseFence {
-        reservation_id: "first".into(),
-        placement: "codec".into(),
-    };
-    drive_for_test(
-        &volume,
-        &task,
-        &fence,
-        || Ok(Some(backend.clone())),
-        vec![],
-        None,
-        3,
+// Both codec paths agree with the independent oracle, and a funded native
+// decode returns every byte it charged to its ledger.
+pub fn check(bytes: Vec<u8>, exa: bool) {
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &CancellationToken::new(),
     )
-    .await
     .unwrap();
-    let published = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        loop {
-            let change = client.changes.next().await.unwrap().unwrap();
-            if let Some(file) = change.file {
-                break file;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(published.key, result);
-    let outcome: SearchOutcome = serde_json::from_slice(&published.bytes).unwrap();
-    let expected = expected.map_or(SearchOutcome::Rejected, |response| {
-        let success = SearchOutcome::Succeeded { response };
-        // Independently predict admission of the complete packed result file.
-        // Codec acceptance and exact normalization were asserted above, even
-        // when a normalized result exceeds the smaller task-record limit.
-        let metadata =
-            serde_json::to_vec(&serde_json::json!({"key":result,"channel":null})).unwrap();
-        let size = serde_json::to_vec(&success).unwrap().len() + metadata.len() + 12;
-        if size > acyclic_stream::MAX_RECORD_BYTES {
-            SearchOutcome::Rejected
-        } else {
-            success
-        }
-    });
-    assert_eq!(outcome, expected);
-    let before = volume
-        .snapshot(&Query::Task(task.clone()), 4)
-        .await
-        .unwrap();
-    assert_eq!(before.files.len(), 3);
-    for replacement in [false, true] {
-        if replacement {
-            fence.reservation_id = "replacement".into();
-        }
-        drive_for_test(
-            &volume,
-            &task,
-            &fence,
-            || panic!("replay resolved credentials or contacted provider"),
-            vec![],
-            None,
-            3,
-        )
-        .await
-        .unwrap();
-        let after = volume
-            .snapshot(&Query::Task(task.clone()), 4)
-            .await
-            .unwrap();
-        assert_eq!(after.files, before.files);
-        assert_eq!(after.generation, before.generation);
+    let baseline = work.live_allocation_bytes();
+    let expected = oracle::expected(&bytes, exa);
+    let ordinary = decode_search_http_response(&bytes, 5, exa, None);
+    assert!(
+        oracle::agrees(&expected, ordinary.as_ref().map(|(response, _)| response)),
+        "ordinary codec disagrees with independent oracle: {ordinary:?}"
+    );
+    if let Ok((_, custody)) = &ordinary {
+        assert!(custody.is_none());
     }
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    drop(ordinary);
+    let result = decode_search_http_response(&bytes, 5, exa, Some(&work));
+    assert!(
+        oracle::agrees(&expected, result.as_ref().map(|(response, _)| response)),
+        "codec disagrees with independent oracle: {result:?}"
+    );
+    match result {
+        Ok((response, custody)) => {
+            assert!(custody.as_ref().unwrap().work().shares_ledger(&work));
+            let encoded = serde_json::to_vec(&response).unwrap();
+            let ordinary = serde_json::from_slice::<SearchResponse>(&encoded).unwrap();
+            assert_eq!(ordinary, response);
+            drop((response, custody));
+        }
+        Err(error) => assert!(matches!(error, Error::ToolRejected { .. }), "{error:?}"),
+    }
+    assert_eq!(work.live_allocation_bytes(), baseline);
 }
 
 pub fn fuzz_response(data: &[u8]) -> Vec<u8> {

@@ -1,4 +1,0 @@
----
-grants: ["model:generate", "tool:call:read"]
----
-inspect files

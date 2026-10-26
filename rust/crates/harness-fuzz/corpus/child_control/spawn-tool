@@ -1,1 +1,0 @@
-{"task":"inspect files","name":"worker","grants":["model:generate","tool:call:read"]}

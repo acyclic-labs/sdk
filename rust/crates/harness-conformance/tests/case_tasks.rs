@@ -32,7 +32,7 @@ struct Observed {
 
 impl Substrate for Observed {
     fn capabilities(&self) -> BTreeSet<String> {
-        substrate::InProcess.capabilities()
+        substrate::Local.capabilities()
     }
     fn execute(
         &self,
@@ -44,7 +44,7 @@ impl Substrate for Observed {
                 .lock()
                 .map_err(|_| "task observations poisoned")?
                 .insert(tokio::task::try_id().ok_or("case owns a task")?);
-            substrate::InProcess.execute(recipe, paths).await
+            substrate::Local.execute(recipe, paths).await
         })
     }
 }
@@ -100,7 +100,7 @@ impl Drop for OwnedCase<'_> {
 
 impl Substrate for Pending {
     fn capabilities(&self) -> BTreeSet<String> {
-        substrate::InProcess.capabilities()
+        substrate::Local.capabilities()
     }
     fn execute(&self, _: Value, _: Vec<String>) -> BoxProviderFuture<'_, Result<CaseObservation>> {
         Box::pin(async move {

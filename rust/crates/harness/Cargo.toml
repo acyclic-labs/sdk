@@ -196,8 +196,3 @@ required-features = ["filesystem-local", "native-execution", "test-support"]
 name = "client-mailbox-model"
 path = "tests/client_mailbox_model.rs"
 required-features = ["model-checking"]
-
-[[test]]
-name = "query-model"
-path = "tests/query_model.rs"
-required-features = ["model-checking"]

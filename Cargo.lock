@@ -466,10 +466,8 @@ dependencies = [
  "acyclic-objects",
  "acyclic-stream",
  "async-trait",
- "axum",
  "blake3",
  "futures",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -627,14 +625,12 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
- "hex",
  "http",
  "http-body-util",
  "hyper",
  "hyper-util",
  "jsonschema",
  "keyring",
- "loom",
  "proptest",
  "reqwest 0.12.28",
  "rustls",
@@ -645,7 +641,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
- "uuid",
 ]
 
 [[package]]

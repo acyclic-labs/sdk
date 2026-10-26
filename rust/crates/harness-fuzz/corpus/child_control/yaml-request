@@ -1,5 +1,0 @@
----
-model: test
-tools: [read, agent]
----
-inspect files

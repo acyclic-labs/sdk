@@ -75,14 +75,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "search_request"
-path = "fuzz_targets/search_request.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "command"
 path = "fuzz_targets/command.rs"
 required-features = ["runtime"]
@@ -198,14 +190,6 @@ bench = false
 name = "filesystem_access"
 path = "fuzz_targets/filesystem_access.rs"
 required-features = ["filesystem-access"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "child_control"
-path = "fuzz_targets/child_control.rs"
-required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -344,14 +328,6 @@ bench = false
 [[bin]]
 name = "approval_contract"
 path = "fuzz_targets/approval_contract.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "native_task_files"
-path = "fuzz_targets/native_task_files.rs"
 required-features = ["runtime"]
 test = false
 doc = false

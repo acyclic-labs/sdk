@@ -60,6 +60,4 @@ fuzz_target!(|input: &[u8]| {
     round_trip::<WriteFileInput>(input);
     round_trip::<EditFileInput>(input);
     round_trip::<acyclic_harness::Outcome<serde_json::Value>>(input);
-    round_trip::<acyclic_harness::scheduler::SchedulerEvent>(input);
-    round_trip::<acyclic_harness::scheduler::OperationState>(input);
 });
