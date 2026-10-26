@@ -893,7 +893,7 @@ find $T ${TD}/.host-targets -maxdepth 4 -path '*/deps/*' -type f \\( -name '*.rl
   while IFS= read -r -d '' f; do b=$(basename "$f"); h=$(echo "$b" | sed -E 's/.*-([0-9a-f]+)\\.[a-z]+$/\\1/'); rm -f "$f"
     echo "[buildbox] zero-sweep: removed empty/truncated $b" >> $J.err
     case "$h" in *[!0-9a-f]*|'') ;; *) rm -rf "$(dirname "$(dirname "$f")")/.fingerprint/"*-"$h";; esac; done
-mkdir -p $J.tmp && chmod 1777 $J.tmp  # this job's private /tmp
+mkdir -p $J.tmp $J.work/src $J.work/target && chmod 1777 $J.tmp  # this job's private /tmp and /work (on /mnt/bb)
 # Host-shaped target dirs (/home/var/targets -> /mnt/bb/home/targets) are per source tree too (2026-10-16 treeid): shared by
 # label, a cargo call in a script built one tree, then another tree whose files were synced earlier (older mtimes) looked fresh
 # and ran the first tree's test binary. Created after the seed (the seed only fills an empty target dir).
@@ -902,10 +902,12 @@ mkdir -p ${TD}/.host-targets/${path.basename(hostTarget(src))} ${TD}/.host-src
 # as well, and every ancestor of a job path is writable by its owner only, as on the host (2026-10-16 custody: /mnt/bb/home
 # was 0775, so the cloud-supervisor ancestor custody check refused every fixture under /home/var/src on bb1 only).
 chmod go-w ${SH ? `/mnt/bb/targets ${SH} ` : ''}$T /mnt/bb /mnt/bb/home /mnt/bb/home/src /mnt/bb/home/targets ${TD} ${TD}/.host-targets ${TD}/.host-src 2>/dev/null || true
+# /work itself is the job's own directory on /mnt/bb (2026-10-26: siblings of the /work/target bind, such as
+# check-feature-matrix's <target>-features-N, landed on the shared root filesystem and filled it).
 # Each job is its own Delegate=yes scope (2026-10-16 delegated cgroup): root moves the job into a "job" leaf and hands the
 # scope to var, so jobs (local e2e's heap cgroups, via /home/var/bin/bbcg/systemd-run) can build cgroups inside the job.
 # Only a cgroup that is a bbjobs.slice scope is ever touched.
-setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON unshare -m --propagation private bash -c 'mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
+setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON unshare -m --propagation private bash -c 'mount --bind ${J}.work /work && mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
 p=$!; echo $p > $J.pid
 node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # Hang reaper (2026-10-18, crit-bslot): the job's scope cgroup must use 5 s of CPU per 10 min; a job under that (a deadlocked
@@ -936,7 +938,7 @@ wait "$watcher" || { echo ${q(watcherRefusal)} >> $J.err; rc=224; }
 touch ${TD} $T 2>/dev/null || true
 rm -f $J.sh
 rm -rf -- ${TD}
-rm -rf $J.tmp 2>/dev/null || sudo -n rm -rf $J.tmp
+rm -rf $J.tmp $J.work 2>/dev/null || sudo -n rm -rf $J.tmp $J.work
 exit $rc`;
   const boundary = wrapper.indexOf('while [ "$(awk');
   if (boundary < 0) throw new Error('missing remote admission boundary');
