@@ -20,23 +20,9 @@ pub(crate) fn record_comparison() {
 }
 
 async fn put_page(store: &MemoryObjectStore, page: FileTablePage) -> ObjectId {
-    let id = file_table_page_id(&page, 128).unwrap();
-    let bytes = encode_file_table_page(
-        &page,
-        128,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )
-    .unwrap();
-    store
-        .put(
-            id,
-            OwnedBytes::from(bytes),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
+    crate::test_support::put_file_table_page(store, &page, 128)
         .await
-        .unwrap();
-    id
+        .unwrap()
 }
 
 async fn root(store: &MemoryObjectStore, keys: &[u8], width: usize, after: bool) -> ObjectId {

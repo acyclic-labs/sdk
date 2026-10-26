@@ -3,8 +3,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, encode_file_metadata,
-    encode_tree_page, file_metadata_id, tree_page_id,
-};
+    file_metadata_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use acyclic_stream::OwnedBytes;
@@ -104,42 +103,19 @@ async fn put_tree(
     store: &MemoryObjectStore,
     entries: Vec<TreeEntry>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let page = TreePage::Leaf(entries);
-    let object = tree_page_id(&page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        object,
-        OwnedBytes::from(encode_tree_page(
-            &page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(object)
+    crate::test_support::put_tree_page(store, &TreePage::Leaf(entries), 8).await
 }
 
 async fn put_table(
     store: &MemoryObjectStore,
     records: Vec<FileRecord>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let page = super::super::FileTablePage::Leaf(records);
-    let object = super::super::file_table_page_id(&page, 8)?;
-    AsyncObjectStore::put(
+    crate::test_support::put_file_table_page(
         store,
-        object,
-        OwnedBytes::from(super::super::encode_file_table_page(
-            &page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        &crate::kernel::FileTablePage::Leaf(records),
+        8,
     )
-    .await?;
-    Ok(object)
+    .await
 }
 
 async fn put_generation(
@@ -151,18 +127,7 @@ async fn put_generation(
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
-    let object = ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
-    };
-    AsyncObjectStore::put(
-        store,
-        object,
-        OwnedBytes::from(encoded),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(object)
+    crate::test_support::put_object(store, ObjectKind::GenerationRoot, encoded).await
 }
 
 async fn stored_request(

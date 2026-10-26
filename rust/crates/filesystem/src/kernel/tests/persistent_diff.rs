@@ -3,9 +3,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreePage};
 use crate::kernel::{
-    FilePayload, FileRecord, FileTablePage, InlineFileData, encode_file_table_page,
-    file_table_page_id,
-};
+    FilePayload, FileRecord, FileTablePage, InlineFileData};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use crate::storage::ObjectStoreError;

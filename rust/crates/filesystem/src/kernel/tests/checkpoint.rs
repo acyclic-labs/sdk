@@ -28,18 +28,7 @@ async fn put_root(
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
-    let object = ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
-    };
-    store
-        .put(
-            object,
-            acyclic_stream::OwnedBytes::from(encoded),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    Ok(object)
+    crate::test_support::put_object(store, ObjectKind::GenerationRoot, encoded).await
 }
 
 #[tokio::test]
