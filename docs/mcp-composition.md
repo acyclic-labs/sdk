@@ -456,58 +456,6 @@ The approved native transport still needs a model-tool consumer using the owning
 task/effect path. Final platform, formal, Chromium, installed-artifact and full-CI
 gates, owner review and actual-main landing remain open.
 
-### Approved native MCP tool-journal development checkpoint
-
-The standalone public consumer now installs its exactly approved MCP invocation
-through `McpCatalog` into the ordinary `ToolRegistry`, then calls
-`DurableToolRunner::run_with_context`. Its context comes from the actual admitted
-`FilesystemTaskRuntime` task. Only the MCP fixture receives the server and tool
-call grants. The host transport requires that task, protocol operation and call
-identity and the exact approved tool name/arguments. A changed-argument control
-must return `Unauthorized` before dispatch.
-
-The transport delegates dispatch and reconciliation to the existing
-`ConversationEffectHost` and retained `TaskJournalOwner`. The already assembled
-`NativeProcessProvider` validates the original lease, native request and exact
-approval. The transport decodes the stored native receipt through
-`NativeProcessRequest::mcp_response`, preserving Unicode and the full-width
-integer through the tool journal and its identity projection. Its operation-only
-entry points reject missing task context. The shared execution-journal factory
-serves both native approval and tool records; no second registry, journal state
-machine, process launcher or retry engine was added.
-
-For successful calls, two invocations of the durable runner cause one transport
-dispatch and no reconciliation. After old task/effect/transport/journal owners
-drop and the physical output is removed, reconstructed native provider, catalog,
-transport and tool-journal owners replay the same result with zero transport
-calls. Memory-backed reassembly retains its backing stores. The local-disk cases
-additionally reopen the filesystem and stream providers.
-
-For an applied call whose peer withholds its response, the bounded native capture
-stores its timeout/cleanup receipt but the MCP tool outcome remains indeterminate.
-Two initial runner calls require one dispatch and one reconciliation. Two calls
-after memory or complete disk reopen require zero dispatches and two
-reconciliations. A physical peer log independently remains exactly one call and
-the removed output never reappears. The reopened SDK destination remains
-unpublished. The original four receipt cuts and actual host-death controller
-continue to exercise the native effect boundary directly.
-
-The final example source passes both positive consumers, five memory fault
-controls, six disk cases and actual host death on Windows. Strict
-library/test/example Clippy passes without a new suppression. The public
-consumer also compiles with only `native-execution`, with no native HTTP or local
-filesystem feature required. Jobs ran sequentially with one Cargo job after
-fresh adequate headroom; terminal results and absence of owned compiler and
-host/peer processes were verified. These are development controls, not shared
-platform or performance qualification.
-
-This host sample binds one preapproved invocation; it does not supply a general
-per-server native admission policy. The stock model-loop context binding is owned
-by B/I and its joined qualification remains pending. Model-request integration,
-fault cuts spanning both tool and native journals, full final-source platform,
-formal, Chromium, installed-artifact and full-CI gates, owner review and actual
-main landing remain open.
-
 ### Portable HTTP lifecycle development checkpoint
 
 Browser hosts can now use the existing Rust initialization and discovery
