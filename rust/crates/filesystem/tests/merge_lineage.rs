@@ -8,6 +8,10 @@
 #[path = "support/unbounded.rs"]
 mod unbounded;
 
+#[macro_use]
+#[path = "support/provider_receipt.rs"]
+mod provider_receipt;
+
 use explicit fatal assertions for impossible setup failures"
 )]
 
@@ -710,63 +714,21 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
     let (left_outcome, right_outcome) = tokio::join!(
         async {
             left_barrier.wait().await;
-            {
-                let __authority_args = (
-                    authority,
-                    Epoch::GENESIS,
-                    expected,
-                    left.clone(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                );
-                let mut __authority_work =
-                    acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5);
-                let __authority_result = store
-                    .compare_and_append(
-                        acyclic_fs::GuardedAppend {
-                            authority_id: __authority_args.0,
-                            epoch: __authority_args.1,
-                            expected: __authority_args.2,
-                            commit: __authority_args.3,
-                            permit: acyclic_fs::PublicationPermit::Unrestricted,
-                        },
-                        &mut __authority_work,
-                        None::<&mut ()>,
-                    )
-                    .await
-                    .map_err(|error| error.into_error(std::convert::identity));
-                __authority_work.receipt(__authority_result)
-            }
+            provider_receipt!(
+                store,
+                compare_and_append(authority, Epoch::GENESIS, expected, left.clone()),
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
         },
         async {
             right_barrier.wait().await;
-            {
-                let __authority_args = (
-                    authority,
-                    Epoch::GENESIS,
-                    expected,
-                    right.clone(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                );
-                let mut __authority_work =
-                    acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5);
-                let __authority_result = store
-                    .compare_and_append(
-                        acyclic_fs::GuardedAppend {
-                            authority_id: __authority_args.0,
-                            epoch: __authority_args.1,
-                            expected: __authority_args.2,
-                            commit: __authority_args.3,
-                            permit: acyclic_fs::PublicationPermit::Unrestricted,
-                        },
-                        &mut __authority_work,
-                        None::<&mut ()>,
-                    )
-                    .await
-                    .map_err(|error| error.into_error(std::convert::identity));
-                __authority_work.receipt(__authority_result)
-            }
+            provider_receipt!(
+                store,
+                compare_and_append(authority, Epoch::GENESIS, expected, right.clone()),
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
         }
     );
     let outcomes = [left_outcome?.value, right_outcome?.value];

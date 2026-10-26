@@ -1,6 +1,10 @@
 //! Immutable filesystem composition over the canonical Objects v1 provider.
 #![cfg(feature = "distributed")]
 
+#[macro_use]
+#[path = "support/provider_receipt.rs"]
+mod provider_receipt;
+
 use acyclic_fs::storage::{
     ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest,
 };
@@ -81,16 +85,12 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
         writes.iter().map(|write| &write.bytes).collect::<Vec<_>>()
     );
     assert_eq!(result.work.bytes_hashed, 16);
-    let present = {
-        let __object_args = (
-            writes.first().ok_or("write absent")?.object_id,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        );
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store.contains(__object_args.0, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    }
+    let present = provider_receipt!(
+        store,
+        contains(writes.first().ok_or("write absent")?.object_id),
+        WorkBudget::UNBOUNDED,
+        &cancel
+    )
     .map_err(|failure| failure.error)?;
     assert!(present.value);
     assert_eq!(
@@ -134,19 +134,12 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
         LogicalObjectStore::new(Arc::clone(&provider), bucket.clone()).with_object_limit(4)?;
     let cancel = CancellationToken::new();
     let oversized = write(b"oversized");
-    let failure = {
-        let __object_args = (
-            oversized.object_id,
-            oversized.bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        );
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }
+    let failure = provider_receipt!(
+        store,
+        put(oversized.object_id, oversized.bytes.clone()),
+        WorkBudget::UNBOUNDED,
+        &cancel
+    )
     .err()
     .ok_or("oversized put succeeded")?;
     assert_eq!(failure.work.backend_write_operations, 0);
@@ -158,25 +151,23 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
         }
     ));
     assert!(
-        {
-            let __object_args = (&[oversized], WorkBudget::UNBOUNDED, &cancel);
-            let mut __object_work =
-                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        }
+        provider_receipt!(
+            store,
+            put_many(&[oversized]),
+            WorkBudget::UNBOUNDED,
+            &cancel
+        )
         .is_err()
     );
     let mut invalid = write(b"data");
     invalid.bytes = OwnedBytes::from_static(b"bad");
     assert!(matches!(
-        {
-            let __object_args = (&[invalid], WorkBudget::UNBOUNDED, &cancel);
-            let mut __object_work =
-                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        }
+        provider_receipt!(
+            store,
+            put_many(&[invalid]),
+            WorkBudget::UNBOUNDED,
+            &cancel
+        )
         .err()
         .map(|failure| failure.error),
         Some(ObjectStoreError::DigestMismatch)
@@ -228,34 +219,23 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
         )
         .await?;
     assert!(matches!(
-        {
-            let __object_args = (
-                wanted.object_id,
-                wanted.bytes.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancel,
-            );
-            let mut __object_work =
-                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }
+        provider_receipt!(
+            store,
+            put(wanted.object_id, wanted.bytes.clone()),
+            WorkBudget::UNBOUNDED,
+            &cancel
+        )
         .err()
         .map(|failure| failure.error),
         Some(ObjectStoreError::Corrupt)
     ));
     assert!(matches!(
-        {
-            let __object_args = (wanted.object_id, 4, WorkBudget::UNBOUNDED, &cancel);
-            let mut __object_work =
-                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }
+        provider_receipt!(
+            store,
+            read(wanted.object_id, 4),
+            WorkBudget::UNBOUNDED,
+            &cancel
+        )
         .err()
         .map(|failure| failure.error),
         Some(ObjectStoreError::Corrupt)
@@ -277,19 +257,12 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
             ..Default::default()
         })
         .await?;
-    {
-        let __object_args = (
-            wanted.object_id,
-            wanted.bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        );
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }
+    provider_receipt!(
+        store,
+        put(wanted.object_id, wanted.bytes.clone()),
+        WorkBudget::UNBOUNDED,
+        &cancel
+    )
     .map_err(|failure| failure.error)?;
     provider
         .delete(wire::DeleteObjectRequest {
@@ -298,28 +271,19 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
             ..Default::default()
         })
         .await?;
-    {
-        let __object_args = (
-            wanted.object_id,
-            wanted.bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        );
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }
+    provider_receipt!(
+        store,
+        put(wanted.object_id, wanted.bytes.clone()),
+        WorkBudget::UNBOUNDED,
+        &cancel
+    )
     .map_err(|failure| failure.error)?;
-    let result = {
-        let __object_args = (wanted.object_id, 4, WorkBudget::UNBOUNDED, &cancel);
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }
+    let result = provider_receipt!(
+        store,
+        read(wanted.object_id, 4),
+        WorkBudget::UNBOUNDED,
+        &cancel
+    )
     .map_err(|failure| failure.error)?;
     assert_eq!(result.value.bytes, wanted.bytes);
     Ok(())
