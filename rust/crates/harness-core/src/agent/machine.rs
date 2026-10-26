@@ -37,6 +37,10 @@ pub enum TurnInput {
         id: IntentId,
         /// Body.
         body: Box<FileRef>,
+        /// Inbox sequence of the message record, as returned
+        /// by `Delivered::Committed`; it correlates a settled turn with
+        /// its prompt, including a replayed send.
+        inbox: u64,
     },
     /// A child finished.
     ChildDone {
@@ -157,7 +161,7 @@ impl AgentState {
             if self.taken.remove(&sequence) {
                 continue;
             }
-            let Some(input) = input(record) else {
+            let Some(input) = input(sequence, record) else {
                 continue;
             };
             if self.queued.len() >= MAX_QUEUED {
@@ -386,7 +390,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         state.open_children.remove(&done.child);
         state.archive_pending.remove(&done.child);
     }
-    if let Some(input) = input(record).filter(|_| admitted.enqueue) {
+    if let Some(input) = input(sequence, record).filter(|_| admitted.enqueue) {
         // The response the waiting turn needs is taken now, out of order;
         // this step consumes it. Any other input joins the window, or, once
         // the window is full or already overflowed, stays in the inbox to be
@@ -409,13 +413,14 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     Ok(state)
 }
 
-/// The turn input an inbox record carries.
-fn input(record: InboxRecord) -> Option<TurnInput> {
+/// The turn input an inbox record at `sequence` carries.
+fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
     match record {
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,
             body: message.body,
+            inbox: sequence,
         }),
         InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),

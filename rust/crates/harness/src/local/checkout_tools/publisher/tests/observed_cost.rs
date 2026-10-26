@@ -225,7 +225,7 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
             (&publisher.tools.workspace, view),
             &mut state.watcher,
             PublicationPermit::Unrestricted,
-        )
+        )?
         .await?;
     assert_eq!(
         publisher.observed(view, operation, staged.clone()).await?,

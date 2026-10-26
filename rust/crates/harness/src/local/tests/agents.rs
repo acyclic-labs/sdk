@@ -48,7 +48,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let id = IntentId::try_from("hello").map_err(agent)?;
-    assert_eq!(harness.prompt(&id, "hello").await?, Delivered::Committed);
+    let delivered = harness.prompt(&id, "hello").await.map_err(agent)?;
+    let Delivered::Committed { inbox } = delivered else {
+        return Err(Error::Conflict(format!("prompt was not delivered: {delivered:?}")));
+    };
     let conversation = root.conversation().map_err(agent)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     let entries = loop {
@@ -68,10 +71,16 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     };
     assert_eq!(entries.len(), 1);
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
-    assert!(matches!(entry.input, TurnInput::Message { .. }));
+    assert!(matches!(entry.input, TurnInput::Message { inbox: settled, .. } if settled == inbox));
     assert_eq!(provider.requests().len(), 1);
-    // The same intent replays its commit; no second turn runs.
-    assert_eq!(harness.prompt(&id, "hello").await?, Delivered::Committed);
+    // A client reads the settled output from the root's private volume.
+    let output = harness
+        .client_reader()?
+        .read(&entry.output, 1 << 20, None, None)?
+        .await?;
+    assert!(!output.is_empty());
+    // The same intent replays its commit at the same sequence; no second turn runs.
+    assert_eq!(harness.prompt(&id, "hello").await.map_err(agent)?, delivered);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
     Ok(())
 }

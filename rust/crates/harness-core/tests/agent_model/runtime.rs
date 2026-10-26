@@ -69,10 +69,7 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
         child: child.clone(),
         id: intent("q"),
     });
-    assert_eq!(
-        host.send(&root, &user(), &record).await?,
-        Delivered::Committed
-    );
+    assert!(matches!(host.send(&root, &user(), &record).await?, Delivered::Committed { .. }));
     // The root's pending inbox follow holds its waker: the append alone wakes it.
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
@@ -88,10 +85,7 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     assert!(state.state().and_then(|s| s.checkpoint()).is_some());
 
     let by = intent("archive");
-    assert_eq!(
-        host.archive(&root, &user(), &by).await?,
-        Delivered::Committed
-    );
+    assert!(matches!(host.archive(&root, &user(), &by).await?, Delivered::Committed { .. }));
     let late = InboxRecord::ApprovalRequested(ApprovalRequested {
         child,
         id: intent("late"),
@@ -121,22 +115,13 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
         child: root.child(&id(2))?,
         outcome: AgentOutcome::Succeeded { result: None },
     });
-    assert_eq!(
-        host.send(&root, &user(), &done).await?,
-        Delivered::Committed
-    );
+    assert!(matches!(host.send(&root, &user(), &done).await?, Delivered::Committed { .. }));
     let another = InboxRecord::Cancel(Control {
         by: user(),
         id: intent("next"),
     });
-    assert_eq!(
-        host.send(&root, &user(), &another).await?,
-        Delivered::Committed
-    );
-    assert_eq!(
-        host.send(&root, &user(), &done).await?,
-        Delivered::Committed
-    );
+    assert!(matches!(host.send(&root, &user(), &another).await?, Delivered::Committed { .. }));
+    assert!(matches!(host.send(&root, &user(), &done).await?, Delivered::Committed { .. }));
     let changed = InboxRecord::ChildDone(ChildDone {
         child: root.child(&id(2))?,
         outcome: AgentOutcome::Failed {
@@ -167,17 +152,8 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
         host.create(&intent("create"), changed).await,
         Err(Error::Stream(StreamError::IdempotencyMismatch))
     ));
-    assert_eq!(
-        host.archive(&root, &user(), &intent("archive")).await?,
-        Delivered::Committed
-    );
-    assert_eq!(
-        host.send(&root, &user(), &done).await?,
-        Delivered::Committed
-    );
-    assert_eq!(
-        host.archive(&root, &user(), &intent("archive")).await?,
-        Delivered::Committed
-    );
+    assert!(matches!(host.archive(&root, &user(), &intent("archive")).await?, Delivered::Committed { .. }));
+    assert!(matches!(host.send(&root, &user(), &done).await?, Delivered::Committed { .. }));
+    assert!(matches!(host.archive(&root, &user(), &intent("archive")).await?, Delivered::Committed { .. }));
     Ok(())
 }

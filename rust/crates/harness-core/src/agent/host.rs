@@ -17,14 +17,22 @@ use acyclic_actors::{
     guest::Handler,
     local::{Clock, Runtime, Store},
 };
-use acyclic_stream::{CommitCondition, CommitRequest, StreamPath, StreamProvider};
+use acyclic_stream::{
+    CommitCondition, CommitRequest, CommittedMutation, StreamPath, StreamProvider,
+};
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivered {
-    /// Committed exactly once (an exact replay also reports this).
-    Committed,
+    /// Committed exactly once (an exact replay also reports this) at inbox
+    /// sequence `inbox`. A message's settled turn carries the same sequence in
+    /// its [`super::TurnInput::Message`]; `StatusRecord::cursor > inbox` means
+    /// the agent has consumed it.
+    Committed {
+        /// Inbox sequence of the delivered record, identical on replay.
+        inbox: u64,
+    },
     /// The recipient is archived; nothing was written.
     Closed,
 }
@@ -161,7 +169,20 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
                 !matches!(condition, CommitCondition::Tail { path, .. } if path == &inbox)
             });
             match submit(&*self.provider, request).await {
-                Ok(Submitted::Committed(_)) => return Ok(Delivered::Committed),
+                Ok(Submitted::Committed(envelope)) => {
+                    return envelope
+                        .mutations
+                        .iter()
+                        .find_map(|mutation| match mutation {
+                            CommittedMutation::Append(append) if append.path == inbox => {
+                                Some(Delivered::Committed {
+                                    inbox: append.start,
+                                })
+                            }
+                            _ => None,
+                        })
+                        .ok_or(Error::Record("committed envelope omits the inbox append"));
+                }
                 Err(error) => return Err(error),
                 Ok(Submitted::RecipientClosed(_)) => return Ok(Delivered::Closed),
                 Ok(Submitted::InboxMoved(_)) => {}
