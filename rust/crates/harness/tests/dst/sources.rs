@@ -304,7 +304,7 @@ const MOUNT_CLOCK_ALLOWED: [(&str, usize); 6] = [
     // Seeded `clock.elapsed()`, else CLOCK_UPTIME_RAW outside simulation.
     ("filesystem/src/native_mount/darwin_mount/context.rs", 2),
     // Mount start/stop deadlines on the mounting thread; never kernel callbacks.
-    ("filesystem/src/native_mount/darwin_mount/cleanup.rs", 7),
+    ("filesystem/src/native_mount/darwin_mount/cleanup.rs", 2),
     ("filesystem/src/native_mount/darwin_mount/session.rs", 2),
     ("filesystem/src/native_mount/darwin_mount/startup.rs", 2),
     ("filesystem/src/native_mount/fuse/lifecycle.rs", 2),
