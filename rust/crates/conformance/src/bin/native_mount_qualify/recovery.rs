@@ -177,9 +177,7 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
             let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
         }
         fs::write(ready, b"ready")?;
-        loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        }
+        std::future::pending::<Result<(), Failure>>().await
     })
 }
 

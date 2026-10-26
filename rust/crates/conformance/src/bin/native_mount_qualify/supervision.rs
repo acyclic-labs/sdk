@@ -29,12 +29,12 @@ pub(super) fn qualification_case_worker(case: &str) -> Result<(), Failure> {
 }
 
 pub(super) fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), Failure> {
-    let child = spawn_captured_child(
+    let output = capture_child(
         Command::new(std::env::current_exe()?)
             .arg("--qualification-case-worker")
             .arg(case),
+        timeout,
     )?;
-    let output = wait_for_child(child, timeout)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -68,33 +68,35 @@ pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChil
     })
 }
 
-pub(super) fn wait_for_child(
-    mut child: CapturedChild,
+pub(super) fn capture_child(
+    command: &mut Command,
     timeout: Duration,
 ) -> Result<std::process::Output, Failure> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate(None)?;
-            return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-        }
-        if let Some(status) = child.process.try_wait(None)? {
-            return captured_child_output(status, &mut child.stdout, &mut child.stderr);
-        }
-        if Instant::now() >= deadline {
-            child.process.terminate_descendants()?;
-            let status = child.process.wait(Duration::from_secs(5))?;
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
-            return Err(format!(
-                "child process exceeded {} ms: stdout={} stderr={}",
-                timeout.as_millis(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    ProcessTree::spawn(command)?
+        .wait_with_output(
+            timeout,
+            usize::try_from(MAX_CHILD_OUTPUT_BYTES)?,
+            None,
+            || Ok(()),
+            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+            None,
+            None,
+            None,
+        )
+        .map_err(|failure| {
+            format!(
+                "child capture failed: {}; cleanup_completed={}; stdout={} stderr={}",
+                failure.error,
+                failure.cleanup_completed,
+                String::from_utf8_lossy(&failure.stdout),
+                String::from_utf8_lossy(&failure.stderr)
             )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+            .into()
+        })
 }
 
 pub(super) fn captured_child_output(

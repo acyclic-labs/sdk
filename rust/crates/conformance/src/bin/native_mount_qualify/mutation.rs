@@ -141,13 +141,13 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         .await
         .map_err(stop_failed_mount)?;
     watcher.watch(&mount_path)?;
-    let child = spawn_captured_child(
+    let child_result = capture_child(
         Command::new(std::env::current_exe()?)
             .arg("--io-child")
             .arg(&mount_path)
             .env("ACYCLIC_EXPECTED_NATIVE_KIND", kind),
-    )?;
-    let child_result = wait_for_child(child, Duration::from_secs(10));
+        Duration::from_secs(10),
+    );
     let watched = wait_for_watch_after_child(
         &watch_rx,
         &mount_path.join("nested/watch-sentinel.txt"),
