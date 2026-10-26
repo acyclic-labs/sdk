@@ -23,9 +23,7 @@ use std::{
 };
 
 #[cfg(test)]
-use acyclic_machines::provider_core::{
-    Admission, NOT_QUIESCENT, operation_id, quiescent_archive_script, shell_quote,
-};
+use acyclic_machines::provider_core::{Admission, operation_id, shell_quote};
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
     ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
@@ -38,13 +36,14 @@ use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::provider_core::{
-    Allocation, MutationIntent as Intent, OperationRegistry, WorkspaceArchive, allocation_receipt,
+    Allocation, MutationIntent as Intent, OperationRegistry, allocation_receipt,
+    snapshot_unavailable,
 };
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox, Snapshot};
 
 /// Default Daytona API base URL.
 pub const DEFAULT_API_URL: &str = "https://app.daytona.io/api";
-/// Default directory a container disk fork copies into its children.
+/// Default working directory for guest command execution.
 pub const DEFAULT_WORKSPACE_DIR: &str = "/home/daytona/workspace";
 
 /// Provider configuration.
@@ -80,8 +79,7 @@ pub struct DaytonaConfig {
     pub ready_timeout: Duration,
     /// Per-request HTTP timeout.
     pub request_timeout: Duration,
-    /// Absolute directory a container disk fork (`Capability::DiskFork`) copies from the
-    /// source into each child; everything outside it comes from the source's snapshot.
+    /// Absolute working directory for guest command execution.
     pub workspace_dir: String,
 }
 
@@ -177,7 +175,7 @@ pub enum Assurance {
 }
 
 /// Feature declaration of this provider. VM-class features apply to `linux-vm` and `windows`
-/// sandboxes; container-class sandboxes offer only [`Self::container_disk_fork`].
+/// sandboxes. Container-class sandboxes have no atomic snapshot boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DaytonaCapabilities {
     /// Checkpoints capture VM memory (hot snapshot, `includeMemory`).
@@ -185,8 +183,7 @@ pub struct DaytonaCapabilities {
     /// Native fork copies a running VM's memory and disk (`POST /sandbox/{id}/fork`), at any
     /// time, without an intermediate checkpoint.
     pub live_fork_memory: Assurance,
-    /// Container disk fork: fresh sandboxes from the source's snapshot, with the source's
-    /// workspace directory copied in through the toolbox. No process or memory state.
+    /// Container disk fork is unavailable without an atomic snapshot boundary.
     pub container_disk_fork: Assurance,
     /// A suspended machine keeps its memory (pause, not stop) and frees CPU and memory quota.
     pub suspend_keeps_memory: Assurance,
@@ -203,7 +200,7 @@ pub struct DaytonaCapabilities {
 pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
     checkpoint_memory: Assurance::Yes,
     live_fork_memory: Assurance::Yes,
-    container_disk_fork: Assurance::Yes,
+    container_disk_fork: Assurance::No,
     suspend_keeps_memory: Assurance::Yes,
     network_policy: Assurance::Provisional,
     usage_receipts: Assurance::Provisional,
@@ -790,70 +787,6 @@ impl DaytonaProvider {
         }
     }
 
-    /// Container disk fork: archives the parent's workspace directory once, at a quiescent
-    /// instant (see [`acyclic_machines::provider_core::quiescent_archive_script`]), creates each child from the parent's snapshot
-    /// with the parent's lifecycle settings, environment, and foreign labels, and unpacks the
-    /// archive into it. The workspace is this provider's declared persistent disk; everything
-    /// else is the snapshot both boot from. Processes and memory are not inherited. A child is
-    /// labelled ready only after its workspace is unpacked.
-    async fn disk_fork(
-        &self,
-        operation: OperationId,
-        parent: &MachineObservation,
-        count: u32,
-        key: IdempotencyKey,
-    ) -> Result<Vec<MachineObservation>, ProviderError> {
-        let source = self.api.get(&parent.id.to_string()).await?;
-        let snapshot = source.snapshot.clone().ok_or_else(|| {
-            ProviderError::Rejected(format!("sandbox {} reports no snapshot", source.id))
-        })?;
-        let tar_path = format!("/tmp/acyclic-fork-{key}.tar");
-        let archive = WorkspaceArchive::capture(
-            &self.api,
-            &source.id,
-            &self.config.workspace_dir,
-            &tar_path,
-            ARCHIVE_ATTEMPTS,
-        )
-        .await?;
-        let mut ids = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let slot = map::ForkSlot { index, count };
-            let mut body =
-                map::create_request(&self.config, &snapshot, key, Some(slot), &parent.contract)?;
-            body.labels = map::relabel(&source.labels, self.live_fork_labels(key, slot, parent));
-            if let Some(minutes) = source
-                .auto_stop_interval
-                .and_then(|value| u32::try_from(value).ok())
-            {
-                body.auto_stop_interval = Some(minutes);
-            }
-            if let Some(minutes) = source.auto_delete_interval {
-                body.auto_delete_interval = Some(minutes);
-            }
-            body.env = inherited_env(&source);
-            let (child, adopted) = self.create_or_adopt(&body).await?;
-            self.claim(operation, &child.id, adopted).await?;
-            ids.push((child.id, body.labels));
-        }
-        let mut children = Vec::with_capacity(ids.len());
-        for (id, mut labels) in ids {
-            let settled = self.wait_settled(&id, key).await?;
-            archive
-                .restore(&self.api, &settled.id, &self.config.workspace_dir)
-                .await?;
-            // Only now is the child a complete copy; label recovery requires this marker.
-            labels.insert(map::LABEL_READY.to_owned(), "true".to_owned());
-            self.api.replace_labels(&id, labels).await?;
-            let observation = self.observe(&settled, Some(&parent.contract), None)?;
-            if observation.state != MachineState::Running {
-                return Err(ProviderError::Failed);
-            }
-            children.push(observation);
-        }
-        Ok(children)
-    }
-
     fn live_fork_labels(
         &self,
         key: IdempotencyKey,
@@ -1230,9 +1163,9 @@ impl MachinesProvider for DaytonaProvider {
         .await
     }
 
-    /// Native VM fork for machines declaring [`Capability::LiveFork`] (memory and disk), and
-    /// a workspace-copying disk fork for containers declaring [`Capability::DiskFork`]; see
-    /// the crate README. Children are labelled with their source (`acyclic.parent`).
+    /// Native VM fork for machines declaring [`Capability::LiveFork`] (memory and disk).
+    /// Containers are refused: no atomic workspace snapshot boundary is available.
+    /// Children are labelled with their source (`acyclic.parent`).
     async fn fork_machine(
         &self,
         machine: MachineId,
@@ -1260,9 +1193,7 @@ impl MachinesProvider for DaytonaProvider {
                     ForkFidelity::MemoryAndDisk => {
                         self.native_fork(operation, &parent, count, key).await?
                     }
-                    ForkFidelity::DiskOnly => {
-                        self.disk_fork(operation, &parent, count, key).await?
-                    }
+                    ForkFidelity::DiskOnly => return Err(snapshot_unavailable()),
                 };
                 Ok(MutationOutcome::MachineForked {
                     source: machine,
@@ -1532,24 +1463,8 @@ fn require_capability(
     }
 }
 
-/// Attempts the shared workspace archive makes before giving up.
-const ARCHIVE_ATTEMPTS: u32 = 5;
 /// Longest wait between retries of a fork refused because its source is still forking.
 const MAX_FORK_BACKOFF: Duration = Duration::from_secs(2);
-
-/// Environment Daytona reports for `sandbox` (`env`), as string pairs.
-fn inherited_env(sandbox: &Sandbox) -> BTreeMap<String, String> {
-    sandbox
-        .extra
-        .get("env")
-        .and_then(serde_json::Value::as_object)
-        .map(|env| {
-            env.iter()
-                .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 #[cfg(test)]
 #[allow(
@@ -1717,25 +1632,16 @@ mod tests {
     }
 
     #[test]
-    fn shell_words_and_inherited_environment() {
+    fn shell_words_are_quoted() {
         assert_eq!(
             shell_quote("/home/daytona/work space"),
             "'/home/daytona/work space'"
         );
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
-        let sandbox: Sandbox = serde_json::from_value(serde_json::json!({
-            "id": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
-            "env": { "ACYCLIC_HOST": "h", "NUMBER": 7 }
-        }))
-        .unwrap();
-        assert_eq!(
-            inherited_env(&sandbox),
-            BTreeMap::from([("ACYCLIC_HOST".to_owned(), "h".to_owned())])
-        );
     }
 
     #[test]
-    fn container_contracts_declare_disk_fork_and_never_auto_suspend() {
+    fn container_contracts_refuse_fork_and_never_auto_suspend() {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000005").unwrap();
         let request = CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32]);
         let container = DaytonaProvider::contract(
@@ -1743,7 +1649,8 @@ mod tests {
             map::capabilities_for_class(Some("container")).unwrap(),
         )
         .unwrap();
-        assert_eq!(container.fork_fidelity(), Some(ForkFidelity::DiskOnly));
+        assert_eq!(container.fork_fidelity(), None);
+        assert_eq!(CAPABILITIES.container_disk_fork, Assurance::No);
         assert_eq!(container.suspension, SuspensionPolicy::Manual);
         let mut config = DaytonaConfig::new("k");
         config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
@@ -1761,16 +1668,17 @@ mod tests {
         .unwrap();
         assert_eq!(vm.fork_fidelity(), Some(ForkFidelity::MemoryAndDisk));
         assert_eq!(vm.suspension, request.suspension);
-        let mut require = request;
-        require.compatibility =
-            CompatibilityPolicy::Require(BTreeSet::from([Capability::LiveFork]));
-        assert!(matches!(
-            DaytonaProvider::contract(
-                &require,
-                map::capabilities_for_class(Some("container")).unwrap()
-            ),
-            Err(ProviderError::Unsupported(_))
-        ));
+        for capability in [Capability::LiveFork, Capability::DiskFork] {
+            let mut require = request.clone();
+            require.compatibility = CompatibilityPolicy::Require(BTreeSet::from([capability]));
+            assert!(matches!(
+                DaytonaProvider::contract(
+                    &require,
+                    map::capabilities_for_class(Some("container")).unwrap()
+                ),
+                Err(ProviderError::Unsupported(_))
+            ));
+        }
     }
 
     const MACHINE: &str = "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61";
@@ -2552,73 +2460,6 @@ mod tests {
                 .iter()
                 .any(|r| r.is("DELETE", &format!("/sandbox/{CHILD}")))
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_workspace_archive_is_kept_only_at_a_quiescent_instant() {
-        let dir = std::env::temp_dir().join(format!("acyclic-quiescent-{}", std::process::id()));
-        let workspace = dir.join("ws");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("a"), "stable").unwrap();
-        let tar = dir.join("out.tar");
-        let script =
-            quiescent_archive_script(workspace.to_str().unwrap(), tar.to_str().unwrap(), 2);
-        let status = acyclic_native_runtime::process_status(
-            std::process::Command::new("sh").arg("-c").arg(&script),
-            std::time::Duration::from_secs(120),
-        )
-        .unwrap();
-        assert!(status.success());
-        assert!(dir.join("out.tar.gz").exists());
-
-        // Shadow `tar` so the workspace changes, or a read reports a change, deterministically
-        // between the two reads of every attempt instead of racing a writer thread.
-        let real_tar = acyclic_native_runtime::process_output(
-            std::process::Command::new("sh").args(["-c", "command -v tar"]),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )
-        .unwrap();
-        let real_tar = String::from_utf8(real_tar.stdout).unwrap();
-        let bin = dir.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let run_with_tar = |after_each_read: &str| {
-            use std::os::unix::fs::PermissionsExt;
-            let shim = bin.join("tar");
-            std::fs::write(
-                &shim,
-                format!(
-                    "#!/bin/sh\n{} \"$@\" || exit $?\n{after_each_read}\n",
-                    real_tar.trim()
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let _ = std::fs::remove_file(dir.join("out.tar.gz"));
-            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-            let status = acyclic_native_runtime::process_status(
-                std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&script)
-                    .env("PATH", path),
-                std::time::Duration::from_secs(120),
-            )
-            .unwrap();
-            assert_eq!(status.code(), Some(i32::try_from(NOT_QUIESCENT).unwrap()));
-            assert!(!dir.join("out.tar.gz").exists() && !tar.exists());
-        };
-        // A workspace written between the two reads of every attempt never yields an archive.
-        let busy = workspace.join("busy");
-        run_with_tar(&format!("echo x >> '{}'", busy.display()));
-        // Nor does one whose re-read sees a file change under it (`tar` exits 1) even though
-        // both reads come out byte-identical.
-        let calls = dir.join("calls");
-        run_with_tar(&format!(
-            "echo x >> '{c}'; [ $(wc -l < '{c}') -eq 1 ] || {{ : > '{c}'; exit 1; }}",
-            c = calls.display()
-        ));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

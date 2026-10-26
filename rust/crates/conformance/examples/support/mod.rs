@@ -19,19 +19,18 @@ pub async fn run<D: SandboxDriver>(
         .with_writer(std::io::stderr)
         .try_init()
         .map_err(|error| format!("Conformance logging initialization failed: {error}; recovery: run the conformance example in a fresh process"))?;
+    acyclic_machines::provider_core::validate_workspace(&workspace)?;
     let name = driver.name();
     let config = RemoteMachinesConfig {
         images: [([7; 32], image)].into(),
         networks: [([8; 32], NetworkPolicy::BlockAll)].into(),
-        workspace,
         ..RemoteMachinesConfig::default()
     };
     println!(
         "{name} conformance resource namespace: {}",
         config.namespace
     );
-    let workspace = config.workspace.clone();
-    let provider = std::sync::Arc::new(RemoteMachines::new(driver, config)?);
+    let provider = std::sync::Arc::new(RemoteMachines::new(driver, config));
     let result = async {
         acyclic_conformance::machines(provider.as_ref()).await?;
         acyclic_conformance::machines_shell::verify(provider.clone(), &workspace).await?;

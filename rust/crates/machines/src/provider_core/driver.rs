@@ -72,7 +72,7 @@ pub struct SandboxInstance {
 /// Implementations dispatch each mutation once. They must report lost mutation
 /// replies as unavailable, and must never retry an exec after uncertain dispatch.
 /// Capability declarations and credential handling belong in the adapter;
-/// operation replay, event history, workspace copies and pagination do not.
+/// operation replay, event history and pagination do not.
 #[async_trait]
 pub trait SandboxDriver: Send + Sync + 'static {
     /// Provider name used in diagnostics and compatibility commitments.

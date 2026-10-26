@@ -178,8 +178,7 @@ impl OperationRegistry {
                 } else {
                     self.fail(operation, &error);
                     // A definite failure leaves nothing the caller can use or replay, so undo
-                    // whatever the operation created (for example fork children whose
-                    // workspace never unpacked). An indeterminate outcome keeps its sandboxes
+                    // whatever the operation created. An indeterminate outcome keeps its sandboxes
                     // for `recover`, and `cancel` undoes it.
                     if !matches!(
                         error,

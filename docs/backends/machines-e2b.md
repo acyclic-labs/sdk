@@ -1,20 +1,20 @@
 # E2B Machines
 
 Enable `acyclic-machines/e2b`. Compose `RemoteMachines<E2b>` using explicit API
-URL/key, guest domain, optional envd proxy URL and lifetime ceiling. Register an
+URL/key, guest domain, optional envd proxy URL and lifetime ceiling. Register a
 dedicated E2B template ID in `RemoteMachinesConfig.images`, a
-`NetworkPolicy::BlockAll` digest in `networks`, and the image's persistent
-workspace path in `workspace`. The `e2b-conformance` example shows the bindings.
+`NetworkPolicy::BlockAll` digest in `networks`. Supply the image's working directory
+to the qualification runner. The `e2b-conformance` example shows the bindings.
 Credentials are never read from an ambient profile by the adapter.
 
 Control-plane create/delete and envd Connect execution/file I/O are transport
-code; lifecycle, stream ownership, expiry, binary output, cancellation and disk
-copying use the shared Machines core. The template needs bash, POSIX sh, setsid,
-`/bin/kill`, tar, gzip, readable `/proc` and writable `/tmp`, and an existing workspace directory.
-Only blocked egress is supported. No memory fork, pause/resume or idle contract
-is advertised. Provider-default lifetime resolves to the configured ceiling
-(one hour in the example); explicit infinite lifetime is refused. Journals and
-workspace archives are process-local, and archives occupy host memory. This
+code; lifecycle, stream ownership, expiry, binary output and cancellation use the
+shared Machines core. The template needs bash, POSIX sh, setsid,
+`/bin/kill`, readable `/proc` and writable `/tmp`, and an existing workspace directory.
+Only blocked egress is supported. Snapshot, checkpoint restoration and fork are
+refused until an atomic provider boundary or an admitted immutable filesystem generation
+is available. No pause/resume or idle contract is advertised. Provider-default lifetime resolves to the configured ceiling
+(one hour in the example); explicit infinite lifetime is refused. Operation records and console history are process-local. This
 binding does not implement the harness kernel filesystem seam.
 E2B resolves template IDs through mutable build tags. Freeze the dedicated
 template's default build for this binding's lifetime and retain its build ID;
@@ -25,7 +25,8 @@ the adapter does not yet enforce an immutable build commitment.
 The transport was derived from the published `e2b@2.61.0` SDK's generated envd
 Connect schema and sandbox REST requests. These are protocol sources, not real
 response fixtures. Provider conformance has not yet run, and no response fixtures
-are claimed. An authorized local Embed host or coordinator captures are required.
+are claimed. The current canonical suite requires checkpoint/fork unconditionally;
+this binding refuses those vectors and cannot yet pass the complete suite. An authorized local Embed host or coordinator captures are required.
 
 [E2B Embed](https://github.com/e2b-dev/runtime/tree/main/embed/compose) offers an
 account-free Linux host. Its official Docker Compose stack alters host namespaces,

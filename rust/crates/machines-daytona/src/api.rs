@@ -880,31 +880,3 @@ mod tests {
         ));
     }
 }
-
-#[async_trait::async_trait]
-impl acyclic_machines::provider_core::WorkspaceIo for DaytonaApi {
-    async fn status(&self, resource: &str, command: String) -> Result<Option<i64>, ProviderError> {
-        let response = self
-            .execute(
-                resource,
-                &ExecuteRequest {
-                    command: format!(
-                        "sh -c {}",
-                        acyclic_machines::provider_core::shell_quote(&command)
-                    ),
-                    cwd: None,
-                    timeout: Some(300),
-                },
-            )
-            .await?;
-        Ok(response.exit_code)
-    }
-
-    async fn download(&self, resource: &str, path: &str) -> Result<Vec<u8>, ProviderError> {
-        self.download_file(resource, path).await
-    }
-
-    async fn upload(&self, resource: &str, path: &str, data: &[u8]) -> Result<(), ProviderError> {
-        self.upload_file(resource, path, data).await
-    }
-}

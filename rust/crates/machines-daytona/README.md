@@ -1,7 +1,7 @@
 # acyclic-machines-daytona
 
 `MachinesProvider` over [Daytona](https://www.daytona.io) sandboxes: VM classes (`linux-vm`,
-`windows`) with the full feature set, and `container` sandboxes with disk fork only.
+`windows`) with native snapshot/fork support, and `container` sandboxes without snapshot/fork support.
 It is one replaceable provider behind the `acyclic-machines` contract: nothing Daytona-specific
 crosses into the harness, and switching providers changes bindings, not orchestration.
 
@@ -12,7 +12,7 @@ crosses into the harness, and switching providers changes bindings, not orchestr
 | `checkpoint`            | `POST /sandbox/{id}/snapshot` with `includeMemory: true` (hot snapshot)       |
 | `fork`                  | `POST /sandbox` from the hot snapshot, once per child                         |
 | `fork_machine` (VM)     | `POST /sandbox/{id}/fork` per child: memory and disk (`LiveFork`)             |
-| `fork_machine` (container) | tar the workspace via toolbox, `POST /sandbox` from the parent's snapshot, upload and unpack (`DiskFork`) |
+| `fork_machine` (container) | refused: no atomic filesystem snapshot boundary |
 | `suspend` / `wake`      | `POST /sandbox/{id}/pause` / `POST /sandbox/{id}/start`                       |
 | `set_suspension_policy` | `POST /sandbox/{id}/autopause/{minutes}` (pause keeps memory; stop does not)  |
 | `destroy_*`             | `DELETE /sandbox/{id}` / `DELETE /snapshots/{id}`                             |
@@ -36,21 +36,12 @@ from the machine contract or the outcome, never from the provider type:
   `GET /sandbox/{id}/forks` first and returns `ProviderError::Conflict` until the children are
   gone; destroy children in reverse index order (a source always has a lower index than the
   children forked from it), then the parent.
-- **Containers** declare only `DiskFork` (`ForkFidelity::DiskOnly`). The provider archives
-  `DaytonaConfig::workspace_dir` (default `/home/daytona/workspace`, env
-  `DAYTONA_WORKSPACE_DIR`) in the parent once, creates each child from the parent's snapshot
-  with its lifecycle intervals, environment, and non-provider labels, and unpacks the archive
-  into it through the toolbox files API. Processes and memory are not inherited: the caller
-  restarts its workload in each child from durable history. The workspace is the provider's
-  declared persistent disk (`ForkFidelity::DiskOnly` copies provider-declared persistent data);
-  writes outside it are not copied, so keep durable state in the workspace. The archive is kept
-  only when two consecutive reads of the workspace agree, so it reflects one quiescent instant;
-  a workspace that keeps changing across five attempts fails the fork with
-  `ProviderError::Conflict` before any child exists. A child gets `acyclic.ready=true` only
-  after its workspace is unpacked. A fork that fails definitively deletes the children it
-  created; an indeterminate one keeps them for `recover`, and `cancel` deletes them. Children
-  never block deleting the parent.
-  Measured on `daytona-small` (eu): a 4 MiB workspace forked into two children in about 7 s.
+- **Containers** advertise no fork capability. `fork_machine` refuses with
+  `ProviderError::Unsupported` until an atomic provider snapshot or an admitted immutable
+  filesystem generation covers every writer. Sequential TAR reads cannot establish a
+  consistent snapshot, even when their checksums match. `DaytonaConfig::workspace_dir`
+  (default `/home/daytona/workspace`, env `DAYTONA_WORKSPACE_DIR`) selects the working
+  directory for execution; it is not a snapshot boundary.
 
 Every live-fork child carries `acyclic.kind=live-fork`, `acyclic.parent=<requested machine>`,
 `acyclic.fork_source=<sandbox it was forked from>`, its index and the requested count, and
@@ -87,8 +78,6 @@ Live checks, all ignored by default and gated on `DAYTONA_API_KEY`:
 ```sh
 # Container smoke test of the REST client (create, exec, delete; bounded TTL):
 DAYTONA_API_KEY=... cargo test -p acyclic-machines-daytona --test live -- --ignored smoke
-# Container disk fork through the trait (three short-lived sandboxes, always deleted):
-DAYTONA_API_KEY=... cargo test -p acyclic-machines-daytona --test live -- --ignored container_disk_fork
 # Full Machines conformance suite; needs a Linux VM snapshot and bills the organization:
 DAYTONA_API_KEY=... DAYTONA_SNAPSHOT=<vm snapshot> \
   cargo test -p acyclic-machines-daytona --test live -- --ignored conformance

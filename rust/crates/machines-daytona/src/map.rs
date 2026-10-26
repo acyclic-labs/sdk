@@ -41,7 +41,7 @@ pub const KIND_FORK: &str = "fork";
 /// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
 pub const KIND_LIVE_FORK: &str = "live-fork";
 /// Label a live-fork child carries, set to `true`, once it is a complete copy (native fork:
-/// as soon as it exists; disk fork: after its workspace is unpacked). Label recovery only
+/// as soon as it exists). Label recovery only
 /// returns a live fork whose every child is ready.
 pub const LABEL_READY: &str = "acyclic.ready";
 /// Label holding the sandbox a live-fork child was actually forked from: the requested machine
@@ -110,8 +110,7 @@ pub fn is_vm_class(class: Option<&str>) -> bool {
 /// does not admit.
 ///
 /// VM classes get memory checkpoints, native memory-and-disk live fork, and pause/resume.
-/// Containers get only disk fork: the provider copies the workspace into fresh sandboxes
-/// booted from the parent's snapshot, and no process state is inherited.
+/// Containers have no atomic snapshot boundary and advertise no fork capability.
 #[must_use]
 pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability>> {
     if is_vm_class(class) {
@@ -121,7 +120,7 @@ pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability
             Capability::SuspendResume,
         ]))
     } else if class.is_some_and(|class| class.eq_ignore_ascii_case(CONTAINER_CLASS)) {
-        Some(BTreeSet::from([Capability::DiskFork]))
+        Some(BTreeSet::new())
     } else {
         None
     }
@@ -752,7 +751,7 @@ mod tests {
         );
         assert_eq!(
             capabilities_for_class(Some("container")),
-            Some(BTreeSet::from([Capability::DiskFork]))
+            Some(BTreeSet::new())
         );
         assert_eq!(capabilities_for_class(Some("android")), None);
         assert_eq!(capabilities_for_class(None), None);

@@ -1,4 +1,4 @@
-//! Shared lifecycle, execution and file-transfer mechanisms for machine adapters.
+//! Shared lifecycle, execution and workspace admission for machine adapters.
 
 mod operations;
 pub use operations::*;
@@ -11,6 +11,8 @@ mod driver;
 pub use driver::*;
 mod remote;
 pub use remote::*;
+#[cfg(test)]
+mod remote_tests;
 
 pub use crate::MutationIntent;
 

@@ -18,7 +18,7 @@ use std::{
 
 /// E2B cloud or account-free Embed deployment. Authentication values are never
 /// included in resource endpoints or diagnostics. Templates must provide the
-/// configured workspace and POSIX shell/tar utilities.
+/// configured workspace and POSIX shell utilities.
 #[derive(Clone)]
 pub struct E2b {
     api: Http,
