@@ -67,7 +67,7 @@ async fn signed_scope_expiry_wakes_a_quiet_owner_without_a_task_deadline() -> Re
 }
 
 #[tokio::test]
-async fn deadline_clock_jump_wakes_a_quiet_owner() -> Result<()> {
+async fn deadline_registration_rearms_after_a_clock_jump() -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     struct Clock(AtomicU64);
     impl UnixMillisClock for Clock {
@@ -91,6 +91,9 @@ async fn deadline_clock_jump_wakes_a_quiet_owner() -> Result<()> {
     assert!(futures::poll!(changed.as_mut()).is_pending());
     let started = std::time::Instant::now();
     clock.0.store(10_001, Ordering::SeqCst);
+    // A changed registration re-arms the shared timer. Clock mutation alone
+    // does not request periodic sampling from an otherwise quiet host.
+    let _registration = owner.owner_changes().await?;
     tokio::time::timeout(Duration::from_millis(200), changed)
         .await
         .map_err(|_| Error::Storage("wall deadline jump did not wake a quiet owner".into()))??;

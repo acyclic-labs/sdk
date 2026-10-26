@@ -2,6 +2,7 @@
 use super::*;
 use crate::scheduler::SchedulerEvent;
 use acyclic_stream::SystemUnixMillisClock;
+use std::ops::Bound;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::Notify;
 
@@ -40,42 +41,44 @@ impl OwnerChangeHub {
         let active = Arc::clone(&subscribers);
         let deadline_changed = Arc::clone(&locked(&active).deadline_changed);
         let driver = tokio::spawn(async move {
+            let deadline = tokio::time::sleep(std::time::Duration::ZERO);
+            tokio::pin!(deadline);
+            let mut armed = false;
+            let mut rearm = true;
             loop {
-                let delay = {
-                    let subscribers = locked(&active);
-                    let now = clock.now_unix_millis();
-                    let scope_now = SystemUnixMillisClock.now_unix_millis();
-                    subscribers.notify_deadlines(now, scope_now);
-                    let first = [
-                        subscribers
-                            .deadlines
-                            .first_key_value()
-                            .map(|(time, _)| time.saturating_sub(now)),
-                        subscribers
-                            .scope_deadlines
-                            .first_key_value()
-                            .map(|(time, _)| time.saturating_sub(scope_now)),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .min();
-                    // One shared sampler preserves the former wall-clock jump
-                    // bound. Task and signed-scope clocks are independent;
-                    // quiet commands reauthenticate only when a bound expires.
-                    first.map(|remaining| {
-                        std::time::Duration::from_millis(if remaining == 0 {
-                            25
-                        } else {
-                            remaining.min(25)
-                        })
-                    })
-                };
-                let deadline = async {
-                    match delay {
-                        Some(delay) => tokio::time::sleep(delay).await,
-                        None => std::future::pending().await,
+                if rearm {
+                    let delay = {
+                        let subscribers = locked(&active);
+                        let now = clock.now_unix_millis();
+                        let scope_now = SystemUnixMillisClock.now_unix_millis();
+                        subscribers.notify_deadlines(now, scope_now);
+                        // Expired routes stay owned by their registrations, but
+                        // never arm another timer. Only a future bound can wake
+                        // an otherwise quiet host.
+                        [
+                            subscribers
+                                .deadlines
+                                .range((Bound::Excluded(now), Bound::Unbounded))
+                                .next()
+                                .map(|(time, _)| time - now),
+                            subscribers
+                                .scope_deadlines
+                                .range((Bound::Excluded(scope_now), Bound::Unbounded))
+                                .next()
+                                .map(|(time, _)| time - scope_now),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .min()
+                    };
+                    armed = delay.is_some();
+                    if let Some(delay) = delay {
+                        let next =
+                            tokio::time::Instant::now() + std::time::Duration::from_millis(delay);
+                        deadline.as_mut().reset(next);
                     }
-                };
+                    rearm = false;
+                }
                 tokio::select! {
                     result = changes.try_next() => match result {
                         Ok(Some(event)) => locked(&active).publish(&event),
@@ -88,8 +91,8 @@ impl OwnerChangeHub {
                             return;
                         }
                     },
-                    () = deadline_changed.notified() => {},
-                    () = deadline => {},
+                    () = deadline_changed.notified() => rearm = true,
+                    () = &mut deadline, if armed => rearm = true,
                 }
             }
         });
@@ -153,7 +156,7 @@ impl Drop for OwnerChangeHub {
 
 impl Subscribers {
     fn notify_deadlines(&self, now: u64, scope_now: u64) {
-        // Keep routes through backward jumps: a later expiry must wake again.
+        // Registration changes re-arm both clocks; elapsed routes do not poll.
         for (deadlines, now) in [(&self.deadlines, now), (&self.scope_deadlines, scope_now)] {
             for entries in deadlines.range(..=now).map(|(_, entries)| entries) {
                 for ready in entries.values() {
