@@ -110,7 +110,12 @@ async fn followed_presentation_rows_are_declarative_and_live() {
                 acyclic_harness::tui::ratatui::layout::Rect::new(0, 0, width, height),
                 &PromptInput::default(),
             );
-            assert_eq!(u64::from(areas.transcript.width), expected, "{}", row["row"]);
+            assert_eq!(
+                u64::from(areas.transcript.width),
+                expected,
+                "{}",
+                row["row"]
+            );
             assert!(
                 screen
                     .transcript

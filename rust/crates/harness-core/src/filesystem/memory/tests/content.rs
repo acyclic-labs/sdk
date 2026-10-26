@@ -476,8 +476,8 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 None,
                 crate::conversation::ContentAccess {
                     ceiling: None,
-                    io: Some(&path_io)
-                }
+                    io: Some(&path_io),
+                },
             )
             .await;
         assert!(
