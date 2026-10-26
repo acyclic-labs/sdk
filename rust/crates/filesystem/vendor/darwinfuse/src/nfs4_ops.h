@@ -35,7 +35,6 @@
 #define OP_OPEN_CONFIRM         20
 #define OP_OPEN_DOWNGRADE       21
 #define OP_PUTFH                22
-#define OP_PUTPUBFH             23
 #define OP_PUTROOTFH            24
 #define OP_READ                 25
 #define OP_READDIR              26
@@ -79,26 +78,14 @@
 #define NFS4ERR_NOTSUPP         10004
 #define NFS4ERR_SERVERFAULT     10006
 #define NFS4ERR_BADTYPE         10007
-#define NFS4ERR_DELAY           10008
 #define NFS4ERR_SAME            10009
-#define NFS4ERR_DENIED          10010
-#define NFS4ERR_EXPIRED         10011
-#define NFS4ERR_LOCKED          10012
-#define NFS4ERR_GRACE           10013
-#define NFS4ERR_FHEXPIRED       10014
-#define NFS4ERR_WRONGSEC        10016
 #define NFS4ERR_CLID_INUSE      10017
-#define NFS4ERR_MOVED           10019
 #define NFS4ERR_RESOURCE        10018
 #define NFS4ERR_MINOR_VERS_MISMATCH 10021
 #define NFS4ERR_STALE_CLIENTID  10022
-#define NFS4ERR_STALE_STATEID   10023
-#define NFS4ERR_OLD_STATEID     10024
-#define NFS4ERR_BAD_SEQID       10026
 #define NFS4ERR_NOT_SAME        10027
 #define NFS4ERR_RESTOREFH       10030
 #define NFS4ERR_ATTRNOTSUPP     10032
-#define NFS4ERR_OPENMODE        10038
 
 /* ---- NFSv4 file types (RFC 7530 §4.2.3) ---- */
 
@@ -130,21 +117,12 @@
 #define FATTR4_FILEHANDLE       19
 
 /* Word 1 (bits 32-63) — recommended attributes */
-#define FATTR4_ACL              12  /* bit 12 in linear, word0 bit 12 */
-#define FATTR4_ACLSUPPORT      13
-#define FATTR4_ARCHIVE          14
-#define FATTR4_CANSETTIME       15
-#define FATTR4_CASE_INSENSITIVE 16
-#define FATTR4_CASE_PRESERVING  17
-#define FATTR4_CHOWN_RESTRICTED 18
 /* FATTR4_FILEHANDLE is 19 (word 0) */
 #define FATTR4_FILEID           20
 #define FATTR4_FILES_AVAIL      21
 #define FATTR4_FILES_FREE       22
 #define FATTR4_FILES_TOTAL      23
 /* 24 = fs_locations */
-#define FATTR4_HIDDEN           25
-#define FATTR4_HOMOGENEOUS      26
 #define FATTR4_MAXFILESIZE      27
 #define FATTR4_MAXLINK          28
 #define FATTR4_MAXNAME          29
@@ -152,26 +130,19 @@
 #define FATTR4_MAXWRITE         31
 
 /* Word 1 continues (bits 32+) */
-#define FATTR4_MIMETYPE         32
 #define FATTR4_MODE             33
-#define FATTR4_NO_TRUNC         34
 #define FATTR4_NUMLINKS         35
 #define FATTR4_OWNER            36
 #define FATTR4_OWNER_GROUP      37
-#define FATTR4_QUOTA_AVAIL_HARD 38
-#define FATTR4_QUOTA_AVAIL_SOFT 39
-#define FATTR4_QUOTA_USED       40
 #define FATTR4_RAWDEV           41
 #define FATTR4_SPACE_AVAIL      42
 #define FATTR4_SPACE_FREE       43
 #define FATTR4_SPACE_TOTAL      44
 #define FATTR4_SPACE_USED       45
-#define FATTR4_SYSTEM           46
 #define FATTR4_TIME_ACCESS      47
 #define FATTR4_TIME_ACCESS_SET  48
 #define FATTR4_TIME_BACKUP      49
 #define FATTR4_TIME_CREATE      50
-#define FATTR4_TIME_DELTA       51
 #define FATTR4_TIME_METADATA    52
 #define FATTR4_TIME_MODIFY      53
 #define FATTR4_TIME_MODIFY_SET  54
@@ -196,13 +167,8 @@
 
 #define OPEN4_SHARE_ACCESS_READ    0x00000001
 #define OPEN4_SHARE_ACCESS_WRITE   0x00000002
-#define OPEN4_SHARE_ACCESS_BOTH    0x00000003
-
-/* Open share deny */
-#define OPEN4_SHARE_DENY_NONE      0x00000000
 
 /* Open create */
-#define OPEN4_NOCREATE             0
 #define OPEN4_CREATE               1
 
 /* createmode4 (RFC 7530 s16.16) */
@@ -212,24 +178,17 @@
 
 /* Open claim types */
 #define CLAIM_NULL                 0
-#define CLAIM_PREVIOUS             1
-#define CLAIM_DELEGATE_CUR         2
-#define CLAIM_DELEGATE_PREV        3
 #define CLAIM_FH                   4
 
 /* Delegation types */
 #define OPEN_DELEGATE_NONE         0
-#define OPEN_DELEGATE_READ         1
-#define OPEN_DELEGATE_WRITE        2
 
 /* Write stable how */
 #define UNSTABLE4                  0
-#define DATA_SYNC4                 1
 #define FILE_SYNC4                 2
 
 /* FH expire type */
 #define FH4_PERSISTENT             0x00000000
-#define FH4_VOLATILE_ANY           0x00000001
 
 /* ---- Per-request NFSv4 state (stack-allocated per COMPOUND) ---- */
 
