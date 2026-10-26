@@ -14,8 +14,8 @@ async fn put(
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = ExtentPage::Leaf(extents);
     let root = extent_page_id(&page, 16)?;
-    {
-        let __object_args = (
+    store
+        .put(
             root,
             OwnedBytes::from(encode_extent_page(
                 &page,
@@ -23,15 +23,9 @@ async fn put(
                 |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
                 |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
             )?),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
     Ok(root)
 }
 
@@ -39,20 +33,13 @@ async fn extents(
     store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
-    let bytes = {
-        let __object_args = (
+    let bytes = store
+        .read(
             root,
             u64::MAX,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
     let ExtentPage::Leaf(extents) =
         decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())

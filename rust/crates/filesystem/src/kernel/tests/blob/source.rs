@@ -393,20 +393,13 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
     assert_eq!(built.logical_bytes, 0);
     assert_eq!(built.work.source_bytes_read, 0);
     assert_eq!(built.work.backend_write_operations, 1);
-    let encoded = {
-        let __object_args = (
-            built.root,
-            127,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        built.root,
+        127,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     assert_eq!(
         decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<
             _,

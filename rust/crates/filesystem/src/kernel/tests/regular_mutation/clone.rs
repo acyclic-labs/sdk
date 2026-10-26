@@ -60,20 +60,13 @@ async fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         return Err("clone into sparse destination unexpectedly demoted".into());
     };
     assert_eq!(logical_bytes, 128);
-    let encoded = {
-        let __object_args = (
-            extents,
-            config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        extents,
+        config().limits.maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let ExtentPage::Leaf(extents) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -97,20 +90,13 @@ async fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         return Err("hole-bearing identity clone unexpectedly remained inline".into());
     };
     assert_eq!(logical_bytes, 12);
-    let encoded = {
-        let __object_args = (
-            extents,
-            config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        extents,
+        config().limits.maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let ExtentPage::Leaf(extents) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -403,20 +389,13 @@ async fn sparse_clone_preserves_holes_and_destination_size()
     };
     assert_eq!(logical_bytes, 160);
     assert!(cloned.work.backend_write_operations > 0);
-    let encoded = {
-        let __object_args = (
-            extents,
-            config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        extents,
+        config().limits.maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())

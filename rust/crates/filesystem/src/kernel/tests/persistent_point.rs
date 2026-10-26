@@ -30,24 +30,18 @@ async fn put(
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    {
-        let __object_args = (
-            id,
-            OwnedBytes::from(encode_file_table_page(
-                page,
-                8,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        store,
+        id,
+        OwnedBytes::from(encode_file_table_page(
+            page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     Ok(id)
 }
 

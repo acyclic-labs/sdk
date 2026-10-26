@@ -1,17 +1,7 @@
 use super::*;
 
 fn config() -> VolumeConfig {
-    VolumeConfig {
-        profile: FilesystemProfile::Portable,
-        concurrency: ConcurrencyMode::Optimistic,
-        lifecycle: Lifecycle::Ephemeral,
-        case_sensitivity: CaseSensitivity::Sensitive,
-        unicode: UnicodePolicy::Preserve,
-        symbolic_links: true,
-        hard_links: true,
-        sparse_files: true,
-        limits: VolumeLimits::default(),
-    }
+    VolumeConfig::portable(Lifecycle::Ephemeral)
 }
 
 #[test]

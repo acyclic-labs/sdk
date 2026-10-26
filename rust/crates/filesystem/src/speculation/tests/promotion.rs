@@ -618,23 +618,13 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
     let bytes = OwnedBytes::from(vec![3; 64]);
     let object_id = object(3);
     let source = MemoryObjectStore::default();
-    {
-        let __object_args = (
-            object_id,
-            bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(
-            &source,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        &source,
+        object_id,
+        bytes.clone(),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let destination = MemoryObjectStore::default();
     let mut engine = PromotionSpeculator::new(
         PromotionSpeculatorOptions::default(),
@@ -707,23 +697,13 @@ async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
     let source = UnderreportedOwnedStore {
         inner: MemoryObjectStore::default(),
     };
-    {
-        let __object_args = (
-            object_id,
-            OwnedBytes::from(vec![33; 64]),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(
-            &source.inner,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        &source.inner,
+        object_id,
+        OwnedBytes::from(vec![33; 64]),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let mut engine = PromotionSpeculator::new(
         PromotionSpeculatorOptions::default(),
         volume_id,
@@ -768,23 +748,13 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
     let generation_id = generation(2);
     let object_id = object(3);
     let source_inner = MemoryObjectStore::default();
-    {
-        let __object_args = (
-            object_id,
-            OwnedBytes::from(vec![3; 64]),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(
-            &source_inner,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        &source_inner,
+        object_id,
+        OwnedBytes::from(vec![3; 64]),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let source_simulation = Simulation::wrap(
         MemoryAuthorityStore::default(),
         source_inner,
@@ -890,23 +860,13 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
     let generation_id = generation(2);
     let object_id = object(3);
     let source = MemoryObjectStore::default();
-    {
-        let __object_args = (
-            object_id,
-            OwnedBytes::from(vec![3; 64]),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(
-            &source,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        &source,
+        object_id,
+        OwnedBytes::from(vec![3; 64]),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let destination = MemoryObjectStore::default();
     let mut engine = PromotionSpeculator::new(
         PromotionSpeculatorOptions::default(),
@@ -935,22 +895,12 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
     assert!(
-        !{
-            let __object_args = (
-                object_id,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = AsyncObjectStore::contains(
-                executor.destination(),
-                __object_args.0,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
-        }?
-        .value
+        !AsyncObjectStore::contains(
+            executor.destination(),
+            object_id,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?
     );
     assert_eq!(engine.metrics().active, 1);
     engine.finish(plan.candidate.operation_id, false)?;

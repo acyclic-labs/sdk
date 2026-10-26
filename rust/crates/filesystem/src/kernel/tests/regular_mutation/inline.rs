@@ -51,20 +51,13 @@ async fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
         return Err("sixty-fifth byte did not promote inline data".into());
     };
     assert_eq!(logical_bytes, 65);
-    let encoded = {
-        let __object_args = (
-            extents,
-            config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        extents,
+        config().limits.maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -149,20 +142,13 @@ async fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
     };
     assert_eq!(logical_bytes, 128);
     assert_eq!(receipt.work.source_bytes_read, 0);
-    let encoded = {
-        let __object_args = (
-            extents,
-            config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        extents,
+        config().limits.maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -194,20 +180,13 @@ async fn inline_growth_within_threshold_preserves_trailing_hole()
         return Err("inline growth with a trailing hole demoted incorrectly".into());
     };
     assert_eq!(logical_bytes, 64);
-    let encoded = {
-        let __object_args = (
-            extents,
-            config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+    let encoded = AsyncObjectStore::read(
+        &store,
+        extents,
+        config().limits.maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -310,24 +289,13 @@ async fn inline_zero_extension_preserves_exact_sparse_semantics()
             return Err("hole-bearing zero extension remained inline".into());
         };
         assert_eq!(logical_bytes, offset + 2);
-        let encoded = {
-            let __object_args = (
-                extents,
-                config().limits.maximum_object_bytes,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = AsyncObjectStore::read(
-                &store,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
-        }?
-        .value;
+        let encoded = AsyncObjectStore::read(
+            &store,
+            extents,
+            config().limits.maximum_object_bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
         let ExtentPage::Leaf(values) =
             decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| {
                 Ok::<_, crate::kernel::CanonicalDecodeError>(())

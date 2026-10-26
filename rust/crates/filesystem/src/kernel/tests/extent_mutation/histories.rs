@@ -95,20 +95,13 @@ async fn flatten_extent_tree(
     store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
-    let bytes = {
-        let __object_args = (
+    let bytes = store
+        .read(
             root,
             u64::MAX,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
     Ok(
         match decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())

@@ -35,17 +35,7 @@ fn checkout_modes_reject_contradictions() {
 
 #[test]
 fn default_limits_are_valid() {
-    let config = VolumeConfig {
-        profile: FilesystemProfile::Portable,
-        concurrency: ConcurrencyMode::Optimistic,
-        lifecycle: Lifecycle::Durable,
-        case_sensitivity: CaseSensitivity::Sensitive,
-        unicode: UnicodePolicy::Preserve,
-        symbolic_links: true,
-        hard_links: true,
-        sparse_files: true,
-        limits: VolumeLimits::default(),
-    };
+    let config = VolumeConfig::portable(Lifecycle::Durable);
     assert_eq!(config.validate(), Ok(config));
     let mut invalid = config;
     invalid.limits.maximum_directory_page_entries = 1;

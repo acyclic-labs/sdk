@@ -35,20 +35,7 @@ fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
 }
 
 fn empty_metadata() -> FileMetadata {
-    FileMetadata {
-        posix_mode: MetadataField::Unavailable,
-        posix_uid: MetadataField::Unavailable,
-        posix_gid: MetadataField::Unavailable,
-        posix_flags: MetadataField::Unavailable,
-        windows_attributes: MetadataField::Unavailable,
-        created_ns: MetadataField::Unavailable,
-        modified_ns: MetadataField::Unavailable,
-        accessed_ns: MetadataField::Unavailable,
-        changed_ns: MetadataField::Unavailable,
-        named_attributes: MetadataField::Unavailable,
-        acl: MetadataField::Unavailable,
-        security_descriptor: MetadataField::Unavailable,
-    }
+    FileMetadata::default()
 }
 
 async fn put(
@@ -60,19 +47,13 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    {
-        let __object_args = (
-            object_id,
-            acyclic_stream::OwnedBytes::from(bytes),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        store,
+        object_id,
+        acyclic_stream::OwnedBytes::from(bytes),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     Ok(object_id)
 }
 

@@ -23,19 +23,13 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    {
-        let __object_args = (
-            id,
-            OwnedBytes::from(bytes),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        store,
+        id,
+        OwnedBytes::from(bytes),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     Ok(id)
 }
 
@@ -47,20 +41,7 @@ async fn fixture(
         store,
         ObjectKind::Metadata,
         encode_file_metadata(
-            FileMetadata {
-                posix_mode: MetadataField::Unavailable,
-                posix_uid: MetadataField::Unavailable,
-                posix_gid: MetadataField::Unavailable,
-                posix_flags: MetadataField::Unavailable,
-                windows_attributes: MetadataField::Unavailable,
-                created_ns: MetadataField::Unavailable,
-                modified_ns: MetadataField::Unavailable,
-                accessed_ns: MetadataField::Unavailable,
-                changed_ns: MetadataField::Unavailable,
-                named_attributes: MetadataField::Unavailable,
-                acl: MetadataField::Unavailable,
-                security_descriptor: MetadataField::Unavailable,
-            },
+            FileMetadata::default(),
             |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
             |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
         )?,
@@ -142,20 +123,7 @@ async fn non_regular_fixture(
         store,
         ObjectKind::Metadata,
         encode_file_metadata(
-            FileMetadata {
-                posix_mode: MetadataField::Unavailable,
-                posix_uid: MetadataField::Unavailable,
-                posix_gid: MetadataField::Unavailable,
-                posix_flags: MetadataField::Unavailable,
-                windows_attributes: MetadataField::Unavailable,
-                created_ns: MetadataField::Unavailable,
-                modified_ns: MetadataField::Unavailable,
-                accessed_ns: MetadataField::Unavailable,
-                changed_ns: MetadataField::Unavailable,
-                named_attributes: MetadataField::Unavailable,
-                acl: MetadataField::Unavailable,
-                security_descriptor: MetadataField::Unavailable,
-            },
+            FileMetadata::default(),
             |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
             |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
         )?,
@@ -274,20 +242,7 @@ async fn sparse_probe_fixture(
         store,
         ObjectKind::Metadata,
         encode_file_metadata(
-            FileMetadata {
-                posix_mode: MetadataField::Unavailable,
-                posix_uid: MetadataField::Unavailable,
-                posix_gid: MetadataField::Unavailable,
-                posix_flags: MetadataField::Unavailable,
-                windows_attributes: MetadataField::Unavailable,
-                created_ns: MetadataField::Unavailable,
-                modified_ns: MetadataField::Unavailable,
-                accessed_ns: MetadataField::Unavailable,
-                changed_ns: MetadataField::Unavailable,
-                named_attributes: MetadataField::Unavailable,
-                acl: MetadataField::Unavailable,
-                security_descriptor: MetadataField::Unavailable,
-            },
+            FileMetadata::default(),
             |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
             |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
         )?,

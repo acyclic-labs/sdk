@@ -44,34 +44,11 @@ fn cache_resident<S>(cache: &OperationReadCache<'_, S>) -> Result<u64, WorkError
 }
 
 fn config() -> VolumeConfig {
-    VolumeConfig {
-        profile: FilesystemProfile::Portable,
-        concurrency: ConcurrencyMode::Optimistic,
-        lifecycle: Lifecycle::Ephemeral,
-        case_sensitivity: CaseSensitivity::Sensitive,
-        unicode: UnicodePolicy::Preserve,
-        symbolic_links: true,
-        hard_links: true,
-        sparse_files: true,
-        limits: VolumeLimits::default(),
-    }
+    VolumeConfig::portable(Lifecycle::Ephemeral)
 }
 
 fn metadata() -> FileMetadata {
-    FileMetadata {
-        posix_mode: MetadataField::Unavailable,
-        posix_uid: MetadataField::Unavailable,
-        posix_gid: MetadataField::Unavailable,
-        posix_flags: MetadataField::Unavailable,
-        windows_attributes: MetadataField::Unavailable,
-        created_ns: MetadataField::Unavailable,
-        modified_ns: MetadataField::Unavailable,
-        accessed_ns: MetadataField::Unavailable,
-        changed_ns: MetadataField::Unavailable,
-        named_attributes: MetadataField::Unavailable,
-        acl: MetadataField::Unavailable,
-        security_descriptor: MetadataField::Unavailable,
-    }
+    FileMetadata::default()
 }
 
 async fn put<S: AsyncObjectStore>(
