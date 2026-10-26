@@ -147,7 +147,7 @@ impl Handler for Package {
                 ledger.published += 1;
             }
             Ok(Transition {
-                composition: None,
+                participant: None,
                 checkpoint: Checkpoint {
                     codec: codec(),
                     bytes: serde_json::to_vec(&ledger).map_err(guest)?.into(),

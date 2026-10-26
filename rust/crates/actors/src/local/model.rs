@@ -135,7 +135,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
         0 => Some((
             record(0),
             Transition {
-                composition: None,
+                participant: None,
                 checkpoint: checkpoint(1),
                 alarm: AlarmChange::Set {
                     deadline_unix_ms: 10,
@@ -149,7 +149,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                 now_unix_ms: 10,
             },
             Transition {
-                composition: None,
+                participant: None,
                 checkpoint: checkpoint(2),
                 alarm: AlarmChange::Keep,
                 effects: vec![output(1, b"a1")?],
@@ -158,7 +158,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
         2 => Some((
             record(1),
             Transition {
-                composition: None,
+                participant: None,
                 checkpoint: checkpoint(3),
                 alarm: AlarmChange::Clear,
                 effects: vec![

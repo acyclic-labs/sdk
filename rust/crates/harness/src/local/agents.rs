@@ -26,7 +26,7 @@ use std::sync::{Arc, Weak};
 /// Turns of local agents.
 pub type LocalTurns = FilesystemTurnHost<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 /// Every agent of one local harness.
-pub type LocalAgents = AgentHost<LocalStream, ExecutorDriver<Arc<LocalTurns>>>;
+pub type LocalAgents = AgentHost<LocalStream>;
 
 mod decisions;
 

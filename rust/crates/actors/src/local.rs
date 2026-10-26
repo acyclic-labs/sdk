@@ -5,7 +5,9 @@ mod runtime;
 pub use runtime::{Clock, Runtime, SystemClock};
 
 use crate::addressing::ActorReference;
-use crate::guest::{AlarmChange, Checkpoint, Composition, Effect, GuestError, Transition, Trigger};
+use crate::guest::{
+    AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, Transition, Trigger,
+};
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
     ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -258,12 +260,25 @@ impl PreparedPublish {
 pub struct Store<P: StreamProvider + ?Sized> {
     provider: Arc<P>,
     root: StreamPath,
+    composer: Option<Arc<dyn Composer>>,
 }
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Retain the caller's admitted provider session. Actor state lives at
     /// `<root>/<encoded actor>`, inside the caller's consistency domain.
     pub fn new(provider: Arc<P>, root: StreamPath) -> Self {
-        Self { provider, root }
+        Self {
+            provider,
+            root,
+            composer: None,
+        }
+    }
+
+    /// Open each transition's participant request through `composer`; a
+    /// store without one refuses transitions that name a participant.
+    #[must_use]
+    pub fn with_composer(mut self, composer: Arc<dyn Composer>) -> Self {
+        self.composer = Some(composer);
+        self
     }
 
     /// The shared provider session.
@@ -453,8 +468,26 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
         let state = next(owned(previous, epoch)?, trigger, &transition)?;
+        // The participant is a request from a possibly untrusted handler:
+        // the host composer validates it before any custody exists.
+        let composition = match &transition.participant {
+            None => None,
+            Some(participant) => Some(
+                self.composer
+                    .as_ref()
+                    .ok_or(Error::Invalid(
+                        "transition names a participant without a composer",
+                    ))?
+                    .open(
+                        &self.actor(&previous.path)?,
+                        previous.state.as_ref().and_then(State::checkpoint),
+                        &transition.checkpoint,
+                        participant,
+                    )?,
+            ),
+        };
         let mut prepared = self.prepare(previous, &state, transition.effects, key)?;
-        prepared.composition = transition.composition;
+        prepared.composition = composition;
         Ok(prepared)
     }
 

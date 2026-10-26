@@ -7,16 +7,22 @@
 
 use super::FilesystemHost;
 use crate::{
-    agent::{AgentPath, AgentState, Error, Out, SpawnVolumes, VolumeBinding},
+    agent::{
+        AgentPath, AgentState, Error, IntentId, MAX_OPEN_CHILDREN, Out, SpawnVolumes, VolumeBinding,
+    },
     conversation::{ContentAccess, ContentPublisher, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     core::AuthorityRoot,
 };
-use acyclic_actors::guest::{Composition, GuestError, GuestFuture};
+use acyclic_actors::{
+    addressing::ActorReference,
+    guest::{Checkpoint, Composer, Composition, GuestError, GuestFuture, Participant},
+};
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
     StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
 };
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, OwnedBytes, StreamError};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
@@ -144,43 +150,98 @@ fn plan(
     ))
 }
 
+/// [`Participant::kind`] of a spawn's volume request.
+const SPAWN: &str = "acyclic.harness.agent.spawn-volumes.v1";
+
+/// One spawn the parent's step requests volumes for. Everything else (the
+/// child, its bindings, every fork source and creation) is re-derived from
+/// the parent's state by [`children`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Requested {
+    intent: IntentId,
+    brief: Option<Vec<u8>>,
+}
+
+/// The one planning function: each requested child's bindings and the volumes
+/// its spawn creates, derived only from `parent`'s own bindings.
+fn children(
+    parent: &AgentState,
+    requested: &[Requested],
+    maximum_bytes: u64,
+) -> Result<(Vec<Vec<VolumeBinding>>, Vec<Planned>), Error> {
+    if requested.len() > MAX_OPEN_CHILDREN {
+        return Err(Error::Record("spawn requests too many children"));
+    }
+    let mut bindings = Vec::with_capacity(requested.len());
+    let mut planned = Vec::new();
+    for Requested { intent, brief } in requested {
+        if brief
+            .as_ref()
+            .is_some_and(|brief| u64::try_from(brief.len()).map_or(true, |len| len > maximum_bytes))
+        {
+            return Err(Error::Record("spawn brief exceeds its bound"));
+        }
+        let child = parent.path.child(&crate::agent::AgentId::derive(
+            &parent.path.id(),
+            intent.as_str(),
+        ))?;
+        let mut volumes = Vec::with_capacity(parent.volumes.len());
+        for binding in &parent.volumes {
+            let (bound, created) = plan(&child, binding, brief.as_deref())?;
+            volumes.push(bound);
+            planned.extend(created);
+        }
+        bindings.push(volumes);
+    }
+    Ok((bindings, planned))
+}
+
+/// Canonical request bytes: re-encoding must reproduce them exactly.
+fn requested(participant: &Participant) -> Result<Vec<Requested>, GuestError> {
+    if participant.kind != SPAWN {
+        return Err(guest("participant is not a spawn volume request"));
+    }
+    let requested: Vec<Requested> = serde_json::from_slice(&participant.plan).map_err(guest)?;
+    if serde_json::to_vec(&requested).map_err(guest)? != participant.plan.as_ref() {
+        return Err(guest("spawn volume request is not canonical"));
+    }
+    Ok(requested)
+}
+
 impl<P, O> SpawnVolumes for FilesystemSpawnVolumes<P, O>
 where
     P: AuthorityProvider + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn bind(
-        &self,
-        parent: &AgentState,
-        outs: &mut [Out],
-    ) -> Result<Option<Box<dyn Composition>>, Error> {
-        let mut planned = Vec::new();
+    fn bind(&self, parent: &AgentState, outs: &mut [Out]) -> Result<Option<Participant>, Error> {
+        let requested: Vec<Requested> = outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Spawn { intent, brief, .. } => Some(Requested {
+                    intent: intent.clone(),
+                    brief: brief.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        let (bindings, planned) = children(parent, &requested, self.maximum_bytes)?;
+        let mut bindings = bindings.into_iter();
         for out in outs {
-            let Out::Spawn {
-                intent,
-                brief,
-                volumes,
-            } = out
-            else {
-                continue;
-            };
-            let child = parent.path.child(&crate::agent::AgentId::derive(
-                &parent.path.id(),
-                intent.as_str(),
-            ))?;
-            volumes.clear();
-            for binding in &parent.volumes {
-                let (bound, created) = plan(&child, binding, brief.as_deref())?;
-                volumes.push(bound);
-                planned.extend(created);
+            if let Out::Spawn { volumes, .. } = out {
+                *volumes = bindings
+                    .next()
+                    .ok_or(Error::Record("spawn bindings are incomplete"))?;
             }
         }
-        Ok((!planned.is_empty()).then(|| {
-            Box::new(SpawnFork {
-                host: Arc::clone(&self.host),
-                planned,
-                commit: None,
-            }) as Box<dyn Composition>
+        if planned.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Participant {
+            kind: SPAWN.to_owned(),
+            plan: serde_json::to_vec(&requested)
+                .map_err(|_| Error::Record("spawn volume request does not encode"))?
+                .into(),
         }))
     }
 
@@ -277,6 +338,50 @@ where
                 .0;
             Ok(Some(file))
         })
+    }
+}
+
+impl<P, O> Composer for FilesystemSpawnVolumes<P, O>
+where
+    P: AuthorityProvider + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Opens a possibly untrusted spawn request: the parent is the actor's own
+    /// committed agent, its bindings are the committed ones, and every child
+    /// and volume is re-derived from them by the same [`children`] as `bind`.
+    fn open(
+        &self,
+        actor: &ActorReference,
+        previous: Option<&Checkpoint>,
+        next: &Checkpoint,
+        participant: &Participant,
+    ) -> Result<Box<dyn Composition>, GuestError> {
+        let requested = requested(participant)?;
+        let next = crate::agent::checkpoint_state(next).map_err(guest)?;
+        let parent = match previous {
+            Some(previous) => {
+                let previous = crate::agent::checkpoint_state(previous).map_err(guest)?;
+                if previous.path != next.path || previous.volumes != next.volumes {
+                    return Err(guest(
+                        "spawn parent bindings differ from its committed state",
+                    ));
+                }
+                previous
+            }
+            None => next,
+        };
+        if parent.path.id().as_str() != actor.id() {
+            return Err(guest("spawn parent is not the publishing actor"));
+        }
+        let (_, planned) = children(&parent, &requested, self.maximum_bytes).map_err(guest)?;
+        if planned.is_empty() {
+            return Err(guest("spawn volume request creates nothing"));
+        }
+        Ok(Box::new(SpawnFork {
+            host: Arc::clone(&self.host),
+            planned,
+            commit: None,
+        }))
     }
 }
 

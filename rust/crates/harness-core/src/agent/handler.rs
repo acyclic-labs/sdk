@@ -43,16 +43,32 @@ fn codec() -> CodecIdentity {
     }
 }
 
+/// The agent state a committed checkpoint carries.
+pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
+    if checkpoint.codec != codec() {
+        return Err(Error::Record("agent checkpoint codec differs"));
+    }
+    serde_json::from_slice::<Saved>(&checkpoint.bytes)
+        .map(|saved| saved.state)
+        .map_err(|_| Error::Record("agent checkpoint is malformed"))
+}
+
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
 
 /// One handler package for every agent, over one turn driver.
 pub struct AgentHandler<P: StreamProvider + ?Sized, D> {
-    store: Store<P>,
+    agents: Agents<P>,
     driver: D,
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
+}
+
+/// The agents' actor state under one store root: creation and observation,
+/// shared by a handler and by a host whose turns run elsewhere.
+pub(super) struct Agents<P: StreamProvider + ?Sized> {
+    store: Store<P>,
 }
 
 impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
@@ -60,7 +76,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     pub fn new(store: Store<P>, driver: D, limits: ActorLimits) -> Result<Self, GuestError> {
         let digest = blake3::hash(include_str!("handler.rs").as_bytes());
         Ok(Self {
-            store,
+            agents: Agents::new(store),
             driver,
             manifest: Manifest {
                 code: CodeSha256::try_from(digest.as_bytes().to_vec()).map_err(guest)?,
@@ -80,10 +96,17 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         self.volumes = Some(volumes);
         self
     }
+}
+
+impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
+    /// Over `store`'s root.
+    pub(super) const fn new(store: Store<P>) -> Self {
+        Self { store }
+    }
 
     /// The effects that create `agent`'s actor, first consuming inbox record `cursor`.
     /// They ride in the commit that creates the agent: a spawn or a root creation.
-    pub fn create(
+    pub(super) fn create(
         &self,
         actor: &ActorReference,
         agent: &AgentPath,
@@ -104,7 +127,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     /// One commit creating root agent `adopted.agent` as an actor in `within`'s
     /// account and namespace: its inbox with `ForkAdopted`, its actor state and
     /// its activation entry. The caller adds volume contributions, then submits.
-    pub fn create_root(
+    pub(super) fn create_root(
         &self,
         within: &ActorReference,
         intent: &IntentId,
@@ -131,7 +154,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     }
 
     /// The actor of `agent` in `actor`'s account and namespace.
-    pub fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
+    pub(super) fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
         ActorReference::new(
             within.account().as_bytes(),
             within.namespace().as_str().as_bytes(),
@@ -212,7 +235,9 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         }
         Ok(read)
     }
+}
 
+impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     async fn transition(
         &self,
         delivery: Delivery,
@@ -277,12 +302,12 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                 Wake::Alarm => cursor,
             };
             if let Some((from, limit)) = state.overflowed(end) {
-                let records = self.read_back(&path, from, limit, end).await?;
+                let records = self.agents.read_back(&path, from, limit, end).await?;
                 state.refill(records, end);
             }
         }
         let mut step = step(&self.driver, &path, state, cursor, wake).await?;
-        let composition = match &self.volumes {
+        let participant = match &self.volumes {
             Some(volumes) => volumes.bind(&step.state, &mut step.outs)?,
             None => None,
         };
@@ -297,15 +322,15 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             })
             .collect();
         for child in spawned {
-            let actor = Self::actor(&delivery.actor, &child)?;
-            effects.extend(self.create(&actor, &path.child(&child)?, cursor)?);
+            let actor = Agents::<P>::actor(&delivery.actor, &child)?;
+            effects.extend(self.agents.create(&actor, &path.child(&child)?, cursor)?);
         }
         let saved = Saved {
             state: step.state,
             cursor,
         };
         Ok(Transition {
-            composition,
+            participant,
             checkpoint: Checkpoint {
                 codec: codec(),
                 bytes: serde_json::to_vec(&saved)

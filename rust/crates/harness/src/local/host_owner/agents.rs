@@ -517,7 +517,7 @@ impl TurnDriver for Shared {
 /// request commits its inbox record, then drains the runtime, so the reply
 /// observes the request's turn. It owns no thread or timer per agent.
 pub(super) struct NativeAgents {
-    host: AgentHost<LocalStream, Shared>,
+    host: AgentHost<LocalStream>,
     driver: Arc<HostDriver>,
     files: Arc<LocalFilesystem>,
     issuer: AuthorityRoot,

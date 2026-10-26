@@ -27,6 +27,7 @@ const PAGES = [
   "../harness/test/browser-wasm-init-failure.html",
   "../harness/test/browser-agents.html",
   "../harness/test/browser-agents-tool.html",
+  "../harness/test/browser-agent-guest.html",
 ];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).

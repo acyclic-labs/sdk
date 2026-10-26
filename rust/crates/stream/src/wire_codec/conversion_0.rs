@@ -48,12 +48,6 @@ pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) fn condition_from_wire(
     value: wire::CommitCondition,
 ) -> Result<CommitCondition, StreamError> {
@@ -106,12 +100,6 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) fn mutation_from_wire(
     value: wire::CommitMutation,
 ) -> Result<CommitMutation, StreamError> {
@@ -350,12 +338,6 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
     }
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a commit request from its generated wire representation.
 pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {

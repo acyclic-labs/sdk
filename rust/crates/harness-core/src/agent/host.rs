@@ -9,12 +9,12 @@
 
 use super::{
     AgentHandler, AgentPath, Error, ForkAdopted, InboxRecord, IntentId, Sender, SpawnVolumes,
-    Submitted, TurnDriver, archive, inbox_tail, send, submit,
+    Submitted, TurnDriver, archive, handler::Agents, inbox_tail, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
-    guest::Handler,
+    guest::{Composer, Handler},
     local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
@@ -37,18 +37,26 @@ pub enum Delivered {
     Closed,
 }
 
-/// One runtime and handler for every agent in one account and namespace.
-pub struct AgentHost<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> {
+/// One runtime for every agent in one account and namespace.
+pub struct AgentHost<P: StreamProvider + ?Sized + 'static> {
     provider: Arc<P>,
-    handler: Arc<AgentHandler<P, D>>,
+    agents: Agents<P>,
     runtime: Runtime<P>,
     within: ActorReference,
 }
 
-impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P, D> {
+/// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
+pub fn actor_store<P: StreamProvider + ?Sized + 'static>(
+    provider: &Arc<P>,
+) -> Result<Store<P>, Error> {
+    let root = StreamPath::new(super::ACTORS).map_err(|_| Error::Path("actor root"))?;
+    Ok(Store::new(provider.clone(), root))
+}
+
+impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// Host for the agents of `within`'s account and namespace, with actor state
     /// under [`super::ACTORS`] in `provider`'s consistency domain.
-    pub fn new(
+    pub fn new<D: TurnDriver + 'static>(
         provider: Arc<P>,
         driver: D,
         within: ActorReference,
@@ -60,7 +68,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
 
     /// Host whose spawns create each child's volumes through `volumes`, in the
     /// spawn's commit; `volumes` must place them in `provider`'s domain.
-    pub fn with_spawn_volumes(
+    pub fn with_spawn_volumes<D: TurnDriver + 'static>(
         provider: Arc<P>,
         driver: D,
         within: ActorReference,
@@ -71,7 +79,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         Self::build(provider, driver, within, limits, clock, Some(volumes))
     }
 
-    fn build(
+    fn build<D: TurnDriver + 'static>(
         provider: Arc<P>,
         driver: D,
         within: ActorReference,
@@ -79,21 +87,35 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         clock: Arc<dyn Clock>,
         volumes: Option<Arc<dyn SpawnVolumes>>,
     ) -> Result<Self, Error> {
-        let store = || -> Result<Store<P>, Error> {
-            let root = StreamPath::new(super::ACTORS).map_err(|_| Error::Path("actor root"))?;
-            Ok(Store::new(provider.clone(), root))
-        };
-        let handler = AgentHandler::new(store()?, driver, limits)
+        let handler = AgentHandler::new(actor_store(&provider)?, driver, limits)
             .map_err(|_| Error::Record("agent handler manifest"))?;
-        let handler = Arc::new(match volumes {
-            Some(volumes) => handler.with_spawn_volumes(volumes),
+        let handler = match &volumes {
+            Some(volumes) => handler.with_spawn_volumes(volumes.clone()),
             None => handler,
-        });
-        let runtime = Runtime::new(store()?, handler.clone() as Arc<dyn Handler>, clock);
+        };
+        let composer = volumes.map(|volumes| volumes as Arc<dyn Composer>);
+        Self::hosting(provider, within, Arc::new(handler), clock, composer)
+    }
+
+    /// Host for agents whose turns run in `handler`, such as the agent guest
+    /// artifact's [`AgentHandler`] reached through [`acyclic_actors::guest::wire`].
+    /// This host keeps scheduling and publication; `composer` opens each
+    /// transition's participant request, as [`SpawnVolumes`] does.
+    pub fn hosting(
+        provider: Arc<P>,
+        within: ActorReference,
+        handler: Arc<dyn Handler>,
+        clock: Arc<dyn Clock>,
+        composer: Option<Arc<dyn Composer>>,
+    ) -> Result<Self, Error> {
+        let published = match composer {
+            Some(composer) => actor_store(&provider)?.with_composer(composer),
+            None => actor_store(&provider)?,
+        };
         Ok(Self {
+            agents: Agents::new(actor_store(&provider)?),
+            runtime: Runtime::new(published, handler, clock),
             provider,
-            handler,
-            runtime,
             within,
         })
     }
@@ -119,13 +141,13 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
 
     /// The actor that runs `agent`.
     pub fn actor(&self, agent: &AgentPath) -> Result<ActorReference, Error> {
-        AgentHandler::<P, D>::actor(&self.within, &agent.id())
+        Agents::<P>::actor(&self.within, &agent.id())
     }
 
     /// Observes the committed agent state, or its adoption before its first turn.
     /// This is an observation; effect admission still requires its own commit fence.
     pub async fn state(&self, agent: &AgentPath) -> Result<super::AgentState, Error> {
-        self.handler.state(&self.actor(agent)?, agent).await
+        self.agents.state(&self.actor(agent)?, agent).await
     }
 
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
@@ -135,7 +157,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         intent: &IntentId,
         adopted: ForkAdopted,
     ) -> Result<AgentPath, Error> {
-        let created = self.handler.create_root(&self.within, intent, adopted)?;
+        let created = self.agents.create_root(&self.within, intent, adopted)?;
         match submit(&*self.provider, created.request).await? {
             Submitted::Committed(_) => {}
             Submitted::Conflict(_) | Submitted::InboxMoved(_) | Submitted::RecipientClosed(_) => {

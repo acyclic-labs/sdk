@@ -1,9 +1,10 @@
 //! Durable record handlers shared by native packages and guest execution adapters.
-use super::{Checkpoint, CodecIdentity, GuestFuture};
+use super::{Checkpoint, CodecIdentity, GuestError, GuestFuture};
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, Record, StreamError,
 };
+use bytes::Bytes;
 
 /// Immutable deployment metadata; resource selection is explicit, never inherited.
 pub struct Manifest {
@@ -41,6 +42,7 @@ pub enum Trigger {
 }
 
 /// Invocation-scoped host input; it contains no deployment credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
     /// Complete account/namespace/id address.
     pub actor: ActorReference,
@@ -81,6 +83,8 @@ pub struct Effect {
 }
 
 /// One indivisible logical result. Physical execution may repeat after a crash.
+/// It is plain data, so it crosses a guest boundary through [`super::wire`].
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transition {
     /// Artifact-owned state encoded with the declared codec.
     pub checkpoint: Checkpoint,
@@ -88,12 +92,40 @@ pub struct Transition {
     pub alarm: AlarmChange,
     /// Committed effects, never an independent best-effort dispatch path.
     pub effects: Vec<Effect>,
-    /// Custody of one joined participant through sealing and the exact outcome.
-    pub composition: Option<Box<dyn Composition>>,
+    /// One participant to join to the publication, as a request the host's
+    /// [`Composer`] validates and composes; never guest-held custody.
+    pub participant: Option<Participant>,
 }
 
-/// One participant in the actor's sole publication, independent of its host.
-/// The runtime retains it with the sealed request while acknowledgement is unknown.
+/// A request to join one host participant (for example spawned volumes) to
+/// the publication. It comes from a possibly untrusted guest: the host's
+/// [`Composer`] re-derives and validates everything it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Participant {
+    /// Participant kind, selecting the host composer's interpretation.
+    pub kind: String,
+    /// Kind-defined canonical request bytes.
+    pub plan: Bytes,
+}
+
+/// Host-side interpreter of [`Participant`] requests. The store opens each
+/// request once, then owns the participant through seal, exact retry and
+/// terminal settlement.
+pub trait Composer: acyclic_stream::ProviderPlatform + 'static {
+    /// Validate `participant` for `actor`'s transition from the committed
+    /// `previous` checkpoint to `next`, and open its custody.
+    fn open(
+        &self,
+        actor: &ActorReference,
+        previous: Option<&Checkpoint>,
+        next: &Checkpoint,
+        participant: &Participant,
+    ) -> Result<Box<dyn Composition>, GuestError>;
+}
+
+/// One host participant in the actor's sole publication, opened by a
+/// [`Composer`]. The store retains it with the sealed request while
+/// acknowledgement is unknown.
 pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
     /// Extend and fence the joined request once, before its first submission.
     /// The actor's original conditions and mutations must remain intact.

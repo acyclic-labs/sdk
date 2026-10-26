@@ -1,6 +1,6 @@
 //! One real actor decision retains its participant through a lost acknowledgement.
 use super::*;
-use crate::guest::{Composition, GuestFuture};
+use crate::guest::{Composer, Composition, GuestFuture};
 
 fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
     IdempotencyKey::new(value.as_bytes().to_vec())
@@ -76,21 +76,15 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
             plan: vec![Fault::None, Fault::None, Fault::Refuse(refusal.clone())],
             calls: AtomicUsize::new(0),
         });
-        let (store, actor) = placed(provider.clone()).await?;
         let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
         let snapshot = store.load(&actor).await?;
         let trigger = Trigger::Record {
             subscription: "inbox".into(),
             sequence: 0,
         };
         let result = store
-            .publish(
-                &snapshot,
-                1,
-                &trigger,
-                transition(counts.clone(), false)?,
-                key("refused")?,
-            )
+            .publish(&snapshot, 1, &trigger, transition(false)?, key("refused")?)
             .await;
         assert!(
             refusal_was_settled(&result, &counts, &refusal),
@@ -114,7 +108,7 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
                 &snapshot,
                 1,
                 &trigger,
-                transition(Arc::new(Counts::default()), false)?,
+                transition(false)?,
                 key("after-refusal")?,
             )
             .await?;
@@ -141,8 +135,8 @@ async fn negative_control_all_errors_unknown_fails_the_refusal_oracle() -> Resul
         ],
         calls: AtomicUsize::new(0),
     });
-    let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let snapshot = store.load(&actor).await?;
     let mut publication = store.prepare_publish(
         &snapshot,
@@ -151,7 +145,7 @@ async fn negative_control_all_errors_unknown_fails_the_refusal_oracle() -> Resul
             subscription: "inbox".into(),
             sequence: 0,
         },
-        transition(counts.clone(), false)?,
+        transition(false)?,
         key("negative-refusal")?,
     )?;
     let participant = publication
@@ -192,8 +186,8 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
         ],
         calls: AtomicUsize::new(0),
     });
-    let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let result = store
         .publish(
             &store.load(&actor).await?,
@@ -202,7 +196,7 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
                 subscription: "inbox".into(),
                 sequence: 0,
             },
-            transition(counts.clone(), false)?,
+            transition(false)?,
             key("lost-then-refused")?,
         )
         .await;
@@ -226,8 +220,30 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
     Ok(())
 }
 
-async fn placed(provider: Arc<Faulty>) -> Result<(Store<Faulty>, ActorReference), Failure> {
-    let store = Store::new(provider, path("participant/actors")?);
+/// Opens each test participant request with the test's counters.
+struct Participants(Arc<Counts>);
+
+impl Composer for Participants {
+    fn open(
+        &self,
+        _: &ActorReference,
+        _: Option<&Checkpoint>,
+        _: &Checkpoint,
+        participant: &crate::guest::Participant,
+    ) -> Result<Box<dyn Composition>, GuestError> {
+        Ok(Box::new(Participant {
+            counts: self.0.clone(),
+            remove_actor_fence: participant.plan.as_ref() == [1],
+        }))
+    }
+}
+
+async fn placed(
+    provider: Arc<Faulty>,
+    counts: Arc<Counts>,
+) -> Result<(Store<Faulty>, ActorReference), Failure> {
+    let store = Store::new(provider, path("participant/actors")?)
+        .with_composer(Arc::new(Participants(counts)));
     let actor = ActorReference::new(b"account", b"agents", b"participant")?;
     let mut create = PreparedPublish::foreign(key("create-participant")?);
     for effect in store.create(
@@ -250,7 +266,7 @@ async fn placed(provider: Arc<Faulty>) -> Result<(Store<Faulty>, ActorReference)
     Ok((store, actor))
 }
 
-fn transition(counts: Arc<Counts>, remove_actor_fence: bool) -> Result<Transition, StreamError> {
+fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
     Ok(Transition {
         checkpoint: checkpoint(1),
         alarm: AlarmChange::Keep,
@@ -263,10 +279,10 @@ fn transition(counts: Arc<Counts>, remove_actor_fence: bool) -> Result<Transitio
                 records: vec![Bytes::from_static(b"joined volume").into()],
             },
         }],
-        composition: Some(Box::new(Participant {
-            counts,
-            remove_actor_fence,
-        })),
+        participant: Some(crate::guest::Participant {
+            kind: "test".into(),
+            plan: Bytes::from(vec![u8::from(remove_actor_fence)]),
+        }),
     })
 }
 
@@ -277,8 +293,8 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
         plan: vec![Fault::None, Fault::None, Fault::LoseAck],
         calls: AtomicUsize::new(0),
     });
-    let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let snapshot = store.load(&actor).await?;
     let result = store
         .publish(
@@ -288,7 +304,7 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
                 subscription: "inbox".into(),
                 sequence: 0,
             },
-            transition(counts.clone(), false)?,
+            transition(false)?,
             key("joined-publication")?,
         )
         .await;
@@ -323,8 +339,8 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
         plan: Vec::new(),
         calls: AtomicUsize::new(0),
     });
-    let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let snapshot = store.load(&actor).await?;
     let before = provider.calls.load(Ordering::SeqCst);
     let result = store
@@ -335,7 +351,7 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
                 subscription: "inbox".into(),
                 sequence: 0,
             },
-            transition(counts.clone(), true)?,
+            transition(true)?,
             key("broken-participant")?,
         )
         .await;
@@ -367,8 +383,8 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
         plan: Vec::new(),
         calls: AtomicUsize::new(0),
     });
-    let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let snapshot = store.load(&actor).await?;
     let mut competing = PreparedPublish::foreign(key("competing-child")?);
     competing.join(Effect {
@@ -387,7 +403,7 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
                 subscription: "inbox".into(),
                 sequence: 0,
             },
-            transition(counts.clone(), false)?,
+            transition(false)?,
             key("rejected-participant")?,
         )
         .await;

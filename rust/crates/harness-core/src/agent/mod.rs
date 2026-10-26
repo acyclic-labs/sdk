@@ -29,8 +29,9 @@ pub use driver::{
     ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
     turn_id,
 };
+pub(crate) use handler::checkpoint_state;
 pub use handler::{AgentHandler, INBOX};
-pub use host::{AgentHost, Delivered};
+pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};

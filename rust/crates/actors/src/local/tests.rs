@@ -16,7 +16,7 @@ fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
 
 fn transition(value: u8, alarm: AlarmChange) -> Transition {
     Transition {
-        composition: None,
+        participant: None,
         checkpoint: Checkpoint {
             codec: CodecIdentity {
                 name: "counter".into(),

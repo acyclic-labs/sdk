@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Harness agent turn through the guest artifact</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { agentsFixture, until, turnText } from "./browser-agents-fixture.mjs";
+const result = document.querySelector("#result");
+const phase = text => { result.dataset.waiting = text; };
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+let fixture;
+let guest;
+let agents;
+try {
+  fixture = await agentsFixture(crypto.randomUUID(), async function* ({ texts }) {
+    yield { kind: "content", delta: `guest:${texts.at(-1)}` };
+  });
+  phase("load the guest artifact's canonical entry");
+  guest = await fixture.guest();
+  const { AgentGuest } = await import("../generated/wasm/acyclic_harness_wasm.js");
+  assert(AgentGuest.abiVersion() === 1, "guest ABI version differs");
+  const manifest = guest.manifest();
+  assert(manifest instanceof Uint8Array && manifest.byteLength > 32, "guest manifest is empty");
+  let deliveries = 0;
+  const counted = { manifest: () => manifest, onRecord: delivery => { deliveries += 1; return guest.onRecord(delivery); } };
+  agents = await fixture.hosting(counted);
+  phase("one agent turn runs in the guest; the host publishes it");
+  const a = await agents.create("agent-guest", "hello");
+  const entries = await until(() => agents.read(a, "conversation", 0n, 16), entries => entries.length === 1);
+  assert(await turnText(agents, a, entries[0]) === "guest:hello", "guest turn output differs");
+  assert(deliveries >= 1, "the host published a turn without the guest");
+  await until(() => agents.read(a, "status", 0n, 64), records => records.at(-1)?.value.phase === "idle");
+  assert(fixture.failures.length === 0, describe(fixture.failures));
+  result.dataset.status = "passed";
+  result.textContent = "one agent turn through the guest facade, published by its host";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  agents?.free();
+  guest?.free();
+  fixture?.free();
+}
+</script>
+</html>
