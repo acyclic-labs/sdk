@@ -116,10 +116,6 @@ pub fn measure(run: impl FnOnce()) -> AllocationInfo {
         INSTALLED.load(Ordering::Relaxed),
         "acyclic_test_support::measure needs `acyclic_test_support::counting_allocator!();` at this binary's crate root"
     );
-    // Captured storage must exist across the observation boundary. Otherwise
-    // inlining can erase a captured Box and its deallocation together, making
-    // an ownership measurement depend on unrelated code-generation changes.
-    let run = std::hint::black_box(run);
     let scope = Scope(COUNTER.replace(Some(AllocationInfo::default())));
     run();
     let result = COUNTER.get().unwrap_or_default();

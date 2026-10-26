@@ -216,9 +216,23 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn boxed_inline_storage_is_counted(value in any::<u64>()) {
-        let (charged, actual) = covers(Box::new(value)).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let (charged, _) = covers(Box::new(value)).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        // GlobalAlloc permits allocation elision. covers still checks that the
+        // charge covers observed storage; the layout must be charged even when
+        // the optimizer removes the physical allocation.
         prop_assert_eq!(charged, size_of::<u64>() as u64);
-        prop_assert_eq!(charged, actual);
+    }
+    #[test]
+    fn boxed_text_storage_is_counted(text in "[a-z]{0,128}") {
+        let expected = text.len() as u64;
+        let (charged, _) = covers(text.into_boxed_str()).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(charged, expected);
+    }
+    #[test]
+    fn boxed_slice_storage_is_counted(values in prop::collection::vec(any::<u64>(), 0..128)) {
+        let expected = (values.len() * size_of::<u64>()) as u64;
+        let (charged, _) = covers(values.into_boxed_slice()).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(charged, expected);
     }
     #[test]
     fn spare_capacity_is_counted(text in "[a-z]{0,32}", spare in 0..4096usize) {

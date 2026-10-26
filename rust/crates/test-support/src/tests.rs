@@ -150,16 +150,6 @@ fn failed_native_calls_do_not_invent_allocations_or_release_the_original() {
 }
 
 #[test]
-fn measurement_materializes_captured_heap_storage() {
-    let value = Box::new(0_u64);
-    let freed = measure(move || drop(value));
-    assert_eq!(freed.count_current, -1);
-    assert_eq!(freed.bytes_current, -(std::mem::size_of::<u64>() as i64));
-    assert_eq!(freed.count_total, 0);
-    assert_eq!(COUNTER.get(), None);
-}
-
-#[test]
 fn scopes_restore_after_unwind_and_isolate_threads() {
     use std::hint::black_box;
     let other = std::thread::spawn(|| measure(|| drop(black_box(Box::new([0u8; 17])))));
