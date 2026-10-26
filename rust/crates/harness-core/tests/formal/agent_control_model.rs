@@ -2,9 +2,7 @@
 // kernel, must verify) and `agent_control_negative.rs` (mutated kernels, must
 // fail). The includer declares `mod production` for `src/agent/kernel.rs`.
 
-use production::{
-    Admit, Admitted, CONTINUE_NOW, Cascade, Control, MAX_FANOUT, Mode, Pick, Wait,
-};
+use production::{Admit, Admitted, CONTINUE_NOW, Cascade, Control, MAX_FANOUT, Mode, Pick, Wait};
 
 const STEPS: usize = 6;
 const MAX_CHILDREN: usize = 2 * MAX_FANOUT + 1;
@@ -70,7 +68,8 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         }
         if admitted.enqueue && model.queued < 3 {
             model.queued += 1;
-            model.approval_queued |= matches!(model.control.mode, Mode::Approval) && kani::any::<bool>();
+            model.approval_queued |=
+                matches!(model.control.mode, Mode::Approval) && kani::any::<bool>();
         }
     }
     if model.control.closed {
@@ -78,7 +77,10 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         assert!(cascade.archive <= MAX_FANOUT && cascade.archive <= model.pending);
         model.pending -= cascade.archive;
         if cascade.report {
-            assert!(model.pending == 0, "archive reported before every child was archived");
+            assert!(
+                model.pending == 0,
+                "archive reported before every child was archived"
+            );
         }
         model.control = cascade.control;
         model.reports += u8::from(cascade.report);
@@ -188,5 +190,8 @@ fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
     }
     assert!(model.pending == 0, "cascade stalled");
     assert!(model.control.reported, "archive never reported");
-    assert!(model.reports == u8::from(!reported), "archive reported wrongly");
+    assert!(
+        model.reports == u8::from(!reported),
+        "archive reported wrongly"
+    );
 }

@@ -409,15 +409,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 },
                 state.checkpoint(),
             );
-            let transition =
-                match futures::future::select(handled, sleep(limits.handler_timeout_millis()))
-                    .await
-                {
-                    futures::future::Either::Left((transition, _)) => transition?,
-                    futures::future::Either::Right(_) => {
-                        return Err(Error::Invalid("handler exceeded its manifest timeout"));
-                    }
-                };
+            let transition = match futures::future::select(
+                handled,
+                sleep(limits.handler_timeout_millis()),
+            )
+            .await
+            {
+                futures::future::Either::Left((transition, _)) => transition?,
+                futures::future::Either::Right(_) => {
+                    return Err(Error::Invalid("handler exceeded its manifest timeout"));
+                }
+            };
             if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
                 > limits.checkpoint_bytes()
             {

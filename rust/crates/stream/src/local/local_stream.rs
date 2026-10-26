@@ -241,7 +241,9 @@ impl LocalStream {
                 journal.limits.durability,
             )
         };
-        let completion = file.flush(|file| sync_file_data(file, durability)).map_err(|_| self.inner.poison())?;
+        let completion = file
+            .flush(|file| sync_file_data(file, durability))
+            .map_err(|_| self.inner.poison())?;
         #[cfg(feature = "test-support")]
         let device_flushed = matches!(completion, SyncCompletion::Flushed(_));
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;

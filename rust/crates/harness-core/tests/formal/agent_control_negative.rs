@@ -9,7 +9,12 @@ mod production;
 include!("agent_control_model.rs");
 
 /// The pre-kernel shell: an inbox wake that ran no turn cleared the alarm.
-fn alarm_from_history(control: Control, queued: bool, approval: bool, pending: usize) -> Option<u64> {
+fn alarm_from_history(
+    control: Control,
+    queued: bool,
+    approval: bool,
+    pending: usize,
+) -> Option<u64> {
     match control.mode {
         Mode::Alarm(_) if !control.closed => None,
         _ => production::alarm(control, queued, approval, pending),

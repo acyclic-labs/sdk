@@ -34,12 +34,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         let grants = [VolumeOperation::Read, VolumeOperation::Write]
             .map(|op| volume.capability(op, &mut None).unwrap());
         let scope = issuer
-            .bootstrap_scope(
-                "caller",
-                &Capabilities::new(grants),
-                Some(agent),
-                &mut None,
-            )
+            .bootstrap_scope("caller", &Capabilities::new(grants), Some(agent), &mut None)
             .unwrap();
         let verifier = issuer.verifier(&mut None).unwrap();
         let provider = Arc::new(MemoryStream::default());
