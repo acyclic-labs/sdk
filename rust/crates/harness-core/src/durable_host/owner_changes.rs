@@ -228,7 +228,11 @@ impl Drop for Registration {
         if let Some(deadline) = self.deadline {
             remove_deadline(&mut subscribers.deadlines, deadline, self.id);
         }
-        remove_deadline(&mut subscribers.scope_deadlines, self.scope_deadline, self.id);
+        remove_deadline(
+            &mut subscribers.scope_deadlines,
+            self.scope_deadline,
+            self.id,
+        );
         subscribers.deadline_changed.notify_one();
     }
 }
