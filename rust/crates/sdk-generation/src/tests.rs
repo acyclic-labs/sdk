@@ -62,12 +62,13 @@ fn release_version_must_match_published_sdk_version() {
         .expect("matching SDK and docs versions should be accepted");
 }
 
-fn test_root(label: &str) -> PathBuf {
-    tempfile::Builder::new()
+fn test_root(label: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::Builder::new()
         .prefix(&format!("sdk-generation-{label}-"))
         .tempdir()
-        .expect("test root should be creatable")
-        .keep()
+        .expect("test root should be creatable");
+    let path = directory.path().to_owned();
+    (directory, path)
 }
 
 fn write(root: &Path, relative: &str, bytes: &[u8]) {
@@ -79,7 +80,7 @@ fn write(root: &Path, relative: &str, bytes: &[u8]) {
 
 #[test]
 fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
-    let root = test_root("artifact-cache");
+    let (_root_directory, root) = test_root("artifact-cache");
     let output = root.join("output");
     write(&output, "sdk-docs-data.v1.json", b"docs");
     write(&output, ".profile-build/debug/cache.bin", b"cache-v1");
@@ -119,7 +120,6 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
         "internal cache mutation must not alter artifacts"
     );
     drop(lock);
-    let _ = fs::remove_dir_all(root);
 }
 
 proptest::proptest! {
@@ -139,7 +139,7 @@ proptest::proptest! {
 
 #[test]
 fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
-    let root = test_root("source-inputs");
+    let (_root_directory, root) = test_root("source-inputs");
     let output = root.join("output");
     for (relative, bytes) in [
         ("proto/demo.proto", b"syntax = \"proto3\";".as_slice()),
@@ -236,7 +236,6 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
         );
         fs::write(root.join(relative), original).expect("source fixture should restore");
     }
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -259,7 +258,8 @@ fn release_generation_requires_executed_profiles() {
 
 #[test]
 fn missing_external_rustdoc_span_is_restored_at_rustdoc_path() {
-    let root = test_root("generated-span-staging")
+    let (_root_directory, root) = test_root("generated-span-staging");
+    let root = root
         .canonicalize()
         .expect("test root should canonicalize");
     let candidate = root.join("target/candidate/wire.rs");
@@ -286,13 +286,11 @@ fn missing_external_rustdoc_span_is_restored_at_rustdoc_path() {
     assert_eq!(fs::read(&foreign).unwrap(), fs::read(&candidate).unwrap());
     assert_eq!(sources[0].sha256, sha256_file(&candidate).unwrap());
     assert!(candidate.exists());
-    let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_dir_all(foreign.parent().unwrap());
 }
 
 #[test]
 fn equivalent_rustdoc_source_paths_are_deduplicated() {
-    let root = test_root("deduplicate-generated-span");
+    let (_root_directory, root) = test_root("deduplicate-generated-span");
     write(&root, "target/candidate/wire.rs", b"pub struct Wire;\n");
     let canonical = root.join("target/candidate/wire.rs");
     let equivalent = root.join("target/candidate/./wire.rs");
@@ -316,12 +314,11 @@ fn equivalent_rustdoc_source_paths_are_deduplicated() {
         sources[0].sha256,
         sha256_file(&canonical).expect("source should hash")
     );
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
 fn existing_external_rustdoc_span_keeps_canonical_input_path() {
-    let root = test_root("existing-external-generated-span");
+    let (_root_directory, root) = test_root("existing-external-generated-span");
     let directory = tempfile::tempdir().expect("external fixture directory should be writable");
     let external = directory.path().join("wire.rs");
     fs::write(&external, b"pub struct Wire;\n").expect("external source should be writable");
@@ -344,12 +341,11 @@ fn existing_external_rustdoc_span_keeps_canonical_input_path() {
             .canonicalize()
             .expect("external source should canonicalize")
     );
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
 fn ambiguous_external_rustdoc_span_is_rejected() {
-    let root = test_root("ambiguous-generated-span");
+    let (_root_directory, root) = test_root("ambiguous-generated-span");
     write(&root, "target/one/wire.rs", b"pub struct One;\n");
     write(&root, "rust/two/wire.rs", b"pub struct Two;\n");
     let foreign = root.join("target/producer/wire.rs");
@@ -366,13 +362,11 @@ fn ambiguous_external_rustdoc_span_is_rejected() {
         .expect_err("ambiguous generated source must fail closed");
     assert!(error.to_string().contains("basename is ambiguous"));
     assert!(!foreign.exists());
-    let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_dir_all(foreign.parent().unwrap());
 }
 
 #[test]
 fn missing_owned_generated_source_is_restored_across_root_spellings() {
-    let root = test_root("restore-generated-span");
+    let (root_directory, root) = test_root("restore-generated-span");
     let bytes = b"pub struct Restored;\n";
     write(&root, "target/one/wire.rs", bytes);
     // Keep this ordinary spelling. materialize_generated_sources canonicalizes
@@ -392,12 +386,12 @@ fn missing_owned_generated_source_is_restored_across_root_spellings() {
     assert_eq!(fs::read(&missing).unwrap(), bytes);
     assert_eq!(sources[0].physical_path, missing.canonicalize().unwrap());
     assert_eq!(sources[0].sha256, sha256_file(&missing).unwrap());
-    fs::remove_dir_all(root).unwrap();
+    root_directory.close().unwrap();
 }
 
 #[test]
 fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
-    let root = test_root("restoration-boundary");
+    let (_root_directory, root) = test_root("restoration-boundary");
     for path in [
         std::env::temp_dir().join(".cargo/sdk-docs-unowned/wire.rs"),
         root.join("rust/wire.rs"),
@@ -409,15 +403,14 @@ fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
                 || error.to_string().contains("parent traversal")
         );
     }
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
 fn captured_external_restoration_is_owned_and_digest_bound() {
-    let root = test_root("captured-restoration").canonicalize().unwrap();
-    let output = test_root("captured-restoration-output")
-        .canonicalize()
-        .unwrap();
+    let (_root_directory, root) = test_root("captured-restoration");
+    let root = root.canonicalize().unwrap();
+    let (_output_directory, output) = test_root("captured-restoration-output");
+    let output = output.canonicalize().unwrap();
     let foreign = output.join(".profile-build/build/demo/out/wire.rs");
     let receipt = output.join(".rustdoc/demo.json");
     let bytes = b"pub struct Captured;\n";
@@ -455,16 +448,14 @@ fn captured_external_restoration_is_owned_and_digest_bound() {
         .to_string()
         .contains("captured Rustdoc source digest changed"));
     assert!(!foreign.exists());
-    let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_dir_all(output);
 }
 
 #[test]
 fn identical_profile_outputs_keep_each_physical_span_mapping() {
-    let root = test_root("identical-profile-spans").canonicalize().unwrap();
-    let output = test_root("identical-profile-spans-output")
-        .canonicalize()
-        .unwrap();
+    let (_root_directory, root) = test_root("identical-profile-spans");
+    let root = root.canonicalize().unwrap();
+    let (_output_directory, output) = test_root("identical-profile-spans-output");
+    let output = output.canonicalize().unwrap();
     let first = output.join(".profile-build/build/one/out/wire.rs");
     let second = output.join(".profile-build/build/two/out/wire.rs");
     write(
@@ -486,8 +477,6 @@ fn identical_profile_outputs_keep_each_physical_span_mapping() {
     assert_eq!(sources[0].sha256, sources[1].sha256);
     assert_eq!(sources[0].logical_path, sources[1].logical_path);
     assert_ne!(sources[0].physical_path, sources[1].physical_path);
-    let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_dir_all(output);
 }
 
 #[test]
@@ -553,8 +542,8 @@ fn real_rustdoc_corpus_projects_every_receipt_source_span() {
 #[cfg(windows)]
 #[test]
 fn restoration_rejects_junction_ancestors_before_writing() {
-    let root = test_root("restoration-junction");
-    let external = test_root("restoration-junction-external");
+    let (_root_directory, root) = test_root("restoration-junction");
+    let (_external_directory, external) = test_root("restoration-junction-external");
     fs::create_dir_all(root.join("target")).unwrap();
     let junction = root.join("target/linked");
     assert!(Command::new("powershell.exe")
@@ -567,14 +556,12 @@ fn restoration_rejects_junction_ancestors_before_writing() {
     assert!(error.to_string().contains("reparse point or symlink"));
     assert!(!external.join("wire.rs").exists());
     fs::remove_dir(junction).unwrap();
-    let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_dir_all(external);
 }
 
 #[test]
 fn file_hashes_keep_existing_artifact_and_tool_identities() {
     use proptest::prelude::*;
-    let root = test_root("sha256-equivalence");
+    let (root_directory, root) = test_root("sha256-equivalence");
     let path = root.join("input.bin");
     // The full branch retains every original byte vector with fewer shrink trees.
     let full = (
@@ -612,7 +599,7 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
             .collect::<Vec<_>>();
         check(&bytes).unwrap();
     }
-    fs::remove_dir_all(root).unwrap();
+    root_directory.close().unwrap();
 }
 
 #[test]
