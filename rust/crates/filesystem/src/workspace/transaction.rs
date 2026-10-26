@@ -132,11 +132,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.checkout
-            .apply_authored_transaction_with_accounting(operations, accounting, cancellation)
-            .await?
-            .retire(accounting)
-            .map_err(WorkspaceError::from)
+        // Authored application is its own erased heap frame: callers' future
+        // layouts, such as a git command over a lazy view, stop at this pointer
+        // instead of descending through compilation, staging and object writes.
+        let applied = {
+            let mut applied = crate::heap_future::in_heap(|| {
+                self.checkout.apply_authored_transaction_with_accounting(
+                    operations,
+                    accounting,
+                    cancellation,
+                )
+            })
+            .erase_task();
+            applied.as_mut().await?
+        };
+        applied.retire(accounting).map_err(WorkspaceError::from)
     }
 
     /// Retains the inspected identity of a staged file.
