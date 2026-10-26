@@ -182,7 +182,8 @@ impl LocalHarness {
             authority,
             Arc::new(Executors(Arc::downgrade(self))),
             limits,
-        );
+        )
+        .with_approvers(self.approval_models.clone());
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
         let agents = Arc::new(

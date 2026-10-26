@@ -42,6 +42,7 @@ mod content_publisher;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+mod agent_approvals;
 mod agent_turns;
 pub use agent_turns::{
     FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,

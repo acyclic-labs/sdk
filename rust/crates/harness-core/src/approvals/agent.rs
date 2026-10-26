@@ -7,33 +7,28 @@
 //! A responder writes that file through [`decide`], then appends
 //! `InboxRecord::Approval { id }` so the waiting turn resumes; nothing polls.
 use super::{
-    ApprovalCreate, ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalResponder, Approver,
+    ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalResponder, Approver,
     NextStage, RuleVerdict,
 };
 use crate::{
-    Error, InteractionId, OperationId, Result,
+    Error, InteractionId, Result,
     agent::AgentId,
-    conversation::{ContentPublisher, ContentResidencyVerifier, Limits, VolumeRef},
+    conversation::Limits,
     interaction::{ApprovalDecisionFile, Interaction, InteractionOutcome},
 };
-use acyclic_stream::BoxProviderFuture;
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::sync::{Arc, Mutex};
 
 /// Requests are immutable, so every decision binds their first and only version.
 const VERSION: u64 = 1;
 
-/// Request identity of the approval for tool operation `operation`. It is both
-/// the request directory and the intent the waiting turn resumes on.
+/// Request identity of approval interaction `id`: its request directory and
+/// the intent of the `Approval` record that resumes the turn waiting on it.
+/// Every approval of one tool call has its own interaction, so its own files.
 #[must_use]
-pub fn request_id(operation: OperationId) -> String {
-    let mut text = String::with_capacity(37);
-    text.push_str("tool-");
-    for byte in operation.into_bytes() {
+pub fn request_id(id: InteractionId) -> String {
+    let mut text = String::with_capacity(41);
+    text.push_str("approval-");
+    for byte in id.into_bytes() {
         for nibble in [byte >> 4, byte & 0x0f] {
             text.extend(char::from_digit(u32::from(nibble), 16));
         }
@@ -50,91 +45,6 @@ fn decision_path(id: &str, principal: &str) -> String {
         "approvals/{id}/decisions/{}.json",
         ApprovalDecisionFile::principal_file(principal)
     )
-}
-
-/// [`ApprovalFiles`] over an agent's private volume through its content bindings.
-/// Every path has one writer identity derived from the path, so the publisher's
-/// once-semantics make a create exclusive: a second, different body conflicts.
-pub struct VolumeApprovalFiles {
-    reader: Arc<dyn ContentResidencyVerifier>,
-    writer: Arc<dyn ContentPublisher>,
-    volume: VolumeRef,
-}
-
-impl VolumeApprovalFiles {
-    /// Files of the volume `writer` publishes to.
-    #[must_use]
-    pub fn new(reader: Arc<dyn ContentResidencyVerifier>, writer: Arc<dyn ContentPublisher>) -> Self {
-        let volume = writer.volume().clone();
-        Self {
-            reader,
-            writer,
-            volume,
-        }
-    }
-}
-
-fn path_operation(path: &str) -> OperationId {
-    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.approval-file.v1");
-    hasher.update(path.as_bytes());
-    let mut bytes = [0; 16];
-    hasher.finalize_xof().fill(&mut bytes);
-    OperationId::from_bytes(bytes)
-}
-
-impl ApprovalFiles for VolumeApprovalFiles {
-    fn read<'a>(
-        &'a self,
-        path: &'a str,
-        maximum_bytes: u64,
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
-        Box::pin(async move {
-            let read = self.reader.read_private_path(
-                &self.volume,
-                "approvals",
-                path,
-                None,
-                maximum_bytes,
-                crate::conversation::ContentAccess::default(),
-            );
-            match async { read?.await }.await {
-                Ok((_, bytes, _)) => Ok(Some(bytes.to_vec())),
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
-                Err(error) => Err(error),
-            }
-        })
-    }
-
-    fn create<'a>(
-        &'a self,
-        path: &'a str,
-        bytes: Vec<u8>,
-        maximum_bytes: u64,
-    ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
-        Box::pin(async move {
-            super::files::check_bound(bytes.len(), maximum_bytes)?;
-            if let Some(existing) = self.read(path, maximum_bytes).await? {
-                return Ok(ApprovalCreate::Existing(existing));
-            }
-            let staged = self.writer.stage_once(
-                path_operation(path),
-                path,
-                &bytes,
-                "application/json",
-                path.rsplit('/').next().unwrap_or(path),
-                crate::conversation::ContentAccess::default(),
-            );
-            match async { staged?.await }.await {
-                Ok(_) => Ok(ApprovalCreate::Created),
-                Err(error) if error.code() == crate::wire::ErrorCode::Conflict => self
-                    .read(path, maximum_bytes)
-                    .await?
-                    .map(ApprovalCreate::Existing)
-                    .ok_or(error),
-                Err(error) => Err(error),
-            }
-        })
-    }
 }
 
 /// The bound policy chain of one agent: its policy (the human default when the
@@ -180,8 +90,8 @@ impl AgentApprovalPolicy {
 pub struct AgentApprovals {
     files: Arc<dyn ApprovalFiles>,
     policy: Arc<AgentApprovalPolicy>,
-    opened: Mutex<Vec<(InteractionId, String)>>,
-    awaits_parent: AtomicBool,
+    /// The request the turn waits on, and whether its stage is the parent's.
+    pending: Mutex<Option<(String, bool)>>,
 }
 
 impl AgentApprovals {
@@ -191,23 +101,30 @@ impl AgentApprovals {
         Self {
             files,
             policy,
-            opened: Mutex::new(Vec::new()),
-            awaits_parent: AtomicBool::new(false),
+            pending: Mutex::new(None),
         }
     }
 
-    /// Whether the last pending approval waits for the parent's decision.
+    /// The request the turn now waits on, and whether the parent decides it.
     #[must_use]
-    pub fn awaits_parent(&self) -> bool {
-        self.awaits_parent.load(Ordering::Acquire)
+    pub fn pending(&self) -> Option<(String, bool)> {
+        self.pending.lock().ok().and_then(|pending| pending.clone())
+    }
+
+    fn wait(&self, pending: Option<(String, bool)>) -> Result<()> {
+        *self
+            .pending
+            .lock()
+            .map_err(|_| Error::Storage("approvals lock".into()))? = pending;
+        Ok(())
     }
 
     /// Opens the request file of approval `id` exactly once.
     pub async fn open(&self, id: InteractionId, interaction: &Interaction) -> Result<()> {
-        let Interaction::Approval { operation_id, .. } = interaction else {
+        if !matches!(interaction, Interaction::Approval { .. }) {
             return Err(Error::Unsupported("agents open only approval interactions".into()));
-        };
-        let request = request_id(*operation_id);
+        }
+        let request = request_id(id);
         let bytes = crate::contract::canonical_json_bytes(interaction)?;
         super::files::create_exact(
             &*self.files,
@@ -216,23 +133,13 @@ impl AgentApprovals {
             self.policy.limits.file_bytes,
         )
         .await?;
-        let mut opened = self.opened.lock().map_err(|_| Error::Storage("approvals lock".into()))?;
-        if !opened.iter().any(|(known, _)| *known == id) {
-            opened.push((id, request));
-        }
         Ok(())
     }
 
     /// The decided outcome of `id`, running due automatic stages; `None` while a
     /// human or parent decision is outstanding.
     pub async fn outcome(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
-        let request = self
-            .opened
-            .lock()
-            .map_err(|_| Error::Storage("approvals lock".into()))?
-            .iter()
-            .find_map(|(known, request)| (*known == id).then(|| request.clone()))
-            .ok_or_else(|| Error::NotFound("approval request is not open".into()))?;
+        let request = request_id(id);
         let policy = &*self.policy;
         let bytes = policy.request(&*self.files, &request).await?;
         let view = ApprovalRequest::new(&request, &bytes, policy.limits.file_bytes)?;
@@ -250,7 +157,7 @@ impl AgentApprovals {
             .await?;
             let (approver, expected) = match stage {
                 NextStage::Decided(review) => {
-                    self.awaits_parent.store(false, Ordering::Release);
+                    self.wait(None)?;
                     return Ok(Some(if review.verdict == RuleVerdict::Allow {
                         InteractionOutcome::Approved {}
                     } else {
@@ -275,8 +182,7 @@ impl AgentApprovals {
             }
             let path = decision_path(&request, &expected.principal);
             let Some(decided) = self.files.read(&path, policy.limits.file_bytes).await? else {
-                self.awaits_parent
-                    .store(matches!(approver, Approver::Parent), Ordering::Release);
+                self.wait(Some((request, matches!(approver, Approver::Parent))))?;
                 return Ok(None);
             };
             let decision = ApprovalDecisionFile::decode(&decided, policy.limits.file_bytes)?;
@@ -286,7 +192,7 @@ impl AgentApprovals {
             {
                 return Err(Error::Conflict("approval decision binding differs".into()));
             }
-            self.awaits_parent.store(false, Ordering::Release);
+            self.wait(None)?;
             return Ok(Some(if decision.approved() {
                 InteractionOutcome::Approved {}
             } else {

@@ -257,18 +257,22 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     }
                 }
                 ExecutionProgress::Pending(approval) => {
-                    let id = IntentId::try_from(approval_intent(approval))?;
+                    // The approval owner names the request the turn waits on;
+                    // a host without one waits on the pending operation.
+                    let (id, parent) = match open.approvals.as_ref().and_then(|a| a.pending()) {
+                        Some((request, parent)) => (request, parent),
+                        None => (approval_intent(approval), false),
+                    };
+                    let id = IntentId::try_from(id)?;
                     // A parent stage asks the parent in the same commit as the pause.
-                    let outs = match (&agent.parent, &open.approvals) {
-                        (Some(parent), Some(approvals)) if approvals.awaits_parent() => {
-                            vec![Out::Send {
-                                to: parent.clone(),
-                                record: InboxRecord::ApprovalRequested(ApprovalRequested {
-                                    child: agent.path.clone(),
-                                    id: id.clone(),
-                                }),
-                            }]
-                        }
+                    let outs = match &agent.parent {
+                        Some(to) if parent => vec![Out::Send {
+                            to: to.clone(),
+                            record: InboxRecord::ApprovalRequested(ApprovalRequested {
+                                child: agent.path.clone(),
+                                id: id.clone(),
+                            }),
+                        }],
                         _ => Vec::new(),
                     };
                     TurnStep {
@@ -285,9 +289,15 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     }
 }
 
-/// Approval intent naming the executor's pending approval operation: the
-/// identity of its request files and of the `Approval` record that resumes it.
+/// Approval intent naming the executor's pending approval operation.
 #[must_use]
 pub fn approval_intent(operation: OperationId) -> String {
-    crate::approvals::agent_request_id(operation)
+    let mut text = String::with_capacity(37);
+    text.push_str("tool:");
+    for byte in operation.into_bytes() {
+        for nibble in [byte >> 4, byte & 0x0f] {
+            text.extend(char::from_digit(u32::from(nibble), 16));
+        }
+    }
+    text
 }
