@@ -300,10 +300,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
         EmbeddedCapabilities::MEMORY,
     );
     let volume = fs.create_volume(config(), B, &cancel).await?.value;
-    let mut seed = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut seed = open_checkout(&volume, writable_pinned(), &cancel).await?;
     for value in ["observed", "local", "remote"] {
         seed.create(
             AuthoredMutation::CreateFile {
@@ -327,14 +324,8 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
         allow::<FsError>,
     )
     .await?;
-    let mut local = volume
-        .checkout(GenerationSelector::Head, writable_manual(), B, &cancel)
-        .await?
-        .value;
-    let mut remote = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut local = open_checkout(&volume, writable_manual(), &cancel).await?;
+    let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
     local
         .read_file_range(
             &path("observed")?,

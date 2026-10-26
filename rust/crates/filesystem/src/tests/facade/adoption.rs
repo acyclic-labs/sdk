@@ -5,10 +5,7 @@ use super::*;
 async fn prepared_candidate_adoption_rejects_new_observations() -> TestResult {
     let cancel = CancellationToken::new();
     let (volume, _) = fixture(config(), &cancel).await?;
-    let mut live = volume
-        .checkout(GenerationSelector::Head, tracking(), B, &cancel)
-        .await?
-        .value;
+    let mut live = open_checkout(&volume, tracking(), &cancel).await?;
     let base = live.private_candidate(
         &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel),
         &cancel,

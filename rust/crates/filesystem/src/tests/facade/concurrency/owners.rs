@@ -147,10 +147,7 @@ async fn edit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     name: &str,
     cancel: &CancellationToken,
 ) -> TestResult<Checkout<A, O>> {
-    let mut checkout = volume
-        .checkout(GenerationSelector::Head, writable_manual(), B, cancel)
-        .await?
-        .value;
+    let mut checkout = open_checkout(volume, writable_manual(), cancel).await?;
     checkout
         .change_content(
             path(name)?,
@@ -303,10 +300,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
         EmbeddedCapabilities::MEMORY,
     );
     let volume = first.create_volume(config(), B, &cancel).await?.value;
-    let mut seed = volume
-        .checkout(GenerationSelector::Head, writable_manual(), B, &cancel)
-        .await?
-        .value;
+    let mut seed = open_checkout(&volume, writable_manual(), &cancel).await?;
     for name in ["a", "b"] {
         seed.create(
             AuthoredMutation::CreateFile {
@@ -402,10 +396,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
             .value,
         LivePublicationObservation::AlreadyCommitted { .. }
     ));
-    let mut current = volume
-        .checkout(GenerationSelector::Head, pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut current = open_checkout(&volume, pinned(), &cancel).await?;
     for name in ["a", "b"] {
         assert_eq!(
             current
