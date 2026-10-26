@@ -1,7 +1,8 @@
 // Formatting gate for every tracked Rust file: root-workspace members and the
 // standalone fuzz, proof, model and binding crates that `cargo fmt --all` never
 // visits. Each file is checked under the edition of its nearest Cargo.toml, as
-// `cargo fmt` would. Vendored third-party crates are not ours to format.
+// `cargo fmt` would. Vendored crates and hash-bound historical source captures
+// are data, not current source: formatting them would invalidate their receipts.
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
@@ -10,6 +11,10 @@ import { fileURLToPath } from "node:url";
 import { TOML } from "bun";
 
 const VENDORED = ":(exclude)rust/vendor/**";
+// capture.json, review.json and sources.json within this evidence archive bind
+// the original bytes to their recorded source revisions. Ordinary Rust test
+// fixtures outside the archive remain checked.
+const CAPTURED_EVIDENCE = ":(exclude)scripts/tests/fixtures/proof-policy/**";
 
 // Returns {workspace, edition} for one manifest: `workspace` is the
 // [workspace.package] edition (false when absent, null for no workspace root),
@@ -33,7 +38,7 @@ const nearest = (path, table) => {
 
 // Groups the tracked Rust files under `root` by the edition cargo would format them with.
 export function filesByEdition(root) {
-  const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED], { cwd: root, encoding: "utf8" })
+  const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { cwd: root, encoding: "utf8" })
     .split("\0").filter(Boolean);
   const manifests = new Map(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
     .map((path) => [dirname(path), parseManifest(readFileSync(resolve(root, path), "utf8"))]));

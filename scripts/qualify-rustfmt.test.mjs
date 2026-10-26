@@ -122,6 +122,16 @@ test("every tracked non-vendored Rust file is checked under its crate's edition"
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("historical evidence stays byte-exact while current source fixtures stay checked", () => {
+  const captured = "scripts/tests/fixtures/proof-policy/history/source.rs";
+  const root = fixture({ [captured]: drift });
+  try {
+    const files = [...filesByEdition(root).values()].flat();
+    assert.equal(files.includes(captured), false);
+    assert.equal(files.includes("member/tests/fixtures/source.rs"), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("the gate passes a clean tree and fails drift planted in any crate shape", async () => {
   const root = fixture();
   try { assert.deepEqual(await qualifyRustfmt(root), { status: 0, output: "" }); }
