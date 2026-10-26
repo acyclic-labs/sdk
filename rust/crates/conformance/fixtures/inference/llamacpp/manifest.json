@@ -99,5 +99,19 @@
     "output": "/usage/completion_tokens",
     "output_tokens": 5
   },
-  "rate_source": "real nginx limit_req configured at 1 request/minute, limit_req_status 429"
+  "rate_source": "real nginx limit_req configured at 1 request/minute, limit_req_status 429",
+  "tool_usage": [
+    {
+      "output_tokens": 19,
+      "input_tokens": 159,
+      "output": "/usage/completion_tokens",
+      "input": "/usage/prompt_tokens"
+    },
+    {
+      "output_tokens": 13,
+      "input_tokens": 195,
+      "output": "/usage/completion_tokens",
+      "input": "/usage/prompt_tokens"
+    }
+  ]
 }

@@ -67,6 +67,8 @@ pub trait Backend {
     fn session(&self, scenario: Scenario) -> Result<Session>;
     /// Exact token counts recorded independently from the original wire response.
     fn usage(&self) -> &ExpectedUsage;
+    /// Exact counters for the tool-producing step and the paired-result step.
+    fn tool_usage(&self) -> &[ExpectedUsage; 2];
 }
 
 /// Execute all inference vectors, unchanged, against one backend.
@@ -92,6 +94,7 @@ pub async fn verify(backend: &dyn Backend) -> Result<Vec<&'static str>> {
         session.provider.as_ref(),
         &session.request,
         session.dispatch,
+        backend.tool_usage(),
     )
     .await?;
     for (scenario, expected) in [
@@ -139,6 +142,24 @@ fn require(condition: bool, reason: &'static str) -> Result<()> {
     }
 }
 
+fn usage(metadata: &Value, expected: &ExpectedUsage) -> Result<()> {
+    require(
+        metadata.pointer(&expected.input).and_then(Value::as_u64) == Some(expected.input_tokens),
+        "inference input usage differs from capture",
+    )?;
+    require(
+        metadata.pointer(&expected.output).and_then(Value::as_u64) == Some(expected.output_tokens),
+        "inference output usage differs from capture",
+    )
+}
+
+fn completed_usage(events: &[ModelEvent], expected: &ExpectedUsage) -> Result<()> {
+    match events.last() {
+        Some(ModelEvent::Completed { metadata }) => usage(metadata, expected),
+        _ => Err(Error::Invalid("inference usage completion absent".into())),
+    }
+}
+
 /// Validates incremental output, exactly one final completion and exact usage counters.
 pub async fn streaming(
     provider: &dyn ModelProvider,
@@ -156,16 +177,7 @@ pub async fn streaming(
         match &event {
             ModelEvent::Content { delta } => text.push_str(delta),
             ModelEvent::Completed { metadata } => {
-                require(
-                    metadata.pointer(&expected.input).and_then(Value::as_u64)
-                        == Some(expected.input_tokens),
-                    "inference input usage differs from capture",
-                )?;
-                require(
-                    metadata.pointer(&expected.output).and_then(Value::as_u64)
-                        == Some(expected.output_tokens),
-                    "inference output usage differs from capture",
-                )?;
+                usage(metadata, expected)?;
                 completed = true;
             }
             _ => {}
@@ -269,6 +281,7 @@ pub async fn tools_and_results(
     provider: &dyn ModelProvider,
     request: &PreparedModelRequest,
     dispatch: ModelDispatch,
+    expected: &[ExpectedUsage; 2],
 ) -> Result<()> {
     let events: Vec<ModelEvent> = provider.generate(request, dispatch).try_collect().await?;
     let calls: Vec<_> = events
@@ -296,6 +309,7 @@ pub async fn tools_and_results(
         matches!(events.last(), Some(ModelEvent::Completed { .. })),
         "tool output continued after completion",
     )?;
+    completed_usage(&events, &expected[0])?;
     let mut followup = request.request().clone();
     let assistant: Vec<_> = events
         .iter()
@@ -347,5 +361,6 @@ pub async fn tools_and_results(
                 .count()
                 == 1,
         "tool result did not produce a completed answer",
-    )
+    )?;
+    completed_usage(&events, &expected[1])
 }

@@ -66,6 +66,8 @@ pub struct Manifest {
     pub options: Value,
     /// Independent expected token counters for the text step.
     pub usage: ExpectedUsage,
+    /// Independent expected counters for tool and result completions.
+    pub tool_usage: [ExpectedUsage; 2],
     captures: BTreeMap<String, FileCapture>,
 }
 fn options() -> Value {
@@ -344,6 +346,9 @@ impl Backend for Captured {
     fn usage(&self) -> &ExpectedUsage {
         &self.manifest.usage
     }
+    fn tool_usage(&self) -> &[ExpectedUsage; 2] {
+        &self.manifest.tool_usage
+    }
 }
 
 /// Qualifies one complete fixture family with the common verifier.
@@ -410,6 +415,9 @@ impl Backend for Local {
     }
     fn usage(&self) -> &ExpectedUsage {
         self.captured.usage()
+    }
+    fn tool_usage(&self) -> &[ExpectedUsage; 2] {
+        self.captured.tool_usage()
     }
 }
 
