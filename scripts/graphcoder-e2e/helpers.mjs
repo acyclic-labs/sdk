@@ -26,7 +26,7 @@ export async function runHelperSuite(files, { signal = AbortSignal.timeout(9000)
     signal.throwIfAborted();
     const env = { ...environment(join(scratch, "profile")), E2E_SCRATCH_ROOT: scratch };
     delete env.NODE_TEST_CONTEXT; // A new suite owns its runner, never its caller's worker context.
-    const result = await processes.runOwned(process.execPath, ["--test", "--test-reporter=tap",
+    const result = await processes.runOwned("node", ["--test", "--test-reporter=tap",
       ...(process.platform === "win32" ? ["--test-concurrency=1"] : []), ...files], { env });
     publish(result);
     signal.throwIfAborted(); // A late successful summary cannot erase cancellation.

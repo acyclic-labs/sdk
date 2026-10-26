@@ -379,7 +379,7 @@ case "$lane" in
     node --test scripts/check-feature-matrix.test.mjs scripts/gate-windows-features.test.mjs
     node --test scripts/check-test-support.test.mjs
     node scripts/check-test-support.mjs
-    node scripts/static-ci.mjs
+    node --experimental-vm-modules scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs
@@ -402,7 +402,7 @@ case "$lane" in
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
-    node --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/check-boundaries.test.mjs
+    node --experimental-vm-modules --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/javascript-syntax.test.mjs scripts/check-boundaries.test.mjs
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
     node --test scripts/test-typescript-qualification.mjs

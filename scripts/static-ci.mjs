@@ -1,6 +1,9 @@
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import {pinnedActions} from './static-policy.mjs';
+import {checkJavaScript, requireSyntaxRuntime} from './javascript-syntax.mjs';
+
+requireSyntaxRuntime();
 
 const all=execFileSync('git',['ls-files','-z','--','.',':!managed-agents'],{encoding:'utf8'}).split('\0').filter(file=>file && fs.existsSync(file));
 const git=(...args)=>execFileSync('git',args,{encoding:'utf8'}).trim();
@@ -14,6 +17,6 @@ execFileSync('git',['diff','--check',base,'HEAD','--','.',':!managed-agents'],{s
 for(const file of all){
  if(/^\.github\/(workflows\/.*\.ya?ml|actions\/.*\/action\.ya?ml)$/.test(file))pinnedActions(file,fs.readFileSync(file,'utf8'));
  if(file.endsWith('.json'))JSON.parse(fs.readFileSync(file,'utf8'));
- if(/\.(?:mjs|cjs|js)$/.test(file))execFileSync(process.execPath,['--check',file],{stdio:'inherit'});
+ if(/\.(?:mjs|cjs|js)$/.test(file))checkJavaScript(file);
 }
 console.log('Release static checks passed');

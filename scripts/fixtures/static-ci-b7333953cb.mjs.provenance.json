@@ -1,0 +1,11 @@
+{
+  "source_commit": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
+  "path": "scripts/static-ci.mjs",
+  "capture_command": [
+    "git",
+    "show",
+    "b7333953cbd5d3b31adc05cf2f0851f049f6c16a:scripts/static-ci.mjs"
+  ],
+  "sha256": "6468b13bc63edf798cb2ab3f168b470c5e024a79c852b6f5044210fb3ccde716",
+  "purpose": "Actual old production source; executed only in a temporary fixture with a two-level depth fence."
+}

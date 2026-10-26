@@ -92,7 +92,7 @@ test("every TypeScript package prepares generation for build, test and prepack",
 
 test("native source roots cover the generators' transitive script imports", () => {
   // Node's module parser enumerates static imports without executing generators.
-  execFileSync(process.execPath, ["--experimental-vm-modules", "--input-type=module", "-e", String.raw`
+  execFileSync("node", ["--experimental-vm-modules", "--input-type=module", "-e", String.raw`
     import assert from "node:assert/strict";
     import { readFileSync } from "node:fs";
     import { posix } from "node:path";

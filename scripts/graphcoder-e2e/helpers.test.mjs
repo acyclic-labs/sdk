@@ -7,6 +7,22 @@ import { runHelperSuite } from "./helpers.mjs";
 import { Processes } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
+test("Node test flags always use Node independently of the parent interpreter", async () => {
+  let observed;
+  await runHelperSuite(["fixture.test.mjs"], {
+    processes: {
+      async runOwned(command, args) {
+        observed = {command, args};
+        return {code: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n", stderr: ""};
+      },
+      async close() {},
+    },
+    publish() {},
+  });
+  assert.equal(observed.command, "node");
+  assert.equal(observed.args[0], "--test");
+});
+
 test("helper cancellation drains every process and cannot qualify a blocked suite", async () => {
   const directory = await mkdtemp(join(tmpdir(), "helper-cancellation-"));
   const controller = new AbortController();

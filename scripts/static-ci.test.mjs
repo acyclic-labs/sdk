@@ -43,12 +43,12 @@ async function fixture(body) {
   append('\n');
  };
  const tag = name => append(`reset refs/tags/${name}\nfrom :${mark}\n\n`);
- const check = async () => {
+ const check = async ({runtime = 'node', args = ['--experimental-vm-modules'], extraEnv = {}} = {}) => {
   await git(['init', '-q', '--initial-branch=fixture', '--template=']);
   await git(['fast-import', '--quiet'], Buffer.concat([...history, Buffer.from('done\n')]));
   await git(['read-tree', 'HEAD']);
   try {
-   return {status: 0, ...await execute(process.execPath, ['scripts/static-ci.mjs'], {cwd: root, env})};
+   return {status: 0, ...await execute(runtime, [...args, 'scripts/static-ci.mjs'], {cwd: root, env: {...env, ...extraEnv}})};
   } catch (error) {
    return {status: error.code, stdout: error.stdout, stderr: error.stderr};
   }
@@ -56,7 +56,7 @@ async function fixture(body) {
  try {
   mkdirSync(join(root, 'scripts/vendor'), {recursive: true});
   copyFileSync(resolve('.gitattributes'), join(root, '.gitattributes'));
-  for (const name of ['static-ci.mjs', 'static-policy.mjs', 'vendor/yaml.cjs']) {
+  for (const name of ['static-ci.mjs', 'static-policy.mjs', 'javascript-syntax.mjs', 'vendor/yaml.cjs']) {
    copyFileSync(resolve('scripts', name), join(root, 'scripts', name));
   }
   commit('baseline');
@@ -68,6 +68,27 @@ async function fixture(body) {
 }
 
 describe('release static policy', {concurrency: true}, () => {
+ test('Bun refuses before launch and the captured old checker reaches a bounded recursion fence', () => fixture(async ({root, commit, check}) => {
+  const old = readFileSync('scripts/fixtures/static-ci-b7333953cb.mjs.txt', 'utf8');
+  const current = readFileSync(join(root, 'scripts/static-ci.mjs'), 'utf8');
+  const fence = `const depth = Number(process.env.STATIC_CI_TEST_DEPTH ?? 0);
+if (depth === 2) { console.error('BOUNDED_OLD_RECURSION'); process.exit(86); }
+process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
+`;
+  writeFileSync(join(root, 'scripts/static-ci.mjs'), fence + old);
+  commit('captured original checker with test-only depth fence');
+  const negative = await check({runtime: 'bun', args: []});
+  assert.notEqual(negative.status, 0);
+  assert.match(negative.stderr, /BOUNDED_OLD_RECURSION/);
+  writeFileSync(join(root, 'scripts/static-ci.mjs'), current);
+  // Existing fixture Git history remains valid; the corrected parser must
+  // refuse before consulting Git or executing a checked file.
+  const refused = await check({runtime: 'bun', args: []});
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /step=javascript-syntax.*recovery command: node --experimental-vm-modules scripts\/static-ci.mjs/);
+  assert.doesNotMatch(refused.stderr, /BOUNDED_OLD_RECURSION/);
+ }));
+
  test('release whitespace catches an earlier commit and cannot be hidden by a tag at HEAD', () => fixture(async ({root, tag, commit, check}) => {
   tag('acyclic-v0.1.0');
   writeFileSync(join(root, 'earlier.txt'), 'trailing space \n'); commit('earlier error');
