@@ -35,7 +35,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             paths,
             idempotency_key,
             None,
-            None,
         )
         .await
     }
@@ -49,22 +48,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         paths: Option<Vec<String>>,
         key: &IdempotencyKey,
         io: Option<&PreparationIo>,
-        preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<WorkspaceObservation>
     where
         A: 'static,
     {
         let host = self;
 
-        if io.is_some_and(|io| io.original_native_work().is_some()) && preparation.is_none() {
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
-                "task-bound native fork requires its original issued creation guard",
+                "volume fork does not accept task-bound native work",
             ));
-        }
-        if let Some(task) = preparation {
-            task.verify(false, io)?.await?;
         }
         grant.require(source, VolumeOperation::Read, io)?;
         let owned = if io.is_none() {
@@ -98,49 +93,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         Some(paths) => options.inherit_paths(paths),
                         None => options,
                     };
-                    let forked = match preparation {
-                        Some(task) => io.sdk(
-                            workspace
-                                .fork::<_, _, Error>(
-                                    &name,
-                                    options,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io,
-                                    io.cancellation(),
-                                    task.as_ref(),
-                                )
-                                .await,
-                        )?,
-                        None => io.sdk(
-                            workspace
-                                .fork::<_, _, Error>(
-                                    &name,
-                                    options,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io,
-                                    io.cancellation(),
-                                    &mut |_| {
-                                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                                            value: (),
-                                            work: WorkCounters::default(),
-                                        }))
-                                    },
-                                )
-                                .await,
-                        )?,
-                    };
+                    let forked = io.sdk(
+                        workspace
+                            .fork::<_, _, Error>(
+                                &name,
+                                options,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io,
+                                io.cancellation(),
+                                &mut |_| {
+                                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: WorkCounters::default(),
+                                    }))
+                                },
+                            )
+                            .await,
+                    )?;
                     Ok::<_, Error>(forked)
                 })
                 .await,
         )??;
         io.remaining()?;
-        let observed = host.fork_observation(&forked, name, operation, io).await?;
-        if io.original_native_work().is_none()
-            && let Some(task) = preparation
-        {
-            task.verify(false, Some(io))?.await?;
-        }
-        Ok(observed)
+        host.fork_observation(&forked, name, operation, io).await
     }
 
     async fn fork_observation(

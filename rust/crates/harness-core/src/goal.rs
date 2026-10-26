@@ -3,8 +3,6 @@
 use crate::{Error, OperationId, Result, TaskId, conversation::VolumeClass};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
-#[doc(hidden)]
-pub mod request_head;
 
 /// Maximum bytes in a YAML-quoted status reason, including its quotes.
 pub const GOAL_REASON_BYTES: usize = 128;

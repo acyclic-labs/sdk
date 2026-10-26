@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 mod authority;
 mod commit;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-mod completion;
 mod serializer;
 
 #[cfg(feature = "filesystem")]
@@ -22,6 +20,4 @@ pub use authority::JournalWrite;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use commit::native_call_result;
 pub(crate) use commit::{CommitPhase, add_condition, add_record, append, commit, commit_request};
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use completion::prepare_materialization_commit;
 pub(crate) use serializer::{digest_key, execution_path};

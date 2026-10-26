@@ -341,16 +341,6 @@ pub enum Error {
         /// Existing custody for SDK-owned diagnostic payloads.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
-    /// A publication failure with its actionable destination and completed work.
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    #[error("{failure}")]
-    NativePublication {
-        /// The original failure, written into the preallocated slot.
-        #[source]
-        failure: Box<crate::filesystem::NativeViewPublicationError>,
-        /// Custody for the slot, released after its Box is deallocated.
-        custody: Option<acyclic_fs::NativeAllocation>,
-    },
     /// An actual SDK workspace publication failure, including its original prefix.
     #[cfg(all(
         feature = "filesystem-local",
@@ -530,9 +520,7 @@ impl Error {
             | Self::NativeStageUncertain { .. }
             | Self::NativeFilesystem { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            Self::NativeView { .. }
-            | Self::NativePublication { .. }
-            | Self::NativeTimeout { .. } => ErrorCode::Storage,
+            Self::NativeView { .. } | Self::NativeTimeout { .. } => ErrorCode::Storage,
             #[cfg(all(
                 feature = "filesystem-local",
                 feature = "native-execution",
@@ -646,8 +634,6 @@ impl Error {
             Self::NativeFilesystem { .. } => true,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } => true,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            Self::NativePublication { .. } => true,
             #[cfg(all(
                 feature = "filesystem-local",
                 feature = "native-execution",

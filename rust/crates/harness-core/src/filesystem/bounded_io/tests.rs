@@ -200,7 +200,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             &denied_child,
             None,
             &IdempotencyKey::new("denied-source-read")?,
-            None,
             None
         )
         .await,
@@ -216,7 +215,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             &denied_child,
             None,
             &IdempotencyKey::new("wrong-generation")?,
-            None,
             None
         )
         .await
@@ -242,7 +240,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             &child,
             None,
             &IdempotencyKey::new("pinned-selected-fork")?,
-            None,
             None,
         )
         .await?;

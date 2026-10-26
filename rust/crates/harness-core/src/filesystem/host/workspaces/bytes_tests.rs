@@ -42,7 +42,7 @@ fn rejected(
     let started = std::time::Instant::now();
     let allocations = acyclic_test_support::measure(|| {
         result = Some(runtime.block_on(async {
-            host.apply_generation(reference, None, &mutations, key, io, None)?
+            host.apply_generation(reference, None, &mutations, key, io)?
                 .await
         }));
     });
@@ -192,14 +192,7 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
         }];
         let key = IdempotencyKey::new(if accounted { "accounted" } else { "ordinary" })?;
         let generation = host
-            .apply_generation(
-                &reference,
-                None,
-                &mutations,
-                key,
-                accounted.then_some(&io),
-                None,
-            )?
+            .apply_generation(&reference, None, &mutations, key, accounted.then_some(&io))?
             .await?;
         drop(mutations);
         let generation = host.generation_ref_id(generation.id(), None)?;

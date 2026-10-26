@@ -149,16 +149,6 @@ impl PreparationIo {
         }
     }
 
-    pub(crate) fn new(
-        request: &crate::resource_preparation::ResourcePreparationRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<Self> {
-        request.validate(&mut None)?;
-        Self::from_budget(
-            acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes),
-            cancellation,
-        )
-    }
     /// Starts finite preparation accounting with the caller's cancellation token.
     pub fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
         if !budget.has_finite_allowances() {

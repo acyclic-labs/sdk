@@ -71,18 +71,7 @@ pub use memory::MemoryHarnessStorage;
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-mod native_execution;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_execution::NativePreparationCompletionTemplate;
-#[cfg(all(
-    any(fuzzing, feature = "test-support"),
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
-pub use native_execution::{
-    fuzz_native_preparation_intent, fuzz_native_preparation_journal,
-    verify_native_preparation_journal,
-};
+mod native_access;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_process;
@@ -96,6 +85,19 @@ mod native_contract;
     not(target_arch = "wasm32")
 ))]
 mod native_directory;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_access::{
+    NativeMountAuthority, WorkspaceAccess, require_unrestricted_volume_access,
+    require_unrestricted_workspace_read,
+};
+#[cfg(all(
+    feature = "native-execution",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
+pub use native_access::{
+    local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
+};
 pub use native_contract::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
@@ -107,23 +109,6 @@ pub use native_contract::{
     not(target_arch = "wasm32")
 ))]
 pub(crate) use native_directory::NativeDirectory;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_execution::journal::preparation_owner;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountAuthority, NativeMountedVolume,
-    NativePreparationRoot, NativeViewPublicationError, NativeVolumeView, WorkspaceAccess,
-    authenticated_mount_options, owner_mount_options, require_unrestricted_volume_access,
-    require_unrestricted_workspace_read,
-};
-#[cfg(all(
-    feature = "native-execution",
-    feature = "filesystem-local",
-    not(target_arch = "wasm32")
-))]
-pub use native_execution::{
-    local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
-};
 mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
@@ -432,7 +417,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     io,
-                    None,
                 )?
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;

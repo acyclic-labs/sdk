@@ -426,7 +426,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ],
                 key,
                 Some(io),
-                None,
             )?
             .await?
         };

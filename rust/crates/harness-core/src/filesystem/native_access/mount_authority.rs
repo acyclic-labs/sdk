@@ -43,60 +43,6 @@ impl NativeMountAuthority {
         WorkspaceAccess::new(&self.verifier, scope, ceiling, Some(volume))
     }
 
-    /// Created resources are delegated only from the original live task admission.
-    pub async fn created_scope(
-        &self,
-        context: &crate::runtime::TaskContext,
-        ceiling: &crate::runtime::RuntimeScope,
-    ) -> Result<Scope> {
-        let owner = context
-            .owned_mailbox
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
-        owner.validate_scope(ceiling, None)?;
-        owner.verify_owner(None)?.await?;
-        let (task, fence) = owner.task_binding();
-        if !context.original_task_binding_matches(task, fence) {
-            return Err(Error::Unauthorized("child mount owner differs".into()));
-        }
-        let access =
-            context
-                .scope()
-                .created_access
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration(
-                    "child mount allocation",
-                ))?;
-        if access.operation.into_bytes() != task.into_bytes() {
-            return Err(Error::Unauthorized("child mount allocation differs".into()));
-        }
-        let mut private = access.content.iter().filter(|binding| {
-            binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate
-        });
-        let binding = private
-            .next()
-            .ok_or(Error::FilesystemAccessConfiguration("child private mount"))?;
-        if private.next().is_some() {
-            return Err(Error::Unauthorized(
-                "child private mount is ambiguous".into(),
-            ));
-        }
-        let crate::conversation::VolumeOwner::Agent(agent) = binding.volume.owner() else {
-            return Err(Error::Unauthorized(
-                "child private mount has no agent".into(),
-            ));
-        };
-        let scope = self.verifier.admit_native_descendant(
-            &self.scope,
-            "child-checkout",
-            ceiling.grants(),
-            Some(*agent),
-            &mut None,
-        )?;
-        owner.verify_owner(None)?.await?;
-        Ok(scope)
-    }
-
     /// The runtime issues only the exact selected native volume's filesystem grant.
     pub async fn mount_options<A, O>(
         &self,

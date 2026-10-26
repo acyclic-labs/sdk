@@ -109,7 +109,6 @@ pub mod objects;
 mod obs;
 pub mod projection;
 pub mod registry;
-pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod source_authorization;
@@ -178,8 +177,6 @@ pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]
-pub use resource_preparation::ChildScratchCreationProof;
-
 mod process_error;
 pub use process_error::ProcessError;
 

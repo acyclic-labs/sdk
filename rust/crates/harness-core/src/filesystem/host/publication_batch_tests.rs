@@ -405,7 +405,6 @@ async fn immutable_record_batch(adapter: u8) -> Result<()> {
         &first,
         IdempotencyKey::new("create-original")?,
         io.as_ref(),
-        None,
     )?
     .await?;
     let before = host.resolve(&workspace, None).await?;
@@ -433,8 +432,7 @@ async fn immutable_record_batch(adapter: u8) -> Result<()> {
                 &workspace,
                 &forged,
                 IdempotencyKey::new("overwrite-sealed")?,
-                io.as_ref(),
-                None
+                io.as_ref()
             )?
             .await,
             Err(error) if error.code() == crate::wire::ErrorCode::Conflict

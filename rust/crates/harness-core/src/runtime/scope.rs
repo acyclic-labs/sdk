@@ -78,7 +78,6 @@ pub struct RuntimeScope {
     pub(super) extensions_sealed: bool,
     pub(super) extension_runtime: Option<Arc<ExtensionRuntime>>,
     pub(super) extension_schemas: Option<SchemaRegistry>,
-    pub(crate) resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -93,7 +92,6 @@ impl Clone for RuntimeScope {
             extensions_sealed: self.extensions_sealed,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
-            resource_proofs: self.resource_proofs.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_grants_custody: None,
         }
@@ -156,7 +154,6 @@ impl RuntimeScope {
             extensions_sealed: true,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
-            resource_proofs: self.resource_proofs.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_grants_custody: None,
         })
@@ -215,28 +212,6 @@ impl RuntimeScope {
         self.clone_native_metadata(grants, limits, true, work)
     }
 
-    /// Extends the caller's existing quota with the same physical proof copy.
-    #[cfg(any(test, feature = "filesystem"))]
-    pub(crate) fn copy_resource_proofs(
-        proofs: &[crate::resource_preparation::ResourceCreationProofRef],
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
-        if quota.work().is_none() {
-            return Ok(proofs.to_vec());
-        }
-        crate::core::copy_vector(proofs, quota, |proof, quota| {
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                    bytes: 0,
-                    items: 1,
-                })?;
-            }
-            let (copied, retained) = proof.copy(quota.work())?;
-            quota.adopt(retained)?;
-            Ok(copied)
-        })
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn clone_native_metadata(
         &self,
@@ -258,13 +233,6 @@ impl RuntimeScope {
             Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?.0),
             None => None,
         };
-        let resource_proofs = {
-            let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-            let mut quota = crate::wire_codec::CodecQuota::from_retained(&mut observer, 0);
-            let copied = Self::copy_resource_proofs(&self.resource_proofs, &mut quota)?;
-            quota.transfer();
-            copied
-        };
         let scope = Self {
             grants: grants.0,
             limits,
@@ -273,7 +241,6 @@ impl RuntimeScope {
             extensions_sealed: sealed,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas,
-            resource_proofs,
             _native_grants_custody: Some(grants.1),
         };
         Ok((scope, io.into_custody()?))
@@ -411,12 +378,6 @@ impl RuntimeScope {
         }
         self.extensions_sealed = true;
         Ok(self)
-    }
-
-    /// Exact durable proof references retained for descendant scope attenuation.
-    #[must_use]
-    pub fn resource_proofs(&self) -> &[crate::resource_preparation::ResourceCreationProofRef] {
-        &self.resource_proofs
     }
 
     /// Returns the exact effective grants.
