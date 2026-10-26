@@ -46,7 +46,9 @@ pub(crate) use admission::serialized_layout_bytes;
 #[cfg(feature = "filesystem")]
 pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
 #[cfg(test)]
-pub(crate) use admission::{assert_layout_covers_decode, layout_reservation};
+pub(crate) use admission::assert_layout_covers_decode;
+#[cfg(any(test, fuzzing, feature = "test-support"))]
+pub(crate) use admission::layout_reservation;
 pub use records::json_value_logical_owned_bytes;
 pub(crate) use records::json_value_retained_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};

@@ -85,7 +85,10 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use native_execution::{fuzz_native_preparation_intent, fuzz_native_preparation_journal};
+pub use native_execution::{
+    fuzz_native_preparation_intent, fuzz_native_preparation_journal,
+    verify_native_preparation_journal,
+};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_process;

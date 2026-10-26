@@ -36,8 +36,10 @@ pub(super) mod journal;
 mod journal_encoding;
 #[cfg(test)]
 mod journal_properties;
-#[cfg(test)]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 mod journal_verification;
+#[cfg(any(fuzzing, feature = "test-support"))]
+pub use journal_verification::verify_native_preparation_journal;
 mod mounted;
 mod preparation;
 mod preparation_record;

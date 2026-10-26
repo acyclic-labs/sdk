@@ -498,7 +498,7 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(
 
 /// Admits a typed document's value shape and the heap its decode allocates
 /// at each position of `layout`.
-#[cfg(test)]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 pub(crate) fn admit_json_layout(
     bytes: &[u8],
     bounds: JsonBounds,
@@ -555,7 +555,7 @@ pub(super) fn admit_typed(
 }
 /// What a typed decode of `bytes` into `T` reserves at its entry point, or
 /// `None` when admission refuses the document.
-#[cfg(test)]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
     let bounds = JsonBounds {
         maximum_bytes: u64::MAX,
