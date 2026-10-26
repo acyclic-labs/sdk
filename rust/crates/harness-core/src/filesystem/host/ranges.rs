@@ -30,7 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let workspace =
-            fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
+            bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
         let opened = self.open(&workspace, Some(io)).await?;
         let generation = self.file_generation(reference, Some(io))?;
         let selected = self.generation(&opened, &generation, Some(io)).await?;
@@ -126,7 +126,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read_range_if_unchanged(&original, &path, range, io, io.cancellation())
                 .await,
         )?;
-        fork_preparer_io::retain(selected, Some(io)).await?;
+        bounded_io::retain(selected, Some(io)).await?;
         if io.original_native_work().is_none() {
             io.retain_owned(chunk.bytes.retained_capacity().unwrap_or(0) as u64)?;
         }

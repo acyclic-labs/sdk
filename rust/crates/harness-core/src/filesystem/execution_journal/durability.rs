@@ -12,14 +12,6 @@ where
         {
             self.stream.supports_deferred_durability()
                 && self.host.filesystem.supports_deferred_durability()
-                && self
-                    .owner
-                    .as_ref()
-                    .is_none_or(|(owner, _)| Arc::ptr_eq(&self.stream, &owner.stream()))
-                && self
-                    .task_files
-                    .as_ref()
-                    .is_none_or(|files| files.inner.shares_provider(&self.stream))
         }
         #[cfg(target_arch = "wasm32")]
         false

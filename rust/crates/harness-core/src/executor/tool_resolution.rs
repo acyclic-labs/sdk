@@ -22,10 +22,7 @@ impl StockExecution<'_> {
                 "stock tool approval requires interaction:route",
             ));
         }
-        let task = self.stock.task.as_ref().map_or(
-            TaskId::from_bytes(operation.into_bytes()),
-            |(_, task, _)| *task,
-        );
+        let task = TaskId::from_bytes(operation.into_bytes());
         let approval = with_history_io(self.io, |work| {
             crate::interaction::scoped_id(task.into_bytes(), approval_operation, work)
         })?;

@@ -40,7 +40,7 @@ pub(in crate::filesystem::execution_journal) enum Value<'a> {
     Inline(ReadNode<'a>),
     Segmented {
         bytes: OwnedBytes,
-        _hold: Option<crate::filesystem::fork_preparer_io::DecodeReservation<'a>>,
+        _hold: Option<crate::filesystem::bounded_io::DecodeReservation<'a>>,
     },
 }
 

@@ -4,7 +4,7 @@ use persistent_index::NodeRef;
 
 pub(super) struct IndexPath<'a> {
     path: acyclic_stream::StreamPath,
-    _hold: Option<crate::filesystem::fork_preparer_io::DecodeReservation<'a>>,
+    _hold: Option<crate::filesystem::bounded_io::DecodeReservation<'a>>,
 }
 
 impl std::ops::Deref for IndexPath<'_> {

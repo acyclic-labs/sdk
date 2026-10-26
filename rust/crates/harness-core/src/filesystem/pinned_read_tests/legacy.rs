@@ -26,11 +26,8 @@ pub(super) async fn read_pinned(
                     });
                 }
                 let generation = host.file_generation(reference, Some(io))?;
-                let workspace = fork_preparer_io::content_workspace(
-                    &host.provider,
-                    reference.volume(),
-                    Some(io),
-                )?;
+                let workspace =
+                    bounded_io::content_workspace(&host.provider, reference.volume(), Some(io))?;
                 let rendered = original
                     .display(&format_args!("/{}", reference.path()))
                     .map_err(|cause| Error::NativeWork {
@@ -49,7 +46,7 @@ pub(super) async fn read_pinned(
                         source: Box::new(source),
                         custody: None,
                     })?;
-                fork_preparer_io::retain(&pinned, Some(io)).await?;
+                bounded_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
                 })?;
@@ -74,8 +71,7 @@ pub(super) async fn read_pinned(
             let generation_hold = io
                 .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
                 .transpose()?;
-            let workspace =
-                fork_preparer_io::content_workspace(&host.provider, reference.volume(), io)?;
+            let workspace = bounded_io::content_workspace(&host.provider, reference.volume(), io)?;
             let _workspace_hold = io
                 .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
                 .transpose()?;
@@ -98,7 +94,7 @@ pub(super) async fn read_pinned(
                         )
                     })?;
                     io.retain_owned(capacity as u64)?;
-                    fork_preparer_io::retain(&pinned, Some(io)).await?;
+                    bounded_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {

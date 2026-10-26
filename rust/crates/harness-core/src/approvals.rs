@@ -15,8 +15,6 @@ pub use chain::{
 };
 mod files;
 pub use files::{ApprovalCreate, ApprovalFiles, ApprovalRequest};
-mod legacy;
-pub use legacy::{automatic_review, fingerprint, next_stage, request_id, review_key};
 mod agent;
 /// Independent models that `llm` approval stages name, by name.
 pub type ApproverModels = std::collections::BTreeMap<

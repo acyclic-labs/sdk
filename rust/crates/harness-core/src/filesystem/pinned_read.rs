@@ -42,7 +42,7 @@ impl<A, O> PinnedRead<A, O> {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedRead<A, O> {
     pub(super) async fn retain(self) -> Result<acyclic_stream::OwnedBytes> {
         if let Some(generation) = self.pending {
-            fork_preparer_io::retain(&generation, None).await?;
+            bounded_io::retain(&generation, None).await?;
         }
         Ok(self.bytes)
     }

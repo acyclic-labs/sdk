@@ -102,7 +102,6 @@ impl StockExecution<'_> {
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
-        self.verify_execution_owner().await?;
         if !journal
             .append_if_tail(
                 input.operation_id,

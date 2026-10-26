@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(feature = "filesystem")]
-use crate::durable_host::TaskJournalOwner;
 
 fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
     let _ = &error;
@@ -16,118 +14,12 @@ fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
-    #[cfg(feature = "filesystem")]
-    pub(super) async fn execute_root_bind_with_work(
-        &mut self,
-        command: Command,
-        owner: &TaskJournalOwner<P>,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<ApplyResult> {
-        if let Some(work) = work.as_deref_mut() {
-            work.check_cancellation()?;
-        }
-        let Action::BindConversation { agent } = &command.action else {
-            return Err(guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "measured ROOT binding requires the original BindConversation command",
-            ));
-        };
-        if self.reducer.authority().kind != crate::core::AggregateKind::Conversation
-            || command.causal_parent.is_some()
-            || command.scope.agent() != Some(*agent)
-            || owner.authenticated_binding_agent(&mut None)? != Some(*agent)
-        {
-            return Err(guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "ROOT binding differs from its original owner, actor or causal policy",
-            ));
-        }
-        owner.authenticate_binding_scope(self.reducer.authority(), &command.scope, work)?;
-        let gate = owner.lock_root_binding().await.ok_or_else(|| {
-            guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "published children use their canonical child binding, not ROOT binding",
-            )
-        })?;
-        if let Some(work) = work.as_deref_mut() {
-            work.check_cancellation()?;
-        }
-        let intent = crate::executor::json::canonical_json_digest(
-            &command,
-            crate::store::default_projection_read_limits().maximum_bytes,
-            work,
-        )?;
-        owner.check_root_binding(
-            self.reducer.authority(),
-            command.operation_id,
-            intent,
-            &mut None,
-        )?;
-        self.pin_root_choice(owner, &command, intent, work)?;
-        let (original_task, admission_digest, fence) = owner.binding_origin();
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
-        let proof = VerifiedRootBinding {
-            original_task,
-            admission_digest,
-            fence: crate::scheduler::LeaseFence {
-                reservation_id: crate::core::copy_text(&fence.reservation_id, &mut quota)?,
-                placement: crate::core::copy_text(&fence.placement, &mut quota)?,
-            },
-            agent: *agent,
-            audience: crate::core::copy_authority(self.reducer.authority(), &mut quota)?,
-            bind_operation: command.operation_id,
-            intent_digest: intent,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let held = quota.retained();
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = match quota.work().as_deref_mut() {
-            Some(io) if io.original_native_work().is_some() => Some(io.take_native_custody(held)?),
-            _ => None,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let custody = None;
-        let proof = (proof, custody);
-        if proof.1.is_some() {
-            quota.transfer();
-        }
-        let result = self
-            .publish(
-                command,
-                Some(owner),
-                crate::distributed::JournalWrite::Fresh,
-                true,
-                quota.work(),
-            )
-            .await?
-            .0;
-        if owner.retain_root_binding(proof.0, proof.1)? {
-            quota.transfer();
-        }
-        drop(gate);
-        Ok(result)
-    }
-
     pub(crate) async fn publish(
         &mut self,
         command: Command,
-        #[cfg(feature = "filesystem")] owner: Option<&TaskJournalOwner<P>>,
-        #[cfg(feature = "filesystem")] write: crate::distributed::JournalWrite,
         return_event: bool,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        #[cfg(feature = "filesystem")]
-        if let Some(owner) = owner {
-            owner
-                .verify(
-                    matches!(write, crate::distributed::JournalWrite::Settlement),
-                    work,
-                )
-                .await?;
-        }
         if let Some(replay) = self
             .replay_publication(&command, return_event, work)
             .await?
@@ -167,15 +59,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             &command.idempotency_key,
             transient.work(),
         )?);
-        #[cfg(feature = "filesystem")]
-        let key_owned = if owner.is_some() && transient.work().is_some() {
-            32
-        } else {
-            0
-        };
-        #[cfg(not(feature = "filesystem"))]
-        let key_owned = 0;
-        transient.adopt(key_owned)?;
         let fork_guard = self
             .activate_publication_fork(&command, &mut transient)
             .await?;
@@ -185,8 +68,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 &publication,
                 &mut key,
                 command.operation_id,
-                #[cfg(feature = "filesystem")]
-                (owner, write),
                 &mut append_phase,
                 &mut transient,
             )
@@ -194,7 +75,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         drop(publication);
         let released_publication = transient.relinquish(publication_owned);
         drop(key);
-        let released_key = transient.relinquish(key_owned);
+        let released_key = transient.relinquish(0);
         Self::finish_append(
             appended,
             (released_publication, released_key),
@@ -212,35 +93,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             &mut transient,
         )
         .await
-    }
-
-    #[cfg(feature = "filesystem")]
-    fn pin_root_choice(
-        &self,
-        owner: &TaskJournalOwner<P>,
-        command: &Command,
-        intent: [u8; 32],
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<()> {
-        const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
-        let audience = self.reducer.authority();
-        if let Some(work) = work.as_deref_mut() {
-            work.hashed_bytes(
-                (ROOT_CHOICE_DOMAIN.len() + b"conversation".len() + 8 + audience.id.len()) as u64,
-            )?;
-        }
-        let mut choice = blake3::Hasher::new();
-        choice.update(ROOT_CHOICE_DOMAIN);
-        choice.update(b"conversation");
-        choice.update(&(audience.id.len() as u64).to_le_bytes());
-        choice.update(audience.id.as_bytes());
-        owner.pin_root_binding_choice(
-            command.operation_id,
-            intent,
-            *choice.finalize().as_bytes(),
-            &mut None,
-        )?;
-        Ok(())
     }
 
     async fn validate_publication_content(
@@ -309,35 +161,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         publication: &operations::IndexedPublication,
         key: &mut Option<StreamIdempotencyKey>,
         operation: OperationId,
-        #[cfg(feature = "filesystem")] owner_write: (
-            Option<&TaskJournalOwner<P>>,
-            crate::distributed::JournalWrite,
-        ),
         append_phase: &mut crate::distributed::CommitPhase,
         transient: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<bool> {
-        #[cfg(feature = "filesystem")]
-        let (owner, write) = owner_write;
-
         async {
-            #[cfg(feature = "filesystem")]
-            if let Some(owner) = owner {
-                return owner
-                    .append_conversation(
-                        publication,
-                        key.as_ref().ok_or_else(|| {
-                            guarded_boundary(
-                                transient.work(),
-                                crate::wire::ErrorCode::Storage,
-                                "publication key is missing",
-                            )
-                        })?,
-                        write,
-                        transient.work(),
-                        Some(append_phase),
-                    )
-                    .await;
-            }
             let request = publication
                 .request(
                     &self.client,

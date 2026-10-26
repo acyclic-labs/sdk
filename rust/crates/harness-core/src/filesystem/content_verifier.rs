@@ -4,7 +4,6 @@ use super::*;
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
-    pub(in crate::filesystem) creation: Option<Arc<fork_preparer::CreatedProvenance>>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
     pub(in crate::filesystem) maximum_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -77,7 +76,6 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             Ok(Arc::new(Self {
                 host,
                 authority: Arc::new(authority),
-                creation: None,
                 exact_file: None,
                 maximum_bytes,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -97,11 +95,6 @@ where
             .exact_file
             .as_ref()
             .is_some_and(|file| file.volume() != volume)
-            || self.exact_file.is_none()
-                && self
-                    .creation
-                    .as_ref()
-                    .is_some_and(|creation| creation.volume() != volume)
         {
             return Ok(false);
         }
@@ -435,17 +428,6 @@ where
                 "created reference handle names another immutable file",
             ));
         }
-        if let Some(creation) = &self.creation {
-            creation
-                .verify(
-                    &self.host,
-                    self.authority.verifier().audience(),
-                    volume,
-                    self.exact_file.as_ref(),
-                    io,
-                )?
-                .await?;
-        }
         Ok(())
     }
 
@@ -460,7 +442,6 @@ where
             host: self.host.clone(),
             authority: self.authority.clone(),
             maximum_bytes: self.maximum_bytes,
-            creation: self.creation.clone(),
             exact_file: Some(file.copy(&mut Some(&mut io.history_io()))?),
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata: self._native_metadata.clone(),

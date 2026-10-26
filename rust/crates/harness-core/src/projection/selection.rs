@@ -1,7 +1,7 @@
 use super::*;
 use crate::conversation::{ConversationMessage, FileRef};
-use crate::scheduler::diagnostic;
 use crate::store::HistoryIo;
+use crate::store::guarded_boundary as diagnostic;
 use crate::wire::ErrorCode::Conflict;
 use uuid::Uuid;
 

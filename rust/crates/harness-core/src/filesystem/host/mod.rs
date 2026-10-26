@@ -186,10 +186,6 @@ pub(crate) use reads::file_publication;
 pub(in crate::filesystem) use reads::read_generation;
 
 use crate::executor::stock_boundary;
-#[cfg(not(target_arch = "wasm32"))]
-pub use volumes::{
-    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
-};
 
 pub use directory::DirectoryOptions;
 

@@ -8,12 +8,8 @@ impl StockExecution<'_> {
             && let Some((context, expected_operation)) = self.context
         {
             if expected_operation != operation
-                || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
                 || context.scope().run_limits() != self.stock.tool_scope.run_limits()
                 || context.scope().extensions() != self.stock.tool_scope.extensions()
-                || self.stock.task.as_ref().is_some_and(|(_, task, fence)| {
-                    !context.original_task_binding_matches(*task, fence)
-                })
             {
                 return Err(crate::Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
@@ -24,7 +20,6 @@ impl StockExecution<'_> {
         }
         if let Some((context, expected_operation)) = self.context
             && (expected_operation != operation
-                || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
                 || context.scope().grants() != self.stock.tool_scope.grants()
                 || context.scope().limits() != self.stock.limits
                 || context.scope().run_limits() != self.stock.tool_scope.run_limits()
@@ -49,32 +44,12 @@ impl StockExecution<'_> {
         &self,
         invocation: &ToolInvocation,
     ) -> Result<Option<crate::runtime::ToolContext>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = self.native_work() {
-            let (context, _) = self.context.ok_or(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "native tool context has no issued task",
-            })?;
-            let mut tool_context = crate::runtime::ToolContext::new(
-                Arc::clone(context),
-                invocation.operation_id,
-                &invocation.call_id,
-                self.io,
-            )?
-            .with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
-            if let Some(interactions) = self.interactions {
-                tool_context =
-                    tool_context.with_native_interactions(Arc::clone(interactions), work)?;
-            }
-            return Ok(Some(tool_context));
-        }
         self.context
             .map(|(context, _)| {
                 crate::runtime::ToolContext::new(
                     Arc::clone(context),
                     invocation.operation_id,
                     &invocation.call_id,
-                    None,
                 )
             })
             .transpose()
@@ -92,8 +67,6 @@ impl StockExecution<'_> {
         #[derive(Serialize)]
         struct Request<'a> {
             executor: &'static str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            summary_source: Option<&'a FileRef>,
             input: &'a TurnInput,
             model: &'a Model,
             max_output_tokens: Option<u32>,
@@ -108,8 +81,6 @@ impl StockExecution<'_> {
             inherited_prefix: Option<&'a FileRef>,
             compaction: &'a crate::context::CompactionPolicy,
             model_capacity: Option<crate::context::ModelContextCapacity>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            task_id: Option<TaskId>,
             #[serde(skip_serializing_if = "Option::is_none")]
             task_context: Option<IssuedContext<'a>>,
         }
@@ -129,16 +100,15 @@ impl StockExecution<'_> {
         let contracts = self.context_pipeline().contracts(io)?;
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         let task_context = self.context.map(|(context, operation)| IssuedContext {
-            admission_operation: context.id(),
+            admission_operation: operation,
             execution_operation: operation,
-            task_id: context.durable_task_id(),
+            task_id: None,
             run_limits: context.scope().run_limits(),
             extensions: context.scope().extensions(),
         });
         preparation_digest(
             &Request {
                 executor: "acyclic.stock.v7",
-                summary_source: self.stock.summary_source.as_deref(),
                 input,
                 model: &self.stock.model,
                 max_output_tokens: self.output_tokens(),
@@ -163,7 +133,6 @@ impl StockExecution<'_> {
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
                 compaction: self.compaction_policy()?,
                 model_capacity: self.model_capacity()?,
-                task_id: self.stock.task.as_ref().map(|(_, task, _)| *task),
                 task_context,
             },
             io,

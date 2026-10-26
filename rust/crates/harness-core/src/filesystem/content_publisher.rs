@@ -18,7 +18,6 @@ pub struct FilesystemContentPublisher<A: 'static, O: 'static> {
     volume: VolumeRef,
     grant: ContentGrant,
     maximum_bytes: u64,
-    pub(in crate::filesystem) creation: Option<Arc<super::fork_preparer::CreatedProvenance>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -65,92 +64,9 @@ impl<A, O> FilesystemContentPublisher<A, O> {
                 volume,
                 grant,
                 maximum_bytes,
-                creation: None,
                 #[cfg(not(target_arch = "wasm32"))]
                 _native_metadata,
             }))
-        })
-    }
-}
-
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
-    crate::distributed::SchedulerPayloadStore for FilesystemContentPublisher<A, O>
-{
-    fn stage<'a>(
-        &'a self,
-        operation: OperationId,
-        idempotency_key: &'a str,
-        bytes: &'a [u8],
-        io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, FileRef>> {
-        if self.volume.class() != crate::conversation::VolumeClass::AgentPrivate
-            || self.volume.provider() != &self.host.provider
-        {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "scheduler payload store requires a private volume and positive limit",
-            ));
-        }
-        BoundedContentFuture::new(io, || async move {
-            self.verify_creation(io).await?;
-            let hashing = acyclic_fs::WorkCounters {
-                bytes_hashed: idempotency_key.len() as u64,
-                items_examined: 1,
-                ..Default::default()
-            };
-            if let Some(io) = io {
-                io.preflight(hashing)?;
-            }
-            let key = blake3::hash(idempotency_key.as_bytes()).to_hex();
-            if let Some(io) = io {
-                io.charge(hashing)?;
-            }
-            let (path_hold, path) = {
-                let path = crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!("scheduler/results/{operation}/{key}.json"),
-                        work,
-                    )
-                })?;
-                let path_hold = io
-                    .map(|io| io.guard_owned(path.capacity() as u64))
-                    .transpose()?;
-                (path_hold, path)
-            };
-            let (retry_hold, retry) = {
-                let retry = crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!("scheduler-result:{operation}:{key}"),
-                        work,
-                    )
-                })?;
-                let retry_hold = io
-                    .map(|io| io.guard_owned(retry.capacity() as u64))
-                    .transpose()?;
-                (retry_hold, retry)
-            };
-            let retry = IdempotencyKey::new(retry)?;
-            let result = self
-                .host
-                .put_content(
-                    &self.volume,
-                    &self.grant,
-                    &path,
-                    bytes,
-                    "application/json",
-                    "result.json",
-                    self.maximum_bytes,
-                    &retry,
-                    None,
-                    crate::conversation::ContentAccess { ceiling: None, io },
-                )
-                .await;
-            drop(retry);
-            drop(retry_hold);
-            drop(path);
-            drop(path_hold);
-            result
         })
     }
 }
@@ -261,7 +177,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         BoundedContentFuture::new(io, || async move {
-            self.verify_creation(io).await?;
             let retry = upload_key(operation, path, io)?;
             let retry_hold = io
                 .map(|io| io.guard_owned(retry.as_str().len() as u64))
@@ -294,21 +209,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {
-    async fn verify_creation(&self, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(creation) = &self.creation {
-            let scratch = PreparationIo::temporary(io)?;
-            creation
-                .verify(
-                    &self.host,
-                    creation.owner(),
-                    &self.volume,
-                    None,
-                    scratch.as_ref().or(io),
-                )?
-                .await?;
-        }
-        Ok(())
-    }
     pub(super) async fn observe_publication(
         &self,
         operation: OperationId,
@@ -316,7 +216,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        self.verify_creation(io).await?;
         let retry = once_key(operation, io)?;
         let hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
@@ -356,7 +255,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<FileRef> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
-        self.verify_creation(io).await?;
         if let Some(source) = source {
             crate::executor::with_history_io(io, |work| source.validate(work))?;
             if source.volume() != &self.volume {

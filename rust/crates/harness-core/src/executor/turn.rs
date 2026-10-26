@@ -10,7 +10,6 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<TurnOutput>> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
-        self.verify_execution_owner().await?;
         let mut phase = DispatchPhase::new();
         let result = self.execute_turn(input, journal, &mut phase).await;
         phase
@@ -25,12 +24,6 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
-        if let Some(source) = self.stock.summary_source.as_deref() {
-            return crate::conversation::BoundedContentFuture::new(self.io, || {
-                self.summarize_file(journal, input, source, phase)
-            })?
-            .await;
-        }
         self.ensure_started(journal, input).await?;
         self.begin_working_history().await;
         self.begin_request_continuation().await;

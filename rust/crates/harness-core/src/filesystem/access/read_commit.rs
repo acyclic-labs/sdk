@@ -66,7 +66,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
     }
 
     pub(in crate::filesystem) async fn confirm_publication(self) -> Result<()> {
-        fork_preparer_io::retain(&self.generation, Some(self.io)).await?;
+        bounded_io::retain(&self.generation, Some(self.io)).await?;
         self.confirm().await
     }
 
@@ -85,7 +85,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         self.reference
             .descriptor()
             .verify(&bytes, &mut Some(&mut io.history_io()))?;
-        fork_preparer_io::retain(&self.generation, Some(io)).await?;
+        bounded_io::retain(&self.generation, Some(io)).await?;
         // Fence disclosure after both the read and retention have completed.
         // A separate pre-retention observation repeats the same metadata work
         // without protecting any returned bytes.

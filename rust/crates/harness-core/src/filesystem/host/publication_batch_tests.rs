@@ -114,7 +114,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 .await?,
             Some(original)
         );
-        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let before = host.resolve(&workspace, None).await?;
         assert!(
             host.put_content(
@@ -330,7 +330,7 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
                 1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
                 _ => Some(PreparationIo::from_native_work(&native)?),
             };
-            let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+            let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
             let case = InternalPublicationCase {
                 host: &host,
                 volume: &volume,

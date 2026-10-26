@@ -287,28 +287,6 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
         "publication embeds a concrete child operation in its caller"
     );
 }
-
-#[test]
-fn workflow_commit_retains_only_its_owned_polling_handle() {
-    type Journal = crate::filesystem::FilesystemWorkflowJournal<
-        acyclic_stream::MemoryStream,
-        MemoryAuthorityBackend,
-        MemoryObjectBackend,
-    >;
-    let bytes = retained_operation_bytes(
-        |(journal, record, key): (
-            &'static Journal,
-            &'static crate::workflow::WorkflowRecord,
-            IdempotencyKey,
-        )| journal.commit_borrowed_with_io(0, key, record, None),
-    );
-    eprintln!("workflow commit retained bytes={bytes}");
-    assert!(
-        bytes <= 512,
-        "workflow embeds a concrete child operation in its caller"
-    );
-}
-
 #[test]
 fn transaction_operations_retain_only_owned_polling_handles() {
     type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;

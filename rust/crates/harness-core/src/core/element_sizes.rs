@@ -86,11 +86,6 @@ ceiling!(provider_ref, crate::resources::ProviderRef, 72);
 ceiling!(json_entry, (String, serde_json::Value), 56);
 ceiling!(value, serde_json::Value, 32);
 ceiling!(
-    task_admission_record,
-    crate::runtime::TaskAdmissionRecord,
-    992
-);
-ceiling!(
     resource_preparation_request,
     crate::resource_preparation::ResourcePreparationRequest,
     2400
@@ -105,7 +100,6 @@ ceiling!(
     crate::resource_preparation::ResourceCreationOrigin,
     216
 );
-ceiling!(workflow_command, crate::workflow::WorkflowCommand, 312);
 ceiling!(
     project_source_authorization,
     crate::source_authorization::ProjectSourceAuthorization,

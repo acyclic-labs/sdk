@@ -151,7 +151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        let workspace_ref = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
+        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
@@ -162,7 +162,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        fork_preparer_io::retain(&generation, Some(io)).await?;
+        bounded_io::retain(&generation, Some(io)).await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
@@ -231,7 +231,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        let reference = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
+        let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
         let workspace = (self).open(&reference, Some(io)).await?;
         let pinned = (self).generation(&workspace, generation, Some(io)).await?;
@@ -249,7 +249,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        fork_preparer_io::retain(&pinned, Some(io)).await?;
+        bounded_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
@@ -329,7 +329,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ..Default::default()
             })?;
         }
-        fork_preparer_io::generation_ref(
+        bounded_io::generation_ref(
             &self.provider,
             GenerationId::new(Digest::from_bytes(bytes)),
             io,
@@ -489,7 +489,7 @@ fn selected_reference<'a>(
     staged: Option<(FileRef, DecodeReservation<'a>)>,
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    let version = fork_preparer_io::hex_key(&generation.digest().into_bytes(), Some(io))?;
+    let version = bounded_io::hex_key(&generation.digest().into_bytes(), Some(io))?;
     let version_hold = io.guard_owned(version.capacity() as u64)?;
     let reference = if let Some(mut staged) = staged {
         if staged.0.volume() != volume || staged.0.path() != path {

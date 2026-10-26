@@ -218,4 +218,3 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
     quota.transfer();
     Ok((outcome, retained))
 }
-

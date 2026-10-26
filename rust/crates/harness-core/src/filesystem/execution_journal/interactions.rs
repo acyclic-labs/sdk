@@ -16,13 +16,8 @@ where
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
         traced(span, async {
             let host = self.interactions()?;
-            let owner = self.owner.as_ref().map(|(owner, _)| owner);
-            if let Some(owner) = owner {
-                owner.require_interaction_grant(&mut None)?;
-                owner.verify(true, &mut None).await?;
-            }
             let approval = matches!(response, InteractionResponse::Approval { .. });
-            let resolution = host.resolve_latest(id, response, responder, owner);
+            let resolution = host.resolve_latest(id, response, responder);
             if approval {
                 // Only the complete approval publication can certify a
                 // verdict. Its explicit receipts still flush every staged
@@ -34,9 +29,6 @@ where
                 self.published_decision(id, None).await?;
             } else {
                 resolution.await?;
-            }
-            if let Some(owner) = owner {
-                owner.verify(true, &mut None).await?;
             }
             Ok(())
         })
@@ -60,10 +52,6 @@ where
             .as_mut()
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         interaction.validate(&mut work)?;
-        if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(&mut work)?;
-            owner.verify(false, &mut work).await?;
-        }
         let host = self.interactions.as_ref().ok_or_else(|| {
             reject(
                 crate::wire::ErrorCode::Unsupported,
@@ -83,12 +71,8 @@ where
                 (request_hold, original)
             };
             if let Some(original) = &original {
-                if let Some((owner, _)) = &self.owner {
-                    owner.verify(false, &mut work).await?;
-                }
                 return if original.matches_reopened(interaction) {
-                    self.publish_approval_request(id, &transaction.aggregate.0, io)
-                        .await
+                    Ok(())
                 } else {
                     Err(reject(
                         crate::wire::ErrorCode::Conflict,
@@ -108,36 +92,12 @@ where
                 .transpose()?;
             (ticket_hold, ticket)
         };
-        let publication = host.open_at(
-            operation,
-            None,
-            &ticket,
-            self.owner.as_ref().map(|(owner, _)| owner),
-            io,
-            &mut transaction,
-        );
-        #[cfg(feature = "filesystem-local")]
-        let publication = async {
-            if self.owner.is_some() && matches!(interaction, Interaction::Approval { .. }) {
-                // The task-file publisher below proves both durable prefixes.
-                // Only this provider's canonical append may share its flush;
-                // staging on an independent filesystem authority stays eager.
-                acyclic_stream::deferring_provider_durability(&*self.stream, publication).await
-            } else {
-                publication.await
-            }
-        };
+        let publication = host.open_at(operation, None, &ticket, io, &mut transaction);
         let publication = publication.await;
         drop(ticket);
         drop(ticket_hold);
-        if let Some((owner, _)) = &self.owner {
-            owner.verify(false, &mut work).await?;
-        }
-        let result = match publication {
-            Ok(_) => {
-                self.publish_approval_request(id, &transaction.aggregate.0, io)
-                    .await
-            }
+        match publication {
+            Ok(_) => Ok(()),
             Err(error)
                 if matches!(
                     error.code(),
@@ -158,10 +118,7 @@ where
                     (request_hold, original)
                 };
                 let result = match &original {
-                    Some(original) if original.matches_reopened(interaction) => {
-                        self.publish_approval_request(id, &transaction.aggregate.0, io)
-                            .await
-                    }
+                    Some(original) if original.matches_reopened(interaction) => Ok(()),
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",
@@ -173,11 +130,7 @@ where
                 result
             }
             Err(error) => Err(error),
-        };
-        if let Some((owner, _)) = &self.owner {
-            owner.verify(false, &mut work).await?;
         }
-        result
     }
 
     pub(super) async fn interaction_outcome_with_io(
@@ -187,14 +140,6 @@ where
     ) -> Result<Option<InteractionOutcome>> {
         if let Some(approvals) = &self.agent_approvals {
             return approvals.outcome(id).await;
-        }
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-        if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(&mut work)?;
-            owner.verify(true, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| {
             crate::filesystem::interaction_host::interaction_boundary(
@@ -216,9 +161,6 @@ where
                 outcome
             }
         };
-        if let Some((owner, _)) = &self.owner {
-            owner.verify(true, &mut work).await?;
-        }
         Ok(outcome)
     }
 }

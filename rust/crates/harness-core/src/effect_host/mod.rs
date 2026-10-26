@@ -9,7 +9,6 @@ use crate::{
         SchemaRegistry, Scope,
     },
     effects::EffectRegistry,
-    runtime::DurableEffectObserver,
     store::{
         DEFAULT_TERMINAL_EFFECTS, StreamAggregate, default_projection_read_limits,
         guarded_boundary as boundary, history::HistoryIo,

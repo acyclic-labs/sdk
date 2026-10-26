@@ -223,7 +223,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         id: GenerationId,
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
-        fork_preparer_io::generation_ref(&self.provider, id, io)
+        bounded_io::generation_ref(&self.provider, id, io)
     }
 
     pub(in crate::filesystem) fn validate_provider(&self, provider: &ProviderRef) -> Result<()> {
@@ -674,7 +674,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 verify_native_publication(preparation, work).await?;
             }
             let workspace = self.open(reference, Some(io)).await?;
-            let operation = fork_preparer_io::operation_key(&key, Some(io))?;
+            let operation = bounded_io::operation_key(&key, Some(io))?;
             let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
                 let pinned = match expected {
                     Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
@@ -897,7 +897,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &owned
         };
         let workspace = self.open(reference, Some(io)).await?;
-        let key = fork_preparer_io::operation_key(key, Some(io))?;
+        let key = bounded_io::operation_key(key, Some(io))?;
         io.sdk(
             workspace
                 .operation_generation(key, io, io.cancellation())
@@ -966,7 +966,7 @@ mod workload_tests {
             u64::MAX,
             &mut None,
         )?;
-        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
         let opened = host.open(&workspace, Some(&io)).await?;
         let before = io.sdk(opened.head(&io, io.cancellation()).await)?.id();

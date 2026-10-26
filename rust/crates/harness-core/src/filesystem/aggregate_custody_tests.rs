@@ -1,8 +1,7 @@
 use super::*;
 use crate::filesystem::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemInteractionHost, FilesystemJournalBinding, FilesystemWorkflowJournal,
-    FsRootProjectSourceProvider, PreparationIo,
+    FilesystemInteractionHost, FilesystemJournalBinding, PreparationIo,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -10,11 +9,8 @@ enum Constructor {
     Host,
     Content,
     Publisher,
-    RootSource,
-    Parent,
     Interaction,
     ExecutionJournal,
-    WorkflowJournal,
 }
 
 impl Constructor {
@@ -52,20 +48,6 @@ impl Constructor {
                 4096,
                 io,
             )?),
-            Self::RootSource => drop(FsRootProjectSourceProvider::new(
-                Arc::clone(&fixture.host),
-                fixture.parent.reducer().authority(),
-                TaskId::from_bytes([9; 16]),
-                io,
-            )?),
-            Self::Parent => drop(ParentProjectController::new(
-                &fixture.host,
-                fixture.parent.reducer(),
-                verifier,
-                &fixture.scope,
-                &fixture.project,
-                io,
-            )?),
             Self::Interaction => drop(FilesystemInteractionHost::new(
                 Arc::new(MemoryStream::default()),
                 Arc::clone(&fixture.host),
@@ -77,12 +59,6 @@ impl Constructor {
                 Arc::new(MemoryStream::default()),
                 Arc::clone(&fixture.host),
                 &SchemaRegistry::new(),
-                binding,
-            )?),
-            Self::WorkflowJournal => drop(FilesystemWorkflowJournal::new(
-                Arc::new(MemoryStream::default()),
-                Arc::clone(&fixture.host),
-                "constructor-custody",
                 binding,
             )?),
         }
@@ -115,11 +91,8 @@ async fn failed_aggregate_constructors_release_every_allocation_boundary() -> Re
         Constructor::Host,
         Constructor::Content,
         Constructor::Publisher,
-        Constructor::RootSource,
-        Constructor::Parent,
         Constructor::Interaction,
         Constructor::ExecutionJournal,
-        Constructor::WorkflowJournal,
     ] {
         constructor.construct(&fixture, &verifier, None)?;
         for native in [false, true] {

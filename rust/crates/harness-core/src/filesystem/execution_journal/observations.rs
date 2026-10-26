@@ -65,10 +65,7 @@ where
                 "execution summary is not bound to its operation",
             ));
         }
-        let limits = self
-            .owner
-            .as_ref()
-            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+        let limits = Limits::default();
         loop {
             let before = io.map(PreparationIo::owned_bytes).transpose()?;
             let (page_hold, page) = {
@@ -131,116 +128,6 @@ where
         }
     }
 
-    /// Checks settled dispatches under their original owner and optional IO.
-    pub async fn is_quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
-        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
-            canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "quiescence requires a task-owned execution journal",
-            )
-        })?;
-        self.require_operation(*operation, io)?;
-        let mut history = io.map(PreparationIo::history_io);
-        let mut work = history
-            .as_mut()
-            .map(|history| history as &mut dyn crate::store::history::HistoryIo);
-        owner.verify(true, &mut work).await?;
-        let quiescent = {
-            let mut cache = self.verified.lock().await;
-            self.refresh_cached_summary(*operation, &mut cache, io)
-                .await?;
-            cache.summary().quiescent(io)?
-        };
-        owner.verify(true, &mut work).await?;
-        Ok(quiescent)
-    }
-
-    /// Releases only after both configured original journals prove passive workflow state and settled dispatches.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn release_if_quiescent_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-        workflow: &crate::filesystem::FilesystemWorkflowJournal<P, A, O>,
-    ) -> Result<bool> {
-        let io = PreparationIo::from_native_work(work)?;
-        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("quiescence requires a task-owned execution journal".into())
-        })?;
-        workflow.require_execution_owner(owner, &self.volume, self.verifier.audience())?;
-        let result = crate::NativeFutureBundle::new(work, || async {
-            let mut borrowed = io.history_io();
-            owner.verify(true, &mut Some(&mut borrowed)).await?;
-            let tail = {
-                let mut cache = self.verified.lock().await;
-                self.refresh_cached_summary(*operation, &mut cache, Some(&io))
-                    .await?;
-                if !cache.summary().quiescent(Some(&io))? {
-                    return Ok(None);
-                }
-                cache.summary().tail
-            };
-            Ok(workflow
-                .prove_release_with_io(&io)
-                .await?
-                .map(|pending| (tail, pending)))
-        })?
-        .await;
-        let Some((tail, pending)) = result? else {
-            return Ok(false);
-        };
-        owner
-            .release_quiescent_execution(
-                *operation,
-                tail,
-                &pending,
-                &mut Some(&mut io.history_io()),
-            )
-            .await
-    }
-
-    /// Suspends only after the task-bound journal proves every dispatch settled.
-    pub async fn suspend_workflow_command_if_quiescent(
-        &self,
-        revision: u64,
-        command: OperationId,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
-        traced(span, async {
-            let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.is_some_and(|io| io.original_native_work().is_some()) {
-                    return Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "quiescence requires a task-owned execution journal",
-                    };
-                }
-                Error::Unsupported("quiescence requires a task-owned execution journal".into())
-            })?;
-            let mut cache = self.verified.lock().await;
-            self.refresh_cached_summary(*operation, &mut cache, io)
-                .await?;
-            let summary = cache.summary();
-            if !summary.quiescent(io)? {
-                return Err(Error::Indeterminate(*operation));
-            }
-            let mut borrowed = io.map(PreparationIo::history_io);
-            owner
-                .suspend_quiescent_execution(
-                    *operation,
-                    summary.tail,
-                    revision,
-                    command,
-                    &mut borrowed
-                        .as_mut()
-                        .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                )
-                .await
-        })
-        .await
-    }
-
     pub(super) async fn append_validated(
         &self,
         operation_id: OperationId,
@@ -262,12 +149,11 @@ where
                 "execution journal compare-and-append is invalid",
             ));
         }
-        let owner = self.owner.as_ref().map(|(owner, _)| owner);
         if let ExecutionEvent::ModelInline { event, .. } = event {
             self.authorize_inline_event(event, VolumeOperation::Write, io)?;
         }
         let model = self.verify_event_refs_with_io(event, io).await?;
-        let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
+        let limits = Limits::default();
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
@@ -336,18 +222,6 @@ where
                 .await?;
             edit.finish();
             let summary = cache.summary();
-            if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .verify_execution(
-                        operation_id,
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await?;
-            }
             if let Some((sequence, previous)) = summary.retries.get(&retry_key, io)? {
                 if *previous != event_digest {
                     #[cfg(not(target_arch = "wasm32"))]

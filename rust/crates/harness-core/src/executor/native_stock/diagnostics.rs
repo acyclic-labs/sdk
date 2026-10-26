@@ -15,7 +15,6 @@ stock_records!(
     String,
     ExecutionEvent,
     TurnInput,
-    crate::scheduler::LeaseFence,
     crate::conversation::ModelContextSelection,
     crate::context::CompactionRetention,
     crate::context::CompactionPolicy,

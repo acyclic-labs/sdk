@@ -15,13 +15,6 @@ where
         *self.conversation_projection.get_mut() = None;
     }
 
-    /// Used only after the runtime authenticates the task's retained admission.
-    pub(in crate::filesystem) fn for_approval_projection(mut self, task: crate::TaskId) -> Self {
-        self.approval_task = Some(task);
-        self.invalidate_execution_caches();
-        self
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_native_execution_work_matches(
         &self,
@@ -30,98 +23,6 @@ where
         self._native_metadata
             .as_ref()
             .is_some_and(|custody| work.shares_ledger(custody.work()))
-    }
-
-    /// Checks the task lease, execution and coordinator bindings.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn original_task_execution_binding_matches(
-        &self,
-        task: crate::TaskId,
-        fence: &crate::scheduler::LeaseFence,
-        turn: OperationId,
-        operation: OperationId,
-        host: &crate::durable_host::CoordinatorTaskHost<P>,
-    ) -> bool {
-        self.execution
-            .as_ref()
-            .is_some_and(|identity| identity.0 == operation && identity.1 == turn)
-            && self.owner.as_ref().is_some_and(|(owner, bound)| {
-                *bound == operation
-                    && owner.matches_task_binding(task, fence)
-                    && owner.original_host_binding_matches(host)
-            })
-    }
-
-    pub(crate) fn with_optional_task_files(
-        mut self,
-        files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
-    ) -> Result<Self> {
-        if let Some(files) = files {
-            self.with_task_files(files)
-        } else {
-            self.task_files = None;
-            self.invalidate_execution_caches();
-            Ok(self)
-        }
-    }
-
-    /// Attaches an owner-authorized private file projection on this stream provider.
-    pub fn with_task_files(mut self, files: Arc<crate::task_volume::TaskFiles<P>>) -> Result<Self> {
-        if files.volume().provider() != &self.host.provider
-            || !files.inner.shares_provider(&self.stream)
-            || files.maximum_bytes() < self.maximum_payload_bytes
-        {
-            #[cfg(not(target_arch = "wasm32"))]
-            if self._native_metadata.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "task files differ from the journal's provider or byte bound",
-                });
-            }
-            return Err(Error::Unauthorized(
-                "task files differ from the journal's provider or byte bound".into(),
-            ));
-        }
-        self.task_files = Some(files);
-        self.invalidate_execution_caches();
-        Ok(self)
-    }
-
-    /// Binds the execution to the task's exact lease and coordinator provider.
-    pub fn for_task(
-        owner: TaskJournalOwner<P>,
-        operation_id: OperationId,
-        turn_operation: OperationId,
-        host: Arc<FilesystemHost<A, O>>,
-        binding: super::super::FilesystemJournalBinding<'_>,
-    ) -> Result<Self> {
-        let super::super::FilesystemJournalBinding {
-            volume,
-            verifier,
-            scope,
-            maximum_bytes: maximum_payload_bytes,
-            io,
-        } = binding;
-        let mut observer = io.map(PreparationIo::history_io);
-        let mut work = observer
-            .as_mut()
-            .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
-        let mut journal = Self::new(
-            owner.stream(),
-            host,
-            &SchemaRegistry::new(),
-            super::super::FilesystemJournalBinding {
-                volume,
-                verifier,
-                scope,
-                maximum_bytes: maximum_payload_bytes,
-                io,
-            },
-        )?;
-        journal.owner = Some((owner, operation_id));
-        journal.execution = Some((operation_id, turn_operation));
-        Ok(journal)
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
@@ -284,13 +185,10 @@ where
             stop: None,
             agent_approvals: None,
             interactions,
-            owner: None,
-            approval_task: None,
             execution: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
-            task_files: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,
         })
@@ -305,15 +203,6 @@ where
         private_volume: &VolumeRef,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        // Task approvals are followed as task files: an owner-bound task journal
-        // without them could never prove a decision published.
-        if self.owner.is_some() && self.task_files.is_none() {
-            return Err(canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "task interaction owner requires private task files",
-            ));
-        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             let guard = self
@@ -331,15 +220,7 @@ where
                     custody: Some(identity),
                 })?;
         }
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-        if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(&mut work)?;
-        } else if self.approval_task.is_none()
-            && self.verifier.audience().kind == crate::core::AggregateKind::Task
-        {
+        if self.verifier.audience().kind == crate::core::AggregateKind::Task {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

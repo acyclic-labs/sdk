@@ -2,66 +2,6 @@ use super::*;
 use crate::executor::with_history_io;
 use crate::interaction::{ApprovalDecisionFile, PublishedApprovalDecision};
 
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    async fn inspect(
-        &self,
-        scope: Scope,
-        id: InteractionId,
-    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
-        self.verifier.verify(&scope, &mut None)?;
-        let result = self.read(id, None).await?;
-        if let Some((ticket, _)) = &result
-            && !scope.capabilities().contains(&ticket.viewer_grant())
-            && !scope.capabilities().contains(&ticket.responder_grant())
-        {
-            return Err(Error::Unauthorized(
-                "scope lacks interaction view grant".into(),
-            ));
-        }
-        Ok(result)
-    }
-
-    async fn resolve_answer(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        response: InteractionResponse,
-    ) -> Result<ResolutionReceipt> {
-        if matches!(response, InteractionResponse::Approval { .. }) {
-            return Err(Error::Invalid("approval requires a decision".into()));
-        }
-        self.resolve_response((operation_id, id, expected_version), &scope, response, None)
-            .await
-    }
-
-    async fn resolve_approval(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        approved: bool,
-        reason: Option<String>,
-    ) -> Result<ResolutionReceipt> {
-        self.resolve_response(
-            (operation_id, id, expected_version),
-            &scope,
-            InteractionResponse::Approval { approved, reason },
-            None,
-        )
-        .await
-    }
-}
-
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
     P: StreamProvider,
@@ -73,7 +13,6 @@ where
         id: InteractionId,
         response: InteractionResponse,
         responder: &Scope,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
     ) -> Result<()> {
         self.verify_responder_scope(id, responder, None)?;
         let mut transaction = self.transaction(None).await?;
@@ -123,73 +62,7 @@ where
             (resolve_operation(id, version), id, version),
             responder,
             response,
-            owner,
             &mut transaction,
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// Settles exactly the submitted decision: its version, request digest and
-    /// principal travel into one compare-and-set resolve, so a concurrent
-    /// resolution of any other version makes it conflict instead of being
-    /// re-bound to whatever version is current.
-    pub(in crate::filesystem) async fn resolve_decision(
-        &self,
-        id: InteractionId,
-        decision: ApprovalDecisionFile,
-        responder: &Scope,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
-        transaction: &mut InteractionTransaction<'_, P>,
-    ) -> Result<()> {
-        self.verify_responder_scope(id, responder, None)?;
-        let (ticket, prior) = self
-            .read_at(&transaction.aggregate.0, id, None)?
-            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        let version = decision.expected_version;
-        if ticket.kind != crate::interaction::InteractionKind::Approval
-            || decision.principal != responder.id()
-            || !decision.binds(ticket.request.descriptor().sha256(), version)
-        {
-            return Err(Error::Conflict("approval decision binding differs".into()));
-        }
-        if let Some(previous) = &prior
-            && previous.outcome.is_terminal()
-        {
-            let stored = match self
-                .read_resolution_file(&transaction.aggregate.0, id, true, None)
-                .await?
-            {
-                Some(bytes) if previous.detail.is_some() => Some(
-                    PublishedApprovalDecision::decode(&bytes, self.maximum_bytes)
-                        .map_err(|error| Error::Storage(error.to_string()))?,
-                ),
-                _ => None,
-            };
-            let legacy_request = self
-                .read_ticket_request(&ticket, None)
-                .await?
-                .is_legacy_approval();
-            return if previous.expected_version == version
-                && stored
-                    .as_ref()
-                    .is_some_and(|stored| stored.matches(&decision, legacy_request))
-            {
-                Ok(())
-            } else {
-                Err(Error::Conflict("interaction was already resolved".into()))
-            };
-        }
-        let response = InteractionResponse::Approval {
-            approved: decision.approved(),
-            reason: decision.reason,
-        };
-        self.resolve_response_at(
-            (resolve_operation(id, version), id, version),
-            responder,
-            response,
-            owner,
-            transaction,
         )
         .await?;
         Ok(())
@@ -200,11 +73,10 @@ where
         binding: (OperationId, InteractionId, u64),
         scope: &Scope,
         response: InteractionResponse,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
     ) -> Result<ResolutionReceipt> {
         self.verify_responder_scope(binding.1, scope, None)?;
         let mut transaction = self.transaction(None).await?;
-        self.resolve_response_at(binding, scope, response, owner, &mut transaction)
+        self.resolve_response_at(binding, scope, response, &mut transaction)
             .await
     }
 
@@ -213,7 +85,6 @@ where
         binding: (OperationId, InteractionId, u64),
         scope: &Scope,
         response: InteractionResponse,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         transaction: &mut InteractionTransaction<'_, P>,
     ) -> Result<ResolutionReceipt> {
         let (operation_id, id, expected_version) = binding;
@@ -263,7 +134,6 @@ where
                 Action::ResolveInteraction {
                     resolution: Box::new(resolution),
                 },
-                owner,
                 None,
                 transaction,
             )

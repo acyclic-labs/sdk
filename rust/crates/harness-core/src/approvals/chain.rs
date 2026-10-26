@@ -28,22 +28,8 @@ pub async fn next_stage<'a>(
     files: &dyn ApprovalFiles,
     start: usize,
 ) -> Result<NextStage<'a>> {
-    let parent = parent.map(|parent| format!("parent:{parent}"));
-    next_stage_with_parent(policy, digest, parent.as_deref(), request, files, start).await
-}
-
-// The temporary task adapter retains its original parent principal spelling.
-// Only this function traverses the chain; agent callers derive the principal
-// from the admitted native agent identity above.
-pub(super) async fn next_stage_with_parent<'a>(
-    policy: &'a ApprovalPolicy,
-    digest: [u8; 32],
-    parent: Option<&str>,
-    request: &ApprovalRequest<'_>,
-    files: &dyn ApprovalFiles,
-    start: usize,
-) -> Result<NextStage<'a>> {
     use crate::runtime::ToolPolicy as _;
+    let parent = parent.map(|parent| format!("parent:{parent}"));
     if policy.bind()?.identity().digest != digest {
         return Err(Error::Conflict("approval policy digest changed".into()));
     }
@@ -74,7 +60,7 @@ pub(super) async fn next_stage_with_parent<'a>(
             Approver::Rules { principal, .. }
             | Approver::Llm { principal, .. }
             | Approver::Human { principal } => principal.clone(),
-            Approver::Parent => match parent {
+            Approver::Parent => match &parent {
                 Some(parent) => parent.to_owned(),
                 None => {
                     return Ok(NextStage::Decided(ApprovalReviewFile {

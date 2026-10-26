@@ -8,17 +8,16 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Admits an open event under the optional original task lease.
+    /// Admits an open event.
     pub async fn open(
         &self,
         operation_id: OperationId,
         scope: Option<&Scope>,
         ticket: &InteractionTicket,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         io: Option<&PreparationIo>,
     ) -> Result<ApplyResult> {
         let mut transaction = self.transaction(io).await?;
-        self.open_at(operation_id, scope, ticket, owner, io, &mut transaction)
+        self.open_at(operation_id, scope, ticket, io, &mut transaction)
             .await
     }
 
@@ -27,7 +26,6 @@ where
         operation_id: OperationId,
         scope: Option<&Scope>,
         ticket: &InteractionTicket,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         io: Option<&PreparationIo>,
         transaction: &mut InteractionTransaction<'_, P>,
     ) -> Result<ApplyResult> {
@@ -51,7 +49,6 @@ where
                 Action::OpenInteraction {
                     ticket: (copied).into(),
                 },
-                owner,
                 io,
                 transaction,
             )
@@ -65,21 +62,11 @@ where
         operation_id: OperationId,
         scope: &Scope,
         action: Action,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         io: Option<&PreparationIo>,
         transaction: &mut InteractionTransaction<'_, P>,
     ) -> Result<ApplyResult> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);
-        if let Some(owner) = owner {
-            owner.require_interaction_grant(&mut work)?;
-            owner
-                .verify(
-                    matches!(action, Action::ResolveInteraction { .. }),
-                    &mut work,
-                )
-                .await?;
-        }
         let aggregate = &mut transaction.aggregate.0;
         let (committed, _) = crate::store::operations::bounded_operation_with_retained_quota(
             &self.stream,
@@ -120,14 +107,7 @@ where
             causal_parent: None,
             action,
         };
-        let result = match owner {
-            Some(owner) => {
-                aggregate
-                    .execute_with_owner(command, owner, &mut work)
-                    .await
-            }
-            None => aggregate.execute(command, &mut work).await,
-        };
+        let result = aggregate.execute(command, &mut work).await;
         drop(hold);
         result
     }

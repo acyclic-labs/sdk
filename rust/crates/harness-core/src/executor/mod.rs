@@ -14,8 +14,8 @@ use crate::{
     projection::SelectedModelContext,
     registry::ComponentIdentity,
     runtime::{
-        DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
-        tool_approval_request, validate_policy_identity,
+        RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, tool_approval_request,
+        validate_policy_identity,
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult},
 };
@@ -26,8 +26,6 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod native_stock;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
 pub(crate) use native_stock::{
     stage_json, stock_boundary, stock_into_iter, stock_string_copy, stock_string_push,
@@ -68,7 +66,6 @@ mod working_context;
 mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
 mod summary;
-mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
@@ -508,17 +505,6 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Runs with the original ordinary task admission.
-    fn execute_with_context<'a>(
-        &'a self,
-        context: &'a crate::runtime::TaskContext,
-        input: TurnInput,
-        journal: &'a dyn ExecutionJournal,
-    ) -> BoxFuture<'a, Result<TurnOutput>> {
-        let _ = context;
-        self.execute(input, journal)
-    }
-
     /// Pure audited boundary probe; unsupported custom loops are never invoked.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
@@ -528,29 +514,12 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         work.remaining()?;
         Ok(false)
     }
-
-    /// Audited native execution, sharing the exact issued context and original work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execute_with_native_context<'a>(
-        &'a self,
-        _context: &'a Arc<crate::runtime::TaskContext>,
-        _input: &'a TurnInput,
-        _journal: &'a dyn ExecutionJournal,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
-        _work.remaining()?;
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native executor is unavailable",
-        })
-    }
 }
 
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
-    summary_source: Option<Box<FileRef>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
@@ -561,11 +530,6 @@ pub struct StockExecutor {
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_identity: Option<ComponentIdentity>,
-    task: Option<(
-        Arc<dyn DurableTaskHost>,
-        TaskId,
-        crate::scheduler::LeaseFence,
-    )>,
     inherited_prefix: Option<(
         FileRef,
         Arc<dyn crate::conversation::ContentResidencyVerifier>,

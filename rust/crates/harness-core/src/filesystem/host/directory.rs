@@ -128,8 +128,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         {
             return Err(io.invalid("private directory page limit is invalid"));
         }
-        let reference =
-            fork_preparer_io::content_workspace(&self.provider, request.volume, Some(io))?;
+        let reference = bounded_io::content_workspace(&self.provider, request.volume, Some(io))?;
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
         let reference = (reference, reference_hold);
         guard().await?;
@@ -182,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .0
             .prepare(request.path)
             .map_err(|_| io.invalid("invalid directory access path"))?;
-        fork_preparer_io::retain(&generation, Some(io)).await?;
+        bounded_io::retain(&generation, Some(io)).await?;
         guard().await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", request.path), work)
@@ -246,8 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // Do not expose a physical prefetch hint for an unauthorized successor.
             page.next_residency = None;
             page.work = spent;
-            let reference =
-                fork_preparer_io::generation_ref(&self.provider, generation.id(), Some(io))?;
+            let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
             super::super::access::require_current(&workspace, &view.0, io).await?;
             request.grant.recheck(Some(io))?;

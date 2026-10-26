@@ -11,7 +11,6 @@ pub(super) struct Cut<'a> {
     pub(super) pages: &'a StreamPath,
     pub(super) execution_condition: CommitCondition,
     pub(super) head_condition: CommitCondition,
-    pub(super) owner: Option<CommitCondition>,
     pub(super) execution_tail: u64,
     pub(super) head_tail: u64,
     pub(super) base: u64,
@@ -48,9 +47,6 @@ impl Cut<'_> {
         };
         let (key, held) = crate::distributed::digest_key(&digest, work)?;
         let mut request = crate::distributed::commit_request(key, held, work);
-        if let Some(owner) = &self.owner {
-            crate::distributed::add_condition(&mut request, owner.clone())?;
-        }
         crate::distributed::add_condition(&mut request, self.head_condition.clone())?;
         crate::distributed::add_condition(&mut request, self.execution_condition.clone())?;
         crate::distributed::add_condition(&mut request, page_condition)?;

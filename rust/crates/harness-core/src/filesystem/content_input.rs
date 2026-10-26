@@ -9,7 +9,7 @@ pub(super) trait ContentInput: AsRef<[u8]> + Sync {
 
 impl ContentInput for [u8] {
     fn mutation_bytes(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
-        fork_preparer_io::clone_bytes(self, io)
+        bounded_io::clone_bytes(self, io)
     }
 }
 
@@ -31,7 +31,7 @@ impl ContentInput for OwnedBytes {
         }
         // Ordinary Bytes can allocate a sharing header on their first clone.
         // Retain the existing funded copy outside original native custody.
-        fork_preparer_io::clone_bytes(self.as_ref(), io)
+        bounded_io::clone_bytes(self.as_ref(), io)
     }
 }
 

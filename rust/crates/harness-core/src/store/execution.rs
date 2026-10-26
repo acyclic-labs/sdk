@@ -37,131 +37,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
         command: Command,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<ApplyResult> {
-        self.execute_inner(
-            command,
-            #[cfg(feature = "filesystem")]
-            None,
-            work,
-        )
-        .await
-    }
-
-    /// Executes a command using its admitted task journal owner's grants.
-    #[cfg(feature = "filesystem")]
-    pub async fn execute_with_owner(
-        &mut self,
-        command: Command,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<ApplyResult> {
-        self.execute_inner(command, Some(owner), work).await
-    }
-
-    async fn execute_inner(
-        &mut self,
-        command: Command,
-        #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<ApplyResult> {
-        #[cfg(feature = "filesystem")]
-        let write = {
-            if let Some(owner) = owner
-                && matches!(command.action, Action::BindConversation { .. })
-            {
-                return self.execute_root_bind_with_work(command, owner, work).await;
-            }
-
-            if let Some(owner) = owner {
-                match &command.action {
-                    Action::OpenInteraction { .. } => {
-                        owner.require_interaction_grant(work)?;
-                        crate::distributed::JournalWrite::Fresh
-                    }
-                    Action::ResolveInteraction { .. } => {
-                        owner.require_interaction_grant(work)?;
-                        crate::distributed::JournalWrite::Settlement
-                    }
-                    Action::PlanEffect {
-                        provider,
-                        request,
-                        result_schema,
-                        ..
-                    } => {
-                        owner.require_effect_grants(provider, true, work)?;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let io = work
-                            .as_deref()
-                            .and_then(|io| io.original_native_work())
-                            .map(crate::filesystem::PreparationIo::from_native_work)
-                            .transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let io = None;
-                        for file in [request, result_schema] {
-                            owner.validate_input_file(file, io.as_ref())?;
-                        }
-                        crate::distributed::JournalWrite::Fresh
-                    }
-                    action @ (Action::MarkEffectDispatched { .. }
-                    | Action::ResolveEffect { .. }) => {
-                        let effect_id = match action {
-                            Action::MarkEffectDispatched { effect_id, .. } => effect_id,
-                            Action::ResolveEffect { observation } => &observation.effect_id,
-                            _ => unreachable!(),
-                        };
-                        let mut retained = crate::wire_codec::CodecQuota::from_retained(work, 0);
-                        let (effect, bytes) = self
-                            .effect(
-                                *effect_id,
-                                default_projection_read_limits(),
-                                retained.work(),
-                            )
-                            .await?
-                            .ok_or_else(|| {
-                                guarded_boundary(
-                                    retained.work(),
-                                    crate::wire::ErrorCode::NotFound,
-                                    "effect is not found",
-                                )
-                            })?;
-                        retained.adopt(bytes)?;
-                        owner.require_effect_grants(&effect.provider, false, retained.work())?;
-                        drop(effect);
-                        retained.relinquish(bytes)?;
-                        if matches!(command.action, Action::ResolveEffect { .. }) {
-                            crate::distributed::JournalWrite::Settlement
-                        } else {
-                            crate::distributed::JournalWrite::Fresh
-                        }
-                    }
-                    _ => {
-                        return Err(guarded_boundary(
-                            work,
-                            crate::wire::ErrorCode::Invalid,
-                            "task journal action is not an admitted request or effect",
-                        ));
-                    }
-                }
-            } else {
-                crate::distributed::JournalWrite::Fresh
-            }
-        };
         #[cfg(not(feature = "filesystem"))]
         if work.is_some() {
             return Err(Error::Unsupported(
                 "aggregate work observers require filesystem support".into(),
             ));
         }
-        self.publish(
-            command,
-            #[cfg(feature = "filesystem")]
-            owner,
-            #[cfg(feature = "filesystem")]
-            write,
-            true,
-            work,
-        )
-        .await
-        .map(|(result, _)| result)
+        self.publish(command, true, work)
+            .await
+            .map(|(result, _)| result)
     }
 
     pub(super) async fn plan_command(&self, command: &Command) -> Result<ApplyResult> {

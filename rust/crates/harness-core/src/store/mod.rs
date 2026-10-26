@@ -79,43 +79,6 @@ pub(crate) fn guarded_boundary(
     }
 }
 
-/// Original canonical ROOT binding custody, constructed only by this store.
-#[cfg(feature = "filesystem")]
-pub struct VerifiedRootBinding {
-    original_task: crate::TaskId,
-    admission_digest: [u8; 32],
-    fence: crate::scheduler::LeaseFence,
-    agent: crate::AgentId,
-    audience: Authority,
-    bind_operation: OperationId,
-    intent_digest: [u8; 32],
-}
-
-#[cfg(feature = "filesystem")]
-impl VerifiedRootBinding {
-    pub(crate) fn original_task(&self) -> crate::TaskId {
-        self.original_task
-    }
-    pub(crate) fn admission_digest(&self) -> [u8; 32] {
-        self.admission_digest
-    }
-    pub(crate) fn fence(&self) -> &crate::scheduler::LeaseFence {
-        &self.fence
-    }
-    pub(crate) fn agent(&self) -> crate::AgentId {
-        self.agent
-    }
-    pub(crate) fn audience(&self) -> &Authority {
-        &self.audience
-    }
-    pub(crate) fn bind_operation(&self) -> OperationId {
-        self.bind_operation
-    }
-    pub(crate) fn intent_digest(&self) -> [u8; 32] {
-        self.intent_digest
-    }
-}
-
 /// One authoritative reducer whose canonical history is stored directly in Stream.
 pub struct StreamAggregate<P> {
     client: std::sync::Arc<P>,

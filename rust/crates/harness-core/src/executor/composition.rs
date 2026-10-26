@@ -17,7 +17,6 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
-            summary_source: None,
             max_output_tokens: None,
             provider,
             context,
@@ -28,7 +27,6 @@ impl StockExecutor {
             tool_scope: RuntimeScope::default(),
             policy: None,
             policy_identity: None,
-            task: None,
             inherited_prefix: None,
             task_context: None,
             compaction: None,
@@ -43,15 +41,6 @@ impl StockExecutor {
         }
         self.max_output_tokens = Some(maximum);
         Ok(self)
-    }
-
-    #[cfg(any(test, feature = "filesystem"))]
-    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
-        if source.is_some() {
-            self.compaction = Some(crate::context::CompactionPolicy::Disabled);
-        }
-        self.summary_source = source;
-        self
     }
 
     /// Replaces or disables the ordinary threshold policy without starting effects.
@@ -108,18 +97,6 @@ impl StockExecutor {
 }
 
 impl StockExecutor {
-    /// Binds this worker's exact admitted task and execution fence.
-    #[must_use]
-    pub fn with_durable_task(
-        mut self,
-        host: Arc<dyn DurableTaskHost>,
-        task_id: TaskId,
-        fence: crate::scheduler::LeaseFence,
-    ) -> Self {
-        self.task = Some((host, task_id, fence));
-        self
-    }
-
     /// Retains this exact composition while refusing every fresh effect intent.
     #[cfg(feature = "filesystem")]
     pub(crate) fn into_reconciliation(mut self) -> Self {
@@ -180,53 +157,14 @@ impl StockExecutor {
         context: &crate::runtime::TaskContext,
         execution_operation: OperationId,
     ) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if context.native_work().is_ok() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native stock context requires its original work",
-            });
-        }
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
         self.task_context = Some((Arc::new(context), execution_operation));
-        StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
-        Ok(self)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn with_shared_task_context(
-        mut self,
-        context: Arc<crate::runtime::TaskContext>,
-        execution_operation: OperationId,
-    ) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if context.native_work().is_ok() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native stock context requires its original work",
-            });
-        }
-        self.task_context = Some((context, execution_operation));
         StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
         Ok(self)
     }
 }
 
 impl Executor for StockExecutor {
-    fn execute_with_context<'a>(
-        &'a self,
-        context: &'a crate::runtime::TaskContext,
-        input: TurnInput,
-        journal: &'a dyn ExecutionJournal,
-    ) -> BoxFuture<'a, Result<TurnOutput>> {
-        Box::pin(async move {
-            let bound = self
-                .clone()
-                .with_task_context(context, input.operation_id)?;
-            bound.execute(input, journal).await
-        })
-    }
-
     fn execute<'a>(
         &'a self,
         input: TurnInput,
@@ -253,41 +191,6 @@ impl Executor for StockExecutor {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         StockExecutor::supports_native_execution(self, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execute_with_native_context<'a>(
-        &'a self,
-        context: &'a Arc<crate::runtime::TaskContext>,
-        input: &'a TurnInput,
-        journal: &'a dyn ExecutionJournal,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
-        native_execution_supported(self, context, journal, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let session = StockExecution {
-                io: Some(&io),
-                context: Some((context, input.operation_id)),
-                ..StockExecution::ordinary(self)
-            };
-            native_result(
-                &io,
-                async {
-                    session
-                        .execute_progress(input, journal)
-                        .await?
-                        .into_output()
-                },
-                |output| {
-                    native_size_add(
-                        std::mem::size_of::<TurnOutput>() as u64,
-                        native_output_payload_bytes(output)?,
-                    )
-                },
-            )
-            .await
-        })
     }
 }
 

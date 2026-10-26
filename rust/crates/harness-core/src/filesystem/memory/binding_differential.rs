@@ -46,8 +46,7 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
         // does not call the candidate's memory-content constructor, and owns a
         // separate filesystem, proof cache, stream and publisher.
         let workspace =
-            super::super::fork_preparer_io::content_workspace(&host.provider, &volume, None)
-                .unwrap();
+            super::super::bounded_io::content_workspace(&host.provider, &volume, None).unwrap();
         let opened = host.open(&workspace, None).await.unwrap();
         host = host.for_workspace(&volume, opened).unwrap();
     }

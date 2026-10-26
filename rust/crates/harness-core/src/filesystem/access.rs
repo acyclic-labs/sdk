@@ -176,7 +176,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::content_verifier::require_file_read(scope, reference, io)?;
         }
         let workspace_ref =
-            fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
+            bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
         let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;

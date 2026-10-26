@@ -83,7 +83,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     host.create_volume(&volume).await?;
     #[cfg(not(target_arch = "wasm32"))]
     let host = {
-        let reference = super::fork_preparer_io::content_workspace(&host.provider, &volume, None)?;
+        let reference = super::bounded_io::content_workspace(&host.provider, &volume, None)?;
         let workspace = host.open(&reference, None).await?;
         host.for_workspace(&volume, workspace)?
     };
@@ -331,60 +331,10 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         &self.volume
     }
 
-    /// Starts a runnable local composition with this owner-controlled journal.
-    #[must_use]
-    pub fn builder(&self) -> crate::bundle::HarnessBuilder {
-        crate::bundle::HarnessBuilder::new()
-            .journal(self.journal())
-            .content(ContentBindings {
-                reader: self.content_verifier.clone(),
-                writer: Some(self.publisher.clone()),
-            })
-            .grant(self.read_capability.clone())
-            .grant(self.write_capability.clone())
-    }
-
     /// Borrows the authenticated reader for context and client adapters.
     #[must_use]
     pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
         self.content_verifier.as_ref()
-    }
-
-    /// Runs the shared canonical loop with this memory-backed journal.
-    pub async fn run_conversation(
-        &self,
-        bundle: &crate::bundle::HarnessBundle,
-        operation_id: OperationId,
-        content: FileRef,
-        attachments: Vec<Attachment>,
-        max_steps: u32,
-    ) -> Result<TurnOutput> {
-        self.journal
-            .run_conversation(bundle, operation_id, content, attachments, max_steps)
-            .await
-    }
-
-    /// Stages text and ordered attachments for the canonical turn loop.
-    pub async fn run_prompt(
-        &self,
-        bundle: &crate::bundle::HarnessBundle,
-        prompt: &str,
-        attachments: Vec<Attachment>,
-    ) -> Result<TurnOutput> {
-        let operation_id = OperationId::new();
-        let content = self
-            .stage(
-                operation_id,
-                &format!("turns/{operation_id}/user.txt"),
-                prompt.as_bytes(),
-                "text/plain",
-                "prompt.txt",
-            )
-            .await?;
-        let max_steps = u32::try_from(bundle.limits().model_steps)
-            .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?;
-        self.run_conversation(bundle, operation_id, content, attachments, max_steps)
-            .await
     }
 
     /// Stages user content or an attachment before it is admitted to a turn.
@@ -594,10 +544,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-#[path = "memory_summary_tests/mod.rs"]
-mod summary_tests;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
