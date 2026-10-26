@@ -1,5 +1,4 @@
 use super::*;
-use proptest::prelude::*;
 
 #[test]
 fn catalog_preserves_pinned_file_contracts_and_digests() -> Result<()> {
