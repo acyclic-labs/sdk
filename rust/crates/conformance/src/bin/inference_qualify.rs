@@ -20,6 +20,7 @@ async fn main() {
             );
             std::process::exit(2);
         }
+        let started = std::time::Instant::now();
         let result = replay::local_live(
             std::path::Path::new(&arguments[1]),
             &arguments[2].to_string_lossy(),
@@ -33,18 +34,21 @@ async fn main() {
             std::process::exit(1);
         }
         println!(
-            "INFERENCE_LIVE_PASS {}",
-            acyclic_conformance::inference::SUITE.join(",")
+            "INFERENCE_LIVE_PASS {} elapsed_ms={}",
+            acyclic_conformance::inference::SUITE.join(","),
+            started.elapsed().as_millis()
         );
         return;
     }
     for path in &arguments {
+        let started = std::time::Instant::now();
         match replay::qualify(std::path::Path::new(path)).await {
             Ok(cases) => println!(
-                "INFERENCE_PASS {:?}: {} cases {}",
+                "INFERENCE_PASS {:?}: {} cases {} elapsed_ms={}",
                 path,
                 cases.len(),
-                cases.join(",")
+                cases.join(","),
+                started.elapsed().as_millis()
             ),
             Err(cause) => {
                 eprintln!(
