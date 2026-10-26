@@ -96,6 +96,12 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         AgentHandler::<P, D>::actor(&self.within, &agent.id())
     }
 
+    /// Observes the committed agent state, or its adoption before its first turn.
+    /// This is an observation; effect admission still requires its own commit fence.
+    pub async fn state(&self, agent: &AgentPath) -> Result<super::AgentState, Error> {
+        self.handler.state(&self.actor(agent)?, agent).await
+    }
+
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
     /// Retrying the same `intent` replays exactly and names the same agent.
     pub async fn create(&self, intent: &IntentId, adopted: ForkAdopted) -> Result<AgentPath, Error> {

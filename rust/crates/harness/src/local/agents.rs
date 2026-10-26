@@ -22,7 +22,9 @@ use std::sync::{Arc, Weak};
 /// Turns of local agents.
 pub type LocalTurns = FilesystemTurnHost<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 /// Every agent of one local harness.
-pub type LocalAgents = AgentHost<LocalStream, ExecutorDriver<LocalTurns>>;
+pub type LocalAgents = AgentHost<LocalStream, ExecutorDriver<Arc<LocalTurns>>>;
+
+mod decisions;
 
 /// Settled turns of history in each agent turn's model context.
 const HISTORY_TURNS: u32 = 64;
@@ -34,6 +36,7 @@ const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 /// The hosted agents, their root, and the runtime task that ends with them.
 pub(super) struct Hosted {
     agents: Arc<LocalAgents>,
+    turns: Arc<LocalTurns>,
     root: AgentPath,
     run: tokio::task::JoinHandle<()>,
 }
@@ -176,20 +179,22 @@ impl LocalHarness {
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
             history_turns: HISTORY_TURNS,
         };
-        let turns = FilesystemTurnHost::new(
-            stream.clone(),
-            self.files.clone(),
-            authority,
-            Arc::new(Executors(Arc::downgrade(self))),
-            limits,
-        )
-        .with_approvers(self.approval_models.clone());
+        let turns = Arc::new(
+            FilesystemTurnHost::new(
+                stream.clone(),
+                self.files.clone(),
+                authority,
+                Arc::new(Executors(Arc::downgrade(self))),
+                limits,
+            )
+            .with_approvers(self.approval_models.clone()),
+        );
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
         let agents = Arc::new(
             AgentHost::new(
                 stream,
-                ExecutorDriver::new(turns),
+                ExecutorDriver::new(Arc::clone(&turns)),
                 within,
                 ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 Arc::new(SystemClock),
@@ -226,6 +231,11 @@ impl LocalHarness {
                 .await;
             tracing::error!(%error, "agent runtime stopped");
         });
-        Ok(Hosted { agents, root, run })
+        Ok(Hosted {
+            agents,
+            turns,
+            root,
+            run,
+        })
     }
 }

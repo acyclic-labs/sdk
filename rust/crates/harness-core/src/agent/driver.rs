@@ -55,6 +55,18 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
 }
 
+impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
+    fn open<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+        input: &'a ModelContent,
+        stop: Arc<TurnStop>,
+    ) -> BoxFuture<'a, crate::Result<OpenTurn>> {
+        (**self).open(agent, turn, input, stop)
+    }
+}
+
 /// The stop signal of one running turn: a `Cancel` or `Archive` in the agent's
 /// inbox at or after the turn's cursor. The turn's journal follows it as the
 /// executor's cancellation, so a control interrupts the turn's model calls and

@@ -140,6 +140,50 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         .map_err(|_| Error::Path("agent id is not an actor id"))
     }
 
+    pub(super) async fn state(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+    ) -> Result<AgentState, Error> {
+        let snapshot = self
+            .store
+            .load(actor)
+            .await
+            .map_err(|error| Error::Actor(Box::new(error)))?;
+        let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
+        let observed = if let Some(checkpoint) = state.checkpoint() {
+            serde_json::from_slice::<Saved>(&checkpoint.bytes)
+                .map_err(|_| Error::Record("agent checkpoint is malformed"))?
+                .state
+        } else {
+            // A new child's inherited inbox starts with its ancestors' records.
+            // Its own adoption is at the cursor installed by the spawn commit.
+            let inbox = agent.inbox()?;
+            let from = state
+                .subscriptions()
+                .get(INBOX)
+                .filter(|subscription| subscription.path == inbox)
+                .ok_or(Error::Record("agent inbox subscription differs"))?
+                .cursor;
+            let records = self.read_back(agent, from, 1, u64::MAX).await?;
+            let [(sequence, InboxRecord::ForkAdopted(adopted))] = records.as_slice() else {
+                return Err(Error::Record("agent has no adoption record"));
+            };
+            if *sequence != from
+                || adopted.forked_at != from
+                || adopted.agent != agent.id()
+                || adopted.parent != agent.parent()
+            {
+                return Err(Error::Record("agent adoption cursor differs"));
+            }
+            AgentState::adopted(agent.clone(), adopted)
+        };
+        if &observed.path != agent || observed.parent != agent.parent() {
+            return Err(Error::Record("agent state binding differs"));
+        }
+        Ok(observed)
+    }
+
     /// Inbox records `[from, end)`, at most `limit`, in sequence order.
     async fn read_back(
         &self,

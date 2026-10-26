@@ -59,6 +59,10 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
+    let initial = host.state(&root).await?;
+    assert_eq!(initial.path, root);
+    assert_eq!(initial.parent, None);
+    assert!(matches!(host.state(&AgentPath::root(&id(9))).await, Err(Error::NoSuchAgent)));
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let actors = store(&provider)?;
@@ -76,6 +80,12 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     let state = actors.load(&host.actor(&child)?).await?;
     assert_eq!(cursor(&state), Some(2));
     assert_eq!(values(&provider, child.inbox()?).await?.len(), 3);
+    // The child inherits the root's inbox prefix. Its unconsumed adoption is
+    // at its actor subscription cursor, rather than record zero.
+    let inherited = host.state(&child).await?;
+    assert_eq!(inherited.path, child);
+    assert_eq!(inherited.parent.as_ref(), Some(&root));
+    assert!(host.state(&AgentPath::root(&child.id())).await.is_err());
 
     host.host(&child)?;
     let failures = host.runtime().drain().await;
@@ -83,6 +93,9 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     let state = actors.load(&host.actor(&child)?).await?;
     assert_eq!(cursor(&state), Some(3));
     assert!(state.state().and_then(|s| s.checkpoint()).is_some());
+    let observed = host.state(&child).await?;
+    assert_eq!(observed.path, child);
+    assert_eq!(observed.parent.as_ref(), Some(&root));
 
     let by = intent("archive");
     assert!(matches!(host.archive(&root, &user(), &by).await?, Delivered::Committed { .. }));
