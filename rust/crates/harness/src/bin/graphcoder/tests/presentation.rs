@@ -111,7 +111,31 @@ async fn followed_presentation_rows_are_declarative_and_live() {
                 &PromptInput::default(),
             );
             assert_eq!(u64::from(areas.transcript.width), expected, "{}", row["row"]);
-            assert!(screen.transcript.iter().all(|line| line.width() <= usize::from(areas.transcript.width)));
+            assert!(
+                screen
+                    .transcript
+                    .iter()
+                    .all(|line| line.width() <= usize::from(areas.transcript.width))
+            );
+            assert!(
+                screen
+                    .reasoning
+                    .iter()
+                    .all(|line| line.width() <= usize::from(areas.transcript.width))
+            );
+        }
+        for (field, lines) in [
+            ("transcript_text", screen.transcript),
+            ("reasoning_text", screen.reasoning),
+        ] {
+            if let Some(expected) = row[field].as_str() {
+                let text: String = lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                assert_eq!(text, expected, "{}: {field}", row["row"]);
+            }
         }
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal

@@ -78,18 +78,30 @@
   {
     "row": "Streaming markdown wraps at the composed transcript width",
     "reasoning": false,
-    "width": 12,
-    "transcript_width": 11,
-    "expected": ["Visible ans", "wer"],
+    "width": 13,
+    "transcript_width": 12,
+    "transcript_text": "Visible answer",
+    "expected": ["Visible answ", "er"],
     "absent": ["Visible answer", "**Visible answer**"]
   },
   {
     "row": "Reasoning and answer share the same Unicode width projection",
     "reasoning": true,
+    "reasoning_text": "Private reasoning",
+    "width": 13,
+    "transcript_width": 12,
+    "transcript_text": "Visible answer",
+    "expected": ["Private reas", "oning", "Visible answ", "er"],
+    "absent": ["Private reasoning", "Visible answer"]
+  },
+  {
+    "row": "Twelve-column terminal preserves the full answer beside the reserved scrollbar",
+    "reasoning": false,
     "width": 12,
     "transcript_width": 11,
-    "expected": ["Private rea", "soning", "Visible ans", "wer"],
-    "absent": ["Private reasoning", "Visible answer"]
+    "transcript_text": "Visible answer",
+    "expected": ["Visible ans", "wer"],
+    "absent": ["Visible answer", "**Visible answer**"]
   },
   {
     "row": "Followed goal and plans Markdown wrap inside their bordered panels",
