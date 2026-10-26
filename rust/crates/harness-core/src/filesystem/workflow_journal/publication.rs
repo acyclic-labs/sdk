@@ -479,7 +479,7 @@ mod polling_graph_storage_tests {
             &mut None,
         )?;
         host.create_volume(&volume).await?;
-        let issuer = crate::core::AuthorityIssuer::new(
+        let issuer = crate::core::AuthorityRoot::new(
             "future",
             [2; 32],
             crate::core::Authority {
@@ -487,14 +487,13 @@ mod polling_graph_storage_tests {
                 id: crate::ConversationId::from_bytes([3; 16]).to_string(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "owner",
             &crate::Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )?;
         FilesystemWorkflowJournal::new(
