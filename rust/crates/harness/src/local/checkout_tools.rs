@@ -290,6 +290,13 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
+    // A cancelled turn drops its call: the command's stop guard stops the
+    // process tree, the spawned capture keeps the workspace guard until the
+    // tree is reaped, and the next call reconciles from the durable capture.
+    fn cancellable_on_drop(&self) -> bool {
+        true
+    }
+
     fn authorize(
         &self,
         _scope: Option<&RuntimeScope>,
