@@ -668,21 +668,10 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
         .ok_or("merged directory missing")?;
     let entries =
         directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
-    let read = {
-        let __object_args = (
-            entries,
-            DecodeLimits::default().maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?;
+    let read = AsyncObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await?;
     let TreePage::Leaf(entries) =
-        crate::kernel::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| {
+        crate::kernel::decode_tree_page(&read.bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
         })?
     else {
@@ -699,22 +688,11 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
             .iter()
             .any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b)
     );
-    let stored = {
-        let __object_args = (
-            generation_root,
-            DecodeLimits::default().maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?;
+    let stored = AsyncObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await?;
     assert_eq!(
         crate::kernel::decode_generation_root(
-            &stored.value.bytes,
+            &stored.bytes,
             DecodeLimits::default(),
             |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())
         )?,

@@ -342,21 +342,11 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         &cancellation,
     ))
     .await?;
-    let read = {
-        let __object_args = (
-            receipt.root,
-            u64::MAX,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+    let read = store
+            .read(receipt.root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+            .await?;
     assert_eq!(
-        decode_extent_page(&read.value, DecodeLimits::default(), &mut |_| Ok::<
+        decode_extent_page(&read, DecodeLimits::default(), &mut |_| Ok::<
             _,
             crate::kernel::CanonicalDecodeError,
         >(()))?,
@@ -386,21 +376,11 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         &cancellation,
     ))
     .await?;
-    let read = {
-        let __object_args = (
-            cloned.root,
-            u64::MAX,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+    let read = store
+            .read(cloned.root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+            .await?;
     assert_eq!(
-        decode_extent_page(&read.value, DecodeLimits::default(), &mut |_| Ok::<
+        decode_extent_page(&read, DecodeLimits::default(), &mut |_| Ok::<
             _,
             crate::kernel::CanonicalDecodeError,
         >(()))?,
