@@ -84,7 +84,7 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
             started.elapsed().as_micros()
         );
         observed.push(counts);
-        runtime.block_on(harness.close())?;
+        runtime.block_on(harness.disconnect())?;
     }
     assert_eq!(
         observed,
@@ -176,6 +176,6 @@ fn captured_publication_evidence_cannot_cross_a_same_length_rewrite() -> Result<
         "CAPTURED_REBIND_ADVERSARIAL changed_payload_rejected=true untrusted_source_reads={}",
         reads.len()
     );
-    runtime.block_on(harness.close())?;
+    runtime.block_on(harness.disconnect())?;
     Ok(())
 }

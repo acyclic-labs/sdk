@@ -20,20 +20,6 @@ impl LocalWorkspace {
     /// share the process root. No host adapter mounts a task view itself.
     async fn mount_task_source(&self, view: &workspace::View) -> Result<Arc<TaskMount>> {
         let options = self.mount_options(view.workspace()).await?;
-        #[cfg(all(target_os = "linux", test))]
-        if crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS)
-            .is_some()
-        {
-            let root = self.held_task_mount_root()?;
-            let path = root
-                .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
-                .map_err(storage)?;
-            return view
-                .mount(path.path(), options)
-                .await
-                .map(Arc::new)
-                .map_err(storage);
-        }
         view.mount_view(view_options(&self.task_view_admission, options))
             .await
             .map(Arc::new)
@@ -123,7 +109,6 @@ impl LocalWorkspace {
                 view.workspace().id(),
                 Arc::clone(&self.mounts),
             ))),
-            children: StateArc::new(Default::default()),
             mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
             context_line: self.context_line().into(),
             processes: self.processes.clone(),
@@ -227,7 +212,6 @@ impl LocalWorkspace {
                 view.workspace().id(),
                 Arc::clone(&mounts),
             ))),
-            children: StateArc::new(Default::default()),
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
             path,
             fresh: false,

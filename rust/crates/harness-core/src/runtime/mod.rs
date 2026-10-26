@@ -31,5 +31,6 @@ mod content_read;
 mod content_write;
 pub(crate) use content_write::{PrivateSummaries, SummaryDestination};
 mod model_context;
-#[cfg(test)]
-pub(crate) mod test_context;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_context;

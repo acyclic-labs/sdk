@@ -34,7 +34,7 @@ pub(crate) fn private_volume(agent: u8) -> Result<VolumeRef> {
 /// An agent turn context under exactly `scope`, with `artifacts` as the
 /// harness's artifact storage. Its private writer targets a volume `scope`
 /// does not grant, so it has no usable private writer of its own.
-pub(crate) fn agent_context(
+pub fn agent_context(
     scope: RuntimeScope,
     artifacts: Option<ContentBindings>,
 ) -> Result<TaskContext> {
