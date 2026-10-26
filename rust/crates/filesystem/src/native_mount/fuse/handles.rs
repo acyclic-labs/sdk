@@ -353,7 +353,7 @@ impl FuseProjection {
     )]
     pub(super) fn create_file(
         &self,
-        request: &Request,
+        owner: (u32, u32),
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -394,13 +394,7 @@ impl FuseProjection {
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
                 (lookup, open_file, flags & libc::O_TRUNC != 0)
             } else {
-                let metadata = create_metadata(
-                    &self.core.clock,
-                    mode,
-                    S_IFREG,
-                    request.uid(),
-                    request.gid(),
-                );
+                let metadata = create_metadata(&self.core.clock, mode, S_IFREG, owner.0, owner.1);
                 let created = self.source_write(work, || {
                     Ok(source.create_file(path, metadata, proof, work)?)
                 })?;

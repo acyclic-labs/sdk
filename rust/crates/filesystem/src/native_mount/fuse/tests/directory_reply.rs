@@ -1,9 +1,28 @@
-use super::super::{
-    AttributeChanges, FuseProjection,
-    dir::{CapturedDirectory, DirectoryReply},
-};
+use super::super::{AttributeChanges, FuseProjection, dir::DirectoryOutput};
 use super::*;
+use fuser::FileAttr;
 use proptest::prelude::*;
+use std::os::unix::ffi::OsStrExt;
+
+// A semantic test sink; production transports own their bounded response buffers.
+type CapturedDirectory = std::rc::Rc<std::cell::RefCell<Vec<(Vec<u8>, FileAttr)>>>;
+
+impl DirectoryOutput for CapturedDirectory {
+    fn counts_lookups(&self) -> bool {
+        true
+    }
+    fn push(
+        &mut self,
+        _: u64,
+        name: &std::ffi::OsStr,
+        attr: &FileAttr,
+        _: &Duration,
+    ) -> Result<bool, NativeMountError> {
+        self.borrow_mut().push((name.as_bytes().to_vec(), *attr));
+        Ok(false)
+    }
+    fn ok(self) {}
+}
 
 fn paged_aliases(
     first_size: usize,
@@ -36,7 +55,7 @@ fn paged_aliases(
     stream.page = Some(source.read_directory_with_meter(&MountPath::root(), None, 1, &work)?);
     stream.entry_position = 0;
     let entries = CapturedDirectory::default();
-    let mut reply = Some(DirectoryReply::Capture(entries.clone()));
+    let mut reply = Some(entries.clone());
     if reset_per_page {
         // Former production ordering, through the same page emitter and oracle.
         loop {
@@ -97,12 +116,7 @@ fn paged_aliases(
         &work,
     )?;
     let next = CapturedDirectory::default();
-    projection.list_directory(
-        ROOT_INODE,
-        3,
-        &mut Some(DirectoryReply::Capture(next.clone())),
-        &work,
-    )?;
+    projection.list_directory(ROOT_INODE, 3, &mut Some(next.clone()), &work)?;
     let next = next.borrow();
     assert_eq!(next.len(), 1, "the alias must start the next request");
     assert_eq!(next[0].0, b"b");
