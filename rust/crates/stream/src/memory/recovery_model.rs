@@ -396,12 +396,7 @@ pub fn memory_follow_parking(retain_pending: bool, checked: bool) {
 }
 
 /// Cancels real dispatched snapshot jobs while the writer and consumer race.
-pub fn snapshot_executor_shutdown(
-    discard: bool,
-    checked: bool,
-    cancel: bool,
-    polled: bool,
-) {
+pub fn snapshot_executor_shutdown(discard: bool, checked: bool, cancel: bool, polled: bool) {
     crate::memory::parking_model::shutdown(discard, checked, cancel, polled);
 }
 
@@ -436,7 +431,6 @@ pub fn local_compaction_cut() {
     crate::local::compaction_model::verify(2);
 }
 
-
 pub(crate) struct Probe(pub(crate) loom::sync::atomic::AtomicUsize);
 impl std::task::Wake for Probe {
     fn wake(self: std::sync::Arc<Self>) {
@@ -449,7 +443,6 @@ pub(crate) fn probe() -> (std::sync::Arc<Probe>, std::task::Waker) {
     (probe, wake)
 }
 
-
 /// Explores one subtree fork racing a two-stream coordinated write.
 /// Both inherited heads must come from one commit cut.
 pub fn subtree_cut(root_only: bool) {
@@ -457,36 +450,70 @@ pub fn subtree_cut(root_only: bool) {
         let provider = MemoryStream::default();
         for name in ["tree/a", "tree/b"] {
             block_on(provider.append(AppendRequest {
-                path: StreamPath::new(name)?, records: vec![Bytes::from_static(b"seed").into()],
-                if_tail: Some(0), idempotency_key: None,
+                path: StreamPath::new(name)?,
+                records: vec![Bytes::from_static(b"seed").into()],
+                if_tail: Some(0),
+                idempotency_key: None,
             }))?;
         }
-        let writing = thread::spawn({ let provider = provider.clone(); move || {
-            block_on(provider.commit(CommitRequest {
-                conditions: ["tree/a", "tree/b"].map(|name| CommitCondition::Tail { path: StreamPath::new(name).unwrap(), expected: 1 }).into(),
-                mutations: ["tree/a", "tree/b"].map(|name| CommitMutation::Append {
-                    path: StreamPath::new(name).unwrap(), records: vec![Bytes::from_static(b"next").into()],
-                }).into(), idempotency_key: IdempotencyKey::new(b"writer".to_vec()).unwrap(),
-            })).unwrap();
-        }});
-        let forking = thread::spawn({ let provider = provider.clone(); move || {
-            if root_only { set_fault(Fault::RootOnlyFork); }
-            block_on(provider.fork(ForkRequest {
-                source: StreamPath::new("tree").unwrap(), destination: StreamPath::new("copy").unwrap(),
-                exclude: Vec::new(), at_tail: Some(0), idempotency_key: None,
-            })).unwrap();
-        }});
-        writing.join().unwrap(); forking.join().unwrap();
+        let writing = thread::spawn({
+            let provider = provider.clone();
+            move || {
+                block_on(
+                    provider.commit(CommitRequest {
+                        conditions: ["tree/a", "tree/b"]
+                            .map(|name| CommitCondition::Tail {
+                                path: StreamPath::new(name).unwrap(),
+                                expected: 1,
+                            })
+                            .into(),
+                        mutations: ["tree/a", "tree/b"]
+                            .map(|name| CommitMutation::Append {
+                                path: StreamPath::new(name).unwrap(),
+                                records: vec![Bytes::from_static(b"next").into()],
+                            })
+                            .into(),
+                        idempotency_key: IdempotencyKey::new(b"writer".to_vec()).unwrap(),
+                    }),
+                )
+                .unwrap();
+            }
+        });
+        let forking = thread::spawn({
+            let provider = provider.clone();
+            move || {
+                if root_only {
+                    set_fault(Fault::RootOnlyFork);
+                }
+                block_on(provider.fork(ForkRequest {
+                    source: StreamPath::new("tree").unwrap(),
+                    destination: StreamPath::new("copy").unwrap(),
+                    exclude: Vec::new(),
+                    at_tail: Some(0),
+                    idempotency_key: None,
+                }))
+                .unwrap();
+            }
+        });
+        writing.join().unwrap();
+        forking.join().unwrap();
         let a = block_on(provider.tail(StreamPath::new("copy/a")?)).ok();
         let b = block_on(provider.tail(StreamPath::new("copy/b")?)).ok();
-        assert!(matches!((a,b), (Some(1),Some(1)) | (Some(2),Some(2))),
-            "fork must inherit both descendants at one commit cut");
+        assert!(
+            matches!((a, b), (Some(1), Some(1)) | (Some(2), Some(2))),
+            "fork must inherit both descendants at one commit cut"
+        );
         block_on(provider.append(AppendRequest {
-            path: StreamPath::new("copy/a")?, records: vec![Bytes::from_static(b"private").into()],
-            if_tail: a, idempotency_key: None,
+            path: StreamPath::new("copy/a")?,
+            records: vec![Bytes::from_static(b"private").into()],
+            if_tail: a,
+            idempotency_key: None,
         }))?;
         assert_eq!(block_on(provider.tail(StreamPath::new("tree/a")?))?, 2);
-        assert_eq!(block_on(provider.tail(StreamPath::new("copy/b")?))?, b.unwrap());
+        assert_eq!(
+            block_on(provider.tail(StreamPath::new("copy/b")?))?,
+            b.unwrap()
+        );
         Ok(())
     });
 }
@@ -497,16 +524,29 @@ pub fn subtree_exclusions(ignore: bool) {
         let provider = MemoryStream::default();
         block_on(provider.append(AppendRequest {
             path: StreamPath::new("tree/children/old/events")?,
-            records: vec![Bytes::from_static(b"sibling").into()], if_tail: Some(0), idempotency_key: None,
+            records: vec![Bytes::from_static(b"sibling").into()],
+            if_tail: Some(0),
+            idempotency_key: None,
         }))?;
-        if ignore { set_fault(Fault::IgnoreForkExclusions); }
+        if ignore {
+            set_fault(Fault::IgnoreForkExclusions);
+        }
         block_on(provider.fork(ForkRequest {
-            source: StreamPath::new("tree")?, destination: StreamPath::new("tree/children/new")?,
-            exclude: vec![StreamPath::new("children")?], at_tail: Some(0), idempotency_key: None,
+            source: StreamPath::new("tree")?,
+            destination: StreamPath::new("tree/children/new")?,
+            exclude: vec![StreamPath::new("children")?],
+            at_tail: Some(0),
+            idempotency_key: None,
         }))?;
-        assert_eq!(block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)), Err(StreamError::NotFound),
-            "excluded sibling must not leak into the fork");
-        assert_eq!(block_on(provider.tail(StreamPath::new("tree/children/old/events")?))?, 1);
+        assert_eq!(
+            block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)),
+            Err(StreamError::NotFound),
+            "excluded sibling must not leak into the fork"
+        );
+        assert_eq!(
+            block_on(provider.tail(StreamPath::new("tree/children/old/events")?))?,
+            1
+        );
         Ok(())
     });
 }
@@ -516,23 +556,72 @@ pub fn page_tail_cut(split_reads: bool) {
     check_with_bound(Some(2), move || {
         let provider = MemoryStream::default();
         for name in ["agents/a/status", "agents/b/status"] {
-            block_on(provider.append(AppendRequest { path: StreamPath::new(name)?, records: vec![Bytes::from_static(b"old").into()], if_tail: Some(0), idempotency_key: None }))?;
+            block_on(provider.append(AppendRequest {
+                path: StreamPath::new(name)?,
+                records: vec![Bytes::from_static(b"old").into()],
+                if_tail: Some(0),
+                idempotency_key: None,
+            }))?;
         }
-        let writer = thread::spawn({ let provider = provider.clone(); move || {
-            block_on(provider.commit(CommitRequest { conditions: vec![], mutations: ["agents/a/status", "agents/b/status"].map(|name| CommitMutation::Append { path: StreamPath::new(name).unwrap(), records: vec![Bytes::from_static(b"new").into()] }).into(), idempotency_key: IdempotencyKey::new(b"page-writer".to_vec()).unwrap() })).unwrap();
-        }});
-        let projection = thread::spawn({ let provider = provider.clone(); move || {
-            let request = crate::ChildrenPageRequest { parent: Some(StreamPath::new("agents").unwrap()), after: None, hierarchy_version: None, limit: 2, tail_stream: Some(StreamPath::new("status").unwrap()) };
-            let mut page = block_on(provider.children_page(request.clone())).unwrap();
-            if split_reads {
-                thread::yield_now();
-                page.children[1].tail_record = block_on(provider.children_page(request)).unwrap().children[1].tail_record.clone();
+        let writer = thread::spawn({
+            let provider = provider.clone();
+            move || {
+                let outcome = block_on(
+                    provider.commit(CommitRequest {
+                        conditions: ["agents/a/status", "agents/b/status"]
+                            .map(|name| crate::CommitCondition::Tail {
+                                path: StreamPath::new(name).unwrap(),
+                                expected: 1,
+                            })
+                            .into(),
+                        mutations: ["agents/a/status", "agents/b/status"]
+                            .map(|name| CommitMutation::Append {
+                                path: StreamPath::new(name).unwrap(),
+                                records: vec![Bytes::from_static(b"new").into()],
+                            })
+                            .into(),
+                        idempotency_key: IdempotencyKey::new(b"page-writer".to_vec()).unwrap(),
+                    }),
+                )
+                .unwrap();
+                assert!(matches!(outcome, crate::CommitOutcome::Committed(_)));
             }
-            let first = page.children[0].tail_record.as_ref().unwrap().value.as_ref();
-            let second = page.children[1].tail_record.as_ref().unwrap().value.as_ref();
-            assert_eq!(first, second, "page statuses must share one namespace cut");
-        }});
-        writer.join().unwrap(); projection.join().unwrap();
+        });
+        let projection = thread::spawn({
+            let provider = provider.clone();
+            move || {
+                let request = crate::ChildrenPageRequest {
+                    parent: Some(StreamPath::new("agents").unwrap()),
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 2,
+                    tail_stream: Some(StreamPath::new("status").unwrap()),
+                };
+                let mut page = block_on(provider.children_page(request.clone())).unwrap();
+                if split_reads {
+                    thread::yield_now();
+                    page.children[1].tail_record =
+                        block_on(provider.children_page(request)).unwrap().children[1]
+                            .tail_record
+                            .clone();
+                }
+                let first = page.children[0]
+                    .tail_record
+                    .as_ref()
+                    .unwrap()
+                    .value
+                    .as_ref();
+                let second = page.children[1]
+                    .tail_record
+                    .as_ref()
+                    .unwrap()
+                    .value
+                    .as_ref();
+                assert_eq!(first, second, "page statuses must share one namespace cut");
+            }
+        });
+        writer.join().unwrap();
+        projection.join().unwrap();
         Ok(())
     });
 }

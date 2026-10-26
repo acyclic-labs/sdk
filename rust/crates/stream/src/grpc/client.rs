@@ -193,8 +193,12 @@ impl StreamProvider for Client {
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let body = wire::ForkRequest {
-            exclude: request.exclude.into_iter().map(|path| path.to_string()).collect(),
-source: request.source.to_string(),
+            exclude: request
+                .exclude
+                .into_iter()
+                .map(|path| path.to_string())
+                .collect(),
+            source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
             idempotency_key: Some(retry_identity(request.idempotency_key)),
@@ -237,8 +241,6 @@ source: request.source.to_string(),
             .await
     }
 
-
-
     async fn follow_updates(
         &self,
         path: StreamPath,
@@ -272,7 +274,8 @@ source: request.source.to_string(),
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        let body = wire::ChildrenPageRequest { tail_stream: request.tail_stream.map(|path| path.to_string()),
+        let body = wire::ChildrenPageRequest {
+            tail_stream: request.tail_stream.map(|path| path.to_string()),
             parent: request.parent.map(|path| path.to_string()),
             after: request.after.map(|path| path.to_string()),
             hierarchy_version: request
@@ -292,7 +295,11 @@ source: request.source.to_string(),
                     .children
                     .into_iter()
                     .map(|child| {
-                        Ok(Child { tail_record: None,
+                        Ok(Child {
+                            tail_record: child
+                                .tail_record
+                                .map(crate::wire_codec::record)
+                                .transpose()?,
                             path: path(child.path)?,
                         })
                     })

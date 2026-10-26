@@ -29,16 +29,13 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             )
             .await?;
         let mut children = client
-            .follow(StreamPath::new("agents/first")?, 0, crate::FollowFilter::default())
+            .follow(
+                StreamPath::new("agents/first")?,
+                0,
+                crate::FollowFilter::default(),
+            )
             .await?;
-        assert_eq!(
-            children
-                .next()
-                .await
-                .ok_or("discovery ended")??
-                .sequence,
-            0
-        );
+        assert_eq!(children.next().await.ok_or("discovery ended")??.sequence, 0);
         let id = good
             .counts
             .resumes
@@ -67,7 +64,10 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             changed.await;
         }
         bad.controls.send(Ok(malformed_child(id)))?;
-        assert_eq!(children.next().await, Some(Err(StreamError::Unavailable)));
+        assert_eq!(
+            children.next().await,
+            Some(Err(StreamError::InvalidResponse))
+        );
         assert!(children.next().await.is_none());
         let mut later = client
             .follow(
@@ -101,10 +101,15 @@ fn malformed_child(id: u64) -> wire::SessionFrame {
             }),
             accepted: 2,
             durable: 0,
-            item: Some(Item::Record(crate::wire_codec::record_wire(crate::Record {
-                sequence: 99, value: OwnedBytes::from_static(b"malformed"), headers: Default::default(),
-                commit_id: crate::CommitId::from_bytes([1; 32]), committed_at_micros: 0,
-            }))),
+            item: Some(Item::Record(crate::wire_codec::record_wire(
+                crate::Record {
+                    sequence: 99,
+                    value: OwnedBytes::from_static(b"malformed"),
+                    headers: Default::default(),
+                    commit_id: crate::CommitId::from_bytes([1; 32]),
+                    committed_at_micros: 0,
+                },
+            ))),
         }),
     )
 }

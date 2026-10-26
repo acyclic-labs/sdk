@@ -89,7 +89,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Stre
     let fork = provider
         .fork(ForkRequest {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: child.clone(),
             at_tail: Some(1),
             idempotency_key: Some(key(b"stream-fork")?),
@@ -114,7 +114,8 @@ source: source.clone(),
         return Err(StreamError::Unavailable);
     }
     let children = provider
-        .children_page(ChildrenPageRequest { tail_stream: None,
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(path("conformance")?),
             limit: 8,
             after: None,
@@ -131,7 +132,8 @@ source: source.clone(),
         return Err(StreamError::Unavailable);
     }
     let first_page = provider
-        .children_page(ChildrenPageRequest { tail_stream: None,
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(path("conformance")?),
             after: None,
             hierarchy_version: None,
@@ -145,7 +147,8 @@ source: source.clone(),
         return Err(StreamError::Unavailable);
     }
     let final_page = provider
-        .children_page(ChildrenPageRequest { tail_stream: None,
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(path("conformance")?),
             after: first_page.next_after.clone(),
             hierarchy_version: Some(first_page.hierarchy_version),
@@ -167,7 +170,8 @@ source: source.clone(),
         })
         .await?;
     if provider
-        .children_page(ChildrenPageRequest { tail_stream: None,
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(path("conformance")?),
             after: first_page.next_after,
             hierarchy_version: Some(first_page.hierarchy_version),
@@ -228,7 +232,7 @@ source: source.clone(),
         ],
         mutations: vec![CommitMutation::Fork {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: committed_path,
             at_tail: 2,
             records: Vec::new(),
@@ -267,7 +271,9 @@ source: source.clone(),
     {
         return Err(StreamError::Unavailable);
     }
-    let absent_observation = provider.inspect_idempotency(absent_key).await?
+    let absent_observation = provider
+        .inspect_idempotency(absent_key)
+        .await?
         .ok_or(StreamError::Unavailable)?;
     if absent_observation.outcome != IdempotencyOutcome::Commit(absent_outcome) {
         return Err(StreamError::Unavailable);
@@ -327,7 +333,7 @@ async fn verify_stale_tail_condition(
             ],
             mutations: vec![CommitMutation::Fork {
                 exclude: Vec::new(),
-source: source.clone(),
+                source: source.clone(),
                 destination: stale_path.clone(),
                 at_tail: 2,
                 records: Vec::new(),
@@ -361,7 +367,7 @@ async fn verify_fork_with_records(
             },
         ],
         mutations: vec![CommitMutation::Fork {
-exclude: Vec::new(),
+            exclude: Vec::new(),
             source,
             destination: destination.clone(),
             at_tail: 1,
@@ -438,15 +444,22 @@ mod tests {
 }
 
 /// Conflicts publish nothing: the same intent key may be retried at a fresh tail.
-async fn verify_unspent_conflicts(provider: &(impl StreamProvider + ?Sized)) -> Result<(), StreamError> {
+async fn verify_unspent_conflicts(
+    provider: &(impl StreamProvider + ?Sized),
+) -> Result<(), StreamError> {
     let path = path("conformance/unspent")?;
     let append_key = key(b"unspent-append")?;
     let mut request = AppendRequest {
-        path: path.clone(), records: vec![Bytes::from_static(b"intent").into()],
-        if_tail: Some(1), idempotency_key: Some(append_key.clone()),
+        path: path.clone(),
+        records: vec![Bytes::from_static(b"intent").into()],
+        if_tail: Some(1),
+        idempotency_key: Some(append_key.clone()),
     };
-    if !matches!(provider.append(request.clone()).await?, AppendOutcome::TailConflict { actual_tail: 0 })
-        || provider.inspect_idempotency(append_key).await?.is_some() {
+    if !matches!(
+        provider.append(request.clone()).await?,
+        AppendOutcome::TailConflict { actual_tail: 0 }
+    ) || provider.inspect_idempotency(append_key).await?.is_some()
+    {
         return Err(StreamError::Unavailable);
     }
     request.if_tail = Some(0);
@@ -455,15 +468,26 @@ async fn verify_unspent_conflicts(provider: &(impl StreamProvider + ?Sized)) -> 
     }
     let commit_key = key(b"unspent-commit")?;
     let mut request = CommitRequest {
-        conditions: vec![CommitCondition::Tail { path: path.clone(), expected: 0 }],
-        mutations: vec![CommitMutation::Append { path, records: vec![Bytes::from_static(b"next").into()] }],
+        conditions: vec![CommitCondition::Tail {
+            path: path.clone(),
+            expected: 0,
+        }],
+        mutations: vec![CommitMutation::Append {
+            path,
+            records: vec![Bytes::from_static(b"next").into()],
+        }],
         idempotency_key: commit_key.clone(),
     };
-    if !matches!(provider.commit(request.clone()).await?, CommitOutcome::Conflict(_))
-        || provider.inspect_idempotency(commit_key).await?.is_some() {
+    if !matches!(
+        provider.commit(request.clone()).await?,
+        CommitOutcome::Conflict(_)
+    ) || provider.inspect_idempotency(commit_key).await?.is_some()
+    {
         return Err(StreamError::Unavailable);
     }
-    let CommitCondition::Tail { expected, .. } = &mut request.conditions[0] else { unreachable!() };
+    let CommitCondition::Tail { expected, .. } = &mut request.conditions[0] else {
+        unreachable!()
+    };
     *expected = 1;
     if !matches!(provider.commit(request).await?, CommitOutcome::Committed(_)) {
         return Err(StreamError::Unavailable);
@@ -472,101 +496,310 @@ async fn verify_unspent_conflicts(provider: &(impl StreamProvider + ?Sized)) -> 
 }
 
 /// One pre-commit cut covers the whole namespace, including implicit parents.
-pub async fn verify_subtree_fork(provider: &(impl StreamProvider + ?Sized)) -> Result<(), StreamError> {
+pub async fn verify_subtree_fork(
+    provider: &(impl StreamProvider + ?Sized),
+) -> Result<(), StreamError> {
     let source = path("conformance/tree")?;
     let child = path("conformance/tree/a/events")?;
     let destination = path("conformance/tree/children/fork")?;
     let inherited = path("conformance/tree/children/fork/a/events")?;
     let marker = path("conformance/adopted")?;
-    let initial = provider.append(AppendRequest {
-        path: child.clone(), records: vec![Bytes::from_static(b"prefix").into()],
-        if_tail: Some(0), idempotency_key: Some(key(b"tree-seed")?),
-    }).await?;
-    let AppendOutcome::Committed(seed) = initial else { return Err(StreamError::Unavailable); };
-    provider.append(AppendRequest {
-        path: path("conformance/tree/children/old/events")?,
-        records: vec![Bytes::from_static(b"sibling").into()], if_tail: Some(0),
-        idempotency_key: Some(key(b"tree-sibling")?),
-    }).await?;
+    let initial = provider
+        .append(AppendRequest {
+            path: child.clone(),
+            records: vec![Bytes::from_static(b"prefix").into()],
+            if_tail: Some(0),
+            idempotency_key: Some(key(b"tree-seed")?),
+        })
+        .await?;
+    let AppendOutcome::Committed(seed) = initial else {
+        return Err(StreamError::Unavailable);
+    };
+    provider
+        .append(AppendRequest {
+            path: path("conformance/tree/children/old/events")?,
+            records: vec![Bytes::from_static(b"sibling").into()],
+            if_tail: Some(0),
+            idempotency_key: Some(key(b"tree-sibling")?),
+        })
+        .await?;
     // Volume authority streams share the account-tree domain and caller commit.
     for name in ["conformance/volumes/one", "conformance/volumes/two"] {
-        provider.append(AppendRequest { path: path(name)?, records: vec![Bytes::from_static(b"volume-head").into()], if_tail: Some(0), idempotency_key: None }).await?;
+        provider
+            .append(AppendRequest {
+                path: path(name)?,
+                records: vec![Bytes::from_static(b"volume-head").into()],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
     }
     let request = CommitRequest {
-        conditions: vec![CommitCondition::Absent { path: destination.clone() },
-            CommitCondition::Tail { path: child.clone(), expected: 1 },
-            CommitCondition::Tail { path: marker.clone(), expected: 0 },
-            CommitCondition::Absent { path: path("conformance/fork-volumes/one")? },
-            CommitCondition::Absent { path: path("conformance/fork-volumes/two")? }],
-        mutations: vec![CommitMutation::Fork { exclude: vec![path("children")?],
-source: source.clone(), destination: destination.clone(), at_tail: 0, records: vec![Bytes::from_static(b"bound").into()] },
-            CommitMutation::Append { path: child.clone(), records: vec![Bytes::from_static(b"source-after-cut").into()] },
-            CommitMutation::Append { path: marker.clone(), records: vec![Bytes::from_static(b"ForkAdopted").into()] },
-            CommitMutation::Fork { source: path("conformance/volumes/one")?, destination: path("conformance/fork-volumes/one")?, at_tail: 1, exclude: Vec::new(), records: vec![Bytes::from_static(b"volume-bound").into()] },
-            CommitMutation::Fork { source: path("conformance/volumes/two")?, destination: path("conformance/fork-volumes/two")?, at_tail: 1, exclude: Vec::new(), records: vec![Bytes::from_static(b"volume-bound").into()] }],
+        conditions: vec![
+            CommitCondition::Absent {
+                path: destination.clone(),
+            },
+            CommitCondition::Tail {
+                path: child.clone(),
+                expected: 1,
+            },
+            CommitCondition::Tail {
+                path: marker.clone(),
+                expected: 0,
+            },
+            CommitCondition::Absent {
+                path: path("conformance/fork-volumes/one")?,
+            },
+            CommitCondition::Absent {
+                path: path("conformance/fork-volumes/two")?,
+            },
+        ],
+        mutations: vec![
+            CommitMutation::Fork {
+                exclude: vec![path("children")?],
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: 0,
+                records: vec![Bytes::from_static(b"bound").into()],
+            },
+            CommitMutation::Append {
+                path: child.clone(),
+                records: vec![Bytes::from_static(b"source-after-cut").into()],
+            },
+            CommitMutation::Append {
+                path: marker.clone(),
+                records: vec![Bytes::from_static(b"ForkAdopted").into()],
+            },
+            CommitMutation::Fork {
+                source: path("conformance/volumes/one")?,
+                destination: path("conformance/fork-volumes/one")?,
+                at_tail: 1,
+                exclude: Vec::new(),
+                records: vec![Bytes::from_static(b"volume-bound").into()],
+            },
+            CommitMutation::Fork {
+                source: path("conformance/volumes/two")?,
+                destination: path("conformance/fork-volumes/two")?,
+                at_tail: 1,
+                exclude: Vec::new(),
+                records: vec![Bytes::from_static(b"volume-bound").into()],
+            },
+        ],
         idempotency_key: key(b"tree-adopt")?,
     };
     let result = provider.commit(request.clone()).await?;
-    let CommitOutcome::Committed(envelope) = &result else { return Err(StreamError::Unavailable); };
-    if provider.commit(request).await? != result || provider.tail(inherited.clone()).await? != 1
-        || provider.tail(child.clone()).await? != 2 || provider.tail(destination.clone()).await? != 1 {
+    let CommitOutcome::Committed(envelope) = &result else {
+        return Err(StreamError::Unavailable);
+    };
+    if provider.commit(request).await? != result
+        || provider.tail(inherited.clone()).await? != 1
+        || provider.tail(child.clone()).await? != 2
+        || provider.tail(destination.clone()).await? != 1
+    {
         return Err(StreamError::Unavailable);
     }
-    let records: Vec<_> = provider.read(ReadRequest { path: inherited.clone(), from: 0, limit: 8 }).await?.try_collect().await?;
+    let records: Vec<_> = provider
+        .read(ReadRequest {
+            path: inherited.clone(),
+            from: 0,
+            limit: 8,
+        })
+        .await?
+        .try_collect()
+        .await?;
     if records.len() != 1 || records[0].commit_id != seed.commit_id {
         return Err(StreamError::Unavailable);
     }
-    for name in ["conformance/fork-volumes/one", "conformance/fork-volumes/two"] {
-        let records: Vec<_> = provider.read(ReadRequest { path: path(name)?, from: 1, limit: 1 }).await?.try_collect().await?;
-        if records.len() != 1 || records[0].commit_id != envelope.commit_id { return Err(StreamError::Unavailable); }
+    for name in [
+        "conformance/fork-volumes/one",
+        "conformance/fork-volumes/two",
+    ] {
+        let records: Vec<_> = provider
+            .read(ReadRequest {
+                path: path(name)?,
+                from: 1,
+                limit: 1,
+            })
+            .await?
+            .try_collect()
+            .await?;
+        if records.len() != 1 || records[0].commit_id != envelope.commit_id {
+            return Err(StreamError::Unavailable);
+        }
     }
-    let bound: Vec<_> = provider.read(ReadRequest { path: destination.clone(), from: 0, limit: 8 }).await?.try_collect().await?;
-    let adopted: Vec<_> = provider.read(ReadRequest { path: marker, from: 0, limit: 8 }).await?.try_collect().await?;
+    let bound: Vec<_> = provider
+        .read(ReadRequest {
+            path: destination.clone(),
+            from: 0,
+            limit: 8,
+        })
+        .await?
+        .try_collect()
+        .await?;
+    let adopted: Vec<_> = provider
+        .read(ReadRequest {
+            path: marker,
+            from: 0,
+            limit: 8,
+        })
+        .await?
+        .try_collect()
+        .await?;
     if bound[0].commit_id != envelope.commit_id || adopted[0].commit_id != envelope.commit_id {
         return Err(StreamError::Unavailable);
     }
-    provider.append(AppendRequest { path: inherited.clone(), records: vec![Bytes::from_static(b"private").into()], if_tail: Some(1), idempotency_key: Some(key(b"tree-private")?) }).await?;
-    let source_records: Vec<_> = provider.read(ReadRequest { path: child, from: 1, limit: 8 }).await?.try_collect().await?;
+    provider
+        .append(AppendRequest {
+            path: inherited.clone(),
+            records: vec![Bytes::from_static(b"private").into()],
+            if_tail: Some(1),
+            idempotency_key: Some(key(b"tree-private")?),
+        })
+        .await?;
+    let source_records: Vec<_> = provider
+        .read(ReadRequest {
+            path: child,
+            from: 1,
+            limit: 8,
+        })
+        .await?
+        .try_collect()
+        .await?;
     if source_records.len() != 1 || source_records[0].value.as_ref() != b"source-after-cut" {
         return Err(StreamError::Unavailable);
     }
-    let page = provider.children_page(ChildrenPageRequest { tail_stream: None,  parent: Some(destination.clone()), after: None, hierarchy_version: None, limit: 1 }).await?;
-    if page.children.first().map(|child| child.path.as_str()) != Some("conformance/tree/children/fork/a") {
+    let page = provider
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(destination.clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        })
+        .await?;
+    if page.children.first().map(|child| child.path.as_str())
+        != Some("conformance/tree/children/fork/a")
+    {
         return Err(StreamError::Unavailable);
     }
     // A nested destination must inherit the pre-commit source, never itself.
-    if provider.tail(path("conformance/tree/children/fork/children/fork")?).await != Err(StreamError::NotFound) {
+    if provider
+        .tail(path("conformance/tree/children/fork/children/fork")?)
+        .await
+        != Err(StreamError::NotFound)
+    {
         return Err(StreamError::Unavailable);
     }
-    if provider.tail(path("conformance/tree/children/old/events")?).await? != 1
-        || provider.tail(path("conformance/tree/children/fork/children/old/events")?).await != Err(StreamError::NotFound) {
+    if provider
+        .tail(path("conformance/tree/children/old/events")?)
+        .await?
+        != 1
+        || provider
+            .tail(path("conformance/tree/children/fork/children/old/events")?)
+            .await
+            != Err(StreamError::NotFound)
+    {
         return Err(StreamError::Unavailable);
     }
     let second = path("conformance/tree-second")?;
-    provider.fork(ForkRequest { exclude: Vec::new(),
-source: destination, destination: second, at_tail: None, idempotency_key: Some(key(b"tree-second")?) }).await?;
-    if provider.tail(path("conformance/tree-second/a/events")?).await? != 2 {
+    provider
+        .fork(ForkRequest {
+            exclude: Vec::new(),
+            source: destination,
+            destination: second,
+            at_tail: None,
+            idempotency_key: Some(key(b"tree-second")?),
+        })
+        .await?;
+    if provider
+        .tail(path("conformance/tree-second/a/events")?)
+        .await?
+        != 2
+    {
         return Err(StreamError::Unavailable);
     }
     Ok(())
 }
 
 /// A single page captures status with child membership; no extra reads or creation.
-pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Result<(), StreamError> {
+pub async fn verify_page_tails(
+    provider: &(impl StreamProvider + ?Sized),
+) -> Result<(), StreamError> {
     let a = path("conformance/page-tails/a/status")?;
     let b = path("conformance/page-tails/b/status")?;
     let missing = path("conformance/page-tails/c/other")?;
     for target in [&a, &b, &missing] {
-        provider.append(AppendRequest { path: target.clone(), records: vec![Bytes::from_static(b"old").into()], if_tail: Some(0), idempotency_key: Some(IdempotencyKey::new(target.as_str().as_bytes().to_vec())?) }).await?;
+        provider
+            .append(AppendRequest {
+                path: target.clone(),
+                records: vec![Bytes::from_static(b"old").into()],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(target.as_str().as_bytes().to_vec())?),
+            })
+            .await?;
     }
-    let page = provider.children_page(ChildrenPageRequest { parent: Some(path("conformance/page-tails")?), after: None, hierarchy_version: None, limit: 3, tail_stream: Some(path("status")?) }).await?;
+    let page = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(path("conformance/page-tails")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 3,
+            tail_stream: Some(path("status")?),
+        })
+        .await?;
     assert_eq!(page.children.len(), 3);
     assert!(page.children[2].tail_record.is_none());
-    let cut = provider.commit(CommitRequest { conditions: vec![], mutations: vec![a.clone(), b.clone()].into_iter().map(|path| CommitMutation::Append { path, records: vec![Bytes::from_static(b"new").into()] }).collect(), idempotency_key: key(b"page-tails-next")? }).await?;
-    let CommitOutcome::Committed(cut) = cut else { return Err(StreamError::Unavailable); };
-    for child in &page.children[..2] { assert_eq!(child.tail_record.as_ref().map(|record| record.value.as_ref()), Some(b"old".as_slice())); }
-    let next = provider.children_page(ChildrenPageRequest { parent: Some(path("conformance/page-tails")?), after: None, hierarchy_version: None, limit: 3, tail_stream: Some(path("status")?) }).await?;
-    for child in &next.children[..2] { assert_eq!(child.tail_record.as_ref().map(|record| record.commit_id), Some(cut.commit_id)); }
-    assert_eq!(provider.tail(path("conformance/page-tails/c/status")?).await, Err(StreamError::NotFound));
+    let cut = provider
+        .commit(CommitRequest {
+            conditions: [&a, &b]
+                .into_iter()
+                .map(|path| CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 1,
+                })
+                .collect(),
+            mutations: vec![a.clone(), b.clone()]
+                .into_iter()
+                .map(|path| CommitMutation::Append {
+                    path,
+                    records: vec![Bytes::from_static(b"new").into()],
+                })
+                .collect(),
+            idempotency_key: key(b"page-tails-next")?,
+        })
+        .await?;
+    let CommitOutcome::Committed(cut) = cut else {
+        return Err(StreamError::Unavailable);
+    };
+    for child in &page.children[..2] {
+        assert_eq!(
+            child
+                .tail_record
+                .as_ref()
+                .map(|record| record.value.as_ref()),
+            Some(b"old".as_slice())
+        );
+    }
+    let next = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(path("conformance/page-tails")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 3,
+            tail_stream: Some(path("status")?),
+        })
+        .await?;
+    for child in &next.children[..2] {
+        assert_eq!(
+            child.tail_record.as_ref().map(|record| record.commit_id),
+            Some(cut.commit_id)
+        );
+    }
+    assert_eq!(
+        provider
+            .tail(path("conformance/page-tails/c/status")?)
+            .await,
+        Err(StreamError::NotFound)
+    );
     Ok(())
 }

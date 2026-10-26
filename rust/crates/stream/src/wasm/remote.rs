@@ -166,8 +166,12 @@ impl StreamProvider for Remote {
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let body = wire::ForkRequest {
-            exclude: request.exclude.into_iter().map(|path| path.to_string()).collect(),
-source: request.source.to_string(),
+            exclude: request
+                .exclude
+                .into_iter()
+                .map(|path| path.to_string())
+                .collect(),
+            source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
             idempotency_key: Some(identity(request.idempotency_key)),
@@ -266,7 +270,8 @@ source: request.source.to_string(),
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        let body = wire::ChildrenPageRequest { tail_stream: request.tail_stream.map(|path| path.to_string()),
+        let body = wire::ChildrenPageRequest {
+            tail_stream: request.tail_stream.map(|path| path.to_string()),
             parent: request.parent.map(|p| p.to_string()),
             after: request.after.map(|p| p.to_string()),
             hierarchy_version: request
@@ -286,7 +291,8 @@ source: request.source.to_string(),
                 .children
                 .into_iter()
                 .map(|c| {
-                    Ok(Child { tail_record: None,
+                    Ok(Child {
+                        tail_record: c.tail_record.map(wire_codec::record).transpose()?,
                         path: wire_codec::path(c.path)?,
                     })
                 })
