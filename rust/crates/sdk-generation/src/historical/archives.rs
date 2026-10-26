@@ -87,19 +87,11 @@ pub fn archive_plan(
                 None => OriginalLock::Absent,
             };
             if !producer_lock.exists() {
-                let mut command = sdk_docs::command(cargo);
-                command
-                    .args(["generate-lockfile", "--manifest-path"])
-                    .arg(&manifest);
-                sdk_docs::rustdoc_profiles::CargoExecutionContext {
-                    cargo_path: Some(cargo),
-                    lock_selection: Some(
-                        sdk_docs::rustdoc_profiles::LockSelection::RetainedConfig(&config),
-                    ),
-                }
-                .configure(&mut command)
-                .map_err(|e| e.to_string())?;
-                command_output(&mut command)?;
+                generate_lockfile(
+                    cargo,
+                    &manifest,
+                    sdk_docs::rustdoc_profiles::LockSelection::RetainedConfig(&config),
+                )?;
             }
             let producer = ProducerResolution {
                 lock_path: format!(".docs-producer/{directory}/Cargo.lock"),
@@ -125,19 +117,11 @@ pub fn archive_plan(
             // Reuse an already captured producer resolution; the locked Cargo
             // metadata/profile commands below validate it without updating it.
             if !lock.exists() {
-                let mut command = sdk_docs::command(cargo);
-                command
-                    .args(["generate-lockfile", "--manifest-path"])
-                    .arg(&manifest);
-                sdk_docs::rustdoc_profiles::CargoExecutionContext {
-                    cargo_path: Some(cargo),
-                    lock_selection: Some(
-                        sdk_docs::rustdoc_profiles::LockSelection::SourceAdjacent(&lock),
-                    ),
-                }
-                .configure(&mut command)
-                .map_err(|e| e.to_string())?;
-                command_output(&mut command)?;
+                generate_lockfile(
+                    cargo,
+                    &manifest,
+                    sdk_docs::rustdoc_profiles::LockSelection::SourceAdjacent(&lock),
+                )?;
             }
             let digest = crate::sha256_file(&lock).map_err(|e| e.to_string())?;
             plan.source_files
@@ -172,33 +156,19 @@ pub fn archive_plan(
             )?;
         }
         validate_archive_owner(&metadata, &manifest, &release.package, &release.num)?;
-        let publisher_vcs = archive_vcs(&members)?;
         let identity = ArchiveSource {
             package: release.package.clone(),
             version: release.num.clone(),
             registry_checksum: release.checksum.clone(),
-            publisher_vcs: publisher_vcs.clone(),
-            resolution_lock: resolution_lock.clone(),
+            publisher_vcs: archive_vcs(&members)?,
+            resolution_lock,
         };
         // Independently reread original members plus selected config/lock after
         // lock generation and metadata; command success cannot hide input drift.
-        let (_, verified_files) =
+        let (released, verified_files) =
             verify_imported_archive(source_root, &release, &archive, &identity)?;
         plan.source_files.extend(verified_files);
-        plan.released_packages.push(ReleasedPackage {
-            package: release.package.clone(),
-            version: release.num.clone(),
-            yanked: release.yanked,
-            registry_checksum: release.checksum.clone(),
-            source_revision: publisher_vcs
-                .as_ref()
-                .map(|vcs| vcs.revision.clone())
-                .unwrap_or_default(),
-            path_in_vcs: publisher_vcs
-                .as_ref()
-                .map(|vcs| vcs.path_in_vcs.clone())
-                .unwrap_or_default(),
-        });
+        plan.released_packages.push(released);
         archive_sources.push(identity);
         if plan
             .owner_metadata
@@ -221,6 +191,25 @@ pub fn archive_plan(
     // Cargo execution always receives its original per-owner metadata/manifest.
     let index = owner_index(&plan.owner_metadata)?;
     Ok((plan, index))
+}
+
+fn generate_lockfile(
+    cargo: &Path,
+    manifest: &Path,
+    selection: sdk_docs::rustdoc_profiles::LockSelection<'_>,
+) -> Result<(), String> {
+    let mut command = sdk_docs::command(cargo);
+    command
+        .args(["generate-lockfile", "--manifest-path"])
+        .arg(manifest);
+    sdk_docs::rustdoc_profiles::CargoExecutionContext {
+        cargo_path: Some(cargo),
+        lock_selection: Some(selection),
+    }
+    .configure(&mut command)
+    .map_err(|e| e.to_string())?;
+    command_output(&mut command)?;
+    Ok(())
 }
 
 /// Read the whole checksum-verified archive; reject links and escaping members
