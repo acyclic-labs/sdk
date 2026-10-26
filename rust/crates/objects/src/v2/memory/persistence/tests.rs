@@ -489,3 +489,77 @@ async fn compaction_packs_inline_bodies_under_one_directory_synchronization()
     assert_eq!(std::fs::read_dir(root.path().join("segments"))?.count(), 1);
     Ok(())
 }
+
+// The logical byte total moves by each mutation's change instead of being recounted from the
+// whole store, so it must still equal a full count after replacements, deletes, a batch and a
+// replay, and still bound admission.
+#[tokio::test]
+async fn object_byte_total_tracks_every_mutation_and_replay()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn recount(core: &MemoryObjects) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+        let state = core.state.lock().map_err(|_| "poisoned")?;
+        let counted = state
+            .buckets
+            .values()
+            .flat_map(|bucket| bucket.objects.values())
+            .map(|object| object.body.len())
+            .sum();
+        Ok((state.object_bytes, counted))
+    }
+    // Overwrites `key` under a fresh idempotency key.
+    fn replace(key: &str) -> wire::PutObjectHeader {
+        wire::PutObjectHeader {
+            mutation: Some(wire::MutationIdentity {
+                idempotency_key: format!("{key}-replaced"),
+            }),
+            ..put(key)
+        }
+    }
+    // The journal header pins both limits; 20 bytes is just above what the store holds.
+    let limits = LocalObjectsLimits {
+        maximum_object_bytes: 16,
+        maximum_bytes: 20,
+        ..Default::default()
+    };
+    let root = tempfile::tempdir()?;
+    let core = open(root.path().to_path_buf(), limits, None)?;
+    core.create_bucket(wire::CreateBucketRequest {
+        name: "recovery".into(),
+        mutation: None,
+    })
+    .await?;
+    core.put(put("retained"), Bytes::from_static(b"before"))
+        .await?;
+    core.put(put("a"), Bytes::from_static(b"aaa")).await?;
+    core.put(replace("retained"), Bytes::from_static(b"0123456789"))
+        .await?;
+    let results = core
+        .put_batch(vec![
+            (put("b"), Bytes::from_static(b"bbbb")),
+            (put("c"), Bytes::from_static(b"cc")),
+            (replace("a"), Bytes::from_static(b"a")),
+        ])
+        .await;
+    assert!(results.iter().all(Result::is_ok));
+    core.delete(wire::DeleteObjectRequest {
+        bucket: bucket(),
+        object_key: "c".into(),
+        ..Default::default()
+    })
+    .await?;
+    // retained 6 -> 10, a 3 -> 1, b 4, c 2 deleted
+    assert_eq!(recount(&core)?, (15, 15));
+    drop(core);
+    let core = open(root.path().to_path_buf(), limits, None)?;
+    assert_eq!(recount(&core)?, (15, 15));
+    assert_eq!(
+        core.put(put("over"), Bytes::from_static(b"xxxxxx"))
+            .await
+            .err()
+            .map(|e| e.code),
+        Some(QuotaExceeded)
+    );
+    core.put(put("fits"), Bytes::from_static(b"xxxxx")).await?;
+    assert_eq!(recount(&core)?, (20, 20));
+    Ok(())
+}

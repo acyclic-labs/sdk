@@ -472,22 +472,22 @@ impl Journal {
         Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
             && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
     }
-    pub(super) fn validate_bodies(&self, state: &State) -> Result<(), Error> {
-        let bodies = state
-            .buckets
+    /// Checks the bodies a staged mutation added or replaced, and every staged multipart part,
+    /// against the per-object limit. Bodies `before` already held passed when they were admitted.
+    pub(super) fn validate_bodies(&self, before: &State, next: &State) -> Result<(), Error> {
+        for (name, bucket) in &next.buckets {
+            for key in changed_keys(before.buckets.get(name), bucket) {
+                let object = bucket.objects.get(&key).ok_or(Error::from(Unavailable))?;
+                if object.body.len() as u64 > self.limits.maximum_object_bytes {
+                    return Err(QuotaExceeded.into());
+                }
+            }
+        }
+        if next
+            .uploads
             .values()
-            .flat_map(|bucket| bucket.objects.values())
-            .map(|object| &object.body)
-            .chain(
-                state
-                    .uploads
-                    .values()
-                    .flat_map(|upload| upload.parts.values())
-                    .map(|(_, body)| body),
-            );
-        if bodies
-            .into_iter()
-            .any(|body| body.len() as u64 > self.limits.maximum_object_bytes)
+            .flat_map(|upload| upload.parts.values())
+            .any(|(_, body)| body.len() as u64 > self.limits.maximum_object_bytes)
         {
             return Err(QuotaExceeded.into());
         }
@@ -925,6 +925,7 @@ fn apply(
     apply_uploads(&mut next, delta.uploads)?;
     apply_parts(&mut next, delta.parts, root, limits)?;
     apply_receipts(&mut next, delta.receipts)?;
+    next.object_bytes = super::object_bytes_after(state, &next).ok_or(LocalOpenError::Corrupt)?;
     validate_state(&next, options)?;
     *state = next;
     Ok(())
@@ -1027,17 +1028,11 @@ fn apply_receipts(next: &mut State, changes: Vec<ReceiptChange>) -> Result<(), L
 
 fn validate_state(next: &State, options: MemoryOptions) -> Result<(), LocalOpenError> {
     let size = next
-        .buckets
+        .uploads
         .values()
-        .flat_map(|bucket| bucket.objects.values())
-        .map(|object| object.body.len())
-        .chain(
-            next.uploads
-                .values()
-                .flat_map(|upload| upload.parts.values())
-                .map(|(_, body)| body.len()),
-        )
-        .try_fold(0usize, usize::checked_add)
+        .flat_map(|upload| upload.parts.values())
+        .map(|(_, body)| body.len())
+        .try_fold(next.object_bytes, usize::checked_add)
         .ok_or(LocalOpenError::Corrupt)?;
     if size > options.maximum_bytes
         || next

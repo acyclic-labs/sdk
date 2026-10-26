@@ -50,6 +50,9 @@ struct State {
     uploads: BTreeMap<String, Upload>,
     receipts: OrdMap<String, Receipt>,
     sequence: u64,
+    // Combined body bytes of the current objects. `mutate_locked` and journal replay move it by
+    // what each mutation changed, so neither walks the store.
+    object_bytes: usize,
 }
 #[derive(Clone)]
 struct Bucket {
@@ -76,6 +79,46 @@ struct Receipt {
     response: Vec<u8>,
     #[cfg(feature = "local")]
     kind: u32,
+}
+
+/// `next`'s current object bytes, from `before`'s total and the objects that differ: `OrdMap::diff`
+/// skips every subtree the two states share, so a put costs its change, not the store.
+fn object_bytes_after(before: &State, next: &State) -> Option<usize> {
+    let mut added = 0_usize;
+    let mut removed = 0_usize;
+    let total = |bucket: &Bucket| -> Option<usize> {
+        bucket
+            .objects
+            .values()
+            .try_fold(0_usize, |sum, object| sum.checked_add(object.body.len()))
+    };
+    for (name, bucket) in &next.buckets {
+        match before.buckets.get(name) {
+            Some(old) => {
+                for item in old.objects.diff(&bucket.objects) {
+                    match item {
+                        imbl::ordmap::DiffItem::Add(_, object) => {
+                            added = added.checked_add(object.body.len())?;
+                        }
+                        imbl::ordmap::DiffItem::Update { old, new } => {
+                            removed = removed.checked_add(old.1.body.len())?;
+                            added = added.checked_add(new.1.body.len())?;
+                        }
+                        imbl::ordmap::DiffItem::Remove(_, object) => {
+                            removed = removed.checked_add(object.body.len())?;
+                        }
+                    }
+                }
+            }
+            None => added = added.checked_add(total(bucket)?)?,
+        }
+    }
+    for (name, bucket) in &before.buckets {
+        if !next.buckets.contains_key(name) {
+            removed = removed.checked_add(total(bucket)?)?;
+        }
+    }
+    before.object_bytes.checked_add(added)?.checked_sub(removed)
 }
 
 impl MemoryObjects {
@@ -232,18 +275,13 @@ impl MemoryObjects {
                 .values()
                 .map(|upload| upload.parts.len())
                 .sum::<usize>();
+        next.object_bytes = object_bytes_after(guard, &next).ok_or(Error::from(QuotaExceeded))?;
         let bytes = next
-            .buckets
+            .uploads
             .values()
-            .flat_map(|bucket| bucket.objects.values())
-            .map(|object| object.body.len())
-            .chain(
-                next.uploads
-                    .values()
-                    .flat_map(|upload| upload.parts.values())
-                    .map(|(_, body)| body.len()),
-            )
-            .try_fold(0_usize, usize::checked_add)
+            .flat_map(|upload| upload.parts.values())
+            .map(|(_, body)| body.len())
+            .try_fold(next.object_bytes, usize::checked_add)
             .ok_or(Error::from(QuotaExceeded))?;
         if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
             return Err(QuotaExceeded.into());
@@ -251,7 +289,7 @@ impl MemoryObjects {
         #[cfg(feature = "local")]
         if let Some(journal) = &self.journal {
             if self.defer_local {
-                journal.validate_bodies(&next)?;
+                journal.validate_bodies(guard, &next)?;
             } else {
                 journal.commit(guard, &mut next)?;
             }
