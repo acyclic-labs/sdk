@@ -40,10 +40,14 @@ pub struct StreamView {
     next: u64,
     revision: u64,
     watermarks: StreamWatermarks,
+    filtered: bool,
 }
 
 impl StreamView {
-    pub(crate) fn new(policy: StreamViewPolicy, next: u64, revision: u64) -> Self {
+    /// `filtered` folds a follow whose provider omits records outside its
+    /// selection: records and watermarks may then move the cursor forward
+    /// past skipped sequences, but never backward.
+    pub(crate) fn new(policy: StreamViewPolicy, next: u64, revision: u64, filtered: bool) -> Self {
         Self {
             policy,
             records: VecDeque::new(),
@@ -54,6 +58,7 @@ impl StreamView {
                 accepted: next,
                 durable: 0,
             },
+            filtered,
         }
     }
 
@@ -131,7 +136,12 @@ impl StreamView {
                     .checked_add(1)
                     .ok_or(StreamError::InvalidResponse)?;
                 let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
-                if record.sequence != self.next || after.next != next || next > data.accepted {
+                let skipped = if self.filtered {
+                    record.sequence < self.next
+                } else {
+                    record.sequence != self.next
+                };
+                if skipped || after.next != next || next > data.accepted {
                     return Err(StreamError::InvalidResponse);
                 }
                 // Use the canonical record/header validator, including its size
@@ -159,13 +169,13 @@ impl StreamView {
             }
             Some(wire::session_frame::Body::Watermark(mark)) => {
                 self.check_watermarks(mark.accepted, mark.durable)?;
-                // An unfiltered ALL follow cannot skip records on a watermark.
-                if mark
-                    .after
-                    .as_ref()
-                    .is_some_and(|after| after.next != self.next)
-                {
-                    return Err(StreamError::InvalidResponse);
+                // An unfiltered ALL follow cannot skip records on a watermark;
+                // a filtered one advances past records outside its selection.
+                if let Some(after) = mark.after.as_ref() {
+                    if after.next < self.next || (!self.filtered && after.next != self.next) {
+                        return Err(StreamError::InvalidResponse);
+                    }
+                    self.next = after.next;
                 }
                 self.advance_watermarks(mark.accepted, mark.durable);
                 self.revision = revision;

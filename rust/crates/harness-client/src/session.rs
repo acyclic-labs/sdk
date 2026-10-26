@@ -6,8 +6,8 @@ use acyclic_stream::{
 use bytes::Bytes;
 use futures::StreamExt;
 use std::{
+    borrow::Borrow,
     collections::BTreeMap,
-    future::Future as _,
     task::{Context, Poll},
 };
 
@@ -81,6 +81,8 @@ pub struct WireSession {
     demand: ViewDemand,
     follows: BTreeMap<StreamPath, Subscription>,
     views: BTreeMap<StreamPath, StreamView>,
+    resources: BTreeMap<String, Subscription>,
+    resource_views: BTreeMap<String, StreamView>,
     view_policy: StreamViewPolicy,
     revision: u64,
 }
@@ -105,6 +107,8 @@ impl WireSession {
             demand: ViewDemand::default(),
             follows: BTreeMap::new(),
             views: BTreeMap::new(),
+            resources: BTreeMap::new(),
+            resource_views: BTreeMap::new(),
             view_policy,
             revision: 0,
         }
@@ -183,6 +187,9 @@ impl WireSession {
             if requested.insert(path, subscription).is_some() {
                 return Err(WireSessionError::AlreadyOpen);
             }
+        }
+        if requested.len() + self.resources.len() > self.policy.selected_capacity() {
+            return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         let demand = ViewDemand::new(
             self.policy,
@@ -276,6 +283,7 @@ impl WireSession {
         if self.follows.contains_key(&agent) {
             return Err(WireSessionError::AlreadyOpen);
         }
+        self.admit_one()?;
         let from = validate_subscription(&agent, &subscription)?;
         let revision = self
             .revision
@@ -294,11 +302,17 @@ impl WireSession {
         from: u64,
         revision: u64,
     ) -> (StreamView, Subscription) {
+        let filtered = subscription.filter.is_some()
+            || matches!(
+                &subscription.kind,
+                Some(wire::session_subscription::Kind::Follow(follow))
+                    if follow.resource.starts_with(FS_RESOURCE)
+            );
         let request = subscription.clone();
         let client = self.client.clone();
         let opening = Box::pin(async move { client.subscribe(subscription).await });
         (
-            StreamView::new(self.view_policy, from, revision),
+            StreamView::new(self.view_policy, from, revision, filtered),
             Subscription {
                 request,
                 state: SubscriptionState::Opening(opening),
@@ -311,23 +325,7 @@ impl WireSession {
         agent: &StreamPath,
         context: &mut Context<'_>,
     ) -> Poll<Result<(), WireSessionError>> {
-        let Some(subscription) = self.follows.get_mut(agent) else {
-            return Poll::Ready(Err(WireSessionError::NotOpen));
-        };
-        let SubscriptionState::Opening(opening) = &mut subscription.state else {
-            return Poll::Ready(Ok(()));
-        };
-        match opening.as_mut().poll(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(stream)) => {
-                subscription.state = SubscriptionState::Open(stream);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(error)) => {
-                self.follows.remove(agent);
-                Poll::Ready(Err(WireSessionError::Stream(error)))
-            }
-        }
+        poll_open(&mut self.follows, agent, context)
     }
 
     /// Poll only the requested visible agent; never enumerate the stored swarm.
@@ -338,59 +336,76 @@ impl WireSession {
         agent: &StreamPath,
         context: &mut Context<'_>,
     ) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
-        match self.poll_open(agent, context) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => {}
+        poll_follow(
+            &mut self.follows,
+            &mut self.views,
+            &mut self.revision,
+            agent,
+            context,
+        )
+    }
+
+    /// Select one filesystem change follow, `fs:/<volume>/<path>`, on the same
+    /// pool and selected budget as stream follows. A key filter, such as one
+    /// directory's `[prefix, successor)` range, narrows it to a subtree; the
+    /// owning filesystem provider enforces the credential's read policy. The
+    /// canonical resource names the follow for polling, viewing and release.
+    ///
+    /// # Errors
+    /// Refuses duplicate, over-budget or malformed follows before admission.
+    pub fn begin_resource(
+        &mut self,
+        subscription: wire::SessionSubscription,
+    ) -> Result<(), WireSessionError> {
+        let (resource, from) = validate_resource_subscription(&subscription)?;
+        if self.resources.contains_key(&resource) {
+            return Err(WireSessionError::AlreadyOpen);
         }
-        let Some(Subscription {
-            state: SubscriptionState::Open(stream),
-            ..
-        }) = self.follows.get_mut(agent)
-        else {
-            return Poll::Ready(Err(WireSessionError::NotOpen));
-        };
-        match stream.poll_next_unpin(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Some(Ok(frame))) => {
-                let revision = self
-                    .revision
-                    .checked_add(1)
-                    .ok_or(WireSessionError::Stream(StreamError::Capacity));
-                let folded = revision.and_then(|revision| {
-                    self.views
-                        .get_mut(agent)
-                        .ok_or(WireSessionError::NotOpen)
-                        .and_then(|view| {
-                            view.apply(&frame, revision)
-                                .map_err(WireSessionError::Stream)
-                        })?;
-                    self.revision = revision;
-                    Ok(())
-                });
-                if let Err(error) = folded {
-                    // End a malformed or over-budget fold at this boundary;
-                    // never keep consuming past a failed display transition.
-                    self.follows.remove(agent);
-                    return Poll::Ready(Err(error));
-                }
-                if matches!(
-                    frame.body.as_ref(),
-                    Some(wire::session_frame::Body::Closed(_))
-                ) {
-                    self.follows.remove(agent);
-                }
-                Poll::Ready(Ok(Some(frame)))
-            }
-            Poll::Ready(Some(Err(error))) => {
-                self.follows.remove(agent);
-                Poll::Ready(Err(WireSessionError::Stream(error)))
-            }
-            Poll::Ready(None) => {
-                self.follows.remove(agent);
-                Poll::Ready(Ok(None))
-            }
+        self.admit_one()?;
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        let (view, subscription) = self.stage_stream(subscription, from, revision);
+        self.resource_views.insert(resource.clone(), view);
+        self.resources.insert(resource, subscription);
+        self.revision = revision;
+        Ok(())
+    }
+
+    /// Poll one selected filesystem follow; frames fold into its bounded view.
+    pub fn poll_resource(
+        &mut self,
+        resource: &str,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
+        poll_follow(
+            &mut self.resources,
+            &mut self.resource_views,
+            &mut self.revision,
+            resource,
+            context,
+        )
+    }
+
+    /// Borrow one selected filesystem follow's bounded fold.
+    #[must_use]
+    pub fn resource_view(&self, resource: &str) -> Option<&StreamView> {
+        self.resource_views.get(resource)
+    }
+
+    /// Release one filesystem follow and its view; dropping the subscription
+    /// returns its interest through the pool's cancellation guard.
+    pub fn release_resource(&mut self, resource: &str) -> bool {
+        self.resource_views.remove(resource);
+        self.resources.remove(resource).is_some()
+    }
+
+    fn admit_one(&self) -> Result<(), WireSessionError> {
+        if self.follows.len() + self.resources.len() >= self.policy.selected_capacity() {
+            return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
+        Ok(())
     }
 
     /// Admitted selected follows, including pending opens, independent of swarm size.
@@ -431,4 +446,114 @@ fn validate_subscription(
         return Err(WireSessionError::NotRequested);
     }
     Ok(resume.next)
+}
+
+const FS_RESOURCE: &str = "fs:/";
+
+fn poll_open<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
+    follows: &mut BTreeMap<K, Subscription>,
+    key: &Q,
+    context: &mut Context<'_>,
+) -> Poll<Result<(), WireSessionError>> {
+    let Some(subscription) = follows.get_mut(key) else {
+        return Poll::Ready(Err(WireSessionError::NotOpen));
+    };
+    let SubscriptionState::Opening(opening) = &mut subscription.state else {
+        return Poll::Ready(Ok(()));
+    };
+    match opening.as_mut().poll(context) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(stream)) => {
+            subscription.state = SubscriptionState::Open(stream);
+            Poll::Ready(Ok(()))
+        }
+        Poll::Ready(Err(error)) => {
+            follows.remove(key);
+            Poll::Ready(Err(WireSessionError::Stream(error)))
+        }
+    }
+}
+
+/// The one poll and fold shared by stream and filesystem follows.
+fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
+    follows: &mut BTreeMap<K, Subscription>,
+    views: &mut BTreeMap<K, StreamView>,
+    session_revision: &mut u64,
+    key: &Q,
+    context: &mut Context<'_>,
+) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
+    match poll_open(follows, key, context) {
+        Poll::Pending => return Poll::Pending,
+        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+        Poll::Ready(Ok(())) => {}
+    }
+    let Some(Subscription {
+        state: SubscriptionState::Open(stream),
+        ..
+    }) = follows.get_mut(key)
+    else {
+        return Poll::Ready(Err(WireSessionError::NotOpen));
+    };
+    match stream.poll_next_unpin(context) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Some(Ok(frame))) => {
+            let revision = session_revision
+                .checked_add(1)
+                .ok_or(WireSessionError::Stream(StreamError::Capacity));
+            let folded = revision.and_then(|revision| {
+                views
+                    .get_mut(key)
+                    .ok_or(WireSessionError::NotOpen)
+                    .and_then(|view| {
+                        view.apply(&frame, revision)
+                            .map_err(WireSessionError::Stream)
+                    })?;
+                *session_revision = revision;
+                Ok(())
+            });
+            if let Err(error) = folded {
+                // End a malformed or over-budget fold at this boundary;
+                // never keep consuming past a failed display transition.
+                follows.remove(key);
+                return Poll::Ready(Err(error));
+            }
+            if matches!(
+                frame.body.as_ref(),
+                Some(wire::session_frame::Body::Closed(_))
+            ) {
+                follows.remove(key);
+            }
+            Poll::Ready(Ok(Some(frame)))
+        }
+        Poll::Ready(Some(Err(error))) => {
+            follows.remove(key);
+            Poll::Ready(Err(WireSessionError::Stream(error)))
+        }
+        Poll::Ready(None) => {
+            follows.remove(key);
+            Poll::Ready(Ok(None))
+        }
+    }
+}
+
+/// A filesystem follow requests every record of its `fs:/` resource; unlike
+/// a stream follow it may carry a key filter selecting a subtree.
+fn validate_resource_subscription(
+    subscription: &wire::SessionSubscription,
+) -> Result<(String, u64), WireSessionError> {
+    let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
+        return Err(WireSessionError::InvalidSubscription);
+    };
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || subscription.channel.is_some()
+        || !follow.resource.starts_with(FS_RESOURCE)
+    {
+        return Err(WireSessionError::InvalidSubscription);
+    }
+    let resume = subscription
+        .resume
+        .as_ref()
+        .ok_or(WireSessionError::InvalidSubscription)?;
+    wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
+    Ok((follow.resource.clone(), resume.next))
 }
