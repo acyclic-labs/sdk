@@ -5,6 +5,7 @@
 //! fault injection and assertions belong here, never in a backend adapter.
 
 mod admission;
+mod identity;
 mod observe;
 mod publication;
 mod vectors;
@@ -51,9 +52,26 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     identified("spawn", vectors::spawn_cut(backend).await)?;
     identified("publication", publication::verify(backend).await)?;
     identified("admission", admission::verify(backend).await)?;
+    identified("identity", identity::verify(backend).await)?;
     identified("guest wire", wire::verify(backend).await)?;
     identified("restart", vectors::restart(backend).await)?;
     Ok(())
+}
+
+/// Additional real-issuer control, using the same host fixture and production
+/// admission as the portable identity vectors. The expected subject is supplied
+/// by the trusted test configuration, independently of verification output.
+pub async fn verify_oidc(
+    backend: &dyn Backend,
+    verifier: &acyclic_harness_core::oidc::Verifier,
+    token: &str,
+    expected_subject: &str,
+    now_unix_seconds: u64,
+) -> Result {
+    identified(
+        "real OIDC identity",
+        identity::external(backend, verifier, token, expected_subject, now_unix_seconds).await,
+    )
 }
 
 fn identified(vector: &str, result: Result) -> Result {

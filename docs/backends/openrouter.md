@@ -1,3 +1,6 @@
+Qualification: **unqualified** against OpenRouter. The shared Chat adapter passes
+the complete real llama.cpp suite; no OpenRouter cloud pass is claimed.
+
 Enable `endpoint-presets`, register `endpoints::openrouter()`, and supply an
 explicit OpenRouter key through `Credentials`. Model names retain their vendor
 prefix, e.g. `openrouter/vendor/model`; register that full upstream name and its
