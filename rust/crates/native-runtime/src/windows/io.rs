@@ -113,10 +113,12 @@ fn transfer_in_place(
                 Ok(())
             }
         };
+        // Settle kernel custody before accounting can invoke a user callback and unwind.
+        let completed = complete();
         // Completion uses allowance reserved before issue, even after cancellation.
         let (completed, completion_charge) = match operations.as_mut() {
-            Some(operations) => operations.attempt(complete),
-            None => (complete(), Ok(())),
+            Some(operations) => operations.attempt(|| completed),
+            None => (completed, Ok(())),
         };
         if let Some(bytes) = bytes.as_mut() {
             bytes.record(transferred as usize)?;
