@@ -52,7 +52,8 @@ where
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
         let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
-        self.mount(destination.path(), options.for_task_view()).await
+        self.mount(destination.path(), options.for_task_view())
+            .await
     }
 
     /// Mounts the actual sparse source without scanning unresolved

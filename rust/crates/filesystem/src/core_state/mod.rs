@@ -158,7 +158,9 @@ impl OwnerLock {
             }
         })?;
         if acyclic_native_runtime::StoreClaim::is_claimed(&lock)? {
-            return Err(LocalCoreStateStoreError::OwnershipConflict(root.to_path_buf()));
+            return Err(LocalCoreStateStoreError::OwnershipConflict(
+                root.to_path_buf(),
+            ));
         }
         Ok(Self::new(lock, None))
     }

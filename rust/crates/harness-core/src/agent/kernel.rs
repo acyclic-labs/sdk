@@ -257,7 +257,11 @@ pub const fn alarm(
     pending: usize,
 ) -> Option<u64> {
     if control.closed {
-        return if pending > 0 { Some(CONTINUE_NOW) } else { None };
+        return if pending > 0 {
+            Some(CONTINUE_NOW)
+        } else {
+            None
+        };
     }
     match control.mode {
         Mode::Done => None,

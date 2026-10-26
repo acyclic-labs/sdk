@@ -4,7 +4,7 @@
 //! installed callback guard both report access denied, but only the latter
 //! invalidates the session. Post-effect notification custody is separate: an
 //! acknowledged physical mutation must never be discarded as a reply refusal.
-use super::{MountSourceError, CallbackFailure, NativeMountError};
+use super::{CallbackFailure, MountSourceError, NativeMountError};
 
 pub(crate) fn callback_is_terminal(error: &NativeMountError) -> bool {
     match error {

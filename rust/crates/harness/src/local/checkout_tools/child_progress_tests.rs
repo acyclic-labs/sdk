@@ -57,7 +57,7 @@ async fn a_child_command_runs_while_its_parent_command_holds_the_checkout() -> R
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(RuntimeTask::Durable { task_id: child, .. }) =
-        harness.submit_to(operation, Some(parent), "child").await?
+        harness.submit_to(operation, Some(parent), "child")?.await?
     else {
         panic!("child admission")
     };

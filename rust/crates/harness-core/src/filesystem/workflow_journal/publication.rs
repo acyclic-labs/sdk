@@ -334,8 +334,7 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<()>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            let (revision, existing) =
-                self.verified_history(admission, record, false, io)?.await?;
+            let (revision, existing) = self.verified_history(admission, record, false, io)?.await?;
             if let Some(existing) = existing {
                 if existing != *record {
                     return Err(Error::Conflict("workflow operation identity reused".into()));

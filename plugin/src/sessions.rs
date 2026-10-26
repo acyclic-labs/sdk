@@ -595,7 +595,7 @@ fn catalog() -> Value {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-#[path = "../tests/held-stderr.rs"]
+#[path = "sessions/held_stderr_tests.rs"]
 mod exit_tests;
 
 #[cfg(test)]

@@ -26,8 +26,8 @@ pub use crate::resources::{
     sample_process_resources,
 };
 pub use process::{ProcessCapture, capture_process};
-pub mod scale;
 mod metadata;
+pub mod scale;
 pub mod snapshot;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]

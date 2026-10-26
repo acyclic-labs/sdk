@@ -150,7 +150,12 @@ impl Commands<'_> {
             .workspace_access(
                 self.signed,
                 context.scope.grants(),
-                &workspace.mounts.named(parsed.volume.as_deref())?.1.view.volume,
+                &workspace
+                    .mounts
+                    .named(parsed.volume.as_deref())?
+                    .1
+                    .view
+                    .volume,
             )?;
         let result = self
             .execute(

@@ -5,12 +5,12 @@ use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_harness_core::{
     OperationId,
     agent::*,
-    core::{AggregateKind, Authority, AuthorityRoot},
     context::{CompactionPolicy, ContextPipeline},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
+    core::{AggregateKind, Authority, AuthorityRoot},
+    executor::Executor,
     executor::StockExecutor,
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnLimits},
-    executor::Executor,
     filesystem::{TurnAuthority, TurnExecutors},
     model::{Model, ModelContent, ModelRole},
     resources::ProviderRef,
@@ -86,7 +86,12 @@ impl TurnExecutors for Stock {
 }
 
 fn executors(model: Arc<ScriptedModelProvider>) -> Result<Arc<dyn TurnExecutors>> {
-    let selection = Model::new("test".into(), "text".into(), "1".into(), serde_json::Value::Null)?;
+    let selection = Model::new(
+        "test".into(),
+        "text".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
     Ok(Arc::new(Stock { selection, model }))
 }
 
@@ -104,7 +109,9 @@ fn requested(id: &str, child: &AgentPath) -> Wake {
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
     let parent = AgentPath::root(&id(1));
     let path = parent.child(&id(2))?;
-    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]));
+    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+        "done".into(),
+    )]));
     let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         Arc::new(MemoryStream::default()),
@@ -203,9 +210,18 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     let roles = |index: usize| -> Vec<ModelRole> {
-        requests[index].messages.iter().map(|message| message.role).collect()
+        requests[index]
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect()
     };
-    let last = |index: usize| roles(index).into_iter().filter(|r| *r != ModelRole::System).count();
+    let last = |index: usize| {
+        roles(index)
+            .into_iter()
+            .filter(|r| *r != ModelRole::System)
+            .count()
+    };
     assert_eq!(last(1), last(0) + 2);
     let assistant = requests[1]
         .messages

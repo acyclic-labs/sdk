@@ -501,7 +501,11 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<ExecutionProgress<TurnOutput>>> {
-        Box::pin(async move { self.execute(input, journal).await.map(ExecutionProgress::Ready) })
+        Box::pin(async move {
+            self.execute(input, journal)
+                .await
+                .map(ExecutionProgress::Ready)
+        })
     }
 
     /// Runs with the original ordinary task admission.

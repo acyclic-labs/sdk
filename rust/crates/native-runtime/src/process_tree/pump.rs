@@ -295,7 +295,11 @@ impl<'a> Pump<'a> {
     }
 
     /// Arms one wait on every source that can make progress.
-    pub(super) fn arm_with_wake(&self, tree: &mut ProcessTree, wakes: Option<&[ProcessWake]>) -> io::Result<events::Wait> {
+    pub(super) fn arm_with_wake(
+        &self,
+        tree: &mut ProcessTree,
+        wakes: Option<&[ProcessWake]>,
+    ) -> io::Result<events::Wait> {
         let wake_at = match self.check_every {
             Some(_) => self.next_check.min(self.deadline),
             None => self.deadline,
@@ -332,10 +336,14 @@ impl<'a> Pump<'a> {
             for wake in wakes.unwrap_or_default() {
                 #[cfg(unix)]
                 // SAFETY: each retained wake owns this descriptor through registration.
-                sources.push(Source::Readable(unsafe { std::os::fd::BorrowedFd::borrow_raw(wake.raw()) }));
+                sources.push(Source::Readable(unsafe {
+                    std::os::fd::BorrowedFd::borrow_raw(wake.raw())
+                }));
                 #[cfg(windows)]
                 // SAFETY: each retained wake owns this handle through registration.
-                sources.push(Source::Exit(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw()) }));
+                sources.push(Source::Exit(unsafe {
+                    std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
+                }));
             }
             events::arm(&sources, Some(wake_at))
         }
@@ -365,10 +373,14 @@ impl<'a> Pump<'a> {
             for wake in wakes.unwrap_or_default() {
                 #[cfg(unix)]
                 // SAFETY: each retained wake owns this descriptor through registration.
-                sources.push(Source::Readable(unsafe { std::os::fd::BorrowedFd::borrow_raw(wake.raw()) }));
+                sources.push(Source::Readable(unsafe {
+                    std::os::fd::BorrowedFd::borrow_raw(wake.raw())
+                }));
                 #[cfg(windows)]
                 // SAFETY: each retained wake owns this handle through registration.
-                sources.push(Source::Exit(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw()) }));
+                sources.push(Source::Exit(unsafe {
+                    std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
+                }));
             }
             events::arm(&sources, Some(wake_at))
         }

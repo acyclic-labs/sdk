@@ -6,10 +6,7 @@ use acyclic_stream::{
     StreamError, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt;
-use std::{
-    collections::VecDeque,
-    sync::Mutex,
-};
+use std::{collections::VecDeque, sync::Mutex};
 
 #[path = "agent_model/driver.rs"]
 mod driver;
@@ -72,7 +69,10 @@ async fn values(provider: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>
         .await?
         .try_collect()
         .await?;
-    Ok(records.into_iter().map(|record| record.value.to_vec()).collect())
+    Ok(records
+        .into_iter()
+        .map(|record| record.value.to_vec())
+        .collect())
 }
 
 async fn create(provider: &MemoryStream, agent: AgentId) -> Result<AgentPath> {
@@ -272,7 +272,10 @@ async fn spawn_child(
             names.clear();
         }
     }
-    assert!(matches!(provider.commit(request).await?, CommitOutcome::Committed(_)));
+    assert!(matches!(
+        provider.commit(request).await?,
+        CommitOutcome::Committed(_)
+    ));
     Ok(step)
 }
 
@@ -334,7 +337,10 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
         phase: Phase::Idle,
         cursor: 1,
     };
-    assert_eq!(values(&provider, child.status()?).await?, vec![first.encode()?]);
+    assert_eq!(
+        values(&provider, child.status()?).await?,
+        vec![first.encode()?]
+    );
     assert_eq!(values(&provider, parent.status()?).await?.len(), 3);
     Ok(())
 }
@@ -361,14 +367,25 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     state.conversation_tail = 2;
     let first = spawning(state, "s2");
     let request = lower(&first, 1, delivery_key(&first.state, "t2")?)?;
-    assert!(matches!(submit(&provider, request).await?, Submitted::Committed(_)));
+    assert!(matches!(
+        submit(&provider, request).await?,
+        Submitted::Committed(_)
+    ));
     let s2 = AgentId::derive(&parent.id(), "s2");
     let s3 = spawn_child(&provider, &first.state, "s3", true).await?;
     let child = |name: &str| parent.child(&AgentId::derive(&parent.id(), name));
-    assert!(values(&provider, child("s3")?.child(&s2)?.inbox()?).await?.is_empty());
+    assert!(
+        values(&provider, child("s3")?.child(&s2)?.inbox()?)
+            .await?
+            .is_empty()
+    );
     // Negative control: without the exclusion s4 inherits its siblings' subtrees.
     spawn_child(&provider, &s3.state, "s4", false).await?;
-    assert!(!values(&provider, child("s4")?.child(&s2)?.inbox()?).await?.is_empty());
+    assert!(
+        !values(&provider, child("s4")?.child(&s2)?.inbox()?)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -493,8 +510,13 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     // Forty inputs arrive while the turn waits; the window holds the first 32.
     let idle = script(Vec::new());
     for sequence in 1..=40 {
-        let wake = Wake::Inbox { sequence, record: request(sequence)? };
-        state = step(&idle, &path, Some(state), sequence + 1, wake).await?.state;
+        let wake = Wake::Inbox {
+            sequence,
+            record: request(sequence)?,
+        };
+        state = step(&idle, &path, Some(state), sequence + 1, wake)
+            .await?
+            .state;
     }
     assert_eq!(state.queued.len(), MAX_QUEUED);
     assert_eq!(state.overflow, Some(33));
@@ -505,7 +527,10 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         wait: Wait::Input,
     }]);
     let approval = InboxRecord::Approval(Approval { id: intent("q") });
-    let wake = Wake::Inbox { sequence: 41, record: approval.clone() };
+    let wake = Wake::Inbox {
+        sequence: 41,
+        record: approval.clone(),
+    };
     let after = step(&resumed, &path, Some(state), 42, wake).await?;
     state = after.state;
     assert_eq!(after.alarm, Alarm::At(CONTINUE_NOW));
@@ -516,7 +541,9 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     state.queued.drain(..8);
     let (from, limit) = state.overflowed(42).ok_or("nothing to read back")?;
     assert_eq!((from, limit), (33, 9));
-    let mut inbox = (33..=40).map(|n| Ok((n, request(n)?))).collect::<Result<Vec<_>>>()?;
+    let mut inbox = (33..=40)
+        .map(|n| Ok((n, request(n)?)))
+        .collect::<Result<Vec<_>>>()?;
     inbox.push((41, approval));
     state.refill(inbox, 42);
     let expected: Vec<String> = (9..=40).map(|n| format!("r{n}")).collect();
@@ -530,7 +557,9 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     let root = AgentPath::root(&id(1));
     let (path, mut state) = child_of(&root, 2)?;
     for byte in 0..40 {
-        state.open_children.insert(path.child(&AgentId::from_bytes([byte; 16]))?);
+        state
+            .open_children
+            .insert(path.child(&AgentId::from_bytes([byte; 16]))?);
     }
     let driver = script(Vec::new());
     let archive_record = InboxRecord::Archive(Control {
@@ -548,7 +577,11 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
         },
     )
     .await?;
-    let archives = |outs: &[Out]| outs.iter().filter(|out| matches!(out, Out::Archive { .. })).count();
+    let archives = |outs: &[Out]| {
+        outs.iter()
+            .filter(|out| matches!(out, Out::Archive { .. }))
+            .count()
+    };
     assert_eq!(archives(&first.outs), MAX_FANOUT);
     assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
     assert!(!first.state.reported);
@@ -635,11 +668,19 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
                 | CommitCondition::Absent { path } => path.clone(),
             })
             .collect();
-        assert!(touched.iter().all(|path| path.as_str().starts_with(agent.as_str())));
+        assert!(
+            touched
+                .iter()
+                .all(|path| path.as_str().starts_with(agent.as_str()))
+        );
         let Submitted::Committed(envelope) = submit(&provider, request.clone()).await? else {
             panic!("send to a dormant agent did not commit");
         };
-        shapes.push((request.conditions.len(), request.mutations.len(), envelope.mutations.len()));
+        shapes.push((
+            request.conditions.len(),
+            request.mutations.len(),
+            envelope.mutations.len(),
+        ));
     }
     assert!(shapes.windows(2).all(|pair| pair[0] == pair[1]));
     assert_eq!(shapes[0], (2, 1, 1));
@@ -651,7 +692,8 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
 
 #[test]
 fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/inbox_record");
+    let corpus =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/inbox_record");
     let mut seen = 0;
     for entry in std::fs::read_dir(corpus)? {
         let entry = entry?;
@@ -661,7 +703,9 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
             continue;
         };
         let accepted = match selector % 4 {
-            0 => InboxRecord::decode(bytes).map(|record| record.encode().map(drop)).is_ok(),
+            0 => InboxRecord::decode(bytes)
+                .map(|record| record.encode().map(drop))
+                .is_ok(),
             1 => StatusRecord::decode(bytes).is_ok(),
             2 => Closed::decode(bytes).is_ok(),
             _ => AgentPath::try_from(String::from_utf8(bytes.to_vec())?).is_ok(),

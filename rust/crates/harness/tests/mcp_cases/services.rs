@@ -680,7 +680,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
 async fn sampling_media_context(
     root: &std::path::Path,
     disk: &Arc<LocalJournal>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     signed: &acyclic_harness::core::Scope,
     granted: bool,
 ) -> Result<(RuntimeScope, TaskContext)> {

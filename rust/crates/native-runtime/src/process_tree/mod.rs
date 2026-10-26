@@ -13,14 +13,14 @@ mod capture;
 mod external_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub use external_host::run_external_process_host;
-#[cfg(windows)]
-mod custodian;
-mod events;
+#[cfg(test)]
+mod capture_events_tests;
 #[cfg(windows)]
 #[path = "capture_wait_windows.rs"]
 mod capture_wait;
-#[cfg(test)]
-mod capture_events_tests;
+#[cfg(windows)]
+mod custodian;
+mod events;
 mod wake;
 pub use wake::ProcessWake;
 #[cfg(unix)]
@@ -787,10 +787,12 @@ impl ProcessTree {
                 let result = loop {
                     match pump::handled_turn(&mut pump, &mut tree, &mut handler) {
                         pump::Turn::Done(result) => break result,
-                        pump::Turn::Wait => match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
-                            Ok(wait) => wait.block(),
-                            Err(error) => break Err(error),
-                        },
+                        pump::Turn::Wait => {
+                            match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
+                                Ok(wait) => wait.block(),
+                                Err(error) => break Err(error),
+                            }
+                        }
                     }
                 };
                 let result = pump.finish(&mut tree, result, None);

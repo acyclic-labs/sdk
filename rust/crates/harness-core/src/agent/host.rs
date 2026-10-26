@@ -104,7 +104,11 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
 
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
     /// Retrying the same `intent` replays exactly and names the same agent.
-    pub async fn create(&self, intent: &IntentId, adopted: ForkAdopted) -> Result<AgentPath, Error> {
+    pub async fn create(
+        &self,
+        intent: &IntentId,
+        adopted: ForkAdopted,
+    ) -> Result<AgentPath, Error> {
         let created = self.handler.create_root(&self.within, intent, adopted)?;
         match submit(&*self.provider, created.request).await? {
             Submitted::Committed(_) => {}
@@ -138,14 +142,18 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         by: &Sender,
         id: &IntentId,
     ) -> Result<Delivered, Error> {
-        self.deliver(target, |tail| archive(target, tail, by, id)).await
+        self.deliver(target, |tail| archive(target, tail, by, id))
+            .await
     }
 
     /// Durably pause or resume one agent. A paused agent consumes nothing.
     pub async fn pause(&self, agent: &AgentPath, paused: bool) -> Result<(), Error> {
         let actor = self.actor(agent)?;
         self.runtime.track(actor.clone()).map_err(actor_error)?;
-        self.runtime.pause(&actor, paused).await.map_err(actor_error)
+        self.runtime
+            .pause(&actor, paused)
+            .await
+            .map_err(actor_error)
     }
 
     /// Host an agent created elsewhere (for example after reopening), so its

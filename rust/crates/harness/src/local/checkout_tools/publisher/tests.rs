@@ -470,7 +470,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
                 1,
                 PublicationPermit::Unrestricted,
                 None,
-            )
+            )?
             .await?;
         assert!(
             view.workspace()

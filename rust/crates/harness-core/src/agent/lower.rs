@@ -108,8 +108,13 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         match out {
             Out::Conversation(record) => builder.append(conversation.clone(), record.clone()),
             Out::Send { to, record } => {
-                if matches!(record, InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)) {
-                    return Err(Error::Record("send carries neither ForkAdopted nor Archive"));
+                if matches!(
+                    record,
+                    InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+                ) {
+                    return Err(Error::Record(
+                        "send carries neither ForkAdopted nor Archive",
+                    ));
                 }
                 builder.recipient(to)?;
                 builder.append(to.inbox()?, record.encode()?);

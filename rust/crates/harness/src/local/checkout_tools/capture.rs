@@ -19,7 +19,7 @@ const EXCLUDED: &[&str] = &[
     ".git",
     ".acyclic-sdk",
     ".system",
-    crate::local::host_workspace::HOST_VIEW_ROOT,
+    crate::local::workspace::HOST_VIEW_ROOT,
 ];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);

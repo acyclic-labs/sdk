@@ -518,11 +518,12 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
         tools.finish_owed_write(selected, slot, PublicationPermit::Unrestricted)
     });
     let changes = capture_operation_bytes(|(tools, selected, slot): Inputs| {
-        tools.capture_changes(
+        // The former changes entrypoint is now phase one of the same capture API.
+        tools.capture(
             selected,
             slot,
             OperationId::from_bytes([1; 16]),
-            0,
+            1,
             PublicationPermit::Unrestricted,
             None,
         )

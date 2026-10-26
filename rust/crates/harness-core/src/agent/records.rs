@@ -41,7 +41,9 @@ impl TryFrom<String> for IntentId {
         {
             Ok(Self(value))
         } else {
-            Err(Error::Record("intent id must be 1-128 printable ASCII bytes"))
+            Err(Error::Record(
+                "intent id must be 1-128 printable ASCII bytes",
+            ))
         }
     }
 }
@@ -314,9 +316,11 @@ impl AgentRecord for InboxRecord {
                 for binding in &adopted.volumes {
                     check_text(&binding.name)?;
                 }
-                if adopted.parent.as_ref().is_some_and(|parent| {
-                    parent.child(&adopted.agent).is_err()
-                }) {
+                if adopted
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
+                {
                     return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
                 }
                 Ok(())

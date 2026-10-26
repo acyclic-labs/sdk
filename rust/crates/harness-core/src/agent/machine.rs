@@ -300,16 +300,26 @@ pub async fn step<T: TurnDriver + ?Sized>(
     let alarm_wake = matches!(wake, Wake::Alarm);
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
-    let previous = state.as_ref().map_or(Phase::Idle, |state| state.phase.clone());
+    let previous = state
+        .as_ref()
+        .map_or(Phase::Idle, |state| state.phase.clone());
     let mut state = match (state, wake) {
-        (None, Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) => {
+        (
+            None,
+            Wake::Inbox {
+                record: InboxRecord::ForkAdopted(adopted),
+                ..
+            },
+        ) => {
             if adopted.agent != path.id() {
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
             let mut state = AgentState::adopted(path.clone(), &adopted);
             state
                 .queued
-                .extend(adopted.brief.map(|brief| TurnInput::Brief { brief: Box::new(brief) }));
+                .extend(adopted.brief.map(|brief| TurnInput::Brief {
+                    brief: Box::new(brief),
+                }));
             state
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
@@ -539,7 +549,8 @@ fn track_children(state: &mut AgentState, outs: &[Out]) -> Result<(), Error> {
             let child = state
                 .path
                 .child(&super::AgentId::derive(&state.path.id(), intent.as_str()))?;
-            if state.open_children.len() >= MAX_OPEN_CHILDREN && !state.open_children.contains(&child)
+            if state.open_children.len() >= MAX_OPEN_CHILDREN
+                && !state.open_children.contains(&child)
             {
                 return Err(Error::Record("agent has too many open children"));
             }

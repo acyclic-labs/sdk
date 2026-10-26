@@ -420,7 +420,13 @@ impl HostWorkspaceOwner {
                     .map_err(storage)?
                     .create_directories(Path::new(host_workspace::HOST_VIEW_ROOT))
                     .map_err(storage)?;
-                host_workspace::HostWorkspace::attach(Arc::clone(workspace), &context, &self.local.signed, root).await?
+                host_workspace::HostWorkspace::attach(
+                    Arc::clone(workspace),
+                    &context,
+                    &self.local.signed,
+                    root,
+                )
+                .await?
             };
             self.views.insert(task, Attached { context, workspace });
             Ok(())

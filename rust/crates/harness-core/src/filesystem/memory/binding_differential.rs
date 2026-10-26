@@ -161,7 +161,9 @@ fn paired(
                     let (state, inputs) = scoped(&runtime, &schedule, &mut boundaries, async {
                         let state = initialize(old, denied, unbound, old && reference).await;
                         let mut next_input = [0; 32];
-                        assert!(acyclic_native_runtime::testing::fill_seeded(&mut next_input));
+                        assert!(acyclic_native_runtime::testing::fill_seeded(
+                            &mut next_input
+                        ));
                         let clock = acyclic_native_runtime::testing::unix_millis();
                         assert_eq!(clock, Some(1_700_000_000_000));
                         (state, (next_input, clock))
@@ -172,14 +174,12 @@ fn paired(
                             let mut result = None;
                             let allocations = acyclic_test_support::measure(|| {
                                 if let Ok(publisher) = &publisher {
-                                    result = Some(
-                                        scoped(
-                                            &runtime,
-                                            &schedule,
-                                            &mut boundaries,
-                                            exercise(publisher, &verifier, bytes),
-                                        ),
-                                    );
+                                    result = Some(scoped(
+                                        &runtime,
+                                        &schedule,
+                                        &mut boundaries,
+                                        exercise(publisher, &verifier, bytes),
+                                    ));
                                 }
                             });
                             let result = match (publisher, result) {

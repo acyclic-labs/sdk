@@ -4,6 +4,10 @@ use acyclic_fs::{
     LazyWorkspace, LazyWorkspaceStore, LocalCoreStateStore, NativeMaterializationWork,
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
+
+/// Reserved mount namespace within an already writable checkout.
+pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
+
 mod bootstrap;
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
@@ -122,14 +126,14 @@ impl LocalWorkspace {
             .ancestors()
             .nth(2)
             .ok_or_else(|| Error::Invalid("task mount root has no checkout".into()))?;
-        if self.mount_directory != root.join(super::host_workspace::HOST_VIEW_ROOT) {
+        if self.mount_directory != root.join(HOST_VIEW_ROOT) {
             return Err(Error::Invalid(
                 "task mounts are outside the checkout namespace".into(),
             ));
         }
         acyclic_fs::hold_root(root)
             .map_err(storage)?
-            .create_directories(Path::new(super::host_workspace::HOST_VIEW_ROOT))
+            .create_directories(Path::new(HOST_VIEW_ROOT))
             .map_err(storage)
     }
 
@@ -166,7 +170,7 @@ impl LocalWorkspace {
     /// child projection authors its volume aliases, so every reader of
     /// authored history must reserve them rather than rely on capture.
     pub(super) fn volume_owned_paths(&self) -> Result<Vec<String>> {
-        let mut owned = vec![super::host_workspace::HOST_VIEW_ROOT.to_owned()];
+        let mut owned = vec![HOST_VIEW_ROOT.to_owned()];
         for (relative, mount) in self.mounts.mounts() {
             if !relative.is_empty() && mount.view.source.is_some() {
                 owned.extend(volumes::owned(&self.path, relative)?);
@@ -434,7 +438,7 @@ pub(super) async fn open(
         view.workspace().id(),
         Arc::clone(&mounts),
     )));
-    let mount_directory = path.join(super::host_workspace::HOST_VIEW_ROOT);
+    let mount_directory = path.join(HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -569,7 +573,7 @@ async fn held_source(
         config,
         &path.join(volumes::INCARNATION_PATH),
     )?);
-    for relative in [super::host_workspace::HOST_VIEW_ROOT, ".acyclic-sdk"] {
+    for relative in [HOST_VIEW_ROOT, ".acyclic-sdk"] {
         exclusions.push(volumes::namespace(&path, config, &path.join(relative))?);
     }
     let source = source

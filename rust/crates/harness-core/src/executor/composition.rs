@@ -232,7 +232,11 @@ impl Executor for StockExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        Box::pin(async move { StockExecutor::execute_progress(self, input, journal).await?.into_output() })
+        Box::pin(async move {
+            StockExecutor::execute_progress(self, input, journal)
+                .await?
+                .into_output()
+        })
     }
 
     fn execute_progress<'a>(

@@ -75,15 +75,17 @@ pub fn shared_view_namespace_contains(
             return Ok(false);
         };
         let mut components = relative.components();
-        let (Some(std::path::Component::Normal(root)), Some(std::path::Component::Normal(view)), None) =
-            (components.next(), components.next(), components.next())
+        let (
+            Some(std::path::Component::Normal(root)),
+            Some(std::path::Component::Normal(view)),
+            None,
+        ) = (components.next(), components.next(), components.next())
         else {
             return Ok(false);
         };
-        Ok(root
-            .to_str()
-            .is_some_and(|root| root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            && view_serial(view).is_some())
+        Ok(root.to_str().is_some_and(|root| {
+            root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) && view_serial(view).is_some())
     }
 }
 

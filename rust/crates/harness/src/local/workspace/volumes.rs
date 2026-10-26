@@ -565,7 +565,7 @@ pub(super) fn exclude_state(root: &acyclic_fs::HeldRoot) -> Result<()> {
     exclude::exclude_mount_paths(
         root,
         &[
-            Path::new(super::super::host_workspace::HOST_VIEW_ROOT),
+            Path::new(super::HOST_VIEW_ROOT),
             Path::new(SCRATCH_PATH),
             Path::new(".acyclic-sdk"),
         ],

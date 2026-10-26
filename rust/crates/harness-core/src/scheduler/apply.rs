@@ -78,7 +78,8 @@ impl Scheduler {
                 recursive,
             } = &event
             {
-                cancellation = self.cancellation_frontier(*operation_id, *recursive, quota.work())?;
+                cancellation =
+                    self.cancellation_frontier(*operation_id, *recursive, quota.work())?;
                 if quota.work().is_some() {
                     quota.adopt((cancellation.capacity() * size_of::<OperationId>()) as u64)?;
                 }

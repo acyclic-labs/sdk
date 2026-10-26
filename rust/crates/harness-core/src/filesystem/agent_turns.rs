@@ -182,7 +182,9 @@ where
         if private.volume.class() != VolumeClass::AgentPrivate
             || *private.volume.owner() != VolumeOwner::Agent(owner)
         {
-            return Err(Error::Unauthorized("private volume belongs to another agent".into()));
+            return Err(Error::Unauthorized(
+                "private volume belongs to another agent".into(),
+            ));
         }
         let issuer = self.issuer.with_audience(Authority {
             kind: AggregateKind::Conversation,
@@ -191,8 +193,16 @@ where
         let mut grants = Vec::with_capacity(2 * agent.volumes.len() + 1);
         grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
         for binding in &agent.volumes {
-            grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
-            grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
+            grants.push(
+                binding
+                    .volume
+                    .capability(VolumeOperation::Read, &mut None)?,
+            );
+            grants.push(
+                binding
+                    .volume
+                    .capability(VolumeOperation::Write, &mut None)?,
+            );
         }
         let capabilities = Capabilities::new(grants);
         let scope = issuer.bootstrap_scope("agent", &capabilities, Some(owner), &mut None)?;

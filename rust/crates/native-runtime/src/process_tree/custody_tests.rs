@@ -524,50 +524,52 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
 /// running tree's record holds the directory only while the tree runs.
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 #[test]
-fn an_idle_custody_holds_no_descriptor() {
+fn an_idle_custody_holds_no_descriptor() -> std::io::Result<()> {
     use crate::testing::descriptors_naming;
-    let root = tempfile::tempdir().expect("root");
+    let root = tempfile::tempdir()?;
     let processes = root.path().join("processes");
-    let custody = ProcessCustody::acquire(&processes).expect("custody");
-    assert_eq!(descriptors_naming(&processes).expect("descriptors"), 0);
-    let mut command = crate::shell_command("sleep 30", Some("sh"));
+    let custody = ProcessCustody::acquire(&processes)?;
+    assert_eq!(descriptors_naming(&processes)?, 0);
+    let mut command = crate::shell_command("sleep 30", Some("sh"))?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
     // Negative control: the count sees the descriptor a running tree holds.
-    assert_eq!(descriptors_naming(&processes).expect("descriptors"), 1);
-    tree.terminate(None).expect("terminate");
+    assert_eq!(descriptors_naming(&processes)?, 1);
+    tree.terminate(None)?;
     drop(tree);
-    assert_eq!(descriptors_naming(&processes).expect("descriptors"), 0);
+    assert_eq!(descriptors_naming(&processes)?, 0);
+    Ok(())
 }
 
 /// A custody never records a tree in a directory put in place of the one it
 /// fenced: that directory's records were never fenced.
 #[cfg(unix)]
 #[test]
-fn a_replaced_custody_directory_refuses_to_record() {
-    let root = tempfile::tempdir().expect("root");
+fn a_replaced_custody_directory_refuses_to_record() -> std::io::Result<()> {
+    let root = tempfile::tempdir()?;
     let processes = root.path().join("processes");
-    let custody = ProcessCustody::open(&processes).expect("custody");
-    let mut command = crate::shell_command("exit 0", Some("sh"));
+    let custody = ProcessCustody::open(&processes)?;
+    let mut command = crate::shell_command("exit 0", Some("sh"))?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // Control: the fenced directory records the tree.
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
-    tree.wait(Duration::from_secs(30)).expect("wait");
-    tree.terminate(None).expect("terminate");
-    fs::rename(&processes, root.path().join("fenced")).expect("move aside");
-    fs::create_dir(&processes).expect("replace");
-    let mut command = crate::shell_command("exit 0", Some("sh"));
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
+    tree.wait(Duration::from_secs(30))?;
+    tree.terminate(None)?;
+    fs::rename(&processes, root.path().join("fenced"))?;
+    fs::create_dir(&processes)?;
+    let mut command = crate::shell_command("exit 0", Some("sh"))?;
     let refused = ProcessTree::spawn_in_custody(&mut command, &custody)
         .err()
-        .expect("a replaced directory recorded a tree");
+        .ok_or_else(|| std::io::Error::other("a replaced directory recorded a tree"))?;
     assert!(refused.to_string().contains("replaced"), "{refused}");
-    assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+    assert_eq!(fs::read_dir(&processes)?.count(), 0);
+    Ok(())
 }
 
 fn tree_pid(tree: &ProcessTree) -> u32 {

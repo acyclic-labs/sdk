@@ -125,12 +125,7 @@ impl Checkpoint {
             digest.as_bytes(),
             publication,
         )?;
-        crate::physical::write_publication(
-            &file,
-            (MAGIC.len() + 36) as u64,
-            &header,
-            publication,
-        )?;
+        crate::physical::write_publication(&file, (MAGIC.len() + 36) as u64, &header, publication)?;
         Ok(Self {
             file,
             limits: journal.limits,
@@ -171,18 +166,8 @@ impl Checkpoint {
         let encoded = frame.encode(&pending.delta)?;
         let length = u32::try_from(encoded.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = frame.codec(0, 0, encoded.len(), || blake3::hash(&encoded))?;
-        crate::physical::write_publication(
-            &self.file,
-            self.bytes,
-            &length.to_le_bytes(),
-            frame,
-        )?;
-        crate::physical::write_publication(
-            &self.file,
-            self.bytes + 4,
-            digest.as_bytes(),
-            frame,
-        )?;
+        crate::physical::write_publication(&self.file, self.bytes, &length.to_le_bytes(), frame)?;
+        crate::physical::write_publication(&self.file, self.bytes + 4, digest.as_bytes(), frame)?;
         crate::physical::write_publication(&self.file, self.bytes + 36, &encoded, frame)?;
         self.bytes = end;
         self.operations = pending.delta.ordinal;

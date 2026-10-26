@@ -1,7 +1,7 @@
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::io::{FromRawHandle as _};
+use std::os::windows::io::FromRawHandle as _;
 use std::os::windows::process::CommandExt as _;
 #[cfg(test)]
 use std::process::Child;
@@ -19,8 +19,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW,
-    WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, WaitForSingleObject,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -494,8 +493,6 @@ impl Guard {
         self.active = false;
         Ok(())
     }
-
-
 }
 
 // Kill the Job, kill an unassigned partial child, and release the Job handle.

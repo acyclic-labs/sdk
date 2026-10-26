@@ -12,8 +12,7 @@ mod volume_guard;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 pub(super) mod tests;
 
-/// Reserved mount namespace within an already writable checkout.
-pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
+pub use super::workspace::HOST_VIEW_ROOT;
 
 /// An admitted task's workspace, with no execution authority of its own.
 pub struct HostWorkspace {

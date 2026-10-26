@@ -51,8 +51,9 @@ impl ExecutionJournal for Unused {
         _: &'a str,
         _: &'a ExecutionEvent,
         _: Option<&'a PreparationIo>,
-    ) -> acyclic_harness_core::Result<acyclic_harness_core::conversation::BoundedContentFuture<'a, ()>>
-    {
+    ) -> acyclic_harness_core::Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<'a, ()>,
+    > {
         unused()
     }
 
@@ -84,8 +85,9 @@ impl ExecutionJournal for Unused {
         _: acyclic_harness_core::InteractionId,
         _: &'a Interaction,
         _: Option<&'a PreparationIo>,
-    ) -> acyclic_harness_core::Result<acyclic_harness_core::conversation::BoundedContentFuture<'a, ()>>
-    {
+    ) -> acyclic_harness_core::Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<'a, ()>,
+    > {
         unused()
     }
 
@@ -121,7 +123,10 @@ impl Executor for Script {
         input: ExecutorInput,
         _: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<ExecutionProgress<TurnOutput>>> {
-        self.operations.lock().expect("lock").push(input.operation_id);
+        self.operations
+            .lock()
+            .expect("lock")
+            .push(input.operation_id);
         let next = self.progress.lock().expect("lock").pop_front();
         Box::pin(async move { next.map_or_else(unused, Ok) })
     }
@@ -206,7 +211,9 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         2,
         Wake::Inbox {
             sequence: 2,
-            record: InboxRecord::Approval(Approval { id: intent("tool:other") }),
+            record: InboxRecord::Approval(Approval {
+                id: intent("tool:other"),
+            }),
         },
     )
     .await?;
@@ -221,7 +228,9 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
 async fn a_refused_approval_fails_the_agent() -> Result {
     let path = AgentPath::root(&id(1));
     let state = AgentState::adopted(path.clone(), &adopted(id(1)));
-    let (_, driver) = driver(vec![ExecutionProgress::Rejected(InteractionRejection::Declined)]);
+    let (_, driver) = driver(vec![ExecutionProgress::Rejected(
+        InteractionRejection::Declined,
+    )]);
     let failed = step(
         &driver,
         &path,
@@ -249,7 +258,13 @@ fn distinct_inputs_start_distinct_turns() -> Result {
     let path = AgentPath::root(&id(1));
     let state = AgentState::adopted(path, &adopted(id(1)));
     let input = |id: &str| -> Result<TurnInput> { Ok(request(id)?.1) };
-    assert_eq!(turn_id(&state, &input("a")?)?, turn_id(&state, &input("a")?)?);
-    assert_ne!(turn_id(&state, &input("a")?)?, turn_id(&state, &input("b")?)?);
+    assert_eq!(
+        turn_id(&state, &input("a")?)?,
+        turn_id(&state, &input("a")?)?
+    );
+    assert_ne!(
+        turn_id(&state, &input("a")?)?,
+        turn_id(&state, &input("b")?)?
+    );
     Ok(())
 }
