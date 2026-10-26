@@ -3,12 +3,11 @@ use super::*;
 #[test]
 pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::native_mount::fuse::Errno;
     #[derive(Clone, Copy)]
     struct Reply<'a>(&'a std::cell::Cell<u32>);
     impl Reply<'_> {
-        fn error(self, error: Errno) {
-            assert_eq!(error, Errno::from_i32(libc::EIO));
+        fn error(self, error: i32) {
+            assert_eq!(error, libc::EIO);
             self.0.set(self.0.get() + 1);
         }
     }
@@ -24,20 +23,14 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
     let replied = std::cell::Cell::new(0);
     let reply = Reply(&replied);
     crate::obs::assert_filtered_callback_isolation(|span| {
-        respond!(
-            core,
-            reply,
-            span,
-            work,
-            {
-                assert!(work.shares_ledger(&denied));
-                attempted.set(attempted.get() + 1);
-                crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ())
-            },
-            |()| {
-                let _ = reply;
-            }
-        );
+        let result = core.request(|work| {
+            assert!(work.shares_ledger(&denied));
+            attempted.set(attempted.get() + 1);
+            crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ())
+        });
+        if let Err(error) = core.finish(result) {
+            reply.error(super::super::errno_on(&span, error));
+        }
         libc::EIO
     });
     assert_eq!(attempted.get(), 2);
