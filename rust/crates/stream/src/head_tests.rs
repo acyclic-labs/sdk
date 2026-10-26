@@ -59,15 +59,12 @@ async fn head_condition_checks_identity_under_the_commit_lock_and_binds_retries(
         expected: 1,
         commit_id: original,
     }];
-    assert_eq!(
-        provider.commit(changed).await,
-        Err(StreamError::IdempotencyMismatch)
-    );
-    let correct = request(&path, 1, original, b"correct")?;
+    let CommitOutcome::Committed(changed) = provider.commit(changed).await? else { return Err(StreamError::Unavailable); };
+    let correct = request(&path, 2, changed.commit_id, b"correct")?;
     let result = provider.commit(correct.clone()).await?;
     assert!(matches!(result, CommitOutcome::Committed(_)));
     assert_eq!(provider.commit(correct).await?, result);
-    assert_eq!(provider.tail(path).await?, 2);
+    assert_eq!(provider.tail(path).await?, 3);
     Ok(())
 }
 
@@ -80,6 +77,7 @@ async fn head_condition_on_a_fork_uses_the_inherited_record_identity() -> Result
     let path = StreamPath::new("fork")?;
     let fork = provider
         .fork(ForkRequest {
+exclude: Vec::new(),
             source,
             destination: path.clone(),
             at_tail: Some(1),
@@ -177,7 +175,9 @@ async fn head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding(
         accepted = provider.commit(correct.clone()).await?;
     }
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    assert_eq!(provider.commit(wrong).await?, rejected);
+    assert!(matches!(rejected, CommitOutcome::Conflict(_)));
+    assert!(provider.inspect_idempotency(wrong.idempotency_key.clone()).await?.is_none());
+    assert!(matches!(provider.commit(wrong).await?, CommitOutcome::Conflict(_)));
     assert_eq!(provider.commit(correct).await?, accepted);
     let mut records = provider
         .read(ReadRequest {

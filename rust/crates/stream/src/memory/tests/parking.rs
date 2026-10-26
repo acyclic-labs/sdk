@@ -3,7 +3,7 @@ use std::task::{Context, Waker};
 
 #[tokio::test]
 async fn unpolled_streams_do_not_block_appends() {
-    for (children, checked) in [(false, false), (false, true), (true, false)] {
+    for checked in [false, true] {
         let provider = MemoryStream::default();
         let path = StreamPath::new("watched").unwrap();
         let AppendOutcome::Committed(seed) = provider
@@ -18,17 +18,7 @@ async fn unpolled_streams_do_not_block_appends() {
         else {
             unreachable!()
         };
-        let mut follow = if children {
-            provider
-                .children(ChildrenRequest {
-                    parent: None,
-                    limit: 1,
-                })
-                .await
-                .unwrap()
-                .map(|item| item.map(|_| ()))
-                .boxed_local()
-        } else {
+        let mut follow = {
             let follow = if checked {
                 provider
                     .follow_checked(
@@ -77,7 +67,7 @@ async fn unpolled_streams_do_not_block_appends() {
 // reservation, which this same oracle observes until the consumer completes.
 #[tokio::test]
 async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
-    for (keep, children) in [(false, false), (false, true), (true, false), (true, true)] {
+    for keep in [false, true] {
         let provider = MemoryStream::default();
         let path = StreamPath::new("watched").unwrap();
         provider
@@ -89,17 +79,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
             })
             .await
             .unwrap();
-        let mut follow = if children {
-            provider
-                .children(ChildrenRequest {
-                    parent: None,
-                    limit: 1,
-                })
-                .await
-                .unwrap()
-                .map(|item| item.map(|_| ()))
-                .boxed_local()
-        } else {
+        let mut follow = {
             provider
                 .follow(path, 0, crate::FollowFilter::default())
                 .await
@@ -121,7 +101,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         assert_eq!(
             provider.state.try_write().is_ok(),
             !keep,
-            "keep={keep} children={children}"
+            "keep={keep}"
         );
         if let Some(mut follow) = kept {
             assert_eq!(follow.next().await, Some(Ok(())));

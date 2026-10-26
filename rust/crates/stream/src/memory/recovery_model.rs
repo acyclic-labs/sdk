@@ -12,6 +12,8 @@ pub(crate) enum Fault {
     OmitAppendWake,
     RetainReplacedState,
     IgnoreHead,
+    RootOnlyFork,
+    IgnoreForkExclusions,
     OmitPoisonPublication,
     HoldPublicationDuringMaintenance,
 }
@@ -372,9 +374,9 @@ pub fn local_failure_lock_order(hold_borrow: bool) {
     crate::local::follow_model::failure_lock_order(hold_borrow);
 }
 
-/// Checks unpolled record/child consumers against fair publication handoff.
-pub fn local_follow_parking(retain_pending: bool, children: bool, memory: bool) {
-    crate::local::parking_model::verify(retain_pending, children, memory);
+/// Checks unpolled record consumers against fair publication handoff.
+pub fn local_follow_parking(retain_pending: bool, memory: bool) {
+    crate::local::parking_model::verify(retain_pending, memory);
 }
 
 /// Compares queued admission and cancellation with Tokio's fair lock.
@@ -389,19 +391,18 @@ pub fn lock_parity(negative: bool) {
 }
 
 /// Checks direct memory-provider streams against an unpolled state reservation.
-pub fn memory_follow_parking(retain_pending: bool, children: bool, checked: bool) {
-    crate::memory::parking_model::verify(retain_pending, children, checked);
+pub fn memory_follow_parking(retain_pending: bool, checked: bool) {
+    crate::memory::parking_model::verify(retain_pending, checked);
 }
 
 /// Cancels real dispatched snapshot jobs while the writer and consumer race.
 pub fn snapshot_executor_shutdown(
     discard: bool,
-    children: bool,
     checked: bool,
     cancel: bool,
     polled: bool,
 ) {
-    crate::memory::parking_model::shutdown(discard, children, checked, cancel, polled);
+    crate::memory::parking_model::shutdown(discard, checked, cancel, polled);
 }
 
 /// Every consumer departure from real dispatched snapshot jobs, on the memory
@@ -420,10 +421,8 @@ pub fn snapshot_consumer_departures(mutant: &str) {
         Departure::CancelRacesFirstPoll,
         Departure::CancelRacesRelease,
     ] {
-        for children in [false, true] {
-            crate::memory::parking_model::abandon(departure, children, mutant);
-            crate::local::parking_model::abandon(departure, children, mutant);
-        }
+        crate::memory::parking_model::abandon(departure, mutant);
+        crate::local::parking_model::abandon(departure, mutant);
     }
 }
 
@@ -435,4 +434,105 @@ pub fn local_compaction_visibility(hold_publication: bool) {
 /// Detect releasing mutation serialization before the snapshot's device cut.
 pub fn local_compaction_cut() {
     crate::local::compaction_model::verify(2);
+}
+
+
+pub(crate) struct Probe(pub(crate) loom::sync::atomic::AtomicUsize);
+impl std::task::Wake for Probe {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.fetch_add(1, loom::sync::atomic::Ordering::SeqCst);
+    }
+}
+pub(crate) fn probe() -> (std::sync::Arc<Probe>, std::task::Waker) {
+    let probe = std::sync::Arc::new(Probe(loom::sync::atomic::AtomicUsize::new(0)));
+    let wake = std::task::Waker::from(probe.clone());
+    (probe, wake)
+}
+
+
+/// Explores one subtree fork racing a two-stream coordinated write.
+/// Both inherited heads must come from one commit cut.
+pub fn subtree_cut(root_only: bool) {
+    check_with_bound(Some(2), move || {
+        let provider = MemoryStream::default();
+        for name in ["tree/a", "tree/b"] {
+            block_on(provider.append(AppendRequest {
+                path: StreamPath::new(name)?, records: vec![Bytes::from_static(b"seed").into()],
+                if_tail: Some(0), idempotency_key: None,
+            }))?;
+        }
+        let writing = thread::spawn({ let provider = provider.clone(); move || {
+            block_on(provider.commit(CommitRequest {
+                conditions: ["tree/a", "tree/b"].map(|name| CommitCondition::Tail { path: StreamPath::new(name).unwrap(), expected: 1 }).into(),
+                mutations: ["tree/a", "tree/b"].map(|name| CommitMutation::Append {
+                    path: StreamPath::new(name).unwrap(), records: vec![Bytes::from_static(b"next").into()],
+                }).into(), idempotency_key: IdempotencyKey::new(b"writer".to_vec()).unwrap(),
+            })).unwrap();
+        }});
+        let forking = thread::spawn({ let provider = provider.clone(); move || {
+            if root_only { set_fault(Fault::RootOnlyFork); }
+            block_on(provider.fork(ForkRequest {
+                source: StreamPath::new("tree").unwrap(), destination: StreamPath::new("copy").unwrap(),
+                exclude: Vec::new(), at_tail: Some(0), idempotency_key: None,
+            })).unwrap();
+        }});
+        writing.join().unwrap(); forking.join().unwrap();
+        let a = block_on(provider.tail(StreamPath::new("copy/a")?)).ok();
+        let b = block_on(provider.tail(StreamPath::new("copy/b")?)).ok();
+        assert!(matches!((a,b), (Some(1),Some(1)) | (Some(2),Some(2))),
+            "fork must inherit both descendants at one commit cut");
+        block_on(provider.append(AppendRequest {
+            path: StreamPath::new("copy/a")?, records: vec![Bytes::from_static(b"private").into()],
+            if_tail: a, idempotency_key: None,
+        }))?;
+        assert_eq!(block_on(provider.tail(StreamPath::new("tree/a")?))?, 2);
+        assert_eq!(block_on(provider.tail(StreamPath::new("copy/b")?))?, b.unwrap());
+        Ok(())
+    });
+}
+
+/// The old fork API has no exclusions: an existing sibling leaks into the child.
+pub fn subtree_exclusions(ignore: bool) {
+    check_with_bound(Some(1), move || {
+        let provider = MemoryStream::default();
+        block_on(provider.append(AppendRequest {
+            path: StreamPath::new("tree/children/old/events")?,
+            records: vec![Bytes::from_static(b"sibling").into()], if_tail: Some(0), idempotency_key: None,
+        }))?;
+        if ignore { set_fault(Fault::IgnoreForkExclusions); }
+        block_on(provider.fork(ForkRequest {
+            source: StreamPath::new("tree")?, destination: StreamPath::new("tree/children/new")?,
+            exclude: vec![StreamPath::new("children")?], at_tail: Some(0), idempotency_key: None,
+        }))?;
+        assert_eq!(block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)), Err(StreamError::NotFound),
+            "excluded sibling must not leak into the fork");
+        assert_eq!(block_on(provider.tail(StreamPath::new("tree/children/old/events")?))?, 1);
+        Ok(())
+    });
+}
+
+/// Projection must keep both statuses from the same coordinated publication.
+pub fn page_tail_cut(split_reads: bool) {
+    check_with_bound(Some(2), move || {
+        let provider = MemoryStream::default();
+        for name in ["agents/a/status", "agents/b/status"] {
+            block_on(provider.append(AppendRequest { path: StreamPath::new(name)?, records: vec![Bytes::from_static(b"old").into()], if_tail: Some(0), idempotency_key: None }))?;
+        }
+        let writer = thread::spawn({ let provider = provider.clone(); move || {
+            block_on(provider.commit(CommitRequest { conditions: vec![], mutations: ["agents/a/status", "agents/b/status"].map(|name| CommitMutation::Append { path: StreamPath::new(name).unwrap(), records: vec![Bytes::from_static(b"new").into()] }).into(), idempotency_key: IdempotencyKey::new(b"page-writer".to_vec()).unwrap() })).unwrap();
+        }});
+        let projection = thread::spawn({ let provider = provider.clone(); move || {
+            let request = crate::ChildrenPageRequest { parent: Some(StreamPath::new("agents").unwrap()), after: None, hierarchy_version: None, limit: 2, tail_stream: Some(StreamPath::new("status").unwrap()) };
+            let mut page = block_on(provider.children_page(request.clone())).unwrap();
+            if split_reads {
+                thread::yield_now();
+                page.children[1].tail_record = block_on(provider.children_page(request)).unwrap().children[1].tail_record.clone();
+            }
+            let first = page.children[0].tail_record.as_ref().unwrap().value.as_ref();
+            let second = page.children[1].tail_record.as_ref().unwrap().value.as_ref();
+            assert_eq!(first, second, "page statuses must share one namespace cut");
+        }});
+        writer.join().unwrap(); projection.join().unwrap();
+        Ok(())
+    });
 }

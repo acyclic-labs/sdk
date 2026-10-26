@@ -1,6 +1,6 @@
 const KINDS = new Set([
   "observation", "sequence", "append", "fork",
-  "records", "children", "children_page", "commit", "envelope", "token", "empty",
+  "records", "children_page", "commit", "envelope", "token", "empty",
 ]);
 
 export const rust = [["acyclic-stream", "bin", "stream-http-contract"]];
@@ -38,7 +38,6 @@ type HttpResponseByKind = {
   append: AppendResult;
   fork: ForkReceipt;
   records: readonly EncodedRecord[];
-  children: readonly { readonly path: string }[];
   children_page: ChildrenPage;
   commit: CommitResult;
   envelope: CommittedEnvelope;

@@ -67,7 +67,8 @@ impl LocalStream {
                             unreachable!()
                         };
                         let result = provider.commit_inner(request, deadline).await?;
-                        if let Some(frame) = frame {
+                        if let Some(frame) = frame
+                    && matches!(result.0, CommitOutcome::Committed(_)) {
                             stream.persist(frame).await?;
                         } else {
                             stream.require_accepted::<true>()?;
@@ -162,10 +163,9 @@ impl LocalStream {
                     let Command::Append(request) = command else {
                         unreachable!()
                     };
-                    let retain_conflict = request.idempotency_key.is_some();
                     let result = provider.append_inner(request).await?;
                     if let Some(frame) = frame
-                        && (matches!(result.0, AppendOutcome::Committed(_)) || retain_conflict)
+                        && matches!(result.0, AppendOutcome::Committed(_))
                     {
                         stream.persist(frame).await?;
                     } else if replay {

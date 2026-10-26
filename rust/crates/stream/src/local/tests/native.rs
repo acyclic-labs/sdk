@@ -169,7 +169,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
 }
 
 #[tokio::test]
-async fn native_append_keeps_keyed_conflict_and_does_not_journal_unkeyed_conflict()
+async fn native_append_conflicts_leave_keys_free_and_journal_unchanged()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
@@ -188,6 +188,7 @@ async fn native_append_keeps_keyed_conflict_and_does_not_journal_unkeyed_conflic
         .idempotency_key
         .clone()
         .ok_or("append fixture lacks a key")?;
+    let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
     let meter = Arc::new(Meter::local());
     let expected = AppendOutcome::TailConflict { actual_tail: 1 };
     let conflict = provider
@@ -205,19 +206,21 @@ async fn native_append_keeps_keyed_conflict_and_does_not_journal_unkeyed_conflic
         std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(),
         after_keyed
     );
-    let accepted = provider
-        .inspect_idempotency(key.clone())
-        .await?
-        .ok_or("keyed conflict lost its original identity")?;
-    assert_eq!(
-        accepted.outcome,
-        crate::IdempotencyOutcome::Append(expected.clone())
-    );
+    assert_eq!(after_keyed, before);
+    assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
     drop(provider);
     let reopened = LocalStream::open(directory.path(), limits).await?;
+    assert!(reopened.inspect_idempotency(key.clone()).await?.is_none());
+    assert_eq!(reopened.append(request.clone()).await?, expected);
+    let mut retry = request;
+    retry.if_tail = Some(1);
+    assert!(matches!(reopened.append(retry.clone()).await?, AppendOutcome::Committed(_)));
+    let accepted = reopened.inspect_idempotency(key.clone()).await?.ok_or("missing success")?;
+    assert_eq!(reopened.tail(path).await?, 2);
+    drop(reopened);
+    let reopened = LocalStream::open(directory.path(), limits).await?;
     assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
-    assert_eq!(reopened.append(request).await?, expected);
-    assert_eq!(reopened.tail(path).await?, 1);
+    assert!(matches!(reopened.append(retry).await?, AppendOutcome::Committed(_)));
     drop(reopened);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -708,5 +711,23 @@ async fn native_guard_rechecks_actual_canonical_drift_before_retaining_owner_ide
     drop(reopened);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_commits_do_not_grow_the_journal() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
+    let key = IdempotencyKey::new(b"stable-commit-intent".to_vec())?;
+    for _ in 0..32 {
+        assert!(matches!(provider.commit(CommitRequest {
+            conditions: vec![crate::CommitCondition::Tail { path: StreamPath::new("absent")?, expected: 1 }],
+            mutations: vec![crate::CommitMutation::Append { path: StreamPath::new("absent")?, records: vec![OwnedBytes::from_static(b"intent").into()] }],
+            idempotency_key: key.clone(),
+        }).await?, CommitOutcome::Conflict(_)));
+    }
+    assert!(provider.inspect_idempotency(key).await?.is_none());
+    assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), before);
     Ok(())
 }

@@ -26,7 +26,8 @@ pub(crate) struct PreparedCommit {
     conditions: [CommitCondition; 2],
     key: IdempotencyKey,
     plan: CommitPlan,
-    conflicts: [(Vec<CommitConflict>, Allocation); 2],
+    namespace: NamespaceReserve,
+    conflicts: (Vec<CommitConflict>, Allocation),
     capacity: Option<CapacityReservation>,
     probes: ReplayProbes,
     codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
@@ -73,8 +74,8 @@ impl MemoryStream {
         }
         history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
             expected;
+        let namespace = self.namespace_reserve(&append(&plan.result).path)?;
         let conflict = self.vector(2)?;
-        let (cached_conflicts, conflict_claim) = self.vector(2)?;
         let prototype = self.copy_commit(&plan.result)?;
         let recovery_conflicts = self.vector(2)?;
         let conditions: [CommitCondition; 2] = request
@@ -109,7 +110,8 @@ impl MemoryStream {
                 conditions,
                 key,
                 plan,
-                conflicts: [conflict, (cached_conflicts, conflict_claim)],
+                namespace,
+                conflicts: conflict,
                 capacity,
                 probes,
                 codec,
@@ -278,7 +280,7 @@ impl PreparedCommit {
         let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
         let _ = work.record(record_codec(&mut self.codec, 0, hashed));
         let mut state = self.provider.state.write().await;
-        let [(mut conflicts, output_claim), (mut cached, resident)] = self.conflicts;
+        let (mut conflicts, output_claim) = self.conflicts;
         let result = (|| {
             if let Some(stored) = state.replay(self.key.as_bytes(), || {
                 self.provider.record_replay_probe(&mut self.probes);
@@ -306,7 +308,6 @@ impl PreparedCommit {
             }
             for condition in &self.conditions {
                 if let Some(conflict) = self.provider.condition_conflict(&state, condition)? {
-                    cached.push(conflict.clone());
                     conflicts.push(conflict);
                 }
             }
@@ -333,6 +334,7 @@ impl PreparedCommit {
                     ));
                     self.plan.publish(
                         &mut state,
+                        &mut NamespaceBuilder { allocate: &|_| Err(StreamError::Capacity), reserve: Some(&mut self.namespace) },
                         &mut || self.provider.record_replay_probe(&mut self.probes),
                         self.key,
                         digest,
@@ -341,15 +343,6 @@ impl PreparedCommit {
                 } else {
                     let value = CommitOutcome::Conflict(conflicts);
                     let _ = work.record(record_codec(&mut self.codec, 2 * copied_bytes(&value), 0));
-                    retain(
-                        &mut state,
-                        &mut || self.provider.record_replay_probe(&mut self.probes),
-                        None,
-                        Some(self.key),
-                        digest,
-                        IdempotencyOutcome::Commit(CommitOutcome::Conflict(cached)),
-                        resident,
-                    );
                     Ok((value, output_claim))
                 }
             })

@@ -8,6 +8,7 @@ mod error_code_tests {
         assert_eq!(
             codes,
             [
+                "invalid_response",
                 "invalid_path",
                 "invalid_argument",
                 "limit_exceeded",
@@ -127,9 +128,7 @@ mod replay_tests {
         ) -> Result<RecordStream, StreamError> {
             self.inner.follow(path, from, filter).await
         }
-        async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-            self.inner.children(request).await
-        }
+
         async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
             self.inner.commit(request).await
         }
@@ -146,7 +145,7 @@ mod replay_tests {
                 .map(|sequence| crate::AppendRecord::from(sequence.to_be_bytes().to_vec()))
                 .collect::<Vec<_>>();
             next += batch.len() as u64;
-            stream.append_batch(batch, None, None).await.unwrap();
+            stream.append_batch(batch, None, IdempotencyKey::new(next.to_be_bytes().to_vec()).unwrap()).await.unwrap();
         }
         stream
     }

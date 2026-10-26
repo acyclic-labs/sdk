@@ -23,15 +23,13 @@ use crate::wire_codec::{
     observation_wire, optional_key, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
-    ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
+    AppendOutcome, AppendRequest, Child, ChildrenPage, ChildrenPageRequest,
+    CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record, RecordStream,
     StreamBounds, StreamError, StreamPath, StreamProvider, wire,
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
-#[cfg(test)]
-mod children_tests;
 mod client;
 #[cfg(test)]
 mod credential_tests;
@@ -413,6 +411,7 @@ pub(crate) fn retryable(error: &Status) -> bool {
 
 fn error_status(error: &StreamError) -> Status {
     match error {
+        StreamError::InvalidResponse => Status::data_loss("invalid_response"),
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
         StreamError::InvalidArgument => Status::invalid_argument("invalid_argument"),
         StreamError::LimitExceeded => Status::invalid_argument("limit_exceeded"),

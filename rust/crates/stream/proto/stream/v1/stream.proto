@@ -93,6 +93,8 @@ message TailResponse {
 }
 
 message ForkRequest {
+  // Canonical segment-relative prefixes excluded from the captured namespace.
+  repeated string exclude = 5;
   string source = 1;
   string destination = 2;
   optional uint64 at_tail = 3;
@@ -172,19 +174,12 @@ message AcknowledgeDeliveryRequest {
 
 message AcknowledgeDeliveryResponse {}
 
-message ChildrenRequest {
-  optional string parent = 1;
-  uint32 limit = 2;
-}
-
 message Child {
   string path = 1;
+  optional Record tail_record = 2;
 }
-message ChildrenResponse {
-  Child child = 1;
-}
-
 message ChildrenPageRequest {
+  optional string tail_stream = 5;
   optional string parent = 1;
   optional string after = 2;
   optional bytes hierarchy_version = 3;
@@ -225,9 +220,12 @@ message AppendMutation {
   repeated AppendRecord records = 2;
 }
 
-// Forks the source's prefix ending at `at_tail` into the new destination,
-// then appends `records` to the destination, all at one linearization point.
+// Forks the whole source subtree at the pre-commit cut, sharing its nodes.
+// at_tail selects the root stream prefix; descendant heads are inherited whole.
+// Appends records to the destination root at the same linearization point.
 message ForkMutation {
+  // Canonical segment-relative prefixes excluded from the captured namespace.
+  repeated string exclude = 5;
   string source = 1;
   string destination = 2;
   uint64 at_tail = 3;
@@ -259,6 +257,8 @@ message CommittedAppend {
 }
 
 message CommittedFork {
+  // Canonical segment-relative prefixes excluded from the captured namespace.
+  repeated string exclude = 6;
   string source = 1;
   string destination = 2;
   uint64 forked_at = 3;
@@ -362,7 +362,6 @@ service StreamService {
   rpc Read(ReadRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
   rpc Follow(FollowRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" resource: "streams:/{path}" }; }
   rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" extractor: "streams.delivery-resource" }; }
-  rpc Children(ChildrenRequest) returns (stream ChildrenResponse) { option (acyclic.validation.v1.auth) = { action: "streams/list" extractor: "streams.list-visible-children" }; }
   rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) { option (acyclic.validation.v1.auth) = { action: "streams/list" extractor: "streams.list-visible-children" }; }
   rpc Commit(CommitRequest) returns (CommitResponse) { option (acyclic.validation.v1.auth) = { extractor: "streams.transaction" }; }
   rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.commit-resources" }; }

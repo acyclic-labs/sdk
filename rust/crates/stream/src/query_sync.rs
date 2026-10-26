@@ -1,4 +1,4 @@
-//! Synchronization used by task-volume publication and observation.
+//! Synchronization used by stream publication and observation.
 #[cfg(any(acyclic_loom, all(test, not(target_arch = "wasm32"))))]
 pub(crate) mod parity;
 

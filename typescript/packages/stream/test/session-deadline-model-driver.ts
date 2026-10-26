@@ -8,9 +8,7 @@ import { SessionNode, checkpoint } from "./session-node.js";
 // fires the real helper callback, without wall time or a second implementation.
 const peer = new SessionNode(spend);
 const fault = process.env.STREAM_SESSION_FAULT;
-const requestedScenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
-const children = requestedScenario.endsWith("-children");
-const scenario = requestedScenario.replace(/-children$/, "");
+const scenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
 plugin({ name: "raw-follow-deadline-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
@@ -55,7 +53,7 @@ const sessions = new StreamSessions(async (node, signal) => {
       yield frame;
     }
   } }, async send(input, writeSignal) {
-    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.resource === "streams:/events" || value.kind.case === "children" && value.kind.value.parent === "events");
+    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.resource === "streams:/events");
     const acknowledgement = input.body.case === "ack";
     if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
       blocked = true;
@@ -108,8 +106,7 @@ const sibling = (async () => {
 })();
 // Establish the healthy channel before parking the other channel's write.
 await peer.until(() => peer.active === 1);
-const records = (children ? client.children({ parent: "events", limit: 1 }, { timeoutMs: duration, signal: cancel.signal })
-  : client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal }))[Symbol.asyncIterator]();
+const records = client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal })[Symbol.asyncIterator]();
 const follow = (async () => {
   try {
     for await (const _ of { [Symbol.asyncIterator]: () => records }) {
@@ -130,8 +127,7 @@ async function command(action: string): Promise<unknown> {
   switch (action) {
     case "ready":
       if (scenario === "deadline-ack") {
-        if (children) { peer.append("events/child"); peer.append("events/other"); peer.append("events/third"); }
-        else peer.append("events", 3);
+        peer.append("events", 3);
         // The first yield releases one frame; fill both remaining slots while
         // its JS consumer is paused, then consume to force the real Ack path.
         await peer.until(() => readData === 3 && consumerPaused);
@@ -145,7 +141,7 @@ async function command(action: string): Promise<unknown> {
       break;
     case "releaseWrite": writesReleased = true; releaseWrite?.(); break;
     case "return": void records.return?.().then(() => { returned = true; }); break;
-    case "deliver": peer.append(children ? "events/child" : "events"); break;
+    case "deliver": peer.append("events"); break;
     case "expire":
       expired = true;
       stoppedAt ??= seen;

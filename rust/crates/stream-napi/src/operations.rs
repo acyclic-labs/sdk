@@ -81,19 +81,10 @@ pub(super) async fn append(
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = wire_codec::append_from_wire(decode::<wire::AppendRequest>(&request, "append")?)
         .map_err(|error| stream_error(&error))?;
-    let stream =
-        acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path.to_string())
-            .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async move {
-            stream
-                .append_batch(request.records, request.if_tail, request.idempotency_key)
-                .await
-                .map_err(|error| stream_error(&error))
-        },
+        async move { client.append(request).await.map_err(|error| stream_error(&error)) },
         cancellation_state(cancellation),
-    )
-    .await?;
+    ).await?;
     encode(&wire_codec::append_outcome_to_wire(value), "append")
 }
 
@@ -104,23 +95,10 @@ pub(super) async fn fork(
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = wire_codec::fork_from_wire(decode::<wire::ForkRequest>(&request, "fork")?)
         .map_err(|error| stream_error(&error))?;
-    let stream =
-        acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.source.to_string())
-            .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async move {
-            stream
-                .fork(
-                    request.destination.to_string(),
-                    request.at_tail,
-                    request.idempotency_key,
-                )
-                .await
-                .map_err(|error| stream_error(&error))
-        },
+        async move { client.fork(request).await.map_err(|error| stream_error(&error)) },
         cancellation_state(cancellation),
-    )
-    .await?;
+    ).await?;
     encode(&wire_codec::fork_receipt_to_wire(&value), "fork")
 }
 
@@ -202,82 +180,9 @@ pub(super) fn record_frames(records: acyclic_stream::RecordStream) -> FollowFram
         .boxed()
 }
 
-pub(super) async fn open_children(
-    client: &Arc<grpc::Client>,
-    request: Buffer,
-    cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
-    let request =
-        wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
-            .map_err(|error| stream_error(&error))?;
-    let children = run_with_cancellation(
-        async {
-            client
-                .children(request)
-                .await
-                .map_err(|error| stream_error(&error))
-        },
-        cancellation_state(cancellation),
-    )
-    .await?;
-    let frames = children
-        .map(|child| {
-            child.map(|child| {
-                wire::ChildrenResponse {
-                    child: Some(wire::Child {
-                        path: child.path.to_string(),
-                    }),
-                }
-                .encode_to_vec()
-            })
-        })
-        .boxed();
-    Ok(NativeStreamFollow {
-        state: FollowState {
-            records: Arc::new(Mutex::new(Some(frames))),
-            token: cancellation_state(cancellation).unwrap_or_default(),
-            closed: Arc::new(AtomicBool::new(false)),
-        },
-    })
-}
 
-pub(super) async fn children(
-    client: &Arc<grpc::Client>,
-    request: Buffer,
-    cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
-    let request =
-        wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
-            .map_err(|error| stream_error(&error))?;
-    let token = cancellation_state(cancellation);
-    let values = run_with_cancellation(
-        async {
-            client
-                .children_page(acyclic_stream::ChildrenPageRequest {
-                    parent: request.parent,
-                    limit: request.limit,
-                    after: None,
-                    hierarchy_version: None,
-                })
-                .await
-                .map_err(|error| stream_error(&error))
-        },
-        token.clone(),
-    )
-    .await?;
-    let mut output = Vec::new();
-    for value in values.children {
-        output.push(encode(
-            &wire::ChildrenResponse {
-                child: Some(wire::Child {
-                    path: value.path.to_string(),
-                }),
-            },
-            "children",
-        )?);
-    }
-    Ok(output)
-}
+
+
 
 pub(super) async fn children_page(
     client: &Arc<grpc::Client>,

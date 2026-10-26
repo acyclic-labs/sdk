@@ -276,24 +276,7 @@ impl Fixture {
             .await?;
         Ok(())
     }
-    async fn children(
-        &self,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> TestResult<NativeStreamFollow> {
-        operations::open_children(
-            &self.client,
-            Buffer::from(
-                wire::ChildrenRequest {
-                    parent: Some("agents".into()),
-                    limit: 1,
-                }
-                .encode_to_vec(),
-            ),
-            cancellation,
-        )
-        .await
-        .map_err(|error| error.message.into())
-    }
+
     async fn follow(
         &self,
         cancellation: Option<&NativeStreamCancellation>,
@@ -376,18 +359,6 @@ impl Fixture {
     }
 }
 
-async fn child(cursor: &NativeStreamFollow) -> TestResult<String> {
-    let next = cursor.next_result().await?;
-    assert!(
-        next.error.is_none(),
-        "recovery must retain the original native interest"
-    );
-    let bytes = next.value.ok_or("children ended instead of recovering")?;
-    Ok(wire::ChildrenResponse::decode(bytes.as_ref())?
-        .child
-        .ok_or("missing child")?
-        .path)
-}
 async fn record(cursor: &NativeStreamFollow, sequence: u64, value: u8) -> TestResult {
     let next = cursor.next_result().await?;
     assert!(
@@ -410,20 +381,10 @@ async fn recovered_consumers(terminal: bool) -> TestResult {
     let fixture = Fixture::open(terminal).await?;
     fixture.append("agents/first", 1).await?;
     fixture.append("events", 10).await?;
-    let children = fixture.children(None).await?;
     let records = fixture.follow(None).await?;
-    assert_eq!(child(&children).await?, "agents/first");
     record(&records, 0, 10).await?;
     tokio::select! {
         () = fixture.outage() => {}
-        next = children.next_result() => {
-            let next = next?;
-            assert!(
-                next.error.is_none() && next.value.is_some(),
-                "recovery must retain the original native interest",
-            );
-            panic!("children replayed a consumed value during the unavailable gap");
-        }
         next = records.next_result() => {
             let next = next?;
             assert!(
@@ -438,16 +399,12 @@ async fn recovered_consumers(terminal: bool) -> TestResult {
     fixture.append("events", 12).await?;
     fixture.outage.recover();
     // The same retained cursors must resume, not new subscriptions hiding loss.
-    assert_eq!(child(&children).await?, "agents/second");
     record(&records, 1, 11).await?;
     record(&records, 2, 12).await?;
     fixture.append("events", 13).await?;
     record(&records, 3, 13).await?;
-    children.close().await;
     records.close().await;
-    assert!(children.state.records.lock().await.is_none());
     assert!(records.state.records.lock().await.is_none());
-    end(&children).await?;
     end(&records).await?;
     fixture.retired().await;
     fixture.stop().await;
@@ -455,7 +412,7 @@ async fn recovered_consumers(terminal: bool) -> TestResult {
 }
 
 #[tokio::test]
-async fn native_children_and_follow_recover_exactly_once_after_unavailable_attempt_groups() {
+async fn native_follow_recovers_exactly_once_after_unavailable_attempt_groups() {
     tokio::time::timeout(Duration::from_secs(3), recovered_consumers(false))
         .await
         .unwrap()
@@ -471,15 +428,14 @@ async fn negative_control_terminal_rejection_cannot_satisfy_the_recovery_oracle(
 }
 
 #[tokio::test]
-async fn terminal_reconnect_rejection_is_typed_once_for_both_native_entrypoints() {
+async fn terminal_reconnect_rejection_is_typed_once_for_native_follow() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let fixture = Fixture::open(true).await?;
         fixture.append("events", 10).await?;
-        let children = fixture.children(None).await?;
         let records = fixture.follow(None).await?;
         record(&records, 0, 10).await?;
         fixture.outage().await;
-        for cursor in [&children, &records] {
+        for cursor in [&records] {
             let next = cursor.next_result().await?;
             assert!(next.value.is_none());
             assert_eq!(
@@ -605,14 +561,8 @@ async fn cancellation_case(
         })
         .await?;
     let cancellation = NativeStreamCancellation::new();
-    let cursor = if children {
-        fixture.children(Some(&cancellation)).await?
-    } else {
-        fixture.follow(Some(&cancellation)).await?
-    };
-    if !children {
-        record(&cursor, 0, 10).await?;
-    }
+    let cursor = fixture.follow(Some(&cancellation)).await?;
+    record(&cursor, 0, 10).await?;
     let original_channel = fixture
         .outage
         .subscriptions
@@ -677,7 +627,7 @@ async fn cancellation_case(
 async fn cancellation_close_and_drop_release_native_interests_during_recovery() {
     // Independent endpoints and owners must not consume one another's clock.
     // Keep the same whole matrix and deadline, just as in the counterfactual.
-    let cases: Vec<_> = [false, true]
+    let cases: Vec<_> = [false]
         .into_iter()
         .flat_map(|children| {
             (0..3).map(move |action| {
@@ -720,7 +670,7 @@ async fn retained_provider_cursor_fails_the_same_cancellation_close_and_drop_ora
     use futures::FutureExt as _;
     let results = tokio::time::timeout(
         Duration::from_secs(3),
-        futures::future::join_all([false, true].into_iter().flat_map(|children| {
+        futures::future::join_all([false].into_iter().flat_map(|children| {
             (0..3).map(move |action| async move {
                 let evidence = SyncMutex::new(CancellationEvidence::default());
                 std::panic::AssertUnwindSafe(cancellation_case(children, action, true, &evidence))

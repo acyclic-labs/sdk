@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) enum Key {
     Records(StreamPath),
-    Children(Option<StreamPath>),
 }
 
 /// Retained outside the replaceable replay cache, dispatched after durability.
@@ -100,7 +99,7 @@ impl Before {
         self,
         provider: &MemoryStream,
         keys: &mut Changes,
-        publications: &discovery::Publications,
+        publications: &notifications::Publications,
     ) -> Result<(), StreamError> {
         for (path, before) in self.0 {
             let after = tail(provider, path.clone()).await?;
@@ -134,9 +133,6 @@ impl Before {
                             return Err(StreamError::Unavailable);
                         }
                     }
-                }
-                if before.is_none() && after.is_some() {
-                    keys.keys.insert(Key::Children(path.parent()));
                 }
             }
         }

@@ -1,8 +1,7 @@
 use super::*;
 mod reconnect;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest, RecordStream, StreamBounds, StreamProvider,
 };
 use async_trait::async_trait;
@@ -302,22 +301,7 @@ impl StreamProvider for TcpDropProbe {
         })))
     }
 
-    async fn children(
-        &self,
-        _request: ChildrenRequest,
-    ) -> std::result::Result<ChildStream, StreamError> {
-        let sentinel = TcpDropped(Arc::clone(&self.dropped));
-        Ok(futures::stream::once(async {
-            Ok(acyclic_stream::Child {
-                path: StreamPath::new("agents/new")?,
-            })
-        })
-        .chain(futures::stream::poll_fn(move |_| {
-            let _sentinel = &sentinel;
-            Poll::Pending
-        }))
-        .boxed())
-    }
+
 
     async fn children_page(
         &self,
@@ -459,28 +443,6 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             .await
             .map_err(|_| "server follow stream was not dropped after close")?;
 
-        let children = open_children(
-            &client.provider,
-            Buffer::from(
-                wire::ChildrenRequest {
-                    parent: Some("agents".into()),
-                    limit: 1,
-                }
-                .encode_to_vec(),
-            ),
-            None,
-        )
-        .await
-        .map_err(|error| error.message)?;
-        let value = children.next_result().await?;
-        assert!(value.error.is_none());
-        let value = value.value.ok_or("child response missing")?;
-        let value = wire::ChildrenResponse::decode(value.as_ref())?;
-        assert_eq!(value.child.ok_or("child missing")?.path, "agents/new");
-        children.close().await;
-        tokio::time::timeout(Duration::from_secs(1), dropped.notified()).await?;
-
-        drop(children);
         drop(follow);
         drop(client);
 

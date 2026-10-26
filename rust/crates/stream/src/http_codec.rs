@@ -95,6 +95,7 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
     let mut value = serde_json::Map::from_iter([
         ("source".into(), json!(request.source.to_string())),
         ("destination".into(), json!(request.destination.to_string())),
+        ("exclude".into(), json!(request.exclude.iter().map(ToString::to_string).collect::<Vec<_>>())),
     ]);
     if let Some(options) = options("atTail", request.at_tail, request.idempotency_key.as_ref()) {
         value.insert("options".into(), options);
@@ -147,11 +148,13 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
                 destination,
                 at_tail,
                 records,
+                exclude,
             } => json!({
                 "fork": {
                     "source": source.to_string(),
                     "destination": destination.to_string(),
                     "atTail": at_tail.to_string(),
+                    "exclude": exclude.iter().map(|path| path.to_string()).collect::<Vec<_>>(),
                     "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
                 },
             }),
@@ -241,16 +244,6 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 "limit": request.limit,
             }))
         }
-        "children" => {
-            let request = wire::ChildrenRequest::decode(input).map_err(|_| "invalid_argument")?;
-            let request = wire_codec::children_from_wire(request).map_err(|error| error.code())?;
-            memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
-            if let Some(parent) = request.parent {
-                value.insert("parent".into(), json!(parent.to_string()));
-            }
-            Ok(Value::Object(value))
-        }
         "children/page" => {
             let request =
                 wire::ChildrenPageRequest::decode(input).map_err(|_| "invalid_argument")?;
@@ -261,6 +254,9 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             }
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
             let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
+            if let Some(tail_stream) = request.tail_stream {
+                value.insert("tailStream".into(), json!(tail_stream.to_string()));
+            }
             if let Some(parent) = request.parent {
                 value.insert("parent".into(), json!(parent.to_string()));
             }

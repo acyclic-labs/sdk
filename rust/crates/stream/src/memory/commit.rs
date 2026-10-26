@@ -34,6 +34,7 @@ impl CommitPlan {
     fn publish(
         self,
         state: &mut State,
+        build: &mut NamespaceBuilder<'_>,
         probe: &mut impl FnMut(),
         key: IdempotencyKey,
         digest: [u8; 32],
@@ -42,7 +43,7 @@ impl CommitPlan {
         let CommitOutcome::Committed(envelope) = &self.result else {
             unreachable!()
         };
-        publish(state, self.paths, self.histories, envelope)?;
+        publish(state, self.paths, self.histories, envelope, build)?;
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -221,8 +222,6 @@ impl MemoryStream {
             return Ok((paths, allocation));
         }
         for (destination, end) in missing_paths(state, destinations) {
-            let claim = self.adopt(std::mem::size_of::<(StreamPath, PathState)>())?;
-            let (changed, _) = watch::channel(0);
             paths.push((
                 destination
                     .as_str()
@@ -230,14 +229,9 @@ impl MemoryStream {
                     .and_then(|ancestor| destination.ancestor(ancestor))
                     .ok_or(StreamError::InvalidPath)?,
                 PathState {
-                    children: ChildIndex::default(),
-                    next_sibling: None,
                     history: None,
                     prefix: [None, None],
                     tail: 0,
-                    changed,
-                    follows: None,
-                    _allocation: claim,
                 },
             ));
         }
@@ -322,7 +316,6 @@ impl MemoryStream {
             }
         };
         check_deadline()?;
-        admit_replay(state, Some(&request.idempotency_key), self.limits)?;
         let mut probes =
             self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
         let (mut conflicts, output_claim) = self.vector(request.conditions.len())?;
@@ -332,27 +325,14 @@ impl MemoryStream {
             }
         }
         if !conflicts.is_empty() {
-            let result = CommitOutcome::Conflict(conflicts);
-            let (cached, resident) = self.copy_commit(&result)?;
-            self.reserve_retained(state)?;
-            return self.publish(0, || {
-                check_deadline()?;
-                retain(
-                    state,
-                    &mut || self.record_replay_probe(&mut probes),
-                    None,
-                    Some(request.idempotency_key),
-                    digest,
-                    IdempotencyOutcome::Commit(cached),
-                    resident,
-                );
-                Ok((result, output_claim))
-            });
+            check_deadline()?;
+            return Ok((CommitOutcome::Conflict(conflicts), output_claim));
         }
         drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {
             Ok(state.paths.get(path).map(|path| path.tail))
         })?;
+        admit_replay(state, Some(&request.idempotency_key), self.limits)?;
         reserve_coordinated(state, &request, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -376,6 +356,7 @@ impl MemoryStream {
             plan.bind(commit_id, time)?;
             plan.publish(
                 state,
+                &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
                 &mut || self.record_replay_probe(&mut probes),
                 request.idempotency_key,
                 digest,
@@ -483,38 +464,61 @@ fn publish(
     paths: Vec<(StreamPath, PathState)>,
     histories: Vec<Arc<History>>,
     envelope: &CommittedEnvelope,
+    build: &mut NamespaceBuilder<'_>,
 ) -> Result<(), StreamError> {
-    let hierarchy_changed = !paths.is_empty();
-    for (path, stream) in paths {
-        state.path_bytes += path.as_str().len();
-        state.paths.insert(path.clone(), stream);
-        state.index_child(path)?;
-        state.hierarchy_version = envelope.commit_id;
-    }
+    let mut next = state.paths.clone();
+    for (path, data) in paths { next.put_data(&path, data, build)?; }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
-        publish_fact(state, fact, history)?;
+        let (path, tail) = match fact {
+            CommittedMutation::Append(append) => (&append.path, append.tail),
+            CommittedMutation::Fork(fork) => {
+                let subtree = state.paths.node(&fork.source).ok_or(StreamError::NotFound)?.clone();
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                let subtree = if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
+                    build.node(subtree.data.clone(), None)?
+                } else { subtree };
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                let excludes = if crate::verification::fault_is(crate::verification::Fault::IgnoreForkExclusions) { &[][..] } else { &fork.exclude[..] };
+                #[cfg(not(all(acyclic_loom, feature = "local")))]
+                let excludes = &fork.exclude[..];
+                let subtree = Namespace::excluded(&subtree, excludes, build)?;
+                next.put(&fork.destination, subtree, build)?;
+                (&fork.destination, fork.tail)
+            }
+        };
+        // Root prefix and histories are derived from the same old cut even
+        // when this envelope also appends to the source.
+        let data = fact_data(&state.paths, fact, history, tail)?;
+        next.put_data(path, data, build)?;
     }
-    if hierarchy_changed && let Some(changed) = &state.hierarchy_changed {
-        changed.send_replace(());
+    if next.len() != state.paths.len() { state.hierarchy_version = envelope.commit_id; }
+    state.path_bytes = next.bytes();
+    state.paths = next;
+    for fact in &envelope.mutations {
+        let (path, tail) = match fact {
+            CommittedMutation::Append(append) => (&append.path, append.tail),
+            CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
+        };
+        #[cfg(all(acyclic_loom, feature = "local"))]
+        let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
+        #[cfg(not(all(acyclic_loom, feature = "local")))]
+        let notify = true;
+        if notify && let Some(signals) = state.signals.get(path) {
+            signals.changed.send_replace(tail);
+            signals.follows.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .publish(fact_records(fact), tail);
+        }
+        state.record_count += fact_records(fact).len();
+        state.payload_bytes += fact_records(fact).iter().map(|record| record.payload_bytes()).sum::<usize>();
     }
     Ok(())
 }
-
-fn publish_fact(
-    state: &mut State,
-    fact: &CommittedMutation,
-    history: Arc<History>,
-) -> Result<(), StreamError> {
-    let (path, tail) = match fact {
-        CommittedMutation::Append(append) => (&append.path, append.tail),
-        CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
-    };
+fn fact_data(paths: &Namespace, fact: &CommittedMutation, history: Arc<History>, tail: u64) -> Result<PathState, StreamError> {
     let source = match fact {
         CommittedMutation::Append(append) => &append.path,
         CommittedMutation::Fork(fork) => &fork.source,
     };
-    let mut prefix = state
-        .paths
+    let mut prefix = paths
         .get(source)
         .map_or([None, None], |path| path.prefix.clone());
     if let CommittedMutation::Fork(fork) = fact {
@@ -542,27 +546,5 @@ fn publish_fact(
             }
         }
     }
-    let stream = state.paths.get_mut(path).ok_or(StreamError::Unavailable)?;
-    stream.prefix = prefix;
-    stream.history = Some(history);
-    stream.tail = tail;
-    #[cfg(all(acyclic_loom, feature = "local"))]
-    let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
-    #[cfg(not(all(acyclic_loom, feature = "local")))]
-    let notify = true;
-    if notify {
-        stream.changed.send_replace(tail);
-        if let Some(index) = &stream.follows {
-            index
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .publish(fact_records(fact), tail);
-        }
-    }
-    state.record_count += fact_records(fact).len();
-    state.payload_bytes += fact_records(fact)
-        .iter()
-        .map(|record| record.payload_bytes())
-        .sum::<usize>();
-    Ok(())
+    Ok(PathState { prefix, history: Some(history), tail })
 }

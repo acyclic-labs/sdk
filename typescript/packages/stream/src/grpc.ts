@@ -33,8 +33,7 @@ export type StreamFollowCallOptions = Pick<CallOptions, "signal" | "timeoutMs"> 
 };
 type Follow = (request: Parameters<Client<typeof StreamService>["follow"]>[0],
   options?: StreamFollowCallOptions) => ReturnType<Client<typeof StreamService>["follow"]>;
-type Children = (request: Parameters<Client<typeof StreamService>["children"]>[0],
-  options?: StreamFollowCallOptions) => ReturnType<Client<typeof StreamService>["children"]>;
+
 
 /** Stream v1 client; virtual follow accepts only signal and timeoutMs call options. */
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
@@ -54,21 +53,7 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
       if (controller.signal.aborted) throw ConnectError.from(controller.signal.reason, Code.Canceled);
     } finally { controller.abort(); deadline.cleanup(); }
   };
-  const children: Children = async function* (request, callOptions) {
-    const { signal, timeoutMs } = callOptions ?? {};
-    const parent = request.parent;
-    const limit = request.limit ?? wire.StreamLimit.MAX_ITEMS;
-    await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
-    const controller = createLinkedAbortController(deadline.signal, signal);
-    try {
-      for await (const child of sessions.children({ limit, ...(parent === undefined ? {} : { parent }), signal: controller.signal })) {
-        yield create(wire.ChildrenResponseSchema, { child });
-      }
-      if (controller.signal.aborted) throw ConnectError.from(controller.signal.reason, Code.Canceled);
-    } finally { controller.abort(); deadline.cleanup(); }
-  };
-  return { ...client, follow, children };
+  return { ...client, follow };
 }
 
 function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof CredentialOptions>, credential: CredentialProvider) {
@@ -218,14 +203,10 @@ export class GrpcStreamProvider implements StreamProvider {
       if (!signal?.aborted) throw providerError(error, operation);
     }
   }
-  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    const { parent, signal, limit } = request;
-    await validateWireRequest({ kind: "children", limit,
-      ...(parent === undefined ? {} : { parent }) });
-    yield* this.#sessions.children({ limit, ...(parent === undefined ? {} : { parent }), ...(signal === undefined ? {} : { signal }) });
-  }
+
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const authored = { kind: "children_page" as const, limit: request.limit,
+    const authored = { kind: "children_page" as const,
+      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),

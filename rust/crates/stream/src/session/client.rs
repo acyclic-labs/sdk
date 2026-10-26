@@ -40,8 +40,6 @@ pub use admissions::verify_admission_binding;
 #[cfg(acyclic_stream_loom)]
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
-pub use pool::discovery_model::verify_discovery_admission;
-#[cfg(acyclic_stream_loom)]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_follow_data,
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
@@ -91,7 +89,6 @@ struct Delivery {
     before: Option<wire::SessionFrame>,
     item: Received,
     sequence: u64,
-    opaque: Bytes,
     generation: u64,
     credit: Credit,
 }
@@ -137,14 +134,8 @@ impl Delivery {
                 Some(Item::LatestValue(_)) => {
                     progress.consume_latest(self.generation, self.sequence)
                 }
-                Some(Item::Child(_)) => {
-                    progress.consume_opaque(self.generation, self.sequence, &self.opaque)
-                }
                 _ => Err(StreamError::Unavailable),
             },
-            Received::Child(_) => {
-                progress.consume_opaque(self.generation, self.sequence, &self.opaque)
-            }
             Received::Frame(wire::SessionFrame {
                 body: Some(Body::Watermark(mark)),
                 ..
@@ -165,7 +156,6 @@ impl Delivery {
 }
 enum Received {
     Data(wire::SessionData),
-    Child(crate::Child),
     Frame(wire::SessionFrame),
 }
 enum Command {
@@ -510,29 +500,7 @@ impl Client {
         ))
     }
 
-    /// Discovers direct children on the same per-node session as record follows.
-    pub async fn children(
-        &self,
-        request: crate::ChildrenRequest,
-    ) -> Result<crate::ChildStream, StreamError> {
-        crate::memory::validate_limit(request.limit)?;
-        let kind = Kind::Children(wire::ChildrenRequest {
-            parent: request.parent.map(|path| path.to_string()),
-            limit: request.limit,
-        });
-        Ok(super::runtime::boxed(
-            self.open_kind(kind, 0, true, None)
-                .await?
-                .filter_map(|item| {
-                    future::ready(match item {
-                        Ok(Received::Child(child)) => Some(Ok(child)),
-                        Ok(Received::Frame(_)) => None,
-                        Ok(_) => Some(Err(StreamError::Unavailable)),
-                        Err(error) => Some(Err(error)),
-                    })
-                }),
-        ))
-    }
+
     async fn open_kind(
         &self,
         kind: Kind,
@@ -580,9 +548,6 @@ impl Client {
         let kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
         match &kind {
             Kind::Follow(follow) => wire_codec::session::validate_follow(follow, &resume)?,
-            Kind::Children(request) => {
-                wire_codec::children_from_wire(request.clone())?;
-            }
             _ => return Err(StreamError::Unsupported),
         }
         Ok(super::runtime::boxed(

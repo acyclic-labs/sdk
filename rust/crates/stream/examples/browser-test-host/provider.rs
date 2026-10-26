@@ -71,9 +71,7 @@ impl StreamProvider for Provider {
             .follow_checked(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.memory.children(request).await
-    }
+
     async fn children_page(
         &self,
         request: ChildrenPageRequest,

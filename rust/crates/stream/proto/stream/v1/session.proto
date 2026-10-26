@@ -59,11 +59,10 @@ message SessionSubscription {
   SessionCursor resume = 2;
   uint32 credential = 3;
   SessionFilter filter = 4;
-  reserved 12; // retired filesystem-publications channel
-  reserved "fs_publications";
+  reserved 11, 12; // retired child discovery and filesystem-publications channels
+  reserved "children", "fs_publications";
   oneof kind {
     SessionFollow follow = 10;
-    ChildrenRequest children = 11;
     bytes actor_socket = 13; // RESERVED FOR actor-sockets: encoded Actors message
     bytes actor_call = 14; // RESERVED FOR actor-sockets: encoded Actors message
   }
@@ -84,7 +83,7 @@ message SessionFollow {
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
-  bytes opaque = 2; // provider-owned children anchor; empty for record follows
+  bytes opaque = 2; // provider-owned product cursor; empty for record follows
 }
 message SessionOpened {
   SessionCursor resume = 1;
@@ -98,11 +97,10 @@ message SessionData {
   SessionCursor after = 1;
   uint64 accepted = 2;
   uint64 durable = 3;
-  reserved 12; // filesystem changes use ordinary Record entries
-  reserved "fs_publication";
+  reserved 11, 12; // retired child discovery and filesystem changes
+  reserved "child", "fs_publication";
   oneof item {
     Record record = 10;
-    Child child = 11;
     bytes actor_socket = 13;
     bytes actor_call = 14;
     SessionLatestValue latest_value = 15;

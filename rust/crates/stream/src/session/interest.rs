@@ -92,7 +92,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
-        let opaque_cursor = matches!(subscription.kind, Some(Kind::Children(_)));
+        let opaque_cursor = false;
         let binding;
         let mut terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
@@ -157,31 +157,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     (latest, source, None)
                 }
             }
-            Some(Kind::Children(request)) => {
-                let request = self.children_request(request, &resume)?;
-                binding = Some(
-                    match self.authority.bind_children(
-                        &self.slots,
-                        subscription.credential,
-                        request.parent.as_ref(),
-                        subscription.filter.unwrap_or_default(),
-                        channels,
-                    ) {
-                        Ok(binding) => binding,
-                        Err(reason) => return Ok(Admission::Denied(identity, reason)),
-                    },
-                );
-                (
-                    false,
-                    children::source(
-                        Arc::clone(&self.provider),
-                        request,
-                        resume.clone(),
-                        identity,
-                    ),
-                    None,
-                )
-            }
             _ => return Err(StreamError::Unsupported),
         };
         Ok(Admission::Open(Box::new(Opened {
@@ -192,18 +167,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         })))
     }
 
-    fn children_request(
-        &self,
-        request: wire::ChildrenRequest,
-        resume: &wire::SessionCursor,
-    ) -> Result<crate::ChildrenRequest, StreamError> {
-        if self.limits.pending_bytes < CHILD_FRAME_BYTES {
-            return Err(StreamError::Capacity);
-        }
-        let request = wire_codec::children_from_wire(request)?;
-        children::validate_resume(&request, resume)?;
-        Ok(request)
-    }
+
 
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         self.sources.remove(id);

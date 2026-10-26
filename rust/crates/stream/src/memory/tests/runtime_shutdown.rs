@@ -41,7 +41,7 @@ fn append(provider: &MemoryStream) -> crate::AppendReceipt {
 // checked records and children and workers cancelled before/after their first poll.
 #[test]
 fn pending_stream_survives_its_polling_runtime() {
-    for (children, checked) in [(false, false), (false, true), (true, false)] {
+    for (_children, checked) in [(false, false), (false, true)] {
         for poll_worker in [false, true] {
             let clock = Arc::new(Clock {
                 armed: AtomicBool::new(false),
@@ -51,15 +51,7 @@ fn pending_stream_survives_its_polling_runtime() {
             let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
             let seed = append(&provider);
             let path = StreamPath::new("watched").unwrap();
-            let mut follow = if children {
-                futures::executor::block_on(provider.children(ChildrenRequest {
-                    parent: None,
-                    limit: 1,
-                }))
-                .unwrap()
-                .map(|child| child.map(|child| assert_eq!(child.path.as_str(), "watched")))
-                .boxed()
-            } else {
+            let mut follow = {
                 let follow = if checked {
                     futures::executor::block_on(provider.follow_checked(
                         path,

@@ -1,4 +1,6 @@
-import { MemoryStreamProvider, StreamClient } from "@acyclic-labs/stream";
+import { MemoryStreamProvider, StreamClient, idempotencyKey } from "@acyclic-labs/stream";
+
+const key = (intent: string) => idempotencyKey(new TextEncoder().encode(intent));
 
 type RunEvent =
   | { readonly type: "run.started" }
@@ -16,8 +18,8 @@ const events = streams.json("runs/run_42", (value): RunEvent => {
   throw new TypeError("expected run event");
 });
 
-await events.append({ type: "run.started" });
-await events.append({ type: "run.completed", output: "typed and durable at the provider boundary" });
+await events.append({ type: "run.started" }, { idempotencyKey: key("quickstart-19") });
+await events.append({ type: "run.completed", output: "typed and durable at the provider boundary" }, { idempotencyKey: key("quickstart-20") });
 
 for await (const record of events.read({ from: 0n, limit: 100 })) {
   console.log(record.sequence, record.value);

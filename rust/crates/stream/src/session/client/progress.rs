@@ -111,16 +111,6 @@ impl Progress {
         }
         Ok(true)
     }
-    pub(super) fn consume_opaque(
-        &self,
-        generation: u64,
-        sequence: u64,
-        opaque: &[u8],
-    ) -> Result<bool, StreamError> {
-        // A child cut counts provider discoveries, including children hidden
-        // by authority. Only consuming an allowed child advances this cursor.
-        self.consume_cut(generation, sequence, opaque, None, true)
-    }
     pub(super) fn consume_latest(
         &self,
         generation: u64,

@@ -231,12 +231,7 @@ impl Pool {
             );
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
-            bytes: (u64::from(capacity)
-                * if matches!(route.kind, Kind::Children(_)) {
-                    CHILD_FRAME_BYTES as u64
-                } else {
-                    FRAME_BYTES
-                })
+            bytes: (u64::from(capacity) * FRAME_BYTES)
             .saturating_sub(route.credit.bytes),
         };
         if grant.frames == 0 && grant.bytes == 0 {

@@ -1,6 +1,5 @@
 include!("cases_0.rs");
 
-mod children;
 #[cfg(not(acyclic_loom))]
 mod parking;
 #[cfg(all(not(acyclic_loom), not(target_arch = "wasm32")))]
@@ -21,3 +20,5 @@ mod work_custody;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod commit_index;
+
+mod subtree;

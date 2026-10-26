@@ -1,7 +1,7 @@
-/// Deterministic process-local provider. It retains each idempotency result and committed
+/// Deterministic process-local provider with durable-lifetime successful request identities.
 #[derive(Clone)]
 pub struct MemoryStream {
-    // Lock order: TaskVolume index -> LocalStream visibility -> state -> watch internals.
+    // Lock order: LocalStream visibility -> state -> watch internals.
     state: Arc<RwLock<State>>,
     operation_claims: Arc<crate::OperationClaims>,
     limits: MemoryLimits,
@@ -66,4 +66,9 @@ impl MemoryStream {
         let digest = commit_digest(&mut request)?;
         self.commit_locked(&mut *self.state.write().await, request, digest, deadline)
     }
+}
+
+#[cfg(acyclic_loom)]
+impl MemoryStream {
+    pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ { self.state.write().await }
 }

@@ -129,7 +129,9 @@ impl LocalStream {
         self.inner.commit_clock.unpin();
         let result = match result {
             Ok(result) => {
-                self.persist(frame).await?;
+                if matches!(result.0, CommitOutcome::Committed(_)) {
+                    self.persist(frame).await?;
+                }
                 Ok(result)
             }
             Err(error) => Err(error),

@@ -9,14 +9,14 @@ canonical Stream v1 RPC, including streaming reads/follow and atomic multi-path
 
 Typed, hierarchical append-only streams with explicit cursors, conditional appends, forks, and coordinated commits. Committed records remain readable from the beginning of a stream; paths and committed history are permanent.
 
-`childrenPage({ parent, limit })` returns direct children with an immutable 32-byte hierarchy version and an optional `nextAfter` cursor. Pass both `after` and `hierarchyVersion` for the next page; a path creation between pages fails with `hierarchy_changed` instead of silently skipping or duplicating agents. `childrenAll(parent, limit)` and its `children(parent, limit)` convenience alias use that same continuation loop, including hierarchies larger than 1,024 children. Ancestor paths are materialized when a nested stream is created.
+`childrenPage({ parent, limit })` returns direct children with an immutable 32-byte hierarchy version and an optional `nextAfter` cursor. Pass both `after` and `hierarchyVersion` for the next page; a path creation between pages fails with `hierarchy_changed` instead of silently skipping or duplicating agents. `childrenPage` is the only listing API. Ancestor paths are materialized when a nested stream is created.
 
 ```sh
 npm install @acyclic-labs/stream
 ```
 
 ```ts
-import { MemoryStreamProvider, StreamClient } from "@acyclic-labs/stream";
+import { MemoryStreamProvider, StreamClient, idempotencyKey } from "@acyclic-labs/stream";
 
 const event = (value: import("@acyclic-labs/stream").JsonValue): { readonly type: string } => {
   if (typeof value !== "object" || value === null || Array.isArray(value) || typeof value.type !== "string") {
@@ -30,7 +30,8 @@ const events = client.json("runs/example", value => {
       !("type" in value) || typeof value.type !== "string") throw new TypeError("expected event");
   return { type: value.type };
 });
-await events.append({ type: "started" });
+const intent = idempotencyKey(new TextEncoder().encode("run/example/started"));
+await events.append({ type: "started" }, { idempotencyKey: intent });
 for await (const record of events.read({ from: 0n, limit: 100 })) {
   console.log(record.sequence, record.value.type);
 }
@@ -56,4 +57,8 @@ does not publish a token RPC. Browsers use the HTTP provider.
 
 For a service, use `new StreamClient(new HttpStreamProvider({ endpoint, token }))` or `Stream.fromEnv()` with `ACYCLIC_STREAM_ENDPOINT` and `ACYCLIC_API_KEY`. Service endpoints must be HTTPS. Sequence numbers are `bigint`; persist the last consumed cursor and resume reads or `follow` from the appropriate position. Use `ifTail` for optimistic append concurrency and an idempotency key when retrying mutations.
 
-`MemoryStreamProvider` runs the Rust memory provider through package-local WebAssembly and is process-local. In a browser tab or worker, `new BrowserStreamProvider(databaseName)` uses the same Rust operations with strict IndexedDB publication and bounded restart recovery. Optional `maximumCommands` and `maximumJournalBytes` set the durable retention ceilings; all openers of one database must use identical limits. Atomicity covers one named database. Origin quotas and browser storage eviction remain platform limits. Exact retries retain their original outcomes, including conflicts, at capacity and across reloads. Follow polls durable state while consumed and supports `AbortSignal` cancellation. See the [full quickstart](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/stream/examples/quickstart.ts), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/stream/src), and [protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/stream/proto/stream).
+`MemoryStreamProvider` runs the Rust memory provider through package-local WebAssembly and is process-local. In a browser tab or worker, `new BrowserStreamProvider(databaseName)` uses the same Rust operations with strict IndexedDB publication and bounded restart recovery. Optional `maximumCommands` and `maximumJournalBytes` set the durable retention ceilings; all openers of one database must use identical limits. Atomicity covers one named database. Origin quotas and browser storage eviction remain platform limits. Successful retries retain their original outcomes at capacity and across reloads. Conditional rejection leaves the key free. Follow receives publication notifications over BroadcastChannel and supports `AbortSignal` cancellation. See the [full quickstart](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/stream/examples/quickstart.ts), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/stream/src), and [protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/stream/proto/stream).
+
+Stream helpers require an explicit `idempotencyKey`. Keep one key per intent and reuse it after a definitive conditional rejection. `ifTail: 0n` accepts an absent path in a coordinated commit. After uncertain transport completion, retry the exact request until resolved.
+
+Forks inherit the entire pre-commit subtree by reference; later appends remain private. `exclude: ["children"]` omits a relative segment prefix, and destinations may be nested under the source. Forks and binding appends compose in one atomic commit. HTTP follows use one shared session connection with per-channel credit and resumable cursors.

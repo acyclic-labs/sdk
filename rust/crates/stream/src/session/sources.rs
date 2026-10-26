@@ -273,6 +273,7 @@ impl Sources {
         })
     }
     #[cfg(test)]
+    #[cfg(test)]
     pub(super) fn next(
         &mut self,
         room: (bool, bool, bool),
@@ -338,7 +339,7 @@ impl Channel {
             // One bounded lookahead permits metadata progress without data
             // credit. A matching record fills the queue and stops this path.
             let latest = (self.latest && self.pending.len() < 3)
-                || (self.pending.is_empty() && self.binding.as_ref().is_some_and(|b| !b.children));
+                || (self.pending.is_empty() && self.binding.is_some());
             match (all, latest) {
                 (true, true) => Some(EITHER),
                 (true, false) => Some(ALL),

@@ -172,7 +172,7 @@ impl Responses {
                     return Poll::Ready(None);
                 }
                 if !value.is_instance_of::<Uint8Array>() {
-                    return Poll::Ready(Some(Err(StreamError::Unavailable)));
+                    return Poll::Ready(Some(Err(StreamError::InvalidResponse)));
                 }
                 let bytes = Uint8Array::new(&value);
                 if bytes.length() as usize > MAX_COMMAND_BYTES {

@@ -5,10 +5,12 @@ impl MemoryStream {
         from: u64,
         anchor: Option<CommitId>,
     ) -> Result<(watch::Receiver<u64>, HistoryCursor), StreamError> {
-        let state = self.state.read().await;
-        let path = state.paths.get(path).ok_or(StreamError::NotFound)?;
-        let cursor = HistoryCursor::prepare(path, from, anchor)?;
-        Ok((path.changed.subscribe(), cursor))
+        let mut state = self.state.write().await;
+        let stream = state.paths.get(path).ok_or(StreamError::NotFound)?;
+        let cursor = HistoryCursor::prepare(stream, from, anchor)?;
+        let tail = stream.tail;
+        let signals = state.signals.entry(path.clone()).or_insert_with(|| Signals::new(tail));
+        Ok((signals.changed.subscribe(), cursor))
     }
 
     pub(crate) async fn next_follow_update(

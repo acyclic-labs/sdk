@@ -56,7 +56,6 @@ pub(super) struct Counts {
     pub(super) sent: AtomicUsize,
     pub(super) follows: AtomicUsize,
     pub(super) removals: AtomicUsize,
-    pub(super) children: AtomicUsize,
     // Fixture locks are never nested and never cross an await.
     pub(super) traffic: Mutex<std::collections::BTreeMap<(usize, u64, u64), Traffic>>,
     pub(super) actors: AtomicUsize,
@@ -103,11 +102,8 @@ impl Counts {
         self.removals
             .fetch_add(interest.remove.len(), Ordering::Relaxed);
         for subscription in &interest.upsert {
-            if matches!(subscription.kind, Some(Kind::Children(_))) {
-                self.children.fetch_add(1, Ordering::Relaxed);
-            }
             match subscription.kind {
-                Some(Kind::Follow(_) | Kind::Children(_)) => {
+                Some(Kind::Follow(_)) => {
                     self.follows.fetch_add(1, Ordering::Relaxed);
                     if let (Some(channel), Some(resume)) =
                         (subscription.channel, subscription.resume.as_ref())

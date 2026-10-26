@@ -88,9 +88,6 @@ pub use local::replay_model::{
 #[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
-#[cfg(all(acyclic_loom, feature = "local"))]
-/// Bounded models of the real child-discovery providers.
-pub use memory::discovery_model as discovery_verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
@@ -145,7 +142,6 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("append", "append"),
     ("fork", "fork"),
     ("read", "records"),
-    ("children", "children"),
     ("children/page", "children_page"),
     ("commit", "commit"),
     ("commits/read", "envelope"),

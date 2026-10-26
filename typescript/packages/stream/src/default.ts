@@ -1,5 +1,5 @@
 import { HttpStreamProvider } from "./http.js";
-import { StreamError, type ChildrenRequest, type StreamEnvironment, type StreamProvider } from "./types.js";
+import { StreamError, type StreamEnvironment, type StreamProvider } from "./types.js";
 
 type ProviderSelection = {
   readonly promise: Promise<StreamProvider>;
@@ -141,17 +141,8 @@ export class DefaultStreamProvider implements StreamProvider {
     const authored = structuredClone(request);
     return this.provider().then(provider => provider.childrenPage(authored));
   }
-  children(request: ChildrenRequest) {
-    const authored = { limit: request.limit, ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.signal === undefined ? {} : { signal: request.signal }) };
-    return this.childrenAfterSelection(authored);
-  }
-  private async *childrenAfterSelection(request: ChildrenRequest) {
-    const provider = await this.acquireProvider(request.signal);
-    if (provider === undefined || request.signal?.aborted) return;
-    if (provider.children === undefined) throw new StreamError("unsupported", "provider does not support live child discovery");
-    yield* provider.children(request);
-  }
+
+
   commit(request: Parameters<StreamProvider["commit"]>[0], options: Parameters<StreamProvider["commit"]>[1]) {
     const authoredRequest = structuredClone(request);
     const authoredOptions = structuredClone(options);

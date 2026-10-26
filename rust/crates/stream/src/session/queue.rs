@@ -12,22 +12,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             if let Err(reason) = self.validate_authority(identity.channel_id) {
                 return self.close_authority(identity, reason);
             }
-            if let Ok(Event::Child(child, _)) = &record {
-                let count = self.channels.len();
-                let binding = self
-                    .channels
-                    .get_mut(&identity.channel_id)
-                    .and_then(|channel| channel.binding.as_mut())
-                    .ok_or(StreamError::AccessDenied)?;
-                match self
-                    .authority
-                    .permits_child(&self.slots, binding, &child.path, count)
-                {
-                    Ok(true) => {}
-                    Ok(false) => return Ok(()),
-                    Err(reason) => return self.close_authority(identity, reason),
-                }
-            }
         }
         let Some(channel) = self.channels.get(&identity.channel_id).filter(|channel| {
             channel.generation == identity.generation && channel.ending.is_none()
@@ -57,13 +41,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 self.refresh_source(identity.channel_id);
                 return Ok(());
             }
-            Ok(Event::Child(child, after)) => (
-                after,
-                Item::Child(wire::Child {
-                    path: child.path.to_string(),
-                }),
-                None,
-            ),
             Ok(Event::Record(record)) => {
                 let next = record
                     .sequence

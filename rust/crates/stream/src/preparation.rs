@@ -29,7 +29,16 @@ pub(crate) fn condition_conflict(
 ) -> Result<Option<CommitConflict>, StreamError> {
     let path = crate::request::condition_path(condition);
     Ok(match condition {
-        CommitCondition::Tail { expected, .. } | CommitCondition::Head { expected, .. }
+        CommitCondition::Tail { expected, .. }
+            if actual.unwrap_or(0) != *expected =>
+        {
+            Some(CommitConflict::Tail {
+                path: path.clone(),
+                expected: *expected,
+                actual,
+            })
+        }
+        CommitCondition::Head { expected, .. }
             if actual != Some(*expected) =>
         {
             Some(CommitConflict::Tail {
@@ -136,6 +145,7 @@ pub(crate) fn facts(
                 source,
                 destination,
                 at_tail,
+                exclude,
                 ..
             } => {
                 let tail = start
@@ -144,7 +154,8 @@ pub(crate) fn facts(
                     )
                     .ok_or(StreamError::LimitExceeded)?;
                 CommittedMutation::Fork(CommittedFork {
-                    source: source.clone(),
+                    exclude: exclude.clone(),
+source: source.clone(),
                     destination: destination.clone(),
                     forked_at: *at_tail,
                     tail,

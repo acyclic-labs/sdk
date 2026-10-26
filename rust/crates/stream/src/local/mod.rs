@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 #[cfg(all(not(acyclic_loom), not(feature = "test-support")))]
 use tokio::{spawn, task::spawn_blocking};
 
-mod children;
+
 #[cfg(acyclic_loom)]
 pub(crate) mod parking_model;
 #[cfg(test)]
@@ -36,8 +36,7 @@ use tracing::field::Empty;
 use crate::journal::{Command, decode_command, replay};
 use crate::obs;
 use crate::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest,
     RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
     UnixMillisClock,
@@ -61,8 +60,6 @@ const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 #[cfg(acyclic_loom)]
 pub(crate) mod compaction_model;
-#[cfg(acyclic_loom)]
-pub(crate) mod discovery_model;
 #[cfg(acyclic_loom)]
 pub(crate) mod follow_model;
 #[cfg(acyclic_loom)]

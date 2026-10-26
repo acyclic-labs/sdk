@@ -74,7 +74,6 @@ pub(super) struct Slots {
 }
 
 pub(super) struct Binding {
-    pub(super) children: bool,
     credential_revision: u64,
     pub(super) slot: u32,
     resource: String,
@@ -198,9 +197,7 @@ impl Authority {
         };
         let request = Request {
             target: Target::Resource {
-                action: if binding.children {
-                    "streams/list"
-                } else if binding.resource_authorization.is_some() {
+                action: if binding.resource_authorization.is_some() {
                     "fs/list"
                 } else {
                     "streams/follow"
@@ -216,9 +213,7 @@ impl Authority {
             cpu_millis: 0,
             memory_bytes: 0,
         };
-        if binding.children {
-            capability.authorize_children(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
-        } else if binding.resource_authorization.is_some() {
+        if binding.resource_authorization.is_some() {
             capability.authorize_resource_follow(
                 snapshot.trust.as_ref(),
                 &request,
@@ -256,7 +251,6 @@ impl Authority {
         channels: usize,
     ) -> Result<(Binding, crate::FollowFilter), Rejection> {
         let mut binding = Binding {
-            children: false,
             credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
             slot,
             resource: stream_resource(Some(path)),
@@ -284,7 +278,6 @@ impl Authority {
         let authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
         let mut binding = Binding {
-            children: false,
             credential_revision: *revision,
             slot,
             resource,
@@ -296,49 +289,8 @@ impl Authority {
         binding.filter_digest = filter.digest();
         Ok((binding, filter, authorization))
     }
-    pub(super) fn bind_children(
-        &self,
-        slots: &Slots,
-        slot: u32,
-        parent: Option<&StreamPath>,
-        requested: wire::SessionFilter,
-        channels: usize,
-    ) -> Result<Binding, Rejection> {
-        let mut binding = Binding {
-            children: true,
-            credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
-            slot,
-            resource: stream_resource(parent),
-            requested,
-            filter_digest: [0; 32],
-            resource_authorization: None,
-        };
-        binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
-        Ok(binding)
-    }
-    pub(super) fn permits_child(
-        &self,
-        slots: &Slots,
-        binding: &mut Binding,
-        child: &StreamPath,
-        channels: usize,
-    ) -> Result<bool, Rejection> {
-        self.validate(slots, binding, channels)?;
-        let child_binding = Binding {
-            children: true,
-            credential_revision: binding.credential_revision,
-            slot: binding.slot,
-            resource: stream_resource(Some(child)),
-            requested: binding.requested.clone(),
-            filter_digest: binding.filter_digest,
-            resource_authorization: None,
-        };
-        match self.filter(slots, &child_binding, channels) {
-            Ok(filter) => Ok(filter.matches_child(child)),
-            Err(Rejection::Forbidden) => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
+
+
     pub(super) fn validate(
         &self,
         slots: &Slots,

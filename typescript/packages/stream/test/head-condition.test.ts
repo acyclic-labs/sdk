@@ -7,7 +7,7 @@ const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 test("head conditions retain commit identity through the client, WASM provider and retries", async () => {
   const client = StreamClient.memory();
   const stream = client.bytes("head");
-  const first = await stream.append(new Uint8Array([1]));
+  const first = await stream.append(new Uint8Array([1]), { idempotencyKey: key("head-condition.test-10") });
   if (!first.ok) throw new Error("seed failed");
   const wrong = commitId(new Uint8Array(32).fill(42));
   const result = await client.commit({

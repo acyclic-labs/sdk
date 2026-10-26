@@ -135,20 +135,6 @@ impl FollowFilter {
         self.clauses().iter().all(|clause| clause.matches(headers))
     }
 
-    /// Child identities are paths, not bounded record keys. Discovery supplies
-    /// no record attributes, so an attribute constraint cannot match a child.
-    #[cfg(any(
-        test,
-        all(feature = "grpc", not(target_arch = "wasm32")),
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
-    pub(crate) fn matches_child(&self, child: &crate::StreamPath) -> bool {
-        self.clauses().iter().all(|clause| {
-            (clause.filter.keys.is_empty() || clause.contains(child.as_str().as_bytes()))
-                && clause.filter.attributes.is_empty()
-        })
-    }
-
     fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
         self.clauses().iter().all(|clause| {
             (clause.filter.keys.is_empty() || clause.contains(key))
@@ -344,26 +330,6 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn child_paths_keep_path_bounds_and_every_filter_constraint() -> Result<(), StreamError> {
-        let path = crate::StreamPath::new("a".repeat(crate::MAX_PATH_BYTES))?;
-        assert!(RecordHeaders::new(vec![path.as_str().into()], vec![]).is_err());
-        let filter = FollowFilter::new(wire::SessionFilter {
-            keys: vec![range(b"a", b"b")],
-            ..Default::default()
-        })?;
-        assert!(filter.matches_child(&path));
-        assert!(!filter.matches_child(&crate::StreamPath::new("b")?));
-        let attributes = FollowFilter::new(wire::SessionFilter {
-            attributes: vec![wire::AttributeMatch {
-                name: "owner".into(),
-                any_of: vec![b"alice".as_slice().into()],
-            }],
-            ..Default::default()
-        })?;
-        assert!(!attributes.matches_child(&path));
-        Ok(())
-    }
     fn range(start: &'static [u8], end: &'static [u8]) -> wire::KeyRange {
         wire::KeyRange {
             start: start.into(),

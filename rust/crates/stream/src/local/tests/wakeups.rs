@@ -47,9 +47,7 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let mut records = Vec::new();
-    let mut children = Vec::new();
     let mut wakes = Vec::new();
-    let mut child_wakes = Vec::new();
     for id in 0..32 {
         let parent = StreamPath::new(format!("agents/a{id}"))?;
         let path = StreamPath::new(format!("{}/data", parent.as_str()))?;
@@ -59,21 +57,12 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         wakes.push(probe(follow.as_mut()));
         records.push(follow);
-        let mut discovery = provider
-            .children(ChildrenRequest {
-                parent: Some(parent),
-                limit: 1,
-            })
-            .await?;
-        assert!(discovery.next().await.is_some());
-        child_wakes.push(probe(discovery.as_mut()));
-        children.push(discovery);
+
     }
     // Seeding must not have woken earlier, unrelated subscriptions either.
     assert!(
         wakes
             .iter()
-            .chain(&child_wakes)
             .all(|wake| wake.0.load(Ordering::SeqCst) == 0),
         "seeding woke unrelated subscriptions"
     );
@@ -91,7 +80,6 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         unrelated
             .iter()
-            .chain(&child_wakes)
             .all(|wake| wake.0.load(Ordering::SeqCst) == 0),
         "append woke unrelated subscriptions"
     );
@@ -115,14 +103,12 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         wakes
             .iter()
-            .chain(&child_wakes)
             .all(|wake| wake.0.load(Ordering::SeqCst) > 0)
     );
     assert_failed(&mut records).await?;
-    assert_failed(&mut children).await?;
     assert_eq!(provider.inner.failed.receiver_count(), 0);
     eprintln!(
-        "local_push subscriptions=64 accepted_record_wakes=1 unrelated_wakes=0 failure_wakes=64"
+        "local_push subscriptions=32 accepted_record_wakes=1 unrelated_wakes=0 failure_wakes=32"
     );
     Ok(())
 }
@@ -143,21 +129,12 @@ async fn negative_control_broadcasts_every_accepted_append() {
 #[tokio::test]
 async fn dropped_consumers_leave_no_queued_publication_reservation()
 -> Result<(), Box<dyn std::error::Error>> {
-    for (keep, children) in [(false, false), (false, true), (true, false), (true, true)] {
+    for keep in [false, true] {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let path = StreamPath::new("watched")?;
         append(&provider, path.clone()).await?;
-        let mut follow = if children {
-            provider
-                .children(ChildrenRequest {
-                    parent: None,
-                    limit: 1,
-                })
-                .await?
-                .map(|item| item.map(|_| ()))
-                .boxed()
-        } else {
+        let mut follow = {
             provider
                 .follow(path, 0, crate::FollowFilter::default())
                 .await?
@@ -178,7 +155,7 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
         assert_eq!(
             provider.inner.publication.try_write().is_ok(),
             !keep,
-            "keep={keep} children={children}"
+            "keep={keep}"
         );
         if let Some(mut follow) = kept {
             assert!(matches!(follow.next().await, Some(Ok(()))));

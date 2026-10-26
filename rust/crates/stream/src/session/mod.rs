@@ -21,7 +21,7 @@ pub use authority::{Authority, AuthorityState, TrustSnapshot};
 mod sources;
 #[cfg(acyclic_stream_loom)]
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
-mod children;
+
 mod resources;
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
@@ -49,19 +49,13 @@ pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
     verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_cancel_before_open,
-    verify_discovery_admission, verify_follow_data, verify_initial_retry_yield,
+    verify_follow_data, verify_initial_retry_yield,
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
     verify_registration_deadline, verify_terminal_cursor_dial,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
-// Child frames carry both their path and the provider-owned resume anchor.
-const CHILD_FRAME_BYTES: usize = 2 * crate::MAX_PATH_BYTES + 128;
-const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES + 128 {
-    CHILD_FRAME_BYTES
-} else {
-    crate::MAX_RECORD_BYTES + 128
-};
+const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
 #[cfg(acyclic_stream_loom)]
 pub use client::verify_latest_progress;
 #[cfg(test)]
@@ -110,7 +104,6 @@ enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Progress(wire::SessionWatermark),
-    Child(crate::Child, wire::SessionCursor),
 }
 type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
 type Source = crate::BoxProviderStream<'static, SourceItem>;

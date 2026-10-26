@@ -1,3 +1,7 @@
+/// A nonempty slash-separated path relative to a fork source.
+/// Uses the same canonical segment rules as account-relative stream paths.
+pub type RelativePath = StreamPath;
+
 /// Opaque content-bound identity of one committed envelope.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CommitId([u8; 32]);
@@ -147,7 +151,7 @@ pub struct AppendRequest {
     pub idempotency_key: Option<IdempotencyKey>,
 }
 
-/// Successful O(1) immutable-prefix fork.
+/// Successful immutable subtree fork, constant in descendant count.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForkReceipt {
     /// Source path.
@@ -162,9 +166,13 @@ pub struct ForkReceipt {
     pub commit_id: CommitId,
 }
 
-/// One fork request. Absence of `at_tail` selects the source tail atomically.
+/// Forks a subtree at one pre-commit cut. `at_tail` selects the root stream
+/// prefix; descendants inherit their entire pre-commit histories. Absence of
+/// `at_tail` selects the root tail atomically.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForkRequest {
+    /// Segment-relative subtree prefixes omitted from the inherited namespace.
+    pub exclude: Vec<RelativePath>,
     /// Existing source.
     pub source: StreamPath,
     /// Absent destination.
@@ -205,22 +213,18 @@ pub struct StreamWatermarks {
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {
+    /// Last record of the requested relative stream at this page cut.
+    pub tail_record: Option<Record>,
     /// Exact child path.
     pub path: StreamPath,
 }
 
-/// Live direct-child discovery request.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChildrenRequest {
-    /// Parent, or `None` for top-level paths.
-    pub parent: Option<StreamPath>,
-    /// Nonzero bound on each replay fetch; the subscription remains live.
-    pub limit: u32,
-}
 
 /// Bounded hierarchy traversal. A continuation is valid only while the
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPageRequest {
+    /// Optional relative stream whose last record is projected under each child.
+    pub tail_stream: Option<RelativePath>,
     /// Parent, or `None` for top-level paths.
     pub parent: Option<StreamPath>,
     /// Last path from the preceding page; exclusive.
@@ -260,6 +264,8 @@ pub struct CommittedAppend {
 /// Fork fact retained in a committed envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommittedFork {
+    /// Canonical segment-relative prefixes omitted at the captured cut.
+    pub exclude: Vec<RelativePath>,
     /// Source.
     pub source: StreamPath,
     /// Destination.
@@ -302,7 +308,7 @@ pub enum CommitCondition {
         /// Required identity of the record at `expected - 1`.
         commit_id: CommitId,
     },
-    /// Existing tail must match.
+    /// Tail must match; an absent path has tail zero.
     Tail {
         /// Existing path.
         path: StreamPath,
@@ -326,8 +332,11 @@ pub enum CommitMutation {
         /// Opaque records.
         records: Vec<AppendRecord>,
     },
-    /// Fork one pre-commit prefix into a new destination, then append
+    /// Share the entire pre-commit subtree at a new destination. `at_tail`
+    /// selects the root prefix; descendants retain their pre-commit heads. Append
     Fork {
+        /// Segment-relative prefixes omitted from the inherited namespace.
+        exclude: Vec<RelativePath>,
         /// Source.
         source: StreamPath,
         /// Destination.
@@ -437,11 +446,11 @@ pub enum CommitOutcome {
 /// Terminal result retained under one account-scoped retry identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IdempotencyOutcome {
-    /// Append success or tail conflict.
+    /// Successful append. Failed conditions never retain an outcome.
     Append(AppendOutcome),
     /// Successful immutable-prefix fork.
     Fork(ForkReceipt),
-    /// Coordinated commit success or exact conflict.
+    /// Successful coordinated commit. Conflicts leave the key unspent.
     Commit(CommitOutcome),
 }
 
@@ -476,5 +485,3 @@ pub enum FollowUpdate {
 
 /// Ordered records and skipped-prefix observations from one atomic follow.
 pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
-/// Backpressured fixed-snapshot direct-child listing.
-pub type ChildStream = BoxProviderStream<'static, Result<Child, StreamError>>;

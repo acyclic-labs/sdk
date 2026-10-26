@@ -43,21 +43,6 @@ fn negative_control_strict_consumption_cannot_apply_a_conflated_jump() {
 }
 
 #[test]
-fn child_cut_skips_hidden_discoveries_only_when_consumed_in_the_current_generation()
--> Result<(), StreamError> {
-    let progress = Progress::new(0);
-    assert_eq!(progress.next()?, 0);
-    assert_eq!(progress.consume_opaque(1, 1, b"agents/public"), Ok(true));
-    assert_eq!(progress.position()?, (2, b"agents/public".to_vec()));
-    assert_eq!(progress.fence(), Ok(2));
-    assert_eq!(progress.consume_opaque(1, 5, b"agents/stale"), Ok(false));
-    assert_eq!(progress.position()?, (2, b"agents/public".to_vec()));
-    assert_eq!(progress.consume_opaque(2, 0, b"agents/old"), Ok(false));
-    assert_eq!(progress.position()?, (2, b"agents/public".to_vec()));
-    Ok(())
-}
-
-#[test]
 fn overflow_and_checked_history_cannot_partially_apply_a_latest_cut() {
     let progress = Progress::new(1);
     assert_eq!(

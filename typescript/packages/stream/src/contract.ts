@@ -5,7 +5,7 @@ import {
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
-  ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
+  ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
@@ -95,8 +95,7 @@ type WireRequest =
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
-  | { readonly kind: "children"; readonly parent?: string; readonly limit: number }
-  | { readonly kind: "children_page"; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
+  | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -134,7 +133,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
         if (request.options?.atTail !== undefined) requireSequenceType(request.options.atTail);
         if (request.options?.idempotencyKey !== undefined) requireBytesType(request.options.idempotencyKey);
         return toBinary(ForkRequestSchema, create(ForkRequestSchema, {
-          source: request.source, destination: request.destination,
+          source: request.source, destination: request.destination, exclude: [...(request.options?.exclude ?? [])],
           ...(request.options?.atTail === undefined ? {} : { atTail: request.options.atTail }),
           ...(request.options?.idempotencyKey === undefined ? {} : { idempotencyKey: request.options.idempotencyKey }),
         }));
@@ -147,19 +146,15 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requirePathType(request.path);
         requireSequenceType(request.from);
         return toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: request.path, from: request.from }));
-      case "children":
-        if (request.parent !== undefined) requirePathType(request.parent);
-        requireLimitType(request.limit);
-        return toBinary(ChildrenRequestSchema, create(ChildrenRequestSchema, {
-          limit: request.limit, ...(request.parent === undefined ? {} : { parent: request.parent }),
-        }));
       case "children_page":
+        if (request.tailStream !== undefined) requirePathType(request.tailStream);
         if (request.parent !== undefined) requirePathType(request.parent);
         if (request.after !== undefined) requirePathType(request.after);
         if (request.hierarchyVersion !== undefined) requireBytesType(request.hierarchyVersion);
         requireLimitType(request.limit);
         return toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
           limit: request.limit,
+          ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
           ...(request.parent === undefined ? {} : { parent: request.parent }),
           ...(request.after === undefined ? {} : { after: request.after }),
           ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
@@ -252,6 +247,7 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
           source: mutation.fork.source,
           destination: mutation.fork.destination,
           atTail: mutation.fork.atTail,
+          exclude: [...(mutation.fork.exclude ?? [])],
           records: mutation.fork.values.map(value => create(AppendRecordSchema, { value: value.slice() })),
         }) },
       });
@@ -292,7 +288,7 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
         };
         case "fork": {
           const value = mutation.mutation.value;
-          return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, values: value.records.map(record => record.value.slice()) } };
+          return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => record.value.slice()) } };
         }
         default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
       }

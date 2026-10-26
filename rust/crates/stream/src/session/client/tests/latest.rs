@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    AppendOutcome, ChildStream, ChildrenRequest, CommitId, CommitOutcome, CommitRequest,
+    AppendOutcome, CommitId, CommitOutcome, CommitRequest,
     CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
     ReadRequest, StreamBounds,
 };
@@ -80,9 +80,7 @@ impl StreamProvider for Arc<Counted> {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.memory.read(request).await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.memory.children(request).await
-    }
+
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.memory.commit(request).await
     }

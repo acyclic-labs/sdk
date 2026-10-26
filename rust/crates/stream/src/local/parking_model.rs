@@ -6,7 +6,7 @@ use std::{mem::ManuallyDrop, task::Context};
 // writer without polling its stream. Every schedule must release the handed-off
 // read permit. Lock order is the production publication -> provider -> watches;
 // the result watch is published only after the operation releases all locks.
-pub(crate) fn verify(retain_pending: bool, children: bool, memory: bool) {
+pub(crate) fn verify(retain_pending: bool, memory: bool) {
     loom::model(move || {
         let mut provider = query_model::fixture(false).unwrap();
         Arc::get_mut(&mut provider.inner)
@@ -21,15 +21,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, memory: bool) {
             idempotency_key: None,
         }))
         .unwrap();
-        let follow: futures::stream::BoxStream<'static, _> = if children {
-            block_on(provider.children(ChildrenRequest {
-                parent: None,
-                limit: 1,
-            }))
-            .unwrap()
-            .map(|child| child.map(|_| ()))
-            .boxed()
-        } else {
+        let follow: futures::stream::BoxStream<'static, _> = {
             block_on(provider.follow(path, 0, crate::FollowFilter::default()))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
@@ -41,7 +33,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, memory: bool) {
         } else {
             futures::future::Either::Right(block_on(provider.inner.publication.write()))
         };
-        let (_, wake) = crate::discovery_verification::probe();
+        let (_, wake) = crate::verification::probe();
         assert!(
             follow
                 .as_mut()
@@ -66,7 +58,6 @@ pub(crate) fn verify(retain_pending: bool, children: bool, memory: bool) {
 // Every consumer departure from a real dispatched job on the publication lock.
 pub(crate) fn abandon(
     departure: crate::snapshot::model::Departure,
-    children: bool,
     mutant: crate::snapshot::model::Mutant,
 ) {
     loom::model(move || {
@@ -81,15 +72,7 @@ pub(crate) fn abandon(
             idempotency_key: None,
         }))
         .unwrap();
-        let follow: futures::stream::BoxStream<'static, _> = if children {
-            block_on(provider.children(ChildrenRequest {
-                parent: None,
-                limit: 1,
-            }))
-            .unwrap()
-            .map(|child| child.map(|_| ()))
-            .boxed()
-        } else {
+        let follow: futures::stream::BoxStream<'static, _> = {
             block_on(provider.follow(path, 0, crate::FollowFilter::default()))
                 .unwrap()
                 .map(|record| record.map(|_| ()))

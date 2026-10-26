@@ -193,25 +193,6 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         let mut checked = client
             .follow_checked(path.clone(), 1, anchor, crate::FollowFilter::default())
             .await?;
-        let mut children = client
-            .children(ChildrenRequest {
-                parent: Some(StreamPath::new("agents")?),
-                limit: 1,
-            })
-            .await?;
-        assert!(futures::poll!(children.next()).is_pending());
-        for name in ["m", "a"] {
-            let path = format!("agents/{name}");
-            append(&provider, &path).await?;
-            assert_eq!(
-                tokio::time::timeout(Duration::from_secs(1), children.next())
-                    .await?
-                    .ok_or("children ended")??
-                    .path
-                    .as_str(),
-                path
-            );
-        }
         append(&provider, "events").await?;
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), checked.next())
@@ -230,8 +211,6 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
                 1
             );
         }
-        assert!(futures::poll!(children.next()).is_pending());
-        drop(children);
         let mut measured = follows.pop().ok_or("missing measured follow")?;
         drop(follows);
         measure_append_follow(&provider, &mut measured).await?;
@@ -288,12 +267,6 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
                 crate::FollowFilter::default(),
             )
             .await?;
-        let mut children = client
-            .children(ChildrenRequest {
-                parent: Some(StreamPath::new("agents")?),
-                limit: 1,
-            })
-            .await?;
         append(&provider, "events").await?;
         append(&provider, "agents/one").await?;
         assert_eq!(
@@ -302,14 +275,6 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
                 .ok_or("missing TLS record")??
                 .sequence,
             1
-        );
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), children.next())
-                .await?
-                .ok_or("missing TLS child")??
-                .path
-                .as_str(),
-            "agents/one"
         );
         assert_eq!(sessions.load(Ordering::Relaxed), 1);
         Ok(())

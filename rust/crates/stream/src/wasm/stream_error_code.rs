@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamErrorCode {
+    InvalidResponse,
     InvalidPath,
     InvalidArgument,
     LimitExceeded,

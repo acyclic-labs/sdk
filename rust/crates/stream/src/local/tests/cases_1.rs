@@ -238,7 +238,8 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
     let path = StreamPath::new("failed-replay")?;
     let invalid = PreparedFrame::encode(
         &Command::Fork(ForkRequest {
-            source: StreamPath::new("missing-source")?,
+            exclude: Vec::new(),
+source: StreamPath::new("missing-source")?,
             destination: path.clone(),
             at_tail: None,
             idempotency_key: None,
@@ -465,7 +466,8 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     }
     reopened
         .fork(ForkRequest {
-            source: StreamPath::new("compacted")?,
+            exclude: Vec::new(),
+source: StreamPath::new("compacted")?,
             destination: StreamPath::new("compacted-fork")?,
             at_tail: Some(21),
             idempotency_key: None,

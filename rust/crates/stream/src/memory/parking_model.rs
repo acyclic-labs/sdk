@@ -7,7 +7,7 @@ use std::{
 
 // Lock order: state -> path watch. Stop polling the real returned stream before
 // handoff, then require a real append to finish before polling that stream again.
-pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
+pub(crate) fn verify(retain_pending: bool, checked: bool) {
     loom::model(move || {
         let mut provider = MemoryStream::default();
         provider.retain_pending_read = retain_pending;
@@ -22,19 +22,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
         .unwrap() else {
             unreachable!()
         };
-        let follow = if children {
-            block_on(provider.children(ChildrenRequest {
-                parent: None,
-                limit: 1,
-            }))
-            .unwrap()
-            .map(|child| {
-                child.map(|child| {
-                    assert_eq!(child.path.as_str(), "watched");
-                })
-            })
-            .boxed()
-        } else {
+        let follow = {
             let follow = if checked {
                 block_on(provider.follow_checked(
                     path.clone(),
@@ -85,7 +73,6 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
 // releasing the state writer, including fair handoff to a granted read.
 pub(crate) fn shutdown(
     discard: bool,
-    children: bool,
     checked: bool,
     cancel: bool,
     poll_worker: bool,
@@ -103,15 +90,7 @@ pub(crate) fn shutdown(
         .unwrap() else {
             unreachable!()
         };
-        let follow = if children {
-            block_on(provider.children(ChildrenRequest {
-                parent: None,
-                limit: 1,
-            }))
-            .unwrap()
-            .map(|child| child.map(|child| assert_eq!(child.path.as_str(), "watched")))
-            .boxed()
-        } else {
+        let follow = {
             let follow = if checked {
                 block_on(provider.follow_checked(
                     path.clone(),
@@ -192,7 +171,6 @@ pub(crate) fn shutdown(
 // Every consumer departure from a real dispatched memory snapshot job.
 pub(crate) fn abandon(
     departure: crate::snapshot::model::Departure,
-    children: bool,
     mutant: crate::snapshot::model::Mutant,
 ) {
     loom::model(move || {
@@ -207,15 +185,7 @@ pub(crate) fn abandon(
             idempotency_key: None,
         }))
         .unwrap();
-        let follow = if children {
-            block_on(provider.children(ChildrenRequest {
-                parent: None,
-                limit: 1,
-            }))
-            .unwrap()
-            .map(|child| child.map(|_| ()))
-            .boxed()
-        } else {
+        let follow = {
             block_on(provider.follow(path, 0, crate::FollowFilter::default()))
                 .unwrap()
                 .map(|record| record.map(|_| ()))

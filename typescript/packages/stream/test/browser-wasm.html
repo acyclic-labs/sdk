@@ -19,7 +19,7 @@ import { validateWireRequest } from "../dist/contract.js";
 try {
   const client = StreamClient.memory();
   const stream = client.bytes("browser/events");
-  const appended = await stream.append(new Uint8Array([1]));
+  const appended = await stream.append(new Uint8Array([1]), { idempotencyKey: new Uint8Array([1]) });
   if (!appended.ok || appended.tail !== 1n) throw new Error("browser append failed");
   if (await stream.tail() !== 1n) throw new Error("browser tail validation failed");
   await client.provider.fork("browser/same", "browser/same").then(
@@ -34,8 +34,8 @@ try {
   await validateWireRequest({ kind: "fork", source: "browser/events", destination: "browser/copy", options: { atTail: 0n, idempotencyKey: new Uint8Array([4]) } });
   await validateWireRequest({ kind: "read", path: "browser/events", from: 0n, limit: 1 });
   await validateWireRequest({ kind: "follow", path: "browser/events", from: 0n });
-  await validateWireRequest({ kind: "children", parent: "browser", limit: 1 });
-  await stream.appendBatch(Array(17).fill(new Uint8Array(65_536))).then(
+  await validateWireRequest({ kind: "children_page", parent: "browser", limit: 1 });
+  await stream.appendBatch(Array(17).fill(new Uint8Array(65_536)), { idempotencyKey: new Uint8Array([5]) }).then(
     () => { throw new Error("oversized browser append accepted"); },
     error => { if (error.code !== "limit_exceeded") throw error; },
   );

@@ -111,38 +111,3 @@ impl Drop for Publications {
         self.channel.close();
     }
 }
-impl BrowserStream {
-    pub(super) async fn discover(
-        &self,
-        request: ChildrenRequest,
-    ) -> Result<ChildStream, StreamError> {
-        crate::memory::validate_limit(request.limit)?;
-        // Subscribe before refreshing IndexedDB, closing the snapshot/follow race.
-        let changed = self
-            .inner
-            .publications
-            .interests
-            .subscribe(Key::Children(request.parent.clone()))?;
-        self.with_provider(async |_| Ok(())).await?;
-        Ok(stream::try_unfold(
-            (self.clone(), request.parent, None, changed),
-            |(provider, parent, mut previous, mut changed)| async move {
-                let path = changed
-                    .next(async || {
-                        provider
-                            .with_cached_provider(async |memory| {
-                                memory.next_child(parent.as_ref(), previous.as_ref()).await
-                            })
-                            .await
-                    })
-                    .await?;
-                previous = Some(path.clone());
-                Ok(Some((
-                    Child { path },
-                    (provider, parent, previous, changed),
-                )))
-            },
-        )
-        .boxed_local())
-    }
-}

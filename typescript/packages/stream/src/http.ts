@@ -57,12 +57,7 @@ export class HttpStreamProvider implements StreamProvider {
     yield* this.#sessions.follow(path, authored);
   }
 
-  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    const { parent, signal, limit } = request;
-    await validateWireRequest({ kind: "children", limit,
-      ...(parent === undefined ? {} : { parent }) });
-    yield* this.#sessions.children({ limit, ...(parent === undefined ? {} : { parent }), ...(signal === undefined ? {} : { signal }) });
-  }
+
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
     if (request.parent !== undefined) validatePathValue(request.parent);
@@ -80,6 +75,7 @@ export class HttpStreamProvider implements StreamProvider {
     }
     await validateWireRequest({
       kind: "children_page",
+      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
@@ -87,6 +83,7 @@ export class HttpStreamProvider implements StreamProvider {
     });
     const input = wireRequest({
       kind: "children_page",
+      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),

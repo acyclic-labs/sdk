@@ -3,33 +3,31 @@
 
 #[test]
 fn executor_shutdown_returns_unpolled_snapshot_ownership() {
-    for (children, checked) in [(false, false), (false, true), (true, false)] {
+    for checked in [false, true] {
         acyclic_stream::verification::snapshot_executor_shutdown(
-            false, children, checked, false, false,
-        );
+            false, checked, false, false);
     }
 }
 
 #[test]
 fn executor_shutdown_returns_queued_or_granted_snapshot_ownership() {
-    for (children, checked) in [(false, false), (false, true), (true, false)] {
+    for checked in [false, true] {
         acyclic_stream::verification::snapshot_executor_shutdown(
-            false, children, checked, false, true,
-        );
+            false, checked, false, true);
     }
 }
 
 #[test]
 fn consumer_cancellation_races_executor_shutdown() {
     for polled in [false, true] {
-        acyclic_stream::verification::snapshot_executor_shutdown(false, false, false, true, polled);
+        acyclic_stream::verification::snapshot_executor_shutdown(false, false, true, polled);
     }
 }
 
 #[test]
 #[should_panic(expected = "deadlock")]
 fn negative_control_executor_shutdown_discards_snapshot_ownership() {
-    acyclic_stream::verification::snapshot_executor_shutdown(true, false, false, false, true);
+    acyclic_stream::verification::snapshot_executor_shutdown(true, false, false, true);
 }
 
 #[test]
@@ -57,22 +55,13 @@ fn negative_control_completion_leaves_the_job_armed() {
 
 #[test]
 fn memory_follow_cannot_park_state() {
-    acyclic_stream::verification::memory_follow_parking(false, false, false);
-    acyclic_stream::verification::memory_follow_parking(false, false, true);
-}
-#[test]
-fn memory_children_cannot_park_state() {
-    acyclic_stream::verification::memory_follow_parking(false, true, false);
+    acyclic_stream::verification::memory_follow_parking(false, false);
+    acyclic_stream::verification::memory_follow_parking(false, true);
 }
 #[test]
 #[should_panic(expected = "deadlock")]
 fn negative_control_memory_follow_parks_state() {
-    acyclic_stream::verification::memory_follow_parking(true, false, false);
-}
-#[test]
-#[should_panic(expected = "deadlock")]
-fn negative_control_memory_children_parks_state() {
-    acyclic_stream::verification::memory_follow_parking(true, true, false);
+    acyclic_stream::verification::memory_follow_parking(true, false);
 }
 
 #[test]
@@ -87,40 +76,22 @@ fn negative_control_granted_reader_stalls_new_readers() {
 
 #[test]
 fn unpolled_follow_cannot_park_a_memory_permit() {
-    acyclic_stream::verification::local_follow_parking(false, false, true);
-}
-#[test]
-fn unpolled_children_cannot_park_a_memory_permit() {
-    acyclic_stream::verification::local_follow_parking(false, true, true);
+    acyclic_stream::verification::local_follow_parking(false, true);
 }
 #[test]
 #[should_panic(expected = "deadlock")]
 fn negative_control_follow_retains_pending_memory_read() {
-    acyclic_stream::verification::local_follow_parking(true, false, true);
-}
-#[test]
-#[should_panic(expected = "deadlock")]
-fn negative_control_children_retains_pending_memory_read() {
-    acyclic_stream::verification::local_follow_parking(true, true, true);
+    acyclic_stream::verification::local_follow_parking(true, true);
 }
 
 #[test]
 fn unpolled_follow_cannot_park_a_publication_permit() {
-    acyclic_stream::verification::local_follow_parking(false, false, false);
-}
-#[test]
-fn unpolled_children_cannot_park_a_publication_permit() {
-    acyclic_stream::verification::local_follow_parking(false, true, false);
+    acyclic_stream::verification::local_follow_parking(false, false);
 }
 #[test]
 #[should_panic(expected = "deadlock")]
 fn negative_control_follow_retains_pending_publication_read() {
-    acyclic_stream::verification::local_follow_parking(true, false, false);
-}
-#[test]
-#[should_panic(expected = "deadlock")]
-fn negative_control_children_retains_pending_publication_read() {
-    acyclic_stream::verification::local_follow_parking(true, true, false);
+    acyclic_stream::verification::local_follow_parking(true, false);
 }
 
 #[test]

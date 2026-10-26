@@ -77,10 +77,9 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
         conflict.value(),
         AppendOutcome::TailConflict { actual_tail: 256 }
     ));
-    // Both keys follow the same rightmost search path; only the new key is inserted.
-    assert!(
-        insertion.examined.load(Ordering::SeqCst) > retry_meter.examined.load(Ordering::SeqCst)
-    );
+    // A rejected insertion performs lookup only and leaves no replay node.
+    assert!(provider.inspect_idempotency(IdempotencyKey::new(OwnedBytes::from(
+        256_u64.to_be_bytes().to_vec()))?).await?.is_none());
     for index in 0..256_u64 {
         let observed = provider
             .inspect_idempotency(IdempotencyKey::new(OwnedBytes::from(
@@ -148,14 +147,11 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
             matches!(output.value(), CommitOutcome::Committed(_)),
             index == 0
         );
-        let cached = provider
-            .inspect_idempotency(key)
-            .await?
-            .ok_or(StreamError::Unavailable)?;
-        assert_eq!(
-            cached.outcome,
-            IdempotencyOutcome::Commit(output.value().clone())
-        );
+        let cached = provider.inspect_idempotency(key).await?;
+        if index == 0 {
+            assert_eq!(cached.ok_or(StreamError::Unavailable)?.outcome,
+                IdempotencyOutcome::Commit(output.value().clone()));
+        } else { assert!(cached.is_none()); }
     }
     assert_eq!(provider.tail(path("completion/target")?).await?, 2);
     assert!(meter.examined.load(Ordering::SeqCst) > examined);
@@ -528,14 +524,7 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
         }]
     ));
     assert_eq!(provider.tail(path("completion/target")?).await?, 1);
-    let cached = provider
-        .inspect_idempotency(key)
-        .await?
-        .ok_or(StreamError::Unavailable)?;
-    assert_eq!(
-        cached.outcome,
-        IdempotencyOutcome::Commit(completion.value().clone())
-    );
+    assert!(provider.inspect_idempotency(key).await?.is_none());
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     drop(completion);
     drop(provider);
@@ -567,7 +556,8 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             idempotency_key: None,
         };
         let fork = ForkRequest {
-            source: path("completion/owner")?,
+            exclude: Vec::new(),
+source: path("completion/owner")?,
             destination: path("unrelated")?,
             at_tail: Some(1),
             idempotency_key: None,

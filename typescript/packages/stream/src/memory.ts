@@ -2,7 +2,7 @@ import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ReadResponseSchema, TailResponseSchema, ChildrenResponseSchema, FollowRequestSchema, type Record as WireRecord,
+  ReadResponseSchema, TailResponseSchema, FollowRequestSchema, type Record as WireRecord,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
@@ -112,38 +112,13 @@ class RustStreamProvider implements StreamProvider {
     }
   }
 
-  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    const { parent, signal, limit } = request;
-    await validateWireRequest({ kind: "children", limit,
-      ...(parent === undefined ? {} : { parent }) });
-    if (signal?.aborted) return;
-    const input = wireRequest({ kind: "children", limit,
-      ...(parent === undefined ? {} : { parent }) });
-    let handle: Awaited<ReturnType<WasmStream["open_children"]>>;
-    try { handle = await (await this.#inner).open_children(input); }
-    catch (error) { throw streamError(error, "children"); }
-    const close = (): void => handle.close();
-    signal?.addEventListener("abort", close, { once: true });
-    if (signal?.aborted) close();
-    try {
-      while (!signal?.aborted) {
-        let bytes: Uint8Array | null;
-        try { bytes = await handle.next(); }
-        catch (error) { if (signal?.aborted) return; throw streamError(error, "children"); }
-        if (bytes === null || signal?.aborted) return;
-        const child = fromBinary(ChildrenResponseSchema, bytes).child;
-        yield checkedChild(child, parent);
-      }
-    } finally {
-      signal?.removeEventListener("abort", close);
-      handle.close(); handle.free();
-    }
-  }
+
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") {
       throw new StreamError("invalid_argument", "children page request must be an object");
     }
     const authored = { kind: "children_page" as const,
+      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),

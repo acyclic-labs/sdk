@@ -3,7 +3,7 @@ import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { WasmSession, type WasmFollow } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { commitId, type EncodedRecord, type FollowOptions, type ChildrenRequest, type StreamChild } from "./types.js";
+import { commitId, type EncodedRecord, type FollowOptions } from "./types.js";
 
 export interface SessionTransport {
   readonly incoming: AsyncIterable<wire.SessionFrame>;
@@ -76,22 +76,9 @@ export class StreamSessions {
     }
   }
 
-  children(request: ChildrenRequest & SessionOptions): AsyncGenerator<StreamChild> {
-    const { parent, signal, limit } = request;
-    const subscription = create(wire.SessionSubscriptionSchema, {
-      resume: { next: 0n }, credential: request.credential ?? 0,
-      ...(request.filter === undefined ? {} : { filter: request.filter }),
-      kind: { case: "children", value: { limit, ...(parent === undefined ? {} : { parent }) } },
-    });
-    return this.#children(this.#data(this.subscribe(subscription, signal)));
-  }
 
-  async *#children(data: AsyncIterable<wire.SessionData>): AsyncGenerator<StreamChild> {
-    for await (const item of data) {
-      if (item.item.case !== "child") throw new Error("Rust child cursor omitted a child");
-      yield item.item.value;
-    }
-  }
+
+
 
   subscribe(subscription: wire.SessionSubscription, signal?: AbortSignal): AsyncGenerator<wire.SessionFrame> {
     validateCredentialSlot(subscription.credential);

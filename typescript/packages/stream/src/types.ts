@@ -70,12 +70,11 @@ export type AppendResult =
   | (PublicWire<WireAppendReceipt, { readonly commitId: CommitId }> & { readonly ok: true })
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });
 export type AppendOptions = PublicWire<WireAppendRequest, { readonly idempotencyKey?: IdempotencyKey }, "path" | "records">;
-export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?: IdempotencyKey }, "source" | "destination">;
+export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?: IdempotencyKey; readonly exclude?: readonly string[] }, "source" | "destination">;
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
 export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
-export interface StreamChild { readonly path: string }
-export interface ChildrenRequest { readonly parent?: string; readonly limit: number; readonly signal?: AbortSignal }
-export type ChildrenPageRequest = Readonly<{ parent?: string; limit: number }> & (
+export interface StreamChild { readonly path: string; readonly tailRecord?: EncodedRecord }
+export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
   | Readonly<{ after: string; hierarchyVersion: CommitId }>
 );
@@ -87,7 +86,7 @@ export type CommitCondition =
   | { readonly path: string; readonly ifAbsent: true };
 export type CommitMutation =
   | { readonly append: { readonly stream: import("./client.js").Stream<unknown>; readonly values: readonly unknown[] } }
-  | { readonly fork: { readonly source: import("./client.js").Stream<unknown>; readonly destination: string; readonly atTail: Sequence; readonly values?: readonly unknown[] } };
+  | { readonly fork: { readonly source: import("./client.js").Stream<unknown>; readonly destination: string; readonly atTail: Sequence; readonly exclude?: readonly string[]; readonly values?: readonly unknown[] } };
 export type CommittedMutation =
   | (PublicWire<WireCommittedAppend, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "append"> })
   | (PublicWire<WireCommittedFork, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "fork"> });
@@ -117,7 +116,7 @@ export interface ProviderCommitRequest {
   readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence; readonly ifCommitId?: CommitId } | { readonly path: string; readonly ifAbsent: true })[];
   readonly mutations: readonly (
     | { readonly append: { readonly path: string; readonly values: readonly Uint8Array[] } }
-    | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence; readonly values: readonly Uint8Array[] } }
+    | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence; readonly exclude?: readonly string[]; readonly values: readonly Uint8Array[] } }
   )[];
 }
 export interface StreamProvider {
@@ -128,7 +127,6 @@ export interface StreamProvider {
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
-  children?(request: ChildrenRequest): AsyncIterable<StreamChild>;
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;

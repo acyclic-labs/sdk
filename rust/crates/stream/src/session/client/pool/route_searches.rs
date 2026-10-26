@@ -139,7 +139,6 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
                     }),
                 )),
                 sequence: 0,
-                opaque: Bytes::new(),
                 generation: 1,
                 credit: Credit::new(
                     Arc::clone(&state.pool.release_sender),
@@ -184,7 +183,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
     state.records.push(receiver);
 }
 
-type Delivered = Result<(u64, Vec<u8>, u64, Vec<u8>), StreamError>;
+type Delivered = Result<(u64, u64, Vec<u8>), StreamError>;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Output {
@@ -262,12 +261,10 @@ fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, Allocati
                 received.push(value.map(|d| {
                     (
                         d.sequence,
-                        d.opaque.to_vec(),
                         d.generation,
                         match d.item {
                             Received::Frame(frame) => frame.encode_to_vec(),
                             Received::Data(data) => data.encode_to_vec(),
-                            Received::Child(child) => child.path.as_str().as_bytes().to_vec(),
                         },
                     )
                 }));

@@ -64,7 +64,7 @@ export class StreamClient {
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const { parent, after, hierarchyVersion, limit } = request;
-    const origin = { limit, ...(parent === undefined ? {} : { parent }) };
+    const origin = { limit, ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
     let authored: ChildrenPageRequest;
     if (after === undefined) {
       authored = { ...origin, ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
@@ -104,20 +104,7 @@ export class StreamClient {
     }
     return page;
   }
-  /** Replays direct children and follows newly created children without a handoff gap. */
-  async *children(parent?: string, limit = StreamLimit.MAX_ITEMS, signal?: AbortSignal): AsyncIterable<{ readonly path: string }> {
-    if (parent !== undefined) validatePathValue(parent);
-    positiveInteger(limit, "limit");
-    if (limit > StreamLimit.MAX_ITEMS) throw new StreamError("limit_exceeded", "child replay limit exceeds the contract maximum");
-    if (this.provider.children === undefined) throw new StreamError("unsupported", "provider does not support live child discovery");
-    const seen = new Set<string>();
-    for await (const child of this.provider.children({ ...(parent === undefined ? {} : { parent }), limit,
-      ...(signal === undefined ? {} : { signal }) })) {
-      validatePathValue(child.path);
-      if (directParent(child.path) !== (parent ?? "")) throw new StreamError("invalid_response", "provider returned a non-direct child");
-      if (!seen.has(child.path)) { seen.add(child.path); yield child; }
-    }
-  }
+
   async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
     const authoredOptions = structuredClone(options);
     const conditions = request.conditions.map(condition => {
@@ -138,7 +125,7 @@ export class StreamClient {
         sameProvider(this.provider, mutation.fork.source);
         validatePathValue(mutation.fork.destination);
         const source = mutation.fork.source;
-        return { fork: { source: source.path, destination: mutation.fork.destination, atTail: validateSequenceValue(mutation.fork.atTail), values: (mutation.fork.values ?? []).map(value => source.encode(value)) } };
+        return { fork: { source: source.path, destination: mutation.fork.destination, atTail: validateSequenceValue(mutation.fork.atTail), exclude: mutation.fork.exclude ?? [], values: (mutation.fork.values ?? []).map(value => source.encode(value)) } };
       }
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
@@ -164,19 +151,21 @@ export class Stream<Value = Uint8Array> {
   }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
-  append(value: Value, options?: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
-  appendBatch(values: readonly Value[], options?: AppendOptions): Promise<AppendResult> {
+  append(value: Value, options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> { return this.appendBatch([value], options); }
+  appendBatch(values: readonly Value[], options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> {
     if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
       return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
     }
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
-    const authored = options === undefined ? undefined : structuredClone(options);
+    const authored = structuredClone(options);
+    if (authored?.idempotencyKey === undefined) throw new StreamError("invalid_argument", "an explicit idempotency key is required");
     return this.provider.append(this.path, values.map(value => this.codec.encode(value).slice()), authored);
   }
-  async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
+  async fork(destination: string, options: ForkOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
     validatePathValue(destination);
     if (options?.atTail !== undefined) validateSequenceValue(options.atTail);
-    const authored = options === undefined ? undefined : structuredClone(options);
+    const authored = structuredClone(options);
+    if (authored?.idempotencyKey === undefined) throw new StreamError("invalid_argument", "an explicit idempotency key is required");
     const value = await this.provider.fork(this.path, destination, authored);
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
   }

@@ -64,17 +64,18 @@ pub(in crate::session::client) fn fixture(
             },
         );
     }
-    let (children, _) = mpsc::channel(2);
+    let (unhealthy, _) = mpsc::channel(2);
     let (records, healthy) = mpsc::channel(2);
     pool.routes.insert(
         1,
         route(
             "bad",
-            Kind::Children(wire::ChildrenRequest {
-                parent: Some("agents".into()),
-                limit: 1,
+            Kind::Follow(wire::SessionFollow {
+                delivery: wire::SessionDelivery::All as i32,
+                resource: crate::wire_codec::session::stream_resource("agents"),
+                ..Default::default()
             }),
-            children,
+            unhealthy,
         ),
     );
     pool.routes.insert(

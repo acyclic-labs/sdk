@@ -16,11 +16,4 @@ export function followOptions(client: ReturnType<typeof createStreamGrpcClient>,
   // @ts-expect-error A wider CallOptions variable must not restore unsupported fields.
   client.follow(request, options);
   client.tail({ path: "events" }, options);
-  client.children({ limit: 1 }, { timeoutMs: 500, signal });
-  // @ts-expect-error Discovery also uses a virtual channel on the shared session.
-  client.children({ limit: 1 }, { headers: { "x-test": "value" } });
-  // @ts-expect-error Discovery has no per-channel header callback.
-  client.children({ limit: 1 }, { onHeader: () => {} });
-  // @ts-expect-error Discovery has no per-channel trailer callback.
-  client.children({ limit: 1 }, { onTrailer: () => {} });
 }

@@ -7,7 +7,7 @@ import type { SessionConnect, SessionTransport } from "../src/session.js";
 import { StreamError } from "../src/types.js";
 
 type Credit = { bytes: bigint; frames: number };
-type Route = { id: bigint; generation: bigint; path: string; next: bigint; credit: Credit; children: boolean; latest: boolean };
+type Route = { id: bigint; generation: bigint; path: string; next: bigint; credit: Credit; latest: boolean };
 type Connection = { node: string; output: SessionQueue<wire.SessionFrame>; routes: Map<bigint, Route>; credit: Credit; closed: boolean };
 export const frame = (id: bigint, generation: bigint, body: wire.SessionFrame["body"]): wire.SessionFrame => create(wire.SessionFrameSchema, { channelId: id, generation, body });
 export const checkpoint = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
@@ -21,8 +21,6 @@ export class SessionNode {
   constructor(private readonly spend: () => void = () => {}) {}
   readonly latest = new Map<string, wire.SessionData[]>();
   readonly history = new Map<string, WireRecord[]>();
-  readonly paths = new Set<string>();
-  readonly children = new Map<string, string[]>();
   readonly connections: Connection[] = [];
   readonly resumes: { node: string; path: string; next: bigint }[] = [];
   readonly received: wire.SessionFrame[] = [];
@@ -54,15 +52,6 @@ export class SessionNode {
     } satisfies SessionTransport;
   };
   append(path: string, count = 1): void {
-    const parts = path.split("/");
-    for (let length = 1; length <= parts.length; length++) {
-      const child = parts.slice(0, length).join("/");
-      if (this.paths.has(child)) continue;
-      this.paths.add(child);
-      const parent = parts.slice(0, length - 1).join("/");
-      const siblings = this.children.get(parent) ?? [];
-      siblings.push(child); this.children.set(parent, siblings);
-    }
     let history = this.history.get(path);
     if (history === undefined) { history = []; this.history.set(path, history); }
     for (let index = 0; index < count; index += 1) {
@@ -107,14 +96,9 @@ export class SessionNode {
         for (const removed of input.body.value.remove) connection.routes.delete(removed.channelId);
         for (const subscription of input.body.value.upsert) {
           if (subscription.kind.case === "actorSocket" || subscription.kind.case === "actorCall") this.actorChannels += 1;
-          if ((subscription.kind.case !== "follow" && subscription.kind.case !== "children") || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
-          const children = subscription.kind.case === "children";
-          const path = subscription.kind.case === "follow" ? streamResourcePath(subscription.kind.value.resource) : subscription.kind.value.parent ?? "";
-          if (children && subscription.resume.next > 0n) {
-            const prior = this.children.get(path)?.[Number(subscription.resume.next - 1n)];
-            if (new TextDecoder().decode(subscription.resume.opaque) !== prior) throw new Error("child cursor did not resume from the yielded path");
-          }
-          const route: Route = { id: subscription.channel.channelId, generation: subscription.channel.generation, path, children, latest: subscription.kind.case === "follow" && subscription.kind.value.delivery === wire.SessionDelivery.LATEST, next: subscription.resume.next, credit: { bytes: 0n, frames: 0 } };
+          if (subscription.kind.case !== "follow" || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
+          const path = streamResourcePath(subscription.kind.value.resource);
+          const route: Route = { id: subscription.channel.channelId, generation: subscription.channel.generation, path, latest: subscription.kind.case === "follow" && subscription.kind.value.delivery === wire.SessionDelivery.LATEST, next: subscription.resume.next, credit: { bytes: 0n, frames: 0 } };
           connection.routes.set(route.id, route);
           this.resumes.push({ node: connection.node, path: route.path, next: route.next });
           connection.output.push(frame(route.id, route.generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume, precedingCommitId: subscription.kind.case === "follow" ? subscription.kind.value.precedingCommitId : new Uint8Array() }) }));
@@ -135,14 +119,11 @@ export class SessionNode {
     if (connection.closed) return;
     for (const route of connection.routes.values()) {
       const history = this.history.get(route.path) ?? [];
-      const children = this.children.get(route.path) ?? [];
       const latest = this.latest.get(route.path) ?? [];
-      const length = route.latest ? latest.at(-1)?.after?.next ?? 0n : BigInt(route.children ? children.length : history.length);
+      const length = route.latest ? latest.at(-1)?.after?.next ?? 0n : BigInt(history.length);
       while (route.next < length && route.credit.frames > 0 && connection.credit.frames > 0) {
-        const path = children[Number(route.next)];
-        const item = route.children ? { case: "child" as const, value: { path: path! } } : { case: "record" as const, value: history[Number(route.next)]! };
-        const data = route.latest ? latest.find(value => value.after!.next > route.next)! : create(wire.SessionDataSchema, { after: { next: route.next + 1n,
-          ...(route.children ? { opaque: new TextEncoder().encode(path) } : {}) }, accepted: length, item });
+        const item = { case: "record" as const, value: history[Number(route.next)]! };
+        const data = route.latest ? latest.find(value => value.after!.next > route.next)! : create(wire.SessionDataSchema, { after: { next: route.next + 1n }, accepted: length, item });
         const output = frame(route.id, route.generation, { case: "data", value: data });
         const encoded = toBinary(wire.SessionFrameSchema, output);
         const bytes = BigInt(encoded.byteLength);

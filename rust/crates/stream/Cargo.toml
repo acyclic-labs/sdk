@@ -18,6 +18,10 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [[example]]
+name = "wave1-conformance"
+required-features = ["http"]
+
+[[example]]
 name = "http-conformance"
 required-features = ["http"]
 
@@ -112,3 +116,7 @@ tempfile = "3.27.0"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "provider-conformance"
+required-features = ["http"]

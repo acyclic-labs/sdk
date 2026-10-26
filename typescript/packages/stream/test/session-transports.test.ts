@@ -25,10 +25,8 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n, filter })[Symbol.asyncIterator]();
     const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
-    const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
-    const discovered = children.next();
     const pending = Promise.all(follows.map(follow => follow.next()));
-    await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
+    await Promise.race([node.until(() => node.active === follows.length + 1), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
     const hello = node.received.find(frame => frame.body.case === "hello")!;
@@ -44,16 +42,11 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     expect(status.accepted).toBe(11n);
     expect(status.durable).toBe(8n);
     expect(status.item.case === "latestValue" && status.item.value.attention).toBe(true);
-    expect((await discovered).value?.path).toBe("agent/0");
-    for (let id = 1; id < follows.length; id++) expect((await children.next()).value?.path).toBe(`agent/${id}`);
-    const later = children.next(); node.append("agent/later");
-    expect((await later).value?.path).toBe("agent/later");
     expect(counts.connections).toBe(1);
     expect(counts.sessions).toBe(1);
     expect(counts.legacyFollows).toBe(0);
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
-    await children.return?.();
     await latest.return?.();
     await node.until(() => node.active === 0);
   } finally { await close(); }
@@ -134,10 +127,8 @@ test("public browser follows use one authenticated binary WebSocket without fetc
     const latest = provider.followData(create(SessionFollowSchema, { resource: "streams:/status", delivery: SessionDelivery.LATEST }), { from: 0n, filter })[Symbol.asyncIterator]();
     const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
-    const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
-    const discovered = children.next();
     const pending = Promise.all(follows.map(follow => follow.next()));
-    await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
+    await Promise.race([node.until(() => node.active === follows.length + 1), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
     const hello = node.received.find(frame => frame.body.case === "hello")!;
@@ -153,14 +144,9 @@ test("public browser follows use one authenticated binary WebSocket without fetc
     expect(status.accepted).toBe(11n);
     expect(status.durable).toBe(8n);
     expect(status.item.case === "latestValue" && status.item.value.attention).toBe(true);
-    expect((await discovered).value?.path).toBe("agent/0");
-    for (let id = 1; id < follows.length; id++) expect((await children.next()).value?.path).toBe(`agent/${id}`);
-    const later = children.next(); node.append("agent/later");
-    expect((await later).value?.path).toBe("agent/later");
     expect(connections).toBe(1); expect(sockets).toBe(1); expect(fetches).toBe(0);
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
-    await children.return?.();
     await latest.return?.();
     await node.until(() => node.active === 0);
   } finally { await server.stop(true); }

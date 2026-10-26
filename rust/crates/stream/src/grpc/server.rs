@@ -1,4 +1,5 @@
 use super::*;
+use crate::wire_codec;
 
 type Body<T> = futures::stream::BoxStream<'static, Result<T, Status>>;
 
@@ -26,7 +27,6 @@ fn check_command_size<T: Message>(request: &Request<T>) -> Result<(), Status> {
 impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P> {
     type ReadStream = Body<wire::ReadResponse>;
     type FollowStream = Body<wire::ReadResponse>;
-    type ChildrenStream = Body<wire::ChildrenResponse>;
 
     async fn inspect_idempotency(
         &self,
@@ -106,7 +106,8 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let request = ForkRequest {
-                source: path(request.source).map_err(|error| error_status(&error))?,
+                exclude: Vec::new(),
+source: path(request.source).map_err(|error| error_status(&error))?,
                 destination: path(request.destination).map_err(|error| error_status(&error))?,
                 at_tail: request.at_tail,
                 idempotency_key: optional_key(request.idempotency_key)
@@ -201,82 +202,21 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         Err(error_status(&StreamError::Unsupported))
     }
 
-    async fn children(
-        &self,
-        request: Request<wire::ChildrenRequest>,
-    ) -> Result<Response<Self::ChildrenStream>, Status> {
-        let span = serve_span!("children");
-        streaming(span.clone(), async {
-            check_command_size(&request)?;
-            let request = request.into_inner();
-            let request = ChildrenRequest {
-                parent: request
-                    .parent
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                limit: request.limit,
-            };
-            let children = self
-                .provider
-                .children(request)
-                .await
-                .map_err(|error| error_status(&error))?;
-            let children = children.map(|child| {
-                child
-                    .map(|child| wire::ChildrenResponse {
-                        child: Some(wire::Child {
-                            path: child.path.to_string(),
-                        }),
-                    })
-                    .map_err(|error| error_status(&error))
-            });
-            Ok(observe_body(&span, children).boxed())
-        })
-        .await
-    }
+
 
     async fn children_page(
         &self,
         request: Request<wire::ChildrenPageRequest>,
     ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
         unary(serve_span!("children_page"), async {
-            let request = request.into_inner();
-            let request = ChildrenPageRequest {
-                parent: request
-                    .parent
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                after: request
-                    .after
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                hierarchy_version: request
-                    .hierarchy_version
-                    .as_deref()
-                    .map(commit_id)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                limit: request.limit,
-            };
+            let request = wire_codec::children_page_from_wire(request.into_inner())
+                .map_err(|error| error_status(&error))?;
             let page = self
                 .provider
                 .children_page(request)
                 .await
                 .map_err(|error| error_status(&error))?;
-            Ok(wire::ChildrenPageResponse {
-                hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
-                children: page
-                    .children
-                    .into_iter()
-                    .map(|child| wire::Child {
-                        path: child.path.to_string(),
-                    })
-                    .collect(),
-                next_after: page.next_after.map(|path| path.to_string()),
-            })
+            Ok(wire_codec::children_page_to_wire(page))
         })
         .await
     }

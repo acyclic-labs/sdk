@@ -140,10 +140,6 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::follow_from_wire)
                 .map(|_| ()),
-            "children" => wire::ChildrenRequest::decode(input)
-                .map_err(|_| StreamError::InvalidArgument)
-                .and_then(wire_codec::children_from_wire)
-                .and_then(|request| memory::validate_limit(request.limit)),
             "children_page" => wire::ChildrenPageRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::children_page_from_wire)
@@ -293,6 +289,7 @@ mod http {
                 path(field(child, "path")?)?;
                 let result = Object::new();
                 set(&result, "path", &string_js(field(child, "path")?)?)?;
+                if let Some(record) = child.get("tailRecord") { set(&result, "tailRecord", &record_js(record)?)?; }
                 Ok(result.into())
             })?,
         )?;
@@ -464,6 +461,10 @@ mod http {
                 )?;
             }
             "fork" => {
+                let excluded = array(field(item, "exclude")?)?;
+                if excluded.len() > crate::MAX_ITEMS { return Err("too many exclusions"); }
+                for excluded in excluded { path(excluded)?; }
+                set(&result, "exclude", &array_js(field(item, "exclude")?, string_js)?)?;
                 path(field(item, "source")?)?;
                 path(field(item, "destination")?)?;
                 let forked_at = u64_string(field(item, "forkedAt")?)?;
@@ -572,13 +573,6 @@ mod http {
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
             Some("records") => array_js(value, record_js),
-            Some("children") => array_js(value, |value| {
-                let item = object(value)?;
-                path(field(item, "path")?)?;
-                let result = Object::new();
-                set(&result, "path", &string_js(field(item, "path")?)?)?;
-                Ok(result.into())
-            }),
             Some("children_page") => children_page_js(value),
             Some("commit") => commit_result_js(value),
             Some("envelope") => envelope_js(value),

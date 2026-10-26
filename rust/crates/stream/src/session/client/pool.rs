@@ -13,8 +13,6 @@ pub(super) mod retry_model;
 #[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
 mod route_searches;
 
-#[cfg(acyclic_stream_loom)]
-pub(super) mod discovery_model;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
@@ -178,6 +176,12 @@ impl Pool {
         match self.receive(node, value) {
             Ok(()) => true,
             Err(error) => {
+                // A received frame that fails structural validation is terminal.
+                // Transport I/O failures use the reconnect path in `run`.
+                let error = match error {
+                    StreamError::Unavailable | StreamError::InvalidArgument => StreamError::InvalidResponse,
+                    other => other,
+                };
                 self.fail_link(node, &error);
                 false
             }
@@ -557,33 +561,14 @@ impl Pool {
             (Kind::Follow(follow), _) => {
                 wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
-            (Kind::Children(request), Some(Item::Child(child))) => {
-                let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
-                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
-                    || after.next <= route.received
-                    || after.opaque.as_ref() != child.path.as_bytes()
-                    || data.durable > data.accepted
-                    || data.accepted < after.next
-                {
-                    return Err(StreamError::Unavailable);
-                }
-                // The provider cursor includes undisclosed children. Preserve
-                // its cut without transferring any hidden path to the client.
-                after.next - 1
-            }
             _ => return Err(StreamError::Unavailable),
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
-        let opaque = after.opaque.clone();
         let item = if route.raw {
             Received::Frame(frame(id, generation, Body::Data(data)))
         } else if matches!(route.kind, Kind::Follow(_)) {
             Received::Data(data)
-        } else if let Some(Item::Child(child)) = data.item {
-            Received::Child(crate::Child {
-                path: StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?,
-            })
         } else {
             return Err(StreamError::Unavailable);
         };
@@ -596,7 +581,6 @@ impl Pool {
             before: route.watermark.take(),
             item,
             sequence,
-            opaque,
             generation,
             credit: Credit::new(
                 self.release_sender.clone(),
@@ -637,7 +621,6 @@ impl Pool {
             before: None,
             item: Received::Frame(value),
             sequence: route.received,
-            opaque: route.received_opaque.clone(),
             generation: route.generation,
             credit: Credit::new(
                 self.release_sender.clone(),

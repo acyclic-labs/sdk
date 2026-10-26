@@ -24,7 +24,6 @@ impl MemoryStream {
         {
             return Ok((result, Default::default()));
         }
-        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
         let mut probes = self.reserve_replay_probes(
             request
                 .idempotency_key
@@ -34,20 +33,9 @@ impl MemoryStream {
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
-            if request.idempotency_key.is_some() {
-                self.reserve_retained(&mut state)?;
-                retain(
-                    &mut state,
-                    &mut || self.record_replay_probe(&mut probes),
-                    None,
-                    request.idempotency_key,
-                    digest,
-                    IdempotencyOutcome::Append(result.clone()),
-                    Default::default(),
-                );
-            }
             return Ok((result, Default::default()));
         }
+        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
         reserve_append(&state, &request.path, &request.records, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -83,7 +71,7 @@ impl MemoryStream {
             mutations: facts,
         };
         self.publish(bytes, || {
-            publish(&mut state, paths, histories, &envelope)?;
+            publish(&mut state, paths, histories, &envelope, &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)))?;
             state.decision = decision;
             state.last_committed_at_micros = time;
             retain(

@@ -1,6 +1,9 @@
 /// Stable public failures. CAS and absence conflicts are values instead.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StreamError {
+    /// Peer violated the response contract; retrying the connection cannot repair it.
+    #[error("invalid stream response")]
+    InvalidResponse,
     /// Invalid path syntax.
     #[error("invalid stream path")]
     InvalidPath,
@@ -47,7 +50,8 @@ pub enum StreamError {
 
 impl StreamError {
     /// Every failure, in canonical code order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
+        Self::InvalidResponse,
         Self::InvalidPath,
         Self::InvalidArgument,
         Self::LimitExceeded,
@@ -68,6 +72,7 @@ impl StreamError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::InvalidResponse => "invalid_response",
             Self::InvalidPath => "invalid_path",
             Self::InvalidArgument => "invalid_argument",
             Self::LimitExceeded => "limit_exceeded",

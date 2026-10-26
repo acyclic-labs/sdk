@@ -92,8 +92,10 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
             destination,
             at_tail,
             records,
+            exclude,
         } => wire::commit_mutation::Mutation::Fork(wire::ForkMutation {
-            source: source.to_string(),
+            exclude: exclude.into_iter().map(|path| path.to_string()).collect(),
+source: source.to_string(),
             destination: destination.to_string(),
             at_tail,
             records: records.into_iter().map(append_record_wire).collect(),
@@ -123,7 +125,8 @@ pub(crate) fn mutation_from_wire(
                 .collect::<Result<_, _>>()?,
         }),
         wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
-            source: path(value.source)?,
+            exclude: value.exclude.into_iter().map(path).collect::<Result<_, _>>()?,
+source: path(value.source)?,
             destination: path(value.destination)?,
             at_tail: value.at_tail,
             records: value
@@ -258,7 +261,8 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
 /// Decodes a fork request from its generated wire representation.
 pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
-        source: path(value.source)?,
+        exclude: value.exclude.into_iter().map(path).collect::<Result<_, _>>()?,
+source: path(value.source)?,
         destination: path(value.destination)?,
         at_tail: value.at_tail,
         idempotency_key: optional_key(value.idempotency_key)?,
@@ -295,15 +299,7 @@ pub(crate) fn follow_from_wire(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-/// Decodes a children request from its generated wire representation.
-pub fn children_from_wire(
-    value: wire::ChildrenRequest,
-) -> Result<crate::ChildrenRequest, StreamError> {
-    Ok(crate::ChildrenRequest {
-        parent: value.parent.map(path).transpose()?,
-        limit: value.limit,
-    })
-}
+
 
 #[cfg(any(
     feature = "grpc",
@@ -314,7 +310,7 @@ pub fn children_from_wire(
 pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
-    Ok(crate::ChildrenPageRequest {
+    Ok(crate::ChildrenPageRequest { tail_stream: value.tail_stream.map(path).transpose()?,
         parent: value.parent.map(path).transpose()?,
         after: value.after.map(path).transpose()?,
         hierarchy_version: value
@@ -331,10 +327,6 @@ pub fn children_page_from_wire(
     })
 }
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Converts a domain children page into its generated wire representation.
 pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
@@ -342,7 +334,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
         children: value
             .children
             .into_iter()
-            .map(|child| wire::Child {
+            .map(|child| wire::Child { tail_record: child.tail_record.map(record_wire),
                 path: child.path.to_string(),
             })
             .collect(),
@@ -480,7 +472,8 @@ pub(crate) fn committed_mutation(
         }
         wire::committed_mutation::Mutation::Fork(value) => {
             Ok(CommittedMutation::Fork(CommittedFork {
-                source: path(value.source)?,
+                exclude: value.exclude.into_iter().map(path).collect::<Result<_, _>>()?,
+source: path(value.source)?,
                 destination: path(value.destination)?,
                 forked_at: value.forked_at,
                 tail: value.tail,
@@ -507,7 +500,8 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
         }
         CommittedMutation::Fork(value) => {
             wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
+                exclude: value.exclude.into_iter().map(|path| path.to_string()).collect(),
+source: value.source.to_string(),
                 destination: value.destination.to_string(),
                 forked_at: value.forked_at,
                 tail: value.tail,

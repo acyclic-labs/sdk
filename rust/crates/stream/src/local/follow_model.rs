@@ -76,7 +76,7 @@ pub(crate) fn cancellation(retain: bool) {
             block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
         let mut kept =
             block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
-        let (_, wake) = crate::discovery_verification::probe();
+        let (_, wake) = crate::verification::probe();
         assert!(
             cancelled
                 .as_mut()

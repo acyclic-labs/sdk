@@ -129,8 +129,7 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         let _ = (path, from, preceding, filter);
         Err(StreamError::Unsupported)
     }
-    /// Replays direct children and pushes each newly created child once, without a handoff gap.
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
+
     /// Traverses arbitrarily large direct-child sets without silently
     async fn children_page(
         &self,

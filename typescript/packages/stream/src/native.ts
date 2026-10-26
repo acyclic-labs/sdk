@@ -248,42 +248,10 @@ export class NativeStreamProvider implements StreamProvider {
     }
   }
 
-  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    const { parent, signal, limit } = request;
-    const input = { kind: "children" as const, limit,
-      ...(parent === undefined ? {} : { parent }) };
-    await validateWireRequest(input);
-    if (signal?.aborted) return;
-    const cancellation = new this.module.NativeStreamCancellation();
-    let follow: GeneratedNative.NativeStreamFollow | undefined;
-    let release: (() => void) | undefined;
-    const abort = (): void => { release?.(); cancellation.cancel(); if (follow !== undefined) void follow.close(); };
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    try {
-      release = this.credential?.retain(signal);
-      const opened = await this.client.openChildrenResult(Buffer.from(wireRequest(input)), cancellation);
-      if (signal?.aborted) { follow = opened.follow; return; }
-      if (opened.error !== undefined) throw nativeError(opened.error, "children");
-      if (opened.follow === undefined) throw new StreamError("invalid_response", "native discovery omitted its cursor");
-      follow = opened.follow;
-      while (!signal?.aborted) {
-        const result = await follow.nextResult();
-        if (signal?.aborted) return;
-        if (result.error !== undefined) throw nativeError(result.error, "children");
-        if (result.value === undefined) return;
-        yield checkedChild(fromBinary(wire.ChildrenResponseSchema, result.value).child, parent);
-      }
-    } catch (error) {
-      if (!signal?.aborted) throw error;
-    } finally {
-      release?.();
-      signal?.removeEventListener("abort", abort);
-      if (follow !== undefined) await follow.close();
-    }
-  }
+
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const authored = { kind: "children_page" as const, limit: request.limit,
+    const authored = { kind: "children_page" as const,
+      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),

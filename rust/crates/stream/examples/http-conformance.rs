@@ -4,7 +4,8 @@ use acyclic_stream::{StreamError, StreamPath, StreamProvider, conformance, http:
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = std::env::args().nth(1).ok_or("missing endpoint")?;
-    let provider = HttpStream::new(&endpoint, "conformance", 16 * 1024 * 1024)?;
+    let ca = std::env::var("ACYCLIC_CONFORMANCE_CA").ok().map(std::fs::read).transpose()?;
+    let provider = HttpStream::with_ca_certificate(&endpoint, "conformance", 16 * 1024 * 1024, ca.as_deref())?;
     conformance::verify(&provider).await?;
     let first = StreamPath::new("conformance/atomic-first")?;
     let second = StreamPath::new("conformance/atomic-second")?;
@@ -54,7 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn verify_commit_only(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let commit_only = HttpStream::new(endpoint, "commit-only", 16 * 1024 * 1024)?;
+    let ca = std::env::var("ACYCLIC_CONFORMANCE_CA").ok().map(std::fs::read).transpose()?;
+    let commit_only = HttpStream::with_ca_certificate(endpoint, "commit-only", 16 * 1024 * 1024, ca.as_deref())?;
     let commit_only_request = acyclic_stream::CommitRequest {
         conditions: vec![acyclic_stream::CommitCondition::Absent {
             path: StreamPath::new("conformance/commit-only")?,
@@ -107,12 +109,13 @@ async fn verify_deadline_and_bounds(
         provider.tail(deadline_path).await,
         Err(StreamError::NotFound)
     );
-    let denied = HttpStream::new(endpoint, "wrong", 1024)?;
+    let ca = std::env::var("ACYCLIC_CONFORMANCE_CA").ok().map(std::fs::read).transpose()?;
+    let denied = HttpStream::with_ca_certificate(endpoint, "wrong", 1024, ca.as_deref())?;
     assert_eq!(
         denied.tail(StreamPath::new("conformance/source")?).await,
         Err(StreamError::AccessDenied)
     );
-    let bounded = HttpStream::new(endpoint, "conformance", 1)?;
+    let bounded = HttpStream::with_ca_certificate(endpoint, "conformance", 1, ca.as_deref())?;
     assert_eq!(
         bounded.tail(StreamPath::new("conformance/source")?).await,
         Err(StreamError::Unavailable)

@@ -51,12 +51,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         }).await? else { return Err("seed conflict".into()) };
         assert_eq!(provider.watermarks(path.clone()).await?.durable, 1);
         let mut records = provider.follow(path.clone(), 1, crate::FollowFilter::default()).await?;
-        let mut children = provider.children(ChildrenRequest {
-            parent: Some(StreamPath::new("agents")?), limit: 1,
-        }).await?;
-        children.next().await.ok_or("missing seed child")??;
         assert!(futures::poll!(records.next()).is_pending());
-        assert!(futures::poll!(children.next()).is_pending());
         let (started, waiting) = std::sync::mpsc::sync_channel(0);
         let (release, released) = std::sync::mpsc::sync_channel(0);
         *JOURNAL_COMPACT_BLOCKER.lock().map_err(|_| "compaction hook")? = Some((
@@ -86,10 +81,9 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         // timer or guessed number of idle polls. Drain/release before failing.
         let record = futures::poll!(records.next());
         let opened = futures::poll!(provider.follow_checked(path.clone(), 1, seed.commit_id, crate::FollowFilter::default()));
-        let child = futures::poll!(children.next());
-        let ready = [record.is_ready(), opened.is_ready(), child.is_ready()].into_iter().filter(|ready| *ready).count();
-        eprintln!("accepted_compaction_probes ready_before_device_release={ready}/3");
-        if ready != 3 {
+        let ready = [record.is_ready(), opened.is_ready()].into_iter().filter(|ready| *ready).count();
+        eprintln!("accepted_compaction_probes ready_before_device_release={ready}/2");
+        if ready != 2 {
             release.send(())?;
             writing.await??;
             return Err("compaction delayed accepted publication".into());
@@ -98,10 +92,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         let record: Record = record?;
         let std::task::Poll::Ready(opened) = opened else { unreachable!() };
         let mut resumed = opened?;
-        let std::task::Poll::Ready(Some(child)) = child else { return Err("children ended".into()) };
-        assert_eq!(child?.path.as_str(), "agents/b");
         drop(records);
-        drop(children);
         let mut observing = tokio::spawn({
             let provider = provider.clone();
             let path = path.clone();

@@ -207,36 +207,7 @@ impl WasmStream {
         Ok(bytes_array(output))
     }
 
-    /// Lists one fixed-snapshot child page, returning encoded `ChildrenResponse` messages.
-    #[wasm_bindgen(unchecked_return_type = "Uint8Array[]")]
-    pub async fn children(&self, input: &[u8]) -> Result<JsValue, JsValue> {
-        check_command_size(input)?;
-        let request = decode::<wire::ChildrenRequest>(input)?;
-        let request = wire_codec::children_from_wire(request).map_err(js_error)?;
-        let children = self
-            .provider
-            .children_page(crate::ChildrenPageRequest {
-                parent: request.parent,
-                limit: request.limit,
-                after: None,
-                hierarchy_version: None,
-            })
-            .await
-            .map_err(js_error)?
-            .children;
-        let mut output = Vec::new();
-        for child in children {
-            output.push(
-                wire::ChildrenResponse {
-                    child: Some(wire::Child {
-                        path: child.path.to_string(),
-                    }),
-                }
-                .encode_to_vec(),
-            );
-        }
-        Ok(bytes_array(output))
-    }
+
 
     /// Opens a live follow cursor backed by the canonical provider.
     #[wasm_bindgen]
@@ -262,30 +233,7 @@ impl WasmStream {
             )),
         })
     }
-    /// Opens live child discovery; each next yields one canonical ChildrenResponse.
-    #[wasm_bindgen]
-    pub async fn open_children(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
-        check_command_size(input)?;
-        let request = wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(input)?)
-            .map_err(js_error)?;
-        let children = self.provider.children(request).await.map_err(js_error)?;
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(
-                children
-                    .map(|child| {
-                        child.map(|child| {
-                            wire::ChildrenResponse {
-                                child: Some(wire::Child {
-                                    path: child.path.to_string(),
-                                }),
-                            }
-                            .encode_to_vec()
-                        })
-                    })
-                    .boxed_local(),
-            )),
-        })
-    }
+
 }
 
 impl WasmStream {

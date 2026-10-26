@@ -26,7 +26,7 @@ fn backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_rea
                 ];
                 let tail_matches = actual == Some(expected);
                 let accepted = [
-                    tail_matches,
+                    actual.unwrap_or(0) == expected,
                     tail_matches && matching_head,
                     actual.is_none(),
                 ];
@@ -39,8 +39,8 @@ fn backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_rea
                     assert_eq!(conflict.is_none(), accepted);
                     assert_eq!(reads.get(), usize::from(index == 1 && tail_matches));
                     if index == 0 {
-                        // A cold lookup must preserve missing vs existing-empty.
-                        absence_control_failed |= (actual.unwrap_or(0) == expected) != accepted;
+                        // Old presence-sensitive Tail rejects first writes at zero.
+                        absence_control_failed |= (actual == Some(expected)) != accepted;
                     }
                     if index == 1 {
                         // A matching sequence is not proof of a matching head.
@@ -62,7 +62,7 @@ fn backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_rea
     }
     assert!(
         absence_control_failed,
-        "missing-as-zero control escaped the state space"
+        "presence-sensitive Tail control escaped the state space"
     );
     assert!(
         head_control_failed,
@@ -107,7 +107,8 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
             records: bodies.clone(),
         },
         CommitMutation::Fork {
-            source: source.clone(),
+            exclude: Vec::new(),
+source: source.clone(),
             destination: destination.clone(),
             at_tail: 1,
             records: bodies.clone(),
@@ -147,6 +148,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
                 records(4, &bodies, identity, 9_000, Vec::with_capacity(2))?
             )?),
             CommittedMutation::Fork(CommittedFork {
+exclude: Vec::new(),
                 source,
                 destination,
                 forked_at: 1,
@@ -196,7 +198,8 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
     let request = CommitRequest {
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Fork {
-            source: source.clone(),
+            exclude: Vec::new(),
+source: source.clone(),
             destination: StreamPath::new("destination")?,
             at_tail: 3,
             records: Vec::new(),

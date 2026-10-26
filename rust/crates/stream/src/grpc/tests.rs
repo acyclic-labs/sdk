@@ -180,12 +180,7 @@ impl StreamProvider for EndingFollow {
             .follow_updates(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        if self.deny {
-            return Err(StreamError::AccessDenied);
-        }
-        self.inner.children(request).await
-    }
+
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.inner.commit(request).await
     }

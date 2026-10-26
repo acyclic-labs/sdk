@@ -55,16 +55,9 @@ pub(crate) fn verify(fault: u8) {
             block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
         let mut cancelled =
             block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
-        let mut children = block_on(provider.children(ChildrenRequest {
-            parent: Some(StreamPath::new("agents").unwrap()),
-            limit: 1,
-        }))
-        .unwrap();
-        block_on(children.next()).unwrap().unwrap();
-        let (_, wake) = crate::discovery_verification::probe();
+        let (_, wake) = crate::verification::probe();
         assert!(poll(records.next(), &wake).is_pending());
         assert!(poll(cancelled.next(), &wake).is_pending());
-        assert!(poll(children.next(), &wake).is_pending());
         let (entered, waiting) = loom::sync::mpsc::channel();
         let (release, released) = loom::sync::mpsc::channel();
         let writer = loom::thread::spawn({
@@ -103,7 +96,7 @@ pub(crate) fn verify(fault: u8) {
         // A second mutation cannot pass its real outer acquisition. Keeping
         // its acquisition on the reader actor removes irrelevant post-admission
         // work: until the cut closes, no later provider operation is reachable.
-        let (admission_probe, admission_wake) = crate::discovery_verification::probe();
+        let (admission_probe, admission_wake) = crate::verification::probe();
         let mut admission = Box::pin(provider.inner.visibility.write());
         let attempt = admission
             .as_mut()
@@ -121,7 +114,6 @@ pub(crate) fn verify(fault: u8) {
             ),
             &wake,
         );
-        let child = poll(children.next(), &wake);
         let marks = poll(provider.watermarks(path.clone()), &wake);
         let later_visible = block_on(
             provider
@@ -163,12 +155,10 @@ pub(crate) fn verify(fault: u8) {
         assert!(
             record.is_ready()
                 && matches!(opened, Poll::Ready(Ok(_)))
-                && child.is_ready()
                 && marks.is_ready(),
             "compaction must preserve accepted reads and the snapshot cut"
         );
         assert!(matches!(record, Poll::Ready(Some(Ok(record))) if record.sequence == 1));
-        assert!(matches!(child, Poll::Ready(Some(Ok(child))) if child.path.as_str() == "agents/b"));
         assert_eq!(
             marks,
             Poll::Ready(Ok(crate::StreamWatermarks {

@@ -109,7 +109,8 @@ mod tests {
             idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
         });
         let fork = Command::Fork(ForkRequest {
-            source: crate::StreamPath::new("codec/events")?,
+            exclude: Vec::new(),
+source: crate::StreamPath::new("codec/events")?,
             destination: crate::StreamPath::new("codec/fork")?,
             at_tail: Some(0),
             idempotency_key: None,

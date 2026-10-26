@@ -687,28 +687,7 @@ impl NativeStreamClient {
     }
 
     /// Opens live child discovery using the client's shared Streams session.
-    #[napi(js_name = "openChildrenResult")]
-    pub fn open_children_result<'env>(
-        &self,
-        env: &'env Env,
-        request: Buffer,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<PromiseRaw<'env, NativeStreamFollowResult>> {
-        let client = Arc::clone(&self.provider);
-        let cancellation = cancellation.map(|value| NativeStreamCancellation {
-            token: value.token.clone(),
-        });
-        let work = async move {
-            Ok(
-                match open_children(&client, request, cancellation.as_ref()).await {
-                    Ok(follow) => NativeStreamFollowResult::success(follow),
-                    Err(error) => NativeStreamFollowResult::failure(error),
-                },
-            )
-        };
-        let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
-        env.spawn_future(work)
-    }
+
 
     /// Executes a canonical children-page request.
     #[napi(js_name = "childrenPageResult")]
@@ -740,20 +719,7 @@ impl NativeStreamClient {
         operation_result(read_commit(&self.provider, request, cancellation)).await
     }
 
-    /// Reads all children from one fixed snapshot as encoded responses.
-    #[napi(js_name = "childrenResult")]
-    pub async fn children_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamSequenceResult> {
-        Ok(
-            match children(&self.provider, request, cancellation).await {
-                Ok(values) => NativeStreamSequenceResult::success(values),
-                Err(error) => NativeStreamSequenceResult::failure(error),
-            },
-        )
-    }
+
 }
 
 mod credentials;

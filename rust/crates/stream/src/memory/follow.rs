@@ -7,15 +7,12 @@ impl MemoryStream {
         filter: crate::FollowFilter,
     ) -> Result<(crate::follow_index::FollowInterest, HistoryCursor), StreamError> {
         let mut state = self.state.write().await;
-        let path = state.paths.get_mut(path).ok_or(StreamError::NotFound)?;
-        let cursor = HistoryCursor::prepare(path, from, anchor)?;
-        let index = path.follows.get_or_insert_with(|| {
-            Arc::new(crate::query_sync::SyncMutex::new(
-                crate::follow_index::FollowIndex::default(),
-            ))
-        });
+        let stream = state.paths.get(path).ok_or(StreamError::NotFound)?;
+        let cursor = HistoryCursor::prepare(stream, from, anchor)?;
+        let tail = stream.tail;
+        let signals = state.signals.entry(path.clone()).or_insert_with(|| Signals::new(tail));
         Ok((
-            crate::follow_index::FollowIndex::subscribe(index, filter, path.tail)?,
+            crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?,
             cursor,
         ))
     }

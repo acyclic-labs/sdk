@@ -396,24 +396,6 @@ fn deadline_cancels_a_blocked_subscription_write() {
     blocked_deadline("deadline-subscription", "");
 }
 #[test]
-fn child_deadline_cancels_a_blocked_subscription_write() {
-    blocked_deadline("deadline-subscription-children", "");
-}
-#[test]
-#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
-fn child_deadline_negative_control_omits_timeout() {
-    blocked_deadline("deadline-subscription-children", "deadline");
-}
-#[test]
-fn child_deadline_cancels_a_blocked_acknowledgement_write() {
-    blocked_deadline("deadline-ack-children", "");
-}
-#[test]
-#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
-fn child_deadline_negative_control_waits_for_a_blocked_write() {
-    blocked_deadline("deadline-ack-children", "write");
-}
-#[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_subscription_negative_control_awaits_the_write() {
     blocked_deadline("deadline-subscription", "write");

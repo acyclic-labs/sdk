@@ -52,7 +52,7 @@ async function fixture(node: SessionNode, name: string, movedEndpoint: () => str
   };
 }
 
-test("native concurrent discovery and follows share one Session per node with local cancellation", async () => {
+test("native concurrent follows and follows share one Session per node with local cancellation", async () => {
   const home = new SessionNode();
   const owner = new SessionNode();
   home.append("agents/a"); owner.append("agents/a");
@@ -64,28 +64,28 @@ test("native concurrent discovery and follows share one Session per node with lo
   try {
     const provider = await NativeStreamProvider.connect(edge.host.endpoint, undefined, Buffer.from(edge.host.certificate), undefined,
       signal => { expect(signal?.aborted).toBe(false); credentials++; return "fixture"; });
-    const children = controllers.map(controller => provider.children({ parent: "agents", limit: 1, signal: controller.signal })[Symbol.asyncIterator]());
+    const children = controllers.map(controller => provider.follow("agents/a", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]());
     const records = provider.follow("healthy", { from: 0n, signal: healthy.signal })[Symbol.asyncIterator]();
     try {
       const healthyRecord = records.next();
       const first = await Promise.all(children.map(child => child.next()));
-      expect(first.every(result => result.value?.path === "agents/a")).toBe(true);
+      expect(first.every(result => result.value?.sequence === 0n)).toBe(true);
       await home.until(() => home.active === 33);
       expect(edge.sessions).toBe(1); expect(edge.host.connections).toBe(1);
       expect(credentials).toBe(1);
       const pending = children.map(child => child.next());
-      home.move("agents");
+      home.move("agents/a");
       await owner.until(() => owner.active === 32);
-      owner.append("agents/b");
-      expect((await Promise.all(pending)).every(result => result.value?.path === "agents/b")).toBe(true);
+      owner.append("agents/a");
+      expect((await Promise.all(pending)).every(result => result.value?.sequence === 1n)).toBe(true);
       expect(target.sessions).toBe(1); expect(target.host.connections).toBe(1);
       expect(edge.sessions).toBe(1); expect(edge.host.connections).toBe(1);
       expect(credentials).toBe(2);
       controllers.slice(0, 16).forEach(controller => controller.abort());
       await owner.until(() => owner.active === 16);
       const remaining = children.slice(16).map(child => child.next());
-      owner.append("agents/c"); home.append("healthy");
-      expect((await Promise.all(remaining)).every(result => result.value?.path === "agents/c")).toBe(true);
+      owner.append("agents/a"); home.append("healthy");
+      expect((await Promise.all(remaining)).every(result => result.value?.sequence === 2n)).toBe(true);
       expect((await healthyRecord).value?.sequence).toBe(0n);
       expect(home.actorChannels + owner.actorChannels).toBe(0);
       expect(edge.sessions + target.sessions).toBe(2);
@@ -102,7 +102,7 @@ test("native concurrent discovery and follows share one Session per node with lo
   }
 });
 
-test("cancelling a discovery during shared initialization preserves its sibling", async () => {
+test("cancelling a follows during shared initialization preserves its sibling", async () => {
   const node = new SessionNode(); node.append("agents/a");
   const peer = await fixture(node, "home", () => { throw new Error("unexpected move"); });
   const cancelled = new AbortController(), healthy = new AbortController();
@@ -112,15 +112,15 @@ test("cancelling a discovery during shared initialization preserves its sibling"
   try {
     const provider = await NativeStreamProvider.connect(peer.host.endpoint, undefined, Buffer.from(peer.host.certificate), undefined,
       async () => { started(); await credential; return "fixture"; });
-    const first = provider.children({ parent: "agents", limit: 1, signal: cancelled.signal })[Symbol.asyncIterator]();
-    const second = provider.children({ parent: "agents", limit: 1, signal: healthy.signal })[Symbol.asyncIterator]();
+    const first = provider.follow("agents/a", { from: 0n, signal: cancelled.signal })[Symbol.asyncIterator]();
+    const second = provider.follow("agents/a", { from: 0n, signal: healthy.signal })[Symbol.asyncIterator]();
     try {
       const abandoned = first.next(), surviving = second.next();
       await initializing;
       cancelled.abort();
       expect((await abandoned).done).toBe(true);
       finish();
-      expect((await surviving).value?.path).toBe("agents/a");
+      expect((await surviving).value?.sequence).toBe(0n);
       expect(peer.sessions).toBe(1); expect(peer.host.connections).toBe(1);
       expect(node.actorChannels).toBe(0);
     } finally {
@@ -140,8 +140,8 @@ test("a cancelled waiter cannot cancel a shared Session paused before Welcome", 
   const cancelled = new AbortController(), healthy = new AbortController();
   try {
     const provider = await NativeStreamProvider.connect(peer.host.endpoint, undefined, Buffer.from(peer.host.certificate), undefined, () => "fixture");
-    const first = provider.children({ parent: "agents", limit: 1, signal: cancelled.signal })[Symbol.asyncIterator]();
-    const second = provider.children({ parent: "agents", limit: 1, signal: healthy.signal })[Symbol.asyncIterator]();
+    const first = provider.follow("agents/a", { from: 0n, signal: cancelled.signal })[Symbol.asyncIterator]();
+    const second = provider.follow("agents/a", { from: 0n, signal: healthy.signal })[Symbol.asyncIterator]();
     try {
       const abandoned = first.next();
       await paused;
@@ -151,7 +151,7 @@ test("a cancelled waiter cannot cancel a shared Session paused before Welcome", 
       expect((await abandoned).done).toBe(true);
       expect(peer.live).toBe(1); expect(peer.sessions).toBe(1);
       finish();
-      expect((await surviving).value?.path).toBe("agents/a");
+      expect((await surviving).value?.sequence).toBe(0n);
       expect(peer.sessions).toBe(1); expect(peer.host.connections).toBe(1);
     } finally {
       finish(); cancelled.abort(); healthy.abort();
@@ -161,7 +161,7 @@ test("a cancelled waiter cannot cancel a shared Session paused before Welcome", 
   } finally { await peer.host.close(); }
 });
 
-test("new discovery abandons a cancelled home reconnect before its credential settles", async () => {
+test("new follows abandons a cancelled home reconnect before its credential settles", async () => {
   const node = new SessionNode(); node.append("agents/a");
   const peer = await fixture(node, "home", () => { throw new Error("unexpected move"); });
   const cancelled = new AbortController(), healthy = new AbortController();
@@ -179,10 +179,10 @@ test("new discovery abandons a cancelled home reconnect before its credential se
           finish = () => { settled = true; reject(signal!.reason); };
         });
       });
-    const first = provider.children({ parent: "agents", limit: 1, signal: cancelled.signal })[Symbol.asyncIterator]();
-    const second = provider.children({ parent: "agents", limit: 1, signal: healthy.signal })[Symbol.asyncIterator]();
+    const first = provider.follow("agents/a", { from: 0n, signal: cancelled.signal })[Symbol.asyncIterator]();
+    const second = provider.follow("agents/a", { from: 0n, signal: healthy.signal })[Symbol.asyncIterator]();
     try {
-      expect((await first.next()).value?.path).toBe("agents/a");
+      expect((await first.next()).value?.sequence).toBe(0n);
       const abandoned = first.next().then(result => ({ result }), error => ({ error }));
       node.disconnect();
       await reconnecting;
@@ -192,15 +192,15 @@ test("new discovery abandons a cancelled home reconnect before its credential se
       });
       await cancellation;
       expect(await abandoned).toEqual({ result: { done: true, value: undefined } });
-      expect((await replacement).value?.path).toBe("agents/a");
+      expect((await replacement).value?.sequence).toBe(0n);
       expect(settled).toBe(false);
       expect(calls).toBe(3);
       expect(peer.sessions).toBe(2);
       expect(peer.host.connections).toBe(1);
       expect(node.actorChannels).toBe(0);
       finish();
-      const next = second.next(); node.append("agents/b");
-      expect((await next).value?.path).toBe("agents/b");
+      const next = second.next(); node.append("agents/a");
+      expect((await next).value?.sequence).toBe(1n);
     } finally {
       finish?.(); cancelled.abort(); healthy.abort();
       await Promise.all([first.return?.(), second.return?.()]);

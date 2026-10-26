@@ -18,7 +18,7 @@ use std::{
 };
 use wasm_bindgen::{JsCast, JsValue};
 
-mod discovery;
+mod notifications;
 mod follow;
 mod publication;
 #[cfg(test)]
@@ -31,7 +31,7 @@ const METADATA_WORDS: usize = 10;
 /// Finite durable recovery/retention and canonical in-memory admission limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BrowserStreamLimits {
-    /// Maximum retained journal commands, including terminal conflicts.
+    /// Maximum retained successful journal commands.
     pub commands: u64,
     /// Maximum retained journal bytes, including sampled times.
     pub journal_bytes: u64,
@@ -89,7 +89,7 @@ struct Inner {
     cache: crate::query_sync::Mutex<Cache>,
     clock: Arc<ReplayClock>,
     limits: BrowserStreamLimits,
-    publications: discovery::Publications,
+    publications: notifications::Publications,
     #[cfg(test)]
     refreshes: std::cell::Cell<usize>,
     #[cfg(test)]
@@ -137,7 +137,7 @@ impl BrowserStream {
         let provider = memory(limits.memory, Arc::clone(&clock));
         let inner = Rc::new(Inner {
             operation_claims: crate::OperationClaims::default(),
-            publications: discovery::Publications::new(name)?,
+            publications: notifications::Publications::new(name)?,
             database,
             cache: crate::query_sync::Mutex::new(Cache {
                 provider,
@@ -306,7 +306,6 @@ impl BrowserStream {
             Command::Fork(request) => request.idempotency_key.clone(),
             Command::Commit(request) => Some(request.idempotency_key.clone()),
         };
-        let has_key = key.is_some();
         let existing = match key {
             Some(key) => cache.provider.inspect_idempotency(key).await?.is_some(),
             None => false,
@@ -324,7 +323,7 @@ impl BrowserStream {
             }),
         };
         if existing
-            || matches!(outcome, Outcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
+            || matches!(outcome, Outcome::Append(AppendOutcome::TailConflict { .. }) | Outcome::Commit(CommitOutcome::Conflict(_)))
         {
             cache.valid = true;
             return Ok(outcome);
@@ -470,9 +469,7 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.read(request).await)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.discover(request).await
-    }
+
     async fn children_page(
         &self,
         request: ChildrenPageRequest,

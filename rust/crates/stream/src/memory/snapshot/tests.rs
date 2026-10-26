@@ -61,7 +61,8 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
     };
     let append_result = stream.append(appended.clone()).await?;
     let forked = crate::ForkRequest {
-        source: source.clone(),
+        exclude: Vec::new(),
+source: source.clone(),
         destination: destination.clone(),
         at_tail: Some(1),
         idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"fork"))?),
@@ -130,7 +131,8 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
     stream.append(append(root.clone(), b"root")).await?;
     stream
         .fork(crate::ForkRequest {
-            source: parent.clone(),
+            exclude: Vec::new(),
+source: parent.clone(),
             destination: no_history.clone(),
             at_tail: Some(0),
             idempotency_key: None,
@@ -141,7 +143,8 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         .await?;
     stream
         .fork(crate::ForkRequest {
-            source: root.clone(),
+            exclude: Vec::new(),
+source: root.clone(),
             destination: source.clone(),
             at_tail: Some(0),
             idempotency_key: None,
@@ -149,7 +152,8 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         .await?;
     stream
         .fork(crate::ForkRequest {
-            source: source.clone(),
+            exclude: Vec::new(),
+source: source.clone(),
             destination: empty.clone(),
             at_tail: None,
             idempotency_key: None,
@@ -172,7 +176,8 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
                 records: vec![(Bytes::from_static(b"after")).into()],
             },
             crate::CommitMutation::Fork {
-                source: source.clone(),
+                exclude: Vec::new(),
+source: source.clone(),
                 destination: destination.clone(),
                 at_tail: 1,
                 records: vec![(Bytes::from_static(b"forked")).into()],
@@ -479,7 +484,8 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
         .await?;
     let receipt = stream
         .fork(crate::ForkRequest {
-            source: root,
+            exclude: Vec::new(),
+source: root,
             destination: first.clone(),
             at_tail: Some(0),
             idempotency_key: None,
@@ -487,7 +493,8 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
         .await?;
     stream
         .fork(crate::ForkRequest {
-            source: first,
+            exclude: Vec::new(),
+source: first,
             destination: later.clone(),
             at_tail: Some(0),
             idempotency_key: None,
@@ -531,7 +538,8 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
     stream.append(append(b"before")).await?;
     stream
         .fork(crate::ForkRequest {
-            source: source.clone(),
+            exclude: Vec::new(),
+source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(1),
             idempotency_key: None,
@@ -546,16 +554,14 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         .ok_or(StreamError::Unavailable)?
         .history
         .clone();
-    state
-        .paths
-        .get_mut(&destination)
-        .ok_or(StreamError::Unavailable)?
-        .history = Some(Arc::new(History::Prefix {
+    let mut corrupted = state.paths.get(&destination).ok_or(StreamError::Unavailable)?.clone();
+    corrupted.history = Some(Arc::new(History::Prefix {
         jump: HistoryJump::new(future.as_ref(), 1, || Ok(()))?,
         source: future,
         tail: 1,
         _allocation: Default::default(),
     }));
+    state.paths.insert(destination, corrupted);
     assert!(decode(&encode(&state)).is_none());
     Ok(())
 }

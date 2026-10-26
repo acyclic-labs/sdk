@@ -249,7 +249,8 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
             }],
             mutations: vec![if fork {
                 CommitMutation::Fork {
-                    source: path.clone(),
+                    exclude: Vec::new(),
+source: path.clone(),
                     destination: StreamPath::new("header-fork")?,
                     at_tail: 1,
                     records: vec![record("a", "alice")?],
