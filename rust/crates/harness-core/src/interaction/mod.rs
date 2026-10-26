@@ -36,3 +36,25 @@ mod codec;
 use codec::*;
 #[cfg(test)]
 mod tests;
+
+/// Stable identity of the interaction that `operation` opens within `scope`:
+/// the agent turn (or the bound task) whose execution raised it. Every opener
+/// and every responder derives the same id, on the supplied IO context.
+pub fn scoped_id(
+    scope: [u8; 16],
+    operation: OperationId,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
+) -> Result<crate::InteractionId> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+        io.hashed_bytes((b"harness/v2/task-interaction\0".len() + 32) as u64)?;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"harness/v2/task-interaction\0");
+    hasher.update(&scope);
+    hasher.update(&operation.into_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    Ok(crate::InteractionId::from_bytes(bytes))
+}

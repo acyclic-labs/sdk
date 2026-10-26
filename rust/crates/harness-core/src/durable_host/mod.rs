@@ -2,7 +2,7 @@
 
 use crate::contract::capability;
 use crate::{
-    Admission, BatchId, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result, TaskId,
+    Admission, BatchId, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{DistributedCoordinator, SchedulerPayloadStore},
@@ -84,26 +84,6 @@ fn sdk_and_native_timer_bytes_match() -> Result<()> {
 struct BatchCancellation {
     batch_id: BatchId,
     group_id: crate::GroupId,
-}
-
-/// Derives the stable task interaction identity on the supplied IO context.
-pub fn task_interaction_id(
-    task_id: TaskId,
-    operation_id: OperationId,
-    work: &mut Option<&mut dyn crate::store::HistoryIo>,
-) -> Result<InteractionId> {
-    if let Some(io) = work.as_deref_mut() {
-        io.check_cancellation()?;
-        io.hashed_bytes((b"harness/v2/task-interaction\0".len() + 32) as u64)?;
-    }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"harness/v2/task-interaction\0");
-    hasher.update(&task_id.into_bytes());
-    hasher.update(&operation_id.into_bytes());
-    let digest = hasher.finalize();
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    Ok(InteractionId::from_bytes(bytes))
 }
 
 fn worker_key(

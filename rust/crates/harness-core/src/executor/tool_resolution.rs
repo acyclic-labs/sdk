@@ -27,7 +27,7 @@ impl StockExecution<'_> {
             |(_, task, _)| *task,
         );
         let approval = with_history_io(self.io, |work| {
-            crate::durable_host::task_interaction_id(task, approval_operation, work)
+            crate::interaction::scoped_id(task.into_bytes(), approval_operation, work)
         })?;
         journal
             .open_interaction(approval, request, self.io)?

@@ -2,8 +2,6 @@ use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness_core::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[path = "native_stock_probe.rs"]
-mod probe;
 #[path = "native_stock_tests.rs"]
 pub(crate) mod stock;
 
@@ -42,8 +40,28 @@ impl HttpTransport for Fixture {
     ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(std::time::Duration::MAX, work)
     }
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        panic!("native execution must use its funded HTTP callback")
+    /// The agent host's ordinary dispatch, for fixtures that answer at once.
+    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        assert!(
+            self.cancel.is_none(),
+            "cancellation fixtures exercise only the funded native callback"
+        );
+        Box::pin(async move {
+            if let Some(response) = fixture_count(&request) {
+                return Ok(response);
+            }
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                request.headers.contains_key("authorization")
+                    || request.headers.contains_key("x-api-key")
+                    || request.headers.contains_key("x-goog-api-key")
+            );
+            Ok(HttpResponse {
+                retry_after: None,
+                status: 200,
+                body: Box::pin(futures::stream::iter([Ok(self.response.clone())])),
+            })
+        })
     }
     fn supports_native(&self, work: &NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;

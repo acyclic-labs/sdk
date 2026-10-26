@@ -7,6 +7,19 @@ struct Backend {
     counts: AtomicUsize,
     generations: AtomicUsize,
 }
+impl Backend {
+    fn answer(&self, request: &HttpRequest) -> (u16, &'static str) {
+        if request.url == "https://chatgpt.com/backend-api/codex/responses" {
+            self.generations.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.headers["chatgpt-account-id"], "account");
+            (200, RESPONSE)
+        } else {
+            self.counts.fetch_add(1, Ordering::SeqCst);
+            (404, "no count route")
+        }
+    }
+}
+
 impl HttpTransport for Backend {
     fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         crate::fixtures::delay(wait)
@@ -21,8 +34,16 @@ impl HttpTransport for Backend {
     ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        panic!("stock must use original-ledger native HTTP")
+    /// The agent host's ordinary dispatch.
+    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            let (status, body) = self.answer(&request);
+            Ok(HttpResponse {
+                retry_after: None,
+                status,
+                body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(body.as_bytes()))])),
+            })
+        })
     }
     fn supports_native(&self, _: &NativeMaterializationWork) -> Result<bool> {
         Ok(true)
@@ -33,15 +54,7 @@ impl HttpTransport for Backend {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
-            let (status, body) = if request.url == "https://chatgpt.com/backend-api/codex/responses"
-            {
-                self.generations.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(request.headers["chatgpt-account-id"], "account");
-                (200, RESPONSE)
-            } else {
-                self.counts.fetch_add(1, Ordering::SeqCst);
-                (404, "no count route")
-            };
+            let (status, body) = self.answer(&request);
             drop(request);
             HttpResponse::with_native_body(
                 status,
@@ -180,26 +193,18 @@ async fn stock(broken: bool) -> Result<()> {
         .map_err(|_| invalid("fixture cache"))?,
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
-    let result = crate::tests::native_tests::stock::run_stock_turn(
-        provider,
-        Adapter::Responses,
-        policy,
-        filesystem,
-    )
-    .await?;
+    let result =
+        crate::tests::native_tests::stock::run_stock_turn(provider, policy, filesystem).await?;
     if broken {
-        // The public counter's refusal is the provider's: the task fails without generating.
+        // The public counter's refusal is the provider's: the turn fails without generating.
         assert!(
-            matches!(&result, acyclic_harness_core::Outcome::Failed { .. }),
+            matches!(&result, crate::tests::native_tests::stock::StockTurn::Failed(_)),
             "{result:?}"
         );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 1);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 0);
     } else {
-        assert!(
-            matches!(&result, acyclic_harness_core::Outcome::Succeeded(_)),
-            "{result:?}"
-        );
+        assert_eq!(result, crate::tests::native_tests::stock::StockTurn::Settled);
         assert_eq!(backend.counts.load(Ordering::SeqCst), 0);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 1);
     }

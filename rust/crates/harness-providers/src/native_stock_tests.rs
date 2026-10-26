@@ -1,171 +1,36 @@
+//! Stock turns on the native agent host: one A4 agent over a memory stream and
+//! filesystem, prompted with a staged message and driven to quiescence.
 use super::*;
+use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_harness_core::{
-    Admission, AgentId, Capabilities, OperationId,
-    context::{CompactionPolicy, ContextManifest},
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    Capabilities, OperationId,
+    agent::{
+        self, AgentHost, AgentOutcome, AgentPath, AgentRecord as _, AgentState, ExecutorDriver,
+        ForkAdopted, InboxRecord, IntentId, Message, Phase, Sender, StatusRecord, VolumeBinding,
+    },
+    context::{CompactionPolicy, ContextPipeline},
+    conversation::{
+        ContentAccess, ContentPublisher as _, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    },
     core::{AggregateKind, Authority, AuthorityRoot},
-    distributed::{SchedulerPayloadStore, WorkPull, Worker},
-    durable_tool::ResumableToolRegistry,
+    executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemContentPublisher, FilesystemHost, FilesystemTaskRuntime, MODEL_TASK_COMMAND_KIND,
-        ModelTaskCommand, PreparationIo, TaskWorkerAttempt, TaskWorkerOutcome,
+        FilesystemContentPublisher, FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME,
+        TurnAuthority, TurnExecutors, TurnLimits,
     },
     resources::ProviderRef,
-    runtime::{RuntimeScope, TaskDefinition, TaskRegistry},
-    scheduler::{ResourceRequest, SessionLimits},
-    store::{HistoryIo, HistoryWork},
     tool::ToolRegistry,
-    workflow::{
-        MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
-        WorkflowCommand,
-    },
 };
-use acyclic_stream::{MemoryStream, UnixMillisClock};
+use acyclic_stream::{MemoryStream, ReadRequest, StreamPath, StreamProvider as _};
 
-struct Clock;
-impl UnixMillisClock for Clock {
-    fn now_unix_millis(&self) -> u64 {
-        1
-    }
-}
-
-struct OneCommand {
-    identity: MachineIdentity,
-    schema: serde_json::Value,
-    command: WorkflowCommand,
-}
-impl ResumableMachine for OneCommand {
-    fn identity(&self) -> &MachineIdentity {
-        &self.identity
-    }
-    fn state_schema(&self) -> &serde_json::Value {
-        &self.schema
-    }
-    fn initialize(&self, input: &serde_json::Value) -> Result<serde_json::Value> {
-        let _ = input;
-        Ok(serde_json::Value::Bool(false))
-    }
-    fn transition(
-        &self,
-        _: &serde_json::Value,
-        _: &serde_json::Value,
-    ) -> Result<MachineTransition> {
-        panic!("stock native fixture must use original-ledger machine callbacks")
-    }
-    fn supports_native_work(&self) -> bool {
-        true
-    }
-    fn identity_with_native_work<'a>(
-        &'a self,
-        work: &NativeMaterializationWork,
-    ) -> Result<&'a MachineIdentity> {
-        work.remaining()?;
-        Ok(&self.identity)
-    }
-    fn initialize_with_native_work(
-        &self,
-        input: &serde_json::Value,
-        work: &NativeMaterializationWork,
-    ) -> Result<(serde_json::Value, acyclic_fs::NativeAllocation)> {
-        let _ = input;
-        Ok((
-            serde_json::Value::Bool(false),
-            work.claim(
-                std::mem::size_of::<serde_json::Value>() as u64,
-                0,
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )?,
-        ))
-    }
-    fn transition_with_native_work(
-        &self,
-        state: &serde_json::Value,
-        input: serde_json::Value,
-        work: &NativeMaterializationWork,
-    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        let mut history = HistoryWork::new(PreparationIo::from_native_work(work)?);
-        history.retain_owned(std::mem::size_of::<MachineTransition>() as u64)?;
-        let transition = if state == &serde_json::Value::Bool(true) {
-            let commands = input
-                .get("commands")
-                .and_then(serde_json::Value::as_array)
-                .filter(|commands| commands.len() == 1)
-                .ok_or_else(|| invalid("stock fixture requires its one command result"))?;
-            let command = commands
-                .first()
-                .ok_or_else(|| invalid("stock fixture command result is missing"))?;
-            let identity = command
-                .get("operation_id")
-                .ok_or_else(|| invalid("stock fixture result has no operation identity"))?;
-            let operation: OperationId = serde::Deserialize::deserialize(identity)
-                .map_err(|_| invalid("stock fixture result has no operation identity"))?;
-            if operation != self.command.operation_id {
-                return Err(invalid("stock fixture result belongs to another command"));
-            }
-            let outcome = command
-                .get("value")
-                .ok_or_else(|| invalid("stock fixture command outcome is missing"))?;
-            let status = if let Some(message) = outcome
-                .pointer("/Failed/message")
-                .and_then(serde_json::Value::as_str)
-            {
-                history.retain_owned(message.len() as u64)?;
-                history.allocation_attempt(message.len() as u64)?;
-                work.charge(acyclic_fs::WorkCounters {
-                    bytes_copied: message.len() as u64,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
-                })?;
-                MachineStatus::Failed {
-                    message: message.to_owned(),
-                }
-            } else if outcome.get("Succeeded").is_some() {
-                MachineStatus::Completed {
-                    value: serde_json::Value::Null,
-                }
-            } else {
-                return Err(invalid("stock fixture command has no terminal result"));
-            };
-            MachineTransition {
-                state: serde_json::Value::Bool(true),
-                commands: Vec::new(),
-                status,
-            }
-        } else {
-            let slot = std::mem::size_of::<WorkflowCommand>() as u64;
-            history.retain_owned(slot)?;
-            history.allocation_attempt(slot)?;
-            let mut commands = Vec::new();
-            commands.try_reserve_exact(1)?;
-            if commands.capacity() > 1 {
-                history.retain_owned((commands.capacity() as u64 - 1) * slot)?;
-            }
-            let kind = &self.command.kind;
-            history.retain_owned(kind.len() as u64)?;
-            history.allocation_attempt(kind.len() as u64)?;
-            work.charge(acyclic_fs::WorkCounters {
-                bytes_copied: kind.len() as u64,
-                ..acyclic_fs::WorkCounters::UNCHARGED
-            })?;
-            let kind = kind.to_owned();
-            let payload = self.command.payload.copy(&mut Some(&mut history))?;
-            commands.push(WorkflowCommand {
-                operation_id: self.command.operation_id,
-                kind,
-                payload,
-            });
-            MachineTransition {
-                state: serde_json::Value::Bool(true),
-                commands,
-                status: MachineStatus::Suspended,
-            }
-        };
-        let custody = history.into_custody()?;
-        Ok((transition, custody))
-    }
-}
+const LIMITS: TurnLimits = TurnLimits {
+    maximum_bytes: 65_536,
+    max_steps: 1,
+    history_turns: 8,
+};
 
 #[tokio::test]
-async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<()> {
+async fn every_adapter_runs_a_stock_turn_on_the_native_agent_host() -> Result<()> {
     for (adapter, response) in [
         (
             Adapter::Chat,
@@ -209,43 +74,79 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
                 crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
             provider
         };
-        let outcome = run_stock_turn(
+        let turn = run_stock_turn(
             provider,
-            adapter,
             CompactionPolicy::Disabled,
             acyclic_fs::Fs::memory(),
         )
         .await?;
-        assert!(
-            matches!(outcome, acyclic_harness_core::Outcome::Succeeded(_)),
-            "{adapter:?}: {outcome:?}"
-        );
+        assert_eq!(turn, StockTurn::Settled, "{adapter:?}");
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
     }
     Ok(())
 }
 
+/// How the agent's one prompted turn ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StockTurn {
+    /// The turn settled into the conversation and the agent waits for input.
+    Settled,
+    /// The turn's step failed; the agent keeps its input queued.
+    Failed(String),
+}
+
+/// Builds each turn's stock executor over the provider under test.
+struct Stock {
+    provider: Arc<crate::ResolvedModel>,
+    policy: CompactionPolicy,
+}
+
+impl TurnExecutors for Stock {
+    fn executor<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+        _: &'a acyclic_harness_core::model::ModelContent,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
+        Box::pin(async move {
+            let provider = Arc::clone(&self.provider) as Arc<dyn ModelProvider>;
+            let provider = provider
+                .bind_content(authority.content.reader.clone(), LIMITS.maximum_bytes)
+                .unwrap_or(provider);
+            Ok(Arc::new(
+                StockExecutor::new(
+                    self.provider.model().clone(),
+                    provider,
+                    ContextPipeline::default(),
+                    ToolRegistry::default(),
+                )
+                .with_compaction_policy(self.policy.clone()),
+            ) as Arc<dyn Executor>)
+        })
+    }
+}
+
+fn agent_error(error: agent::Error) -> Error {
+    invalid(error.to_string())
+}
+
+/// Prompts one root agent once and runs the host until it is quiescent.
 pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     provider: crate::ResolvedModel,
-    adapter: Adapter,
     policy: CompactionPolicy,
     filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityBackend, O>,
-) -> Result<acyclic_harness_core::Outcome<serde_json::Value>> {
-    let model = provider.model().clone();
-    let stages = Arc::new(probe::Stages::default());
-    let provider = Arc::new(probe::Probe {
-        provider,
-        stages: stages.clone(),
-    });
-    let storage_provider =
-        ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &storage_provider, None)?;
-    let agent = AgentId::from_bytes([2; 16]);
+) -> Result<StockTurn> {
+    let stream = Arc::new(MemoryStream::default());
+    let storage = ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(filesystem, &storage, None)?;
+    let root = AgentPath::root(&agent::AgentId::from_bytes([2; 16]));
+    let owner = acyclic_harness_core::AgentId::from_bytes(root.id().to_bytes());
     let volume = VolumeRef::new(
-        storage_provider,
+        storage,
         "private".into(),
         VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
+        VolumeOwner::Agent(owner),
         &mut None,
     )?;
     host.create_volume(&volume).await?;
@@ -253,175 +154,138 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         "fixture",
         [47; 32],
         Authority {
-            kind: AggregateKind::Task,
-            id: "owner".into(),
+            kind: AggregateKind::Conversation,
+            id: "agents".into(),
         },
     );
-    let signed = issuer.bootstrap_scope(
-        "owner",
+    // The prompt body is staged on the agent's private volume under the same
+    // conversation authority its turns read with.
+    let audience = issuer.with_audience(Authority {
+        kind: AggregateKind::Conversation,
+        id: root.id().as_str().to_owned(),
+    });
+    let signed = audience.bootstrap_scope(
+        "agent",
         &Capabilities::new([
-            "operation:declare".into(),
-            "operation:observe".into(),
-            "operation:cancel".into(),
-            "task:spawn:model@1".into(),
-            "model:generate".into(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
-        Some(agent),
+        Some(owner),
         &mut None,
     )?;
-    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
-    let work = work(&CancellationToken::new())?;
-    let io = PreparationIo::from_native_work(&work)?;
-    let operation = OperationId::from_bytes([1; 16]);
-    let payloads = FilesystemContentPublisher::new(
-        host.clone(),
+    let publisher = FilesystemContentPublisher::new(
+        Arc::clone(&host),
         &volume,
-        &issuer.verifier(&mut None)?,
+        &audience.verifier(&mut None)?,
         &signed,
-        65_536,
+        LIMITS.maximum_bytes,
         None,
     )?;
-    let command = ModelTaskCommand {
-        summary_source: None,
-        context_manifest: ContextManifest::default()
-            .publish(
-                payloads.as_ref(),
-                OperationId::from_bytes([10; 16]),
-                "manifest.json",
-                Limits::default(),
-            )
-            .await?,
-        input: ModelContent::Text("question".into()),
-        selected_context: None,
-        max_steps: 1,
-        max_output_tokens: None,
-        selected_output_volume: None,
-        mailbox_operation: None,
-    };
-    let payload = payloads
+    let body = publisher
         .stage(
-            operation,
-            "command",
-            &serde_json::to_vec(&command).expect("command fixture"),
-            None,
+            OperationId::from_bytes([1; 16]),
+            "inputs/question.txt",
+            b"question",
+            "text/plain",
+            "prompt",
+            ContentAccess::default(),
         )?
-        .await?;
-    let machine = Arc::new(OneCommand {
-        identity: MachineIdentity {
-            name: "model".into(),
-            version: "1".into(),
-            digest: [48; 32],
-        },
-        schema: json!({"type":"boolean"}),
-        command: WorkflowCommand {
-            operation_id: OperationId::from_bytes([3; 16]),
-            kind: MODEL_TASK_COMMAND_KIND.into(),
-            payload,
-        },
-    });
-    let mut tasks = TaskRegistry::default();
-    tasks.register(
-        TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
-            machine.clone(),
-            json!({"type":"boolean"}),
-            json!({"type":"null"}),
-        )?
-        .publish(&work)?,
-    )?;
-    let mut machines = MachineRegistry::default();
-    machines.register(machine, &mut None)?;
-    let runtime = FilesystemTaskRuntime::open(
-        Arc::new(MemoryStream::default()),
-        host.clone(),
-        &volume,
-        // Callers may arm threshold compaction, whose summaries need the
-        // private volume.
-        Some(&volume),
-        &issuer.verifier(&mut None)?,
-        &signed,
-        &scope,
-        &tasks,
-        &machines,
-        &ToolRegistry::default(),
-        SessionLimits {
-            active_tasks: 1,
-            total_tasks: 1,
-            depth: 1,
-            model_steps: 1,
-        },
-        1,
-        65_536,
-        Arc::new(Clock),
-        None,
-        &[],
-        &ResumableToolRegistry::default(),
-        Some(&io),
-    )
-    .await?;
-    let opened = work.receipt().items_examined;
-    let definition =
-        tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
-    assert!(matches!(
-        runtime
-            .harness()
-            .admit(operation, &definition, serde_json::Value::Bool(false), None)
-            .await?,
-        Admission::Accepted(_)
-    ));
-    let admitted = work.receipt().items_examined;
-    let mut history = HistoryWork::new(PreparationIo::from_native_work(&work)?);
-    history.retain_owned(
-        std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
-    )?;
-    let pulled = runtime
-        .task_host()
-        .pull_work(
-            &Worker {
-                id: "fixture".into(),
-                available: ResourceRequest::default(),
-                labels: BTreeMap::new(),
-            },
-            Some(operation),
-            &mut Some(&mut history),
-        )
-        .await?;
-    let WorkPull::Claimed(lease) = pulled else {
-        panic!("native lease")
-    };
-    let recovery = history.into_custody()?;
-    let commands = runtime
-        .commands()
-        .with_model(&model, provider, &policy, Some(&io))?;
-    let leased = work.receipt().items_examined;
-    let result = runtime
-        .resume_task_with_native_work(lease, recovery, &commands, 2, &work)
-        .await;
-    eprintln!(
-        "{adapter:?} items: open={opened}, admission={}, lease={}, run={}, provider={stages:?}",
-        admitted - opened,
-        leased - admitted,
-        work.receipt().items_examined - leased
-    );
-    let (attempt, custody) = result?;
-    if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
-        return Err(error);
-    }
-    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task }) = attempt else {
-        panic!("{adapter:?}: the stock turn did not reach a terminal outcome");
-    };
-    use acyclic_harness_core::runtime::TaskStateProvider as _;
-    let outcome = runtime
-        .task_host()
-        .outcome(task)
         .await?
-        .expect("a completed task has an outcome");
-    assert!(custody.work().shares_allocation_context(&work));
-    eprintln!(
-        "{adapter:?} total_items={} remaining_items={}",
-        work.receipt().items_examined,
-        work.remaining()?.items_examined,
+        .0;
+    let turns = FilesystemTurnHost::new(
+        stream.clone(),
+        host,
+        issuer,
+        Arc::new(Stock {
+            provider: Arc::new(provider),
+            policy,
+        }),
+        LIMITS,
     );
-    Ok(outcome)
+    let agents = AgentHost::new(
+        stream.clone(),
+        ExecutorDriver::new(turns),
+        ActorReference::new(b"fixture", b"agents", b"providers")
+            .map_err(|error| invalid(error.to_string()))?,
+        ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(|error| invalid(error.to_string()))?,
+        Arc::new(SystemClock),
+    )
+    .map_err(agent_error)?;
+    let intent = |text: &str| IntentId::try_from(text).map_err(agent_error);
+    agents
+        .create(
+            &intent("root")?,
+            ForkAdopted {
+                agent: root.id(),
+                parent: None,
+                forked_at: 0,
+                conversation_tail: 0,
+                volumes: vec![VolumeBinding {
+                    name: PRIVATE_VOLUME.into(),
+                    volume,
+                }],
+                brief: None,
+                policy: None,
+            },
+        )
+        .await
+        .map_err(agent_error)?;
+    let from = Sender::User {
+        principal: "fixture".into(),
+    };
+    agents
+        .send(
+            &root,
+            &from,
+            &InboxRecord::Message(Message {
+                from: from.clone(),
+                id: intent("question")?,
+                body: Box::new(body),
+            }),
+        )
+        .await
+        .map_err(agent_error)?;
+    let failures = agents.runtime().drain().await;
+    if let [(_, failure), ..] = failures.as_slice() {
+        return Ok(StockTurn::Failed(failure.to_string()));
+    }
+    let status = records(&*stream, root.status().map_err(agent_error)?).await?;
+    let last = status
+        .last()
+        .ok_or_else(|| invalid("the agent wrote no status"))?;
+    let status = StatusRecord::decode(last).map_err(agent_error)?;
+    let conversation = records(&*stream, root.conversation().map_err(agent_error)?).await?;
+    Ok(match status.phase {
+        Phase::Idle if conversation.len() == 1 => StockTurn::Settled,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { message },
+        } => StockTurn::Failed(message),
+        phase => {
+            return Err(invalid(format!(
+                "the prompted turn did not settle: {phase:?}, {} conversation records",
+                conversation.len()
+            )));
+        }
+    })
+}
+
+/// The records of `path`; a stream no commit created yet has none.
+async fn records(stream: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>>> {
+    let records = match stream
+        .read(ReadRequest {
+            path,
+            from: 0,
+            limit: 64,
+        })
+        .await
+    {
+        Ok(records) => records,
+        Err(acyclic_stream::StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) => return Err(invalid(error.to_string())),
+    };
+    records
+        .map_ok(|record| record.value.to_vec())
+        .try_collect()
+        .await
+        .map_err(|error| invalid(error.to_string()))
 }

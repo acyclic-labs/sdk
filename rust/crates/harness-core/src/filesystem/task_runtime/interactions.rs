@@ -403,7 +403,7 @@ where
             io.preflight(hashed)?;
             io.charge(hashed)?;
         }
-        let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
+        let id = crate::interaction::scoped_id(task.into_bytes(), operation, &mut None)?;
         let host = self.interaction_host(io)?;
         // Request identity and terminal status must belong to the same cut.
         // This is an observation; execution still consumes the durable decision.

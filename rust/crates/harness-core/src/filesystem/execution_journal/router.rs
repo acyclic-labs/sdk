@@ -27,7 +27,7 @@ where
             .0
             .task_binding()
             .0;
-        let id = crate::durable_host::task_interaction_id(task, operation_id, &mut None)?;
+        let id = crate::interaction::scoped_id(task.into_bytes(), operation_id, &mut None)?;
         self.open_interaction(id, &interaction, None)?.await?;
         Ok(self
             .interaction_outcome(id, None)?
@@ -81,8 +81,8 @@ where
                 .task_binding()
                 .0;
             let io = PreparationIo::from_native_work(work)?;
-            let id = crate::durable_host::task_interaction_id(
-                task,
+            let id = crate::interaction::scoped_id(
+                task.into_bytes(),
                 operation_id,
                 &mut Some(&mut io.history_io()),
             )?;

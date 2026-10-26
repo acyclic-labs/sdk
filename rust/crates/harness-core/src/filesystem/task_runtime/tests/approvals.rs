@@ -293,7 +293,7 @@ async fn native_recorded_tool_waits_for_exact_approval_and_replays_without_dispa
             .ok_or_else(|| Error::Invalid("fixture policy absent".into()))?;
         let (approval, _) =
             crate::runtime::tool_approval_binding(task, &policy, definition, &invocation, None)?;
-        let id = crate::durable_host::task_interaction_id(task, approval, &mut None)?;
+        let id = crate::interaction::scoped_id(task.into_bytes(), approval, &mut None)?;
         let request = runtime
             .interaction_host(None)?
             .read_request(id, None)
@@ -553,7 +553,7 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
                 &invocation,
                 None,
             )?;
-            let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
+            let id = crate::interaction::scoped_id(task.into_bytes(), operation, &mut None)?;
             let context = executor.block_on(
                 runtime.task_context(task, LeaseFence::from(&initialized.lease.reservation)),
             )?;
