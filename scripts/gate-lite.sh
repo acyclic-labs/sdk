@@ -13,7 +13,7 @@ else
 fi
 echo "GATE_LITE_START scope=$(tr -d '\r' < .gate-scope-mode) crates=$((${#args[@]} / 2))"
 if [ "${args[0]:-}" = --workspace ]; then
-  bash scripts/gate-rust-format.sh; rc=$?
+  bash scripts/gate-rust-format.sh --stage; rc=$?
 else
   cargo fmt "${fmt_args[@]}" -- --check; rc=$?
 fi

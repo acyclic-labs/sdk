@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -40,6 +40,40 @@ function fixture(overrides = {}) {
   execFileSync("git", ["add", "-A"], { cwd: root });
   return root;
 }
+
+function gateFixture() {
+  const root = fixture({ "member/src/plain.rs": drift });
+  mkdirSync(join(root, "scripts"));
+  for (const name of ["gate-lite.sh", "gate-rust-format.sh", "qualify-rustfmt.mjs"]) {
+    copyFileSync(join(repo, "scripts", name), join(root, "scripts", name));
+  }
+  writeFileSync(join(root, ".gate-scope-mode"), "full\n");
+  return root;
+}
+
+test("lite formatter refusal has one terminal verdict owned by the parent gate", () => {
+  const root = gateFixture();
+  try {
+    const result = spawnSync("bash", ["scripts/gate-lite.sh"], { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /Diff in .*member\/src\/plain.rs/);
+    assert.match(result.stdout, /^GATE_RUSTFMT rc=1 /m);
+    assert.match(result.stdout, /^GATE_LITE_FORMAT_FAILED rc=1;/m);
+    assert.deepEqual(result.stdout.match(/^GATE_DONE rc=.*$/gm), ["GATE_DONE rc=1"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("formatter standalone refusal retains its terminal verdict while stage refusal does not", () => {
+  const root = gateFixture();
+  try {
+    for (const [args, terminal] of [[[], ["GATE_DONE rc=1"]], [["--stage"], []]]) {
+      const result = spawnSync("bash", ["scripts/gate-rust-format.sh", ...args], { cwd: root, encoding: "utf8" });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stdout, /^GATE_RUSTFMT rc=1 /m);
+      assert.deepEqual(result.stdout.match(/^GATE_DONE rc=.*$/gm) ?? [], terminal);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("manifests resolve explicit, inherited, default and virtual editions", () => {
   assert.deepEqual(parseManifest(tree["Cargo.toml"]), { workspace: "2024", edition: null });
