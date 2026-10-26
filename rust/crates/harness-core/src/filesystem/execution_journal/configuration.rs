@@ -282,6 +282,7 @@ where
             input_verifier: None,
             bound_selection: None,
             stop: None,
+            agent_approvals: None,
             interactions,
             owner: None,
             approval_task: None,
@@ -390,6 +391,13 @@ where
     #[must_use]
     pub fn with_stop(mut self, stop: Arc<crate::agent::TurnStop>) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    /// Opens and settles approvals as files of the agent that `approvals` owns.
+    #[must_use]
+    pub fn with_agent_approvals(mut self, approvals: Arc<crate::approvals::AgentApprovals>) -> Self {
+        self.agent_approvals = Some(approvals);
         self
     }
 

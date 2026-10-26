@@ -21,6 +21,7 @@ use crate::{
     projection::SelectedModelContext,
     runtime::ContentBindings,
 };
+use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy, VolumeApprovalFiles};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
 use futures::TryStreamExt;
@@ -41,6 +42,8 @@ pub struct TurnAuthority {
     /// Reader of files under `scope` and writer of the private volume, for
     /// model content, tool inputs and the turn's own output.
     pub content: ContentBindings,
+    /// Approval gate of the agent's policy file; without one every tool runs.
+    pub approval: Option<Arc<dyn crate::runtime::ToolPolicy>>,
 }
 
 /// Builds the executor of one agent turn: its tools, context, policy, limits
@@ -77,6 +80,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     executors: Arc<dyn TurnExecutors>,
     schemas: SchemaRegistry,
     limits: TurnLimits,
+    approvers: crate::approvals::ApproverModels,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -102,7 +106,68 @@ where
             executors,
             schemas: SchemaRegistry::new(),
             limits,
+            approvers: Default::default(),
         }
+    }
+
+    /// Binds the independent models that `llm` approval stages name.
+    #[must_use]
+    pub fn with_approvers(mut self, approvers: crate::approvals::ApproverModels) -> Self {
+        self.approvers = approvers;
+        self
+    }
+
+    /// `agent`'s approval policy, the parent answering its parent stages, and
+    /// the approval files on its private volume.
+    async fn approvals(
+        &self,
+        agent: &AgentState,
+        content: &ContentBindings,
+    ) -> Result<(Arc<AgentApprovalPolicy>, Arc<VolumeApprovalFiles>, Option<ApprovalPolicy>)> {
+        let writer = content
+            .writer
+            .clone()
+            .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
+        let policy = match &agent.policy {
+            Some(file) => {
+                let bytes = content
+                    .reader
+                    .read(file, self.limits.maximum_bytes, None, None)?
+                    .await?;
+                Some(
+                    crate::contract::json_from_slice::<ApprovalPolicy>(&bytes)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                )
+            }
+            None => None,
+        };
+        let limits = crate::conversation::Limits {
+            file_bytes: self.limits.maximum_bytes,
+            ..crate::conversation::Limits::default()
+        };
+        let bound = AgentApprovalPolicy::new(
+            policy.clone(),
+            agent.parent.as_ref().map(crate::agent::AgentPath::id),
+            self.approvers.clone(),
+            limits,
+        )?;
+        let files = VolumeApprovalFiles::new(content.reader.clone(), writer);
+        Ok((Arc::new(bound), Arc::new(files), policy))
+    }
+
+    /// `responder` decides approval `id` of `agent`. On success the caller
+    /// appends `InboxRecord::Approval { id }` to the agent's inbox to resume it.
+    pub async fn decide(
+        &self,
+        agent: &AgentState,
+        id: &str,
+        responder: crate::approvals::ApprovalResponder<'_>,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<()> {
+        let (_, authority) = self.journal(agent)?;
+        let (policy, files, _) = self.approvals(agent, &authority.content).await?;
+        crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
 
     fn journal(
@@ -124,7 +189,8 @@ where
             kind: AggregateKind::Conversation,
             id: agent.path.id().as_str().to_owned(),
         });
-        let mut grants = Vec::with_capacity(2 * agent.volumes.len());
+        let mut grants = Vec::with_capacity(2 * agent.volumes.len() + 1);
+        grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
         for binding in &agent.volumes {
             grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
             grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
@@ -170,6 +236,7 @@ where
                     reader,
                     writer: Some(writer),
                 },
+                approval: None,
             },
         ))
     }
@@ -275,8 +342,15 @@ where
         stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
-            let (journal, authority) = self.journal(agent)?;
-            let journal = journal.with_stop(stop);
+            let (journal, mut authority) = self.journal(agent)?;
+            let (policy, files, configured) = self.approvals(agent, &authority.content).await?;
+            authority.approval = configured
+                .map(|policy| policy.bind().map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>))
+                .transpose()?;
+            let approvals = Arc::new(AgentApprovals::new(files, policy));
+            let journal = journal
+                .with_stop(stop)
+                .with_agent_approvals(Arc::clone(&approvals));
             let history = self.history(agent).await?;
             let selected = select(agent, &journal, history, turn, input).await?;
             let journal = match &selected {
@@ -292,6 +366,7 @@ where
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected,
+                approvals: Some(approvals),
             })
         })
     }

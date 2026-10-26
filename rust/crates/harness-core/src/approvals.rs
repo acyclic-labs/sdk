@@ -17,6 +17,11 @@ mod files;
 pub use files::{ApprovalCreate, ApprovalFiles, ApprovalRequest};
 mod legacy;
 pub use legacy::{automatic_review, fingerprint, next_stage, request_id, review_key};
+mod agent;
+/// Independent models that `llm` approval stages name, by name.
+pub type ApproverModels =
+    std::collections::BTreeMap<String, (crate::model::Model, std::sync::Arc<dyn crate::model::ModelProvider>)>;
+pub use agent::{AgentApprovalPolicy, AgentApprovals, VolumeApprovalFiles, decide, request_id as agent_request_id};
 mod automatic;
 pub use automatic::automatic_review as automatic_agent_review;
 

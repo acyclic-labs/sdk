@@ -49,6 +49,9 @@ where
         interaction: &Interaction,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        if let Some(approvals) = &self.agent_approvals {
+            return approvals.open(id, interaction).await;
+        }
         let reject = |code, reason| {
             crate::filesystem::interaction_host::interaction_boundary(io, code, reason)
         };
@@ -182,6 +185,9 @@ where
         id: InteractionId,
         io: Option<&PreparationIo>,
     ) -> Result<Option<InteractionOutcome>> {
+        if let Some(approvals) = &self.agent_approvals {
+            return approvals.outcome(id).await;
+        }
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed
             .as_mut()

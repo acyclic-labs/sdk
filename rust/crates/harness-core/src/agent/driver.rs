@@ -7,7 +7,8 @@
 //! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentPath, AgentRecord, AgentState, Error, InboxRecord, IntentId, Out,
+    AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, Error, InboxRecord,
+    IntentId, Out,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
@@ -38,6 +39,8 @@ pub struct OpenTurn {
     /// The agent's prior conversation and this input, as the one selection the
     /// journal admits; `None` for a turn without history.
     pub selected: Option<crate::projection::SelectedModelContext>,
+    /// Owner of the turn's approval files; `None` when the host runs no approvals.
+    pub approvals: Option<Arc<crate::approvals::AgentApprovals>>,
 }
 
 /// Host binding of agent turns to an executor and journal.
@@ -253,11 +256,27 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         wait,
                     }
                 }
-                ExecutionProgress::Pending(approval) => TurnStep {
-                    checkpoint: Some(encode(&input)?),
-                    outs: Vec::new(),
-                    wait: Wait::Approval(IntentId::try_from(approval_intent(approval))?),
-                },
+                ExecutionProgress::Pending(approval) => {
+                    let id = IntentId::try_from(approval_intent(approval))?;
+                    // A parent stage asks the parent in the same commit as the pause.
+                    let outs = match (&agent.parent, &open.approvals) {
+                        (Some(parent), Some(approvals)) if approvals.awaits_parent() => {
+                            vec![Out::Send {
+                                to: parent.clone(),
+                                record: InboxRecord::ApprovalRequested(ApprovalRequested {
+                                    child: agent.path.clone(),
+                                    id: id.clone(),
+                                }),
+                            }]
+                        }
+                        _ => Vec::new(),
+                    };
+                    TurnStep {
+                        checkpoint: Some(encode(&input)?),
+                        outs,
+                        wait: Wait::Approval(id),
+                    }
+                }
                 ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),
                 ExecutionProgress::Failed(kind) => failed(kind.message()),
                 ExecutionProgress::PreDispatchFailed(failure) => failed(failure.message()),
@@ -266,15 +285,9 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     }
 }
 
-/// Approval intent naming the executor's pending approval operation.
+/// Approval intent naming the executor's pending approval operation: the
+/// identity of its request files and of the `Approval` record that resumes it.
 #[must_use]
 pub fn approval_intent(operation: OperationId) -> String {
-    let mut text = String::with_capacity(37);
-    text.push_str("tool:");
-    for byte in operation.into_bytes() {
-        for nibble in [byte >> 4, byte & 0x0f] {
-            text.extend(char::from_digit(u32::from(nibble), 16));
-        }
-    }
-    text
+    crate::approvals::agent_request_id(operation)
 }

@@ -97,7 +97,7 @@ impl TurnExecutors for Executors {
             .with_compaction_policy(local.compaction.clone())
             .with_context_manifest(manifest, reader)
             .await?
-            .with_tool_authority(context.scope().clone(), None)?
+            .with_tool_authority(context.scope().clone(), authority.approval.clone())?
             .with_task_context(&context, turn)?;
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
