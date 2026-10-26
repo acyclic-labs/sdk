@@ -331,12 +331,16 @@ mod tests {
         assert_ne!(candidate, released);
         assert!(candidate.starts_with(output.join("release-candidates")));
         assert!(released.starts_with(output.join("releases")));
+        let stale = candidate.with_extension(format!("tmp-{}", std::process::id()));
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, b"another publisher's scratch").unwrap();
         super::super::write_immutable(&candidate, b"candidate source").unwrap();
         super::super::write_immutable(&released, b"registry source").unwrap();
         assert_eq!(fs::read(&candidate).unwrap(), b"candidate source");
         assert_eq!(fs::read(&released).unwrap(), b"registry source");
         assert!(super::super::write_immutable(&candidate, b"different candidate").is_err());
         assert!(super::super::write_immutable(&released, b"different release").is_err());
+        assert_eq!(fs::read(stale).unwrap(), b"another publisher's scratch");
     }
 
     #[test]
