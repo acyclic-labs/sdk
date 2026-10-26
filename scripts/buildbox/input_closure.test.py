@@ -227,20 +227,20 @@ class InputClosureTests(unittest.TestCase):
             subprocess.run(['git',*args],cwd=self.root,env=self.clean_env,check=True)
         (self.root/'.gitignore').write_text('*.log\n')
         # The production factory has a host cache path. Relocate only that
-        # storage root, retaining actual Git/index/ignore/upload code.
+        # storage root (BUILD_SLOT_CLIENT_CACHE), retaining actual Git/index/ignore/upload code.
         cache=self.root/'client-cache';cache.mkdir()
-        source=(HERE/'buildbox.mjs').read_text().replace('/home/var/.cache/buildbox/',str(cache)+'/')
+        source=(HERE/'buildbox.mjs').read_text()
         (self.root/'generator.mjs').write_text(source+'\nexport {treeIdentity};\n')
         shutil.copyfile(HERE/'buildbox-receipt.mjs',self.root/'buildbox-receipt.mjs')
         probe="import {treeIdentity} from './generator.mjs';console.log(JSON.stringify(treeIdentity({top:process.cwd()})));"
-        result=subprocess.run(['node','--input-type=module','-e',probe],cwd=self.root,env=self.env(),capture_output=True,text=True)
+        result=subprocess.run(['node','--input-type=module','-e',probe],cwd=self.root,env={**self.env(),'BUILD_SLOT_CLIENT_CACHE':str(cache)},capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         value=json.loads(result.stdout);file=self.value['inputs'][0]['path']
         self.assertIn(file,value['files']);self.assertIn(file,value['forced'])
         # Actual former identity omitted ignored proof files; delete only the
         # new force-add to execute that old path against the same real repo.
         (self.root/'generator.mjs').write_text(source.replace("if (inputFiles.length) g(['add', '-f', '--', ...inputFiles], env);",'')+'\nexport {treeIdentity};\n')
-        previous=subprocess.run(['node','--input-type=module','-e',probe],cwd=self.root,env=self.env(),capture_output=True,text=True)
+        previous=subprocess.run(['node','--input-type=module','-e',probe],cwd=self.root,env={**self.env(),'BUILD_SLOT_CLIENT_CACHE':str(cache)},capture_output=True,text=True)
         self.assertEqual(previous.returncode,0,previous.stderr)
         self.assertNotIn(file,json.loads(previous.stdout)['files'])
 

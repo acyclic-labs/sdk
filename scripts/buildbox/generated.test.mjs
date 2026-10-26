@@ -4,7 +4,69 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
+import {gitPrepInvocation,maintenanceResult} from './buildbox.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('source preparation streams arbitrary launch and binary payload bytes through one bounded command',()=>{
+ const root=fs.mkdtempSync(path.join(tmpdir(),'streamed-launch-'));
+ const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+ try{
+  const prep=path.join(root,'prepare.mjs');
+  fs.writeFileSync(prep,`import fs from 'node:fs';
+const [root,...args]=process.argv.slice(2);
+fs.appendFileSync(root+'/preparations','prepared\\n');
+fs.writeFileSync(root+'/payload',fs.readFileSync(0));
+fs.writeFileSync(root+'/arguments',JSON.stringify(args));
+if(process.env.PREP_FAIL)process.exit(Number(process.env.PREP_FAIL));
+console.log('prepared');`);
+  const payload=Buffer.alloc(256*1024);
+  for(let i=0;i<payload.length;i++)payload[i]=i%256;
+  for(const repo of ['sdk','cloud']){
+   const directory=path.join(root,repo+' fixture');fs.mkdirSync(directory);
+   const job=path.join(directory,'job'),worktree=path.join(directory,'source');
+   const effect=path.join(directory,'effect');
+   const launch='#'+ 'x'.repeat(1024*1024)+'\n'+
+    `printf '%s' 'exact action' >> ${quote(effect)}\ntouch ${quote(job+'.wpid')}\necho launched\n`;
+   // sdk maintenance rides the same connection: a fixture maintainer that warns and fails proves its status and
+   // stderr come back framed on every exit path, launched or refused.
+   const maintainer=path.join(directory,'maintain.sh');
+   fs.writeFileSync(maintainer,"#!/bin/bash\necho >&2 'BB_WT_PRUNE_FAILED fixture'\nexit 3\n",{mode:0o755});
+   const invocation=gitPrepInvocation(repo,worktree,'a'.repeat(40),job,launch,payload,quote(maintainer));
+   const maintained=(stdout)=>{
+    const result=maintenanceResult(stdout);
+    if(repo!=='sdk'){assert.equal(result,null);return;}
+    assert.equal(result.status,3);assert.equal(result.stderr.toString(),'BB_WT_PRUNE_FAILED fixture\n');
+   };
+   assert.equal(invocation.command,'bash -s');
+   assert.equal(invocation.input.toString().split('/usr/local/bin/bb-git-prep').length,2);
+   const input=invocation.input.toString()
+    .replaceAll('/mnt/bb/locks/wt-sdk',path.join(root,'locks'))
+    .replace('/usr/local/bin/bb-git-prep',`${quote(process.execPath)} ${quote(prep)} ${quote(directory)}`);
+   const run=extra=>spawnSync('bash',['-s'],{input,env:{...process.env,...extra},encoding:'utf8'});
+   const current=run({});
+   assert.equal(current.status,0,current.stderr);
+   assert.match(current.stdout,repo==='sdk'?/prepared\nlaunched\nBB_MAINTAIN 3 \S+\n$/:/prepared\nlaunched\n$/);maintained(current.stdout);
+   assert.deepEqual(fs.readFileSync(path.join(directory,'payload')),payload);
+   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory,'arguments'))),
+    [worktree,'a'.repeat(40),...(repo==='sdk'?['sdk']:[])]);
+   assert.equal(fs.readFileSync(effect,'utf8'),'exact action');
+   assert.equal(run({}).status,0);
+   assert.equal(fs.readFileSync(path.join(directory,'preparations'),'utf8'),'prepared\n');
+   assert.equal(fs.readFileSync(effect,'utf8'),'exact action','acknowledged ownership cannot launch twice');
+   fs.unlinkSync(job+'.wpid');fs.unlinkSync(effect);
+   const refused=run({PREP_FAIL:'73'});
+   assert.equal(refused.status,73,refused.stderr);maintained(refused.stdout);
+   assert.equal(fs.existsSync(effect),false,'failed preparation must block launch');
+   // Restore the former production transport: its full generated launch is
+   // one SSH exec argument. The actual kernel refuses it before any effect.
+   const former=`echo ${Buffer.from(launch).toString('base64')} | base64 -d | bash`;
+   const negative=spawnSync('bash',['-c',former],{input:payload});
+   assert.equal(negative.error?.code,'E2BIG');
+   assert.equal(fs.existsSync(effect),false);
+  }
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
 
 test('new admission never traverses unrelated receipt records',()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'receipt-admission-'));

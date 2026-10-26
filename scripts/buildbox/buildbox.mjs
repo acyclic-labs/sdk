@@ -33,6 +33,8 @@
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { arm, atomic, finish } from './buildbox-receipt.mjs';
@@ -61,11 +63,19 @@ const unavailable = (c, d = '') => { cause = c; causeDetail = String(d).slice(0,
 const LOGDIR = '/home/var/log/buildbox';
 const SSH = ['-F', '/home/var/.ssh/buildbox/config', '-o', 'BatchMode=yes', '-o', 'ControlPath=none'];
 const REATTACH_SEC = Number(process.env.BUILD_SLOT_BUILDBOX_REATTACH_SEC || 1200);
-fs.mkdirSync(LOGDIR, { recursive: true });
+// Windows adapter (2026-10-26): bs.ps1 runs only `snapshot`/`snapshot-attest` here with native git.exe; the shared WSL
+// client does everything else. No log, ssh or cache state is created on the Windows side.
+const WIN = process.platform === 'win32';
+const CACHE = process.env.BUILD_SLOT_CLIENT_CACHE || (WIN ? path.join(os.tmpdir(), 'buildbox') : '/home/var/.cache/buildbox');
+if (!WIN) fs.mkdirSync(LOGDIR, { recursive: true });
 const ts = () => new Date().toISOString().slice(11, 19);
 const say = (m) => process.stderr.write(`[build-slot buildbox] ${ts()} ${m}\n`);
 const q = (s) => /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replaceAll("'", `'\\''`)}'`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Per-phase client timing (2026-10-26): ms since this node process started, one BUILD_SLOT_PHASES line per job and the
+// same object in the client receipt, so admission/transfer/prep/teardown are measured, never inferred from wall time.
+const PHASES = {};
+const mark = (name) => { PHASES[name] = Math.round(performance.now()); };
 
 export const enabled = () => process.env.BUILD_SLOT_BUILDBOX !== '0' && fs.existsSync('/home/var/.ssh/buildbox/config') &&
   !fs.existsSync(disabledMark(BOX));  // buildbox-ctl stop
@@ -99,6 +109,9 @@ async function probe(h) {
 // Picks the first enabled box that answers; '' or why none does.
 async function pickHost() {
   const live = BOXES.filter((h) => !fs.existsSync(disabledMark(h))); const notes = [];
+  // One enabled box (bb2 only, 2026-10-18): the launch connection itself is the probe (2026-10-26 admission: a separate
+  // probe ssh cost 2.1 s of handshake whenever its 60 s cache was stale). A failed launch heals exactly as a failed probe.
+  if (live.length === 1) { setHost(live[0]); return ''; }
   for (const h of live) {
     const why = await probe(h);
     if (!why) { setHost(h); if (notes.length) say(`using ${h} (${notes.join('; ')})`); return ''; }
@@ -135,6 +148,24 @@ function sshRun(cmd, { input, timeout = 60000, host = HOST, connect = 15 } = {})
     p.on('close', (code) => { done = true; clearTimeout(t); resolve({ status: code ?? 255, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }); });
     p.stdin.end(input ?? '');
   });
+}
+
+// Pre-connected launch transport (2026-10-26, admission < 5 s): `bash -s` on the one enabled box, connected while the
+// client attests and identifies the tree; the launch script is written to its stdin once known. cancel() ends stdin
+// empty, so a job that replays a verdict or is refused runs nothing remotely. A failed connection resolves like a
+// failed sshRun, so gitPrepLaunch's retry and unreachable handling are unchanged.
+function preconnect(host = HOST) {
+  const p = spawn('ssh', [...SSH, '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3', host, 'bash -s'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const out = [], err = []; let sent = false, timer = null;
+  p.stdout.on('data', (b) => out.push(b)); p.stderr.on('data', (b) => err.push(b));
+  p.on('error', (e) => { err.push(Buffer.from(e.message)); });
+  p.stdin.on('error', (e) => { err.push(Buffer.from(`stdin: ${e.message}\n`)); });
+  const closed = new Promise((resolve) => p.on('close', (code) => { clearTimeout(timer); resolve({ status: code ?? 255, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }); }));
+  return {
+    host,
+    send(input, timeout = 60000) { if (sent) throw new Error('pre-connected transport already used'); sent = true; timer = setTimeout(() => p.kill('SIGKILL'), timeout); p.stdin.end(input); return closed; },
+    cancel() { if (!sent) { sent = true; p.stdin.end(''); } },
+  };
 }
 
 async function reachable() {
@@ -175,6 +206,12 @@ const winPath = (p) => { const m = /^([A-Za-z]):[\\/](.*)$/.exec(p.trim()); retu
 // when its .git file names a Windows gitdir; plus the drvfs stat config under /mnt/<drive>.
 function gitEnvFor(cwd) {
   const env = {};
+  // Native Windows git on NTFS: the fsmonitor daemon and untracked cache answer status/add without walking the tree.
+  if (WIN) {
+    const cfg = [['core.fsmonitor', 'true'], ['core.untrackedCache', 'true']], n = Number(process.env.GIT_CONFIG_COUNT) || 0;
+    cfg.forEach(([k, v], i) => { env[`GIT_CONFIG_KEY_${n + i}`] = k; env[`GIT_CONFIG_VALUE_${n + i}`] = v; });
+    env.GIT_CONFIG_COUNT = String(n + cfg.length); return env;
+  }
   for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
     let st; try { st = fs.statSync(`${d}/.git`); } catch { if (d === '/') break; continue; }
     if (st.isFile()) {
@@ -211,7 +248,12 @@ function gitIn(top, genv = {}) {
 }
 // {top, genv, drvfs, repo, git}: the checkout root, the env its git calls need, whether it is on a Windows drive, its
 // repo, a git runner for it.
+const checkouts = new Map();
 function checkout(cwd) {
+  if (!checkouts.has(cwd)) checkouts.set(cwd, lookupCheckout(cwd));
+  return checkouts.get(cwd);
+}
+function lookupCheckout(cwd) {
   const genv = gitEnvFor(cwd);
   let top = genv.GIT_WORK_TREE || '';
   if (!top) try { top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, env: { ...process.env, ...genv }, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).toString().trim(); } catch {}
@@ -325,19 +367,25 @@ function writeHave(co, shas, replace) {
 // The payload for bb-git-prep: {head, buf (gzipped tar), desc}. Throws when the checkout cannot use the git path.
 // The tree is the identity snapshot (id.commit + id.patch, which carries untracked files as new files), not the live
 // checkout. A bundle is cut from the live HEAD, so it is used only while HEAD is still id.commit.
-function gitPayload(co, have, id) {
+function gitBundle(co, have, head) {
   const { git: g } = co;
+  const live = () => String(g(['rev-parse', '--verify', '-q', 'HEAD']).stdout || '').trim();
+  if (live() !== head) throw new Error('HEAD moved since the tree identity');
+  const b = g(['bundle', 'create', '-q', '-', '--stdin'], { input: `HEAD\n${have.map((h) => `^${h}\n`).join('')}` });
+  if (b.status !== 0 && !/empty bundle/.test(String(b.stderr))) throw new Error(`git bundle rc ${b.status}${b.error ? ` (${b.error.code}, ${GIT_TIMEOUT_MS / 1000}s cap)` : ''}: ${String(b.stderr || '').trim().slice(-160)}`);
+  if (live() !== head) throw new Error('HEAD moved since the tree identity');
+  return b.status === 0 && b.stdout.length ? b.stdout : null;
+}
+// bundled: the bundle an attested client snapshot already cut for exactly this have list (null: none needed).
+function gitPayload(co, have, id, bundled) {
   const head = id.commit;
   if (!/^[0-9a-f]{40}$/.test(head)) throw new Error('no HEAD commit');
-  const d = fs.mkdtempSync('/home/var/.cache/buildbox/pay-'); const parts = [];
-  const live = () => String(g(['rev-parse', '--verify', '-q', 'HEAD']).stdout || '').trim();
+  fs.mkdirSync(CACHE, { recursive: true });
+  const d = fs.mkdtempSync(`${CACHE}/pay-`); const parts = [];
   try {
     if (!have.includes(head)) {
-      if (live() !== head) throw new Error('HEAD moved since the tree identity');
-      const b = g(['bundle', 'create', '-q', '-', '--stdin'], { input: `HEAD\n${have.map((h) => `^${h}\n`).join('')}` });
-      if (b.status !== 0 && !/empty bundle/.test(String(b.stderr))) throw new Error(`git bundle rc ${b.status}${b.error ? ` (${b.error.code}, ${GIT_TIMEOUT_MS / 1000}s cap)` : ''}: ${String(b.stderr || '').trim().slice(-160)}`);
-      if (live() !== head) throw new Error('HEAD moved since the tree identity');
-      if (b.status === 0 && b.stdout.length) { fs.writeFileSync(`${d}/b.bundle`, b.stdout); parts.push(`bundle ${b.stdout.length} B`); }
+      const b = bundled !== undefined ? bundled : gitBundle(co, have, head);
+      if (b) { fs.writeFileSync(`${d}/b.bundle`, b); parts.push(`bundle ${b.length} B`); }
     }
     if (id.patch?.length) {
       fs.writeFileSync(`${d}/d.patch`, id.patch);
@@ -378,7 +426,8 @@ const d = [...new Set([...Object.keys(c), ...Object.keys(v)])].filter((k) => c[k
 console.error('[build-slot] tree-mismatch differs under: ' + (d.slice(0, 12).join(', ') || 'nothing (racy)') + (d.length > 12 ? ', +' + (d.length - 12) + ' more' : ''));`;
 function treeIdentity(co) {
   const { top, genv = {} } = co;
-  const tmp = fs.mkdtempSync('/home/var/.cache/buildbox/ident-');
+  fs.mkdirSync(CACHE, { recursive: true });
+  const tmp = fs.mkdtempSync(`${CACHE}/ident-`);
   const g = (args, env = {}, ok = false, raw = false) => {
     const e = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...genv, ...env };
     const r = spawnSync('git', args, { cwd: top, env: e, encoding: raw ? 'buffer' : 'utf8', maxBuffer: 1 << 30, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -424,7 +473,7 @@ function treeIdentity(co) {
       recs.filter((r) => /(^|\/)\.gitignore$/.test(r.slice(r.indexOf('\t') + 1))).map((r) => r.slice(r.indexOf(' ') + 1)),
       readOr((g(['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], env, true) || '').trim()),
       readOr((g(['config', '--path', '--get', 'core.excludesFile'], env, true) || '').trim() || `${xdg}/git/ignore`)])).digest('hex');
-    const ff = `/home/var/.cache/buildbox/forced/${fkey}.json`;
+    const ff = `${CACHE}/forced/${fkey}.json`;
     let forced; try { forced = JSON.parse(fs.readFileSync(ff, 'utf8')); } catch {}
     if (!Array.isArray(forced)) {
       const out = g(['ls-files', '-ci', '--exclude-standard', '-z'], env, true);
@@ -478,22 +527,95 @@ function identityShared(co) {
   } catch {}
   return id;
 }
+// Variable-size source and launch bytes travel on stdin, never in exec argv.
+// This is the sole constructor for both repository adapters.
+export const MAINTAIN = '/home/var/bin/prune-wt-sdk.sh';
+export function gitPrepInvocation(repo, wt, head, J, launch, payload, maintain = MAINTAIN) {
+  const repoArg = repo === 'cloud' ? '' : ` ${repo}`;
+  // sdk maintenance (2026-10-26, one ssh per job): its status and stderr come back as one framed BB_MAINTAIN line on
+  // this connection's stdout when the script exits, whatever path it exits by.
+  const maintained = repo === 'sdk' ? `bbm=$(mktemp); { ${maintain} >/dev/null 2>"$bbm.err"; echo $? > "$bbm"; } & bbmp=$!
+trap 'wait $bbmp; printf "BB_MAINTAIN %s %s\\n" "$(cat "$bbm")" "$(base64 -w0 < "$bbm.err")"; rm -f "$bbm" "$bbm.err"' EXIT
+` : '';
+  const prepLease = repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>${q(`/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock`)}; flock -s 6; ` : '';
+  const input = `${maintained}${prepLease}if [ -e ${q(J + '.wpid')} ]; then echo launched; else
+ o=$(printf '%s' '${payload.toString('base64')}' | base64 -d | /usr/local/bin/bb-git-prep ${q(wt)} ${head}${repoArg}); r=$?
+ printf '%s\n' "$o"; [ $r = 0 ] || exit $r
+ case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac
+ printf '%s' '${zlib.gzipSync(Buffer.from(launch), { level: 6 }).toString('base64')}' | base64 -d | gzip -dc | bash
+fi`;
+  return { command: 'bash -s', input: Buffer.from(input) };
+}
+
+// Client snapshot (2026-10-26, admission < 5 s): on a Windows drive every git call from WSL crosses drvfs (status 7.9 s,
+// add -A 5.6 s, lstat 3 ms/file). bs.ps1 runs `snapshot` here with native git.exe, which writes the tree identity, the
+// merge base and the bundle for the VM-have list, and then `snapshot-attest`, which identifies the tree again. This
+// client uses the snapshot only once the attestation names the same tree, before any verdict replay or launch: a tree
+// changed after its identity was computed is refused (kind=TREE_IDENTITY), never shipped or replayed.
+const wslPath = (p) => { const m = /^([A-Za-z]):[\\/](.*)$/.exec(p); return m ? `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}` : p; };
+const SNAPSHOT_KIND = 'buildbox-client-snapshot';
+const attestFields = (id) => ({ commit: id.commit, tree: id.tree, uploadedTree: id.uploadedTree, content: id.content, overlay: id.overlay });
+export function clientSnapshot(cwd = process.cwd()) {
+  if (WIN && process.env.BUILD_SLOT_VM_HAVE_DIR) { VM_HAVE = `${process.env.BUILD_SLOT_VM_HAVE_DIR}/vm-have`; VM_HAVE_MAIN = `${process.env.BUILD_SLOT_VM_HAVE_DIR}/vm-have-main`; }
+  const co = checkout(cwd); const id = treeIdentity(co);
+  let have = [], bundle = null, bundleError = '';
+  if (/^[0-9a-f]{40}$/.test(id.commit)) try { have = readHave(co, id.commit); if (have.length && !have.includes(id.commit)) bundle = gitBundle(co, have, id.commit); } catch (e) { bundleError = e.message.slice(0, 200); }
+  return { kind: SNAPSHOT_KIND, version: 1, top: wslPath(co.top), repo: co.repo, inputs: inputKey(), at: Date.now(), base: mergeBase(co),
+    have, bundle: bundle ? bundle.toString('base64') : null, bundleError, id: { ...id, patch: id.patch == null ? null : Buffer.from(id.patch).toString('base64') } };
+}
+export function clientAttestation(cwd = process.cwd()) {
+  try { const co = checkout(cwd); return { top: wslPath(co.top), at: Date.now(), ...attestFields(treeIdentity(co)) }; }
+  catch (e) { return { at: Date.now(), error: e.message.slice(0, 300) }; }
+}
+const snapshotRefusal = (detail) => new Error(`kind=TREE_IDENTITY step=client-snapshot owner=gate-speed recovery=${q('rerun the command through Q:/lanes/bs.ps1, which identifies the tree again')} detail=${q(detail)}`);
+// Returns null without a snapshot; throws the typed refusal for any disagreement.
+export async function consumeClientSnapshot(top, file = process.env.BUILD_SLOT_CLIENT_SNAPSHOT, waitMs = 60000) {
+  if (!file) return null;
+  const deadline = Date.now() + waitMs; let s;
+  for (;;) {
+    try { s = JSON.parse(fs.readFileSync(file, 'utf8')); break; }
+    catch (e) { if (e.code !== 'ENOENT') throw snapshotRefusal(`unreadable snapshot ${file}: ${e.message}`); }
+    if (Date.now() > deadline) throw snapshotRefusal(`no snapshot ${file} within ${waitMs / 1000}s`); await sleep(20);
+  }
+  if (s.kind !== SNAPSHOT_KIND || s.version !== 1) throw snapshotRefusal(`not a version-1 client snapshot: ${file}`);
+  if (s.error) throw snapshotRefusal(`snapshot failed: ${s.error}`);
+  if (s.top !== top) throw snapshotRefusal(`snapshot of ${s.top} offered for ${top}`);
+  if (s.inputs !== inputKey()) throw snapshotRefusal('snapshot was identified under a different input declaration');
+  let a;
+  for (;;) { try { a = JSON.parse(fs.readFileSync(`${file}.attest`, 'utf8')); break; } catch {} if (Date.now() > deadline) throw snapshotRefusal(`no attestation ${file}.attest within ${waitMs / 1000}s`); await sleep(20); }
+  if (a.error) throw snapshotRefusal(`attestation failed: ${a.error}`);
+  const want = attestFields(s.id); const moved = Object.keys(want).filter((k) => want[k] !== a[k]);
+  if (a.top !== s.top || a.at < s.at || moved.length) throw snapshotRefusal(`the tree changed after its identity was computed (${moved.join(', ') || 'top/time'} differ); nothing was shipped`);
+  const id = { ...s.id, patch: s.id.patch == null ? null : Buffer.from(s.id.patch, 'base64') };
+  return { id, base: s.base, have: s.have, bundle: s.bundle ? Buffer.from(s.bundle, 'base64') : null, bundleUsable: !s.bundleError };
+}
 // One ssh: prepare the worktree and launch. Returns 'launched', 'unreachable' (ssh could not connect) or 'fallback'.
-async function gitPrepLaunch(co, wt, launch, notes, J, id) {
+// The framed maintenance result of a launch connection, in the shape maintainSourceCopies reads from its transport.
+export function maintenanceResult(out) {
+  const m = /^BB_MAINTAIN (\d*) ([A-Za-z0-9+/=]*)$/m.exec(out);
+  return m ? { status: m[1] === '' ? 255 : Number(m[1]), stderr: Buffer.from(m[2], 'base64') } : null;
+}
+async function gitPrepLaunch(co, wt, launch, notes, J, id, maint = {}) {
   let sshFails = 0;
   for (let attempt = 0; attempt < 5; attempt++) {
-    let have; try { have = readHave(co, id.commit); } catch (e) { notes.push(`git sync unusable (${e.message.slice(0, 160)})`); return 'fallback'; }
+    // The attested snapshot's have list and bundle serve the first attempt; a VM that lacks its base (97) re-reads here.
+    const snap = attempt === 0 && co.snapshot?.bundleUsable ? co.snapshot : null;
+    let have; try { have = snap ? snap.have : readHave(co, id.commit); } catch (e) { notes.push(`git sync unusable (${e.message.slice(0, 160)})`); return 'fallback'; }
     // No commit in common with the VM (synthetic snapshot repos, e.g. affected-tests clones): the bundle would be the whole
     // history (~11 MB); rsync's seeded delta is cheaper.
     if (!have.length) { notes.push('no history shared with the VM'); return 'fallback'; }
-    let p; try { p = gitPayload(co, have, id); } catch (e) { notes.push(`git sync unusable (${e.message.slice(0, 120)})`); return 'fallback'; }
+    let p; try { p = gitPayload(co, have, id, snap ? snap.bundle : undefined); } catch (e) { notes.push(`git sync unusable (${e.message.slice(0, 120)})`); return 'fallback'; }
     const t0 = Date.now();
     // Retry-safe: once this job's wrapper exists (an earlier attempt launched it and only its reply was lost), nothing
     // touches the worktree again. cloud's command line is unchanged; other repos name theirs.
-    const repoArg = co.repo === 'cloud' ? '' : ` ${co.repo}`;
-    const prepLease = co.repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock; flock -s 6; ` : '';
-    const r = await sshRun(`${prepLease}if [ -e ${J}.wpid ]; then echo launched; else o=$(/usr/local/bin/bb-git-prep ${q(wt)} ${p.head}${repoArg}); r=$?; printf '%s\n' "$o"; [ $r = 0 ] || exit $r; case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac; echo ${Buffer.from(launch).toString('base64')} | base64 -d | bash; fi`, { input: p.buf, timeout: 300000 });
-    const out = r.stdout.toString();
+    const invocation = gitPrepInvocation(co.repo, wt, p.head, J, launch, p.buf);
+    const early = co.early; co.early = null;
+    const usable = early && attempt === 0 && early.host === HOST && invocation.command === 'bash -s';
+    if (early && !usable) early.cancel();
+    mark('send'); PHASES.launch_bytes = invocation.input.length;
+    const r = usable ? await early.send(invocation.input, 300000) : await sshRun(invocation.command, { input: invocation.input, timeout: 300000 });
+    const raw = r.stdout.toString(); maint.result = maintenanceResult(raw) ?? maint.result;
+    const out = raw.split('\n').filter((line) => !line.startsWith('BB_MAINTAIN ')).join('\n');
     if (r.status === 0 && /launched/.test(out)) { writeHave(co, [p.head]); notes.push(`${p.desc}, ${((Date.now() - t0) / 1000).toFixed(1)}s${sshFails ? ` after ${sshFails} ssh retries` : ''}`); return 'launched'; }
     if (r.status === 97) { writeHave(co, out.split('\n').filter((s) => /^[0-9a-f]{40}$/.test(s)), true); notes.push('VM lacked the bundle base; rebundled'); continue; }
     // ssh could not connect. A congested uplink (banner/handshake timeouts) is not an outage: retry here rather than
@@ -848,12 +970,16 @@ async function followStream(J, f, sink, st) {
   for (;;) {
     const done = await new Promise((resolve) => {
       // tail exits when the wrapper (writes .rc after the job) is gone and the file is drained.
-      const cmd = `w=$(cat ${J}.wpid 2>/dev/null); if [ ! -e ${J}.rc ] && [ -n "$w" ] && kill -0 $w 2>/dev/null; then exec tail -c +${st[f] + 1} --pid=$w -F ${J}.${f} 2>/dev/null; else tail -c +${st[f] + 1} ${J}.${f}; echo -n >&2 BB-END; fi`;
+      const cmd = `w=$(cat ${J}.wpid 2>/dev/null); if [ ! -e ${J}.rc ] && [ -n "$w" ] && kill -0 $w 2>/dev/null; then tail -c +${st[f] + 1} --pid=$w -F ${J}.${f} 2>/dev/null; else tail -c +${st[f] + 1} ${J}.${f}; echo -n >&2 BB-END; fi; t=$?${f === 'err' ? `; printf >&2 '\\nBB_TERMINAL %s %s %s\\n' "$(cat ${J}.rc 2>/dev/null)" "$(base64 -w0 < ${J}.receipt.json 2>/dev/null)" "$(base64 -w0 < ${J}.tdir 2>/dev/null)"` : ''}; exit $t`;
       const p = spawn('ssh', [...SSH, '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=8', HOST, cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
       let err = '';
       p.stdout.on('data', (b) => { st[f] += b.length; sink(b); lostAt = 0; });
       p.stderr.on('data', (b) => { err += b.toString(); });
-      p.on('close', (code) => resolve(code === 0 ? 'end' : `ssh rc ${code}: ${err.trim().split('\n').pop()?.slice(0, 120) || ''}`));
+      p.on('close', (code) => {
+        const t = /^BB_TERMINAL (\d*) ([A-Za-z0-9+/=]*) ([A-Za-z0-9+/=]*)$/m.exec(err);
+        if (code === 0 && t && t[1] !== '') st.terminal = { rc: Number(t[1]), receipt: Buffer.from(t[2], 'base64'), tdir: Buffer.from(t[3], 'base64').toString().trim() };
+        resolve(code === 0 ? 'end' : `ssh rc ${code}: ${err.trim().split('\n').pop()?.slice(0, 120) || ''}`);
+      });
       st.procs.add(p); p.on('exit', () => st.procs.delete(p));
     });
     if (done === 'end') return true;
@@ -876,6 +1002,13 @@ async function remoteRc(J) {
   }
 }
 
+export function copyBackDestination(group, top, rel, env = process.env) {
+  if (group.target) return env.CARGO_TARGET_DIR || path.join(top, 'target');
+  const destination = env.BUILD_SLOT_REMOTE_FETCH_DIR || path.join(top, rel);
+  if (!path.isAbsolute(destination)) throw new Error('copy-back destination must be absolute');
+  return destination;
+}
+
 async function copyBack(J, top, src, tkey, rel) {
   if (!(process.env.BUILD_SLOT_REMOTE_FETCH || '').trim()) return;
   const m = await sshRun(`cat ${J}.exports/manifest.json`, { timeout: 45000 });
@@ -883,7 +1016,7 @@ async function copyBack(J, top, src, tkey, rel) {
   for (const group of JSON.parse(m.stdout.toString())) {
     const result = await sshRun(`cat ${q(group.archive)}`, { timeout: 600000 });
     if (result.status !== 0) throw new Error('missing declared-output archive');
-    const dest = group.target ? (process.env.CARGO_TARGET_DIR || path.join(top, 'target')) : path.join(top, rel);
+    const dest = copyBackDestination(group, top, rel);
     fs.mkdirSync(dest, { recursive: true });
     const extract = spawnSync('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
     if (extract.status !== 0) throw new Error(`copy-back extract rc ${extract.status}`);
@@ -1084,20 +1217,29 @@ export async function run(argv, sharedReceipt) {
   }
 }
 async function runTracked(argv, ctx) {
+  try { return await runTrackedOnce(argv, ctx); } finally { ctx.early?.cancel(); }
+}
+async function runTrackedOnce(argv, ctx) {
   const t0 = Date.now(); used(); cause = ''; causeDetail = ''; coldNotice();
   const miss = missingTools();
   if (miss.length) { say(`host lacks ${miss.join(', ')} (install with apt); not using the build box`); return unavailable('host-tools-missing', miss.join(' ')); }
-  const cwd = process.cwd(); let co;
+  mark('enter'); const cwd = process.cwd(); let co;
   try { co = ctx.co || checkout(cwd); } catch (e) { say(`no checkout root for ${cwd}: ${e.message.slice(0, 120)}`); return unavailable('no-checkout', cwd); }
-  const top = co.top; const rel = path.relative(top, cwd) || '.';
+  const top = co.top; const rel = path.relative(top, cwd) || '.'; mark('checkout');
+  { const live = BOXES.filter((h) => !fs.existsSync(disabledMark(h)));
+    if (live.length === 1 && process.env.BUILD_SLOT_BUILDBOX_RSYNC !== '1') { setHost(live[0]); co.early = ctx.early = preconnect(); } }
+  // Before anything identifies or replays: an attested Windows snapshot, or none.
+  try { co.snapshot = await consumeClientSnapshot(co.top); } catch (e) { process.stderr.write(`${e.message}\n`); return unavailable('tree-identity', e.message); }
+  mark('snapshot');
   ctx.meta.repo = co.repo;
   argv = pinGlibc(nextestTimeout(dropCoveredCheck(argv)));
-  const comparisonBase = mergeBase(co); let verdictLock = null;
+  const comparisonBase = co.snapshot ? co.snapshot.base : mergeBase(co); let verdictLock = null; mark('base');
   const prerequisites = admitInputs(argv, cwd, comparisonBase);
   if (!prerequisites) return unavailable('input-closure', 'required input admission refused; see typed diagnostic above');
   ctx.meta.input_closure = prerequisites;
   // Pin the dispatched source and comparison base to the same identity as its verdict lock.
-  let id; try { id = identityFor(co); } catch (e) { return unavailable('sync-failed', `tree identity: ${e.message}`); }
+  let id; try { id = co.snapshot ? co.snapshot.id : identityFor(co); } catch (e) { return unavailable('sync-failed', `tree identity: ${e.message}`); }
+  mark('identity');
   ctx.meta.argv = [...argv];
   ctx.meta.source = { commit: id.commit, git_tree: id.uploadedTree || id.tree, base_tree: id.tree,
     dirty_overlay_sha256: id.overlay || crypto.createHash('sha256').update(id.patch || id.content).digest('hex'), content_sha256: id.content };
@@ -1110,15 +1252,15 @@ async function runTracked(argv, ctx) {
       m = verdictGet(k);
       if (m) { const r = verdictReplay(k, m, id, cwd, argv, t0); if (r !== null) { ctx.meta.execution_kind = 'existing-verdict-replay'; atomic(ctx.metaFile, { ...JSON.parse(fs.readFileSync(ctx.metaFile, 'utf8')), ...ctx.meta }); return r; } }
     }
-  { const why = await pickHost(); if (why) { say(`no build box reachable (${why})`); return unavailable('vm-unreachable', why); } }
+  mark('verdict'); { const why = await pickHost(); if (why) { say(`no build box reachable (${why})`); return unavailable('vm-unreachable', why); } }
   // Target keys are per repo (sdk: /mnt/bb/targets/sdk/<key>); cloud's are unchanged.
   const base = keyOf(top); let tkey = REPOS[co.repo].tkey + (process.env.CARGO_TARGET_DIR ? keyOf(path.resolve(process.env.CARGO_TARGET_DIR)) : base);
   // build-slot --remote --cold: a fresh target dir for this job only (removed after copy-back) and no sccache.
   if (COLD) tkey = `cold/${Date.now()}-${process.pid}`;
   // Concurrent jobs from one checkout (a node gate's control/local/ci/tsc steps, shards) each get their own remote copy
   // <base>.<n> for the whole job, so one job's rsync --delete or npm ci never rewrites a tree another job is running in.
-  const n = await claimCopy(base); if (n === null) { say(`all ${COPIES} remote copies of ${base} busy`); return unavailable('copies-busy', `${COPIES} copies of ${base}`); }
-  try { configureRemoteTier(cwd); return await runIn(argv, t0, cwd, co, rel, `${base}.${n}`, tkey, id, comparisonBase, ctx); } finally { releaseCopy(base, n); used(); }
+  mark('host'); const n = await claimCopy(base); mark('copy'); if (n === null) { say(`all ${COPIES} remote copies of ${base} busy`); return unavailable('copies-busy', `${COPIES} copies of ${base}`); }
+  try { configureRemoteTier(cwd); return await runIn(argv, t0, cwd, co, rel, `${base}.${n}`, tkey, id, comparisonBase, ctx); } finally { releaseCopy(base, n); used(); mark('done'); ctx.meta.phases = { ...PHASES }; say(`BUILD_SLOT_PHASES ${JSON.stringify(PHASES)}`); }
   } finally { verdictLock?.stdin.end(); }
 }
 
@@ -1305,8 +1447,10 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   let src = `${R.wt}/${key}`; const notes = [];
   // id and base are the immutable inputs used by run() to own this verdict key.
   say(`BUILD_SLOT_TREE=${id.commit} ${id.tree} ${id.content} (client ${top})`);
-  await maintainSourceCopies(co.repo, notes);
-  const g = process.env.BUILD_SLOT_BUILDBOX_RSYNC === '1' && R.rsync ? 'fallback' : await gitPrepLaunch(co, src, launchScript(src, tkey, rel, argv, J, R.path, co.repo, base, id, jobMaxSec(), process.env.BUILD_SLOT_IDLE_OK === '1', receipt), notes, J, id);
+  const maint = {};
+  const g = process.env.BUILD_SLOT_BUILDBOX_RSYNC === '1' && R.rsync ? 'fallback' : await gitPrepLaunch(co, src, launchScript(src, tkey, rel, argv, J, R.path, co.repo, base, id, jobMaxSec(), process.env.BUILD_SLOT_IDLE_OK === '1', receipt), notes, J, id, maint);
+  mark('launched');
+  await maintainSourceCopies(co.repo, notes, async () => maint.result ?? { status: 255, stderr: Buffer.alloc(0) }); mark('maintain');
   if (g === 'unreachable') { heal(notes.join('; ') || 'ssh failed'); return unavailable('vm-unreachable', notes.join('; ') || 'ssh failed'); }
   if (g === 'fallback' && !R.rsync) return unavailable('sync-failed', `${co.repo} git sync: ${notes.join('; ')}`);
   if (g === 'fallback') {
@@ -1342,10 +1486,11 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
       st.receiptLines = (st.receiptLines || '') + b.toString();
       const lines = st.receiptLines.split('\n'); st.receiptLines = lines.pop().slice(-65536);
       for (const line of lines) if (line.startsWith('BUILD_SLOT_EXEC=')) {
+        mark('exec-line');
         try { atomic(ctx.metaFile + '.exec', JSON.parse(line.slice(16))); } catch {}
       }
     }, st)]);
-  let rc = okOut && okErr ? await remoteRc(J) : null;
+  mark('streams'); let rc = !(okOut && okErr) ? null : st.terminal ? st.terminal.rc : await remoteRc(J); mark('rc');
   clearInterval(hb); log.end();
   if (rc === null) {
     const recovery = `ssh bb2 ${q('cat '+J+'.receipt.json')}`;
@@ -1355,7 +1500,8 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
     // that same job rather than signalling a potentially reused numeric PID.
     return unavailable('job-lost', `terminal receipt unobserved; recovery=${recovery}`);
   }
-  const terminal = await sshRun(`cat ${J}.receipt.json`, { timeout: 45000 });
+  // The wrapper writes the receipt before .rc, so a follower that saw .rc also carried the final receipt.
+  const terminal = st.terminal?.receipt.length ? { status: 0, stdout: st.terminal.receipt } : await sshRun(`cat ${J}.receipt.json`, { timeout: 45000 });
   if (terminal.status === 0) {
     try {
       ctx.remote = JSON.parse(terminal.stdout.toString());
@@ -1363,7 +1509,7 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
     } catch (e) { say(`receipt read failed: ${e.message}`); }
   }
   say(`rc=${rc} in ${((Date.now() - t0) / 1000).toFixed(1)}s; log ${logFile}`);
-  if (rc === 0 && process.env.BUILD_SLOT_REMOTE_FETCH) jobTdir = String((await sshRun(`cat ${J}.tdir 2>/dev/null`, { timeout: 45000 })).stdout || '').trim();
+  if (rc === 0 && process.env.BUILD_SLOT_REMOTE_FETCH) jobTdir = st.terminal?.tdir || String((await sshRun(`cat ${J}.tdir 2>/dev/null`, { timeout: 45000 })).stdout || '').trim();
   if (rc === 0) {
     try { await copyBack(J, top, src, tkey, rel); }
     catch (e) { say(`copy-back FAILED (${e.message.slice(0, 200)}); the job passed remotely but its declared outputs are not local`); rc = 1; ctx.termination = 'infra'; }
@@ -1377,4 +1523,18 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
 
 function sourceCopyKey(key, jobPrefix) {
   return `${key}-${path.basename(jobPrefix)}`;
+}
+
+// bs.ps1's Windows adapter entry: `node buildbox.mjs snapshot --out F` / `snapshot-attest --snapshot F` (cwd: the checkout).
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url)) && /^snapshot(-attest)?$/.test(process.argv[2] || '')) {
+  const [verb, flag, file, then] = process.argv.slice(2);
+  if (!file || flag !== (verb === 'snapshot' ? '--out' : '--snapshot') || (then !== undefined && (verb !== 'snapshot' || then !== '--attest'))) {
+    process.stderr.write('usage: buildbox.mjs snapshot --out F [--attest] | snapshot-attest --snapshot F\n'); process.exit(2);
+  }
+  const write = (out, value) => { fs.writeFileSync(`${out}.${process.pid}`, JSON.stringify(value)); fs.renameSync(`${out}.${process.pid}`, out); };
+  let value; try { value = verb === 'snapshot' ? clientSnapshot() : clientAttestation(); }
+  catch (e) { value = { kind: SNAPSHOT_KIND, version: 1, error: e.message.slice(0, 300) }; process.stderr.write(`${snapshotRefusal(`snapshot failed: ${value.error}`).message}\n`); }
+  write(verb === 'snapshot' ? file : `${file}.attest`, value);
+  if (!value.error && then === '--attest') { value = clientAttestation(); write(`${file}.attest`, value); }
+  process.exit(value.error ? 224 : 0);
 }
