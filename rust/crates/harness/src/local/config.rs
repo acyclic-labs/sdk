@@ -285,7 +285,7 @@ impl LocalHarnessConfig {
         self.default_tools = preset.default_tools;
         #[cfg(feature = "search-http")]
         {
-            self.web_tools = preset.web_tools || self.search_provider.is_some();
+            self.web_tools = preset.web_tools;
         }
         if let Some(steps) = preset.max_steps {
             self.limits.model_steps = steps;

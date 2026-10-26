@@ -17,7 +17,8 @@ pub struct Preset {
     /// Whether credential-free web retrieval is enabled; search also needs a
     /// configured provider.
     pub web_tools: bool,
-    /// Model and tool steps per turn; `None` keeps the harness limit.
+    /// Model rounds per turn; each round may run several tool calls. `None`
+    /// keeps the harness limit.
     pub max_steps: Option<usize>,
     /// Ordered approval chain bound to every enabled tool.
     pub approval_policy: ApprovalPolicy,
