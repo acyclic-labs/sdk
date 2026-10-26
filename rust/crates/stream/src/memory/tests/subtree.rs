@@ -33,7 +33,7 @@ proptest! {
                 if exclude_items { assert_eq!(provider.tail(target).await, Err(StreamError::NotFound)); }
                 else {
                     let records: Vec<_> = provider.read(ReadRequest { path: target.clone(), from: 0, limit: 2 }).await?.try_collect().await?;
-                    assert_eq!(records[0].value.as_ref(), &[*value]);
+                    assert_eq!(records.first().map(|record| record.value.as_ref()), Some([*value].as_slice()));
                     provider.append(AppendRequest { path: target, records: vec![Bytes::from_static(b"private").into()], if_tail: Some(1), idempotency_key: None }).await?;
                 }
                 assert_eq!(provider.tail(StreamPath::new(format!("tree/items/{index}"))?).await?, 1);
@@ -81,7 +81,10 @@ async fn fork_namespace_allocation_is_independent_of_descendant_count() -> Resul
         ));
         costs.push(count.get());
     }
-    assert_eq!(costs[0], costs[1]);
+    let [small, large] = costs.as_slice() else {
+        return Err(StreamError::Unavailable);
+    };
+    assert_eq!(small, large);
     Ok(())
 }
 
@@ -137,7 +140,7 @@ async fn page_projection_charges_record_bytes_and_headers() -> Result<(), Stream
         tail_stream: Some(StreamPath::new("status")?),
         after: None,
         hierarchy_version: None,
-        limit: count as u32,
+        limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
     };
     assert_eq!(
         provider.children_page(request).await,

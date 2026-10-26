@@ -17,6 +17,8 @@
     "immutable-commit-envelope-read",
     "atomic-subtree-cut-with-nested-destination-and-companion-writes",
     "canonical-segment-relative-exclusions-without-sibling-leakage",
-    "inherited-record-identities-and-private-fork-suffixes"
+    "inherited-record-identities-and-private-fork-suffixes",
+    "child-status-records-share-the-page-cut-with-missing-stream-none",
+    "child-status-values-headers-and-framing-obey-the-page-byte-bound"
   ]
 }

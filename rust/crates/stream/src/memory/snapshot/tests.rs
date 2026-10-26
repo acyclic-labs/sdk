@@ -112,6 +112,15 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
     Ok(())
 }
 
+fn snapshot_append(path: StreamPath, value: &'static [u8]) -> AppendRequest {
+    AppendRequest {
+        path,
+        records: vec![Bytes::from_static(value).into()],
+        if_tail: None,
+        idempotency_key: None,
+    }
+}
+
 #[tokio::test]
 async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Result<(), StreamError>
 {
@@ -122,13 +131,9 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
     let source = StreamPath::new("writer/source")?;
     let empty = StreamPath::new("writer/empty")?;
     let destination = StreamPath::new("writer/destination")?;
-    let append = |path: StreamPath, value: &'static [u8]| AppendRequest {
-        path,
-        records: vec![(Bytes::from_static(value)).into()],
-        if_tail: None,
-        idempotency_key: None,
-    };
-    stream.append(append(root.clone(), b"root")).await?;
+    stream
+        .append(snapshot_append(root.clone(), b"root"))
+        .await?;
     stream
         .fork(crate::ForkRequest {
             exclude: Vec::new(),
@@ -139,7 +144,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         })
         .await?;
     stream
-        .append(append(parent.clone(), b"parent-later"))
+        .append(snapshot_append(parent.clone(), b"parent-later"))
         .await?;
     stream
         .fork(crate::ForkRequest {
@@ -159,7 +164,9 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
             idempotency_key: None,
         })
         .await?;
-    stream.append(append(source.clone(), b"before")).await?;
+    stream
+        .append(snapshot_append(source.clone(), b"before"))
+        .await?;
     let request = crate::CommitRequest {
         conditions: vec![
             crate::CommitCondition::Tail {
@@ -200,10 +207,8 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
             vec![b"before".as_slice(), b"forked".as_slice()],
         ),
     ] {
-        assert_eq!(
-            restored.tail(path.clone()).await?,
-            u64::try_from(expected.len()).map_err(|_| StreamError::LimitExceeded)?
-        );
+        let tail = u64::try_from(expected.len()).map_err(|_| StreamError::LimitExceeded)?;
+        assert_eq!(restored.tail(path.clone()).await?, tail);
         let records = restored
             .read(ReadRequest {
                 path,

@@ -28,3 +28,14 @@ fn page_statuses_share_one_atomic_cut() {
 fn negative_control_independent_status_reads() {
     acyclic_stream::verification::page_tail_cut(true);
 }
+
+#[test]
+fn projected_status_records_obey_the_page_byte_bound() {
+    acyclic_stream::verification::page_tail_bytes(false);
+}
+
+#[test]
+#[should_panic(expected = "projected record headers and values must fit the page byte bound")]
+fn negative_control_uncharged_status_records() {
+    acyclic_stream::verification::page_tail_bytes(true);
+}

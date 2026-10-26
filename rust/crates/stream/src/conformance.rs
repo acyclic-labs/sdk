@@ -281,6 +281,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Stre
     verify_unspent_conflicts(provider).await?;
     verify_subtree_fork(provider).await?;
     verify_page_tails(provider).await?;
+    verify_page_tail_bytes(provider).await?;
     Ok(())
 }
 
@@ -488,11 +489,30 @@ async fn verify_unspent_conflicts(
 pub async fn verify_subtree_fork(
     provider: &(impl StreamProvider + ?Sized),
 ) -> Result<(), StreamError> {
-    let source = path("conformance/tree")?;
+    let seed = seed_subtree(provider).await?;
+    let request = subtree_request()?;
     let child = path("conformance/tree/a/events")?;
     let destination = path("conformance/tree/children/fork")?;
     let inherited = path("conformance/tree/children/fork/a/events")?;
-    let marker = path("conformance/adopted")?;
+    let result = provider.commit(request.clone()).await?;
+    let CommitOutcome::Committed(envelope) = &result else {
+        return Err(StreamError::Unavailable);
+    };
+    if provider.commit(request).await? != result
+        || provider.tail(inherited.clone()).await? != 1
+        || provider.tail(child.clone()).await? != 2
+        || provider.tail(destination.clone()).await? != 1
+    {
+        return Err(StreamError::Unavailable);
+    }
+    verify_subtree_records(provider, seed.commit_id, envelope.commit_id).await?;
+    verify_subtree_private_writes(provider).await
+}
+
+async fn seed_subtree(
+    provider: &(impl StreamProvider + ?Sized),
+) -> Result<crate::AppendReceipt, StreamError> {
+    let child = path("conformance/tree/a/events")?;
     let initial = provider
         .append(AppendRequest {
             path: child.clone(),
@@ -523,7 +543,15 @@ pub async fn verify_subtree_fork(
             })
             .await?;
     }
-    let request = CommitRequest {
+    Ok(seed)
+}
+
+fn subtree_request() -> Result<CommitRequest, StreamError> {
+    let source = path("conformance/tree")?;
+    let child = path("conformance/tree/a/events")?;
+    let destination = path("conformance/tree/children/fork")?;
+    let marker = path("conformance/adopted")?;
+    Ok(CommitRequest {
         conditions: vec![
             CommitCondition::Absent {
                 path: destination.clone(),
@@ -546,17 +574,17 @@ pub async fn verify_subtree_fork(
         mutations: vec![
             CommitMutation::Fork {
                 exclude: vec![path("children")?],
-                source: source.clone(),
-                destination: destination.clone(),
+                source,
+                destination,
                 at_tail: 0,
                 records: vec![Bytes::from_static(b"bound").into()],
             },
             CommitMutation::Append {
-                path: child.clone(),
+                path: child,
                 records: vec![Bytes::from_static(b"source-after-cut").into()],
             },
             CommitMutation::Append {
-                path: marker.clone(),
+                path: marker,
                 records: vec![Bytes::from_static(b"ForkAdopted").into()],
             },
             CommitMutation::Fork {
@@ -575,18 +603,17 @@ pub async fn verify_subtree_fork(
             },
         ],
         idempotency_key: key(b"tree-adopt")?,
-    };
-    let result = provider.commit(request.clone()).await?;
-    let CommitOutcome::Committed(envelope) = &result else {
-        return Err(StreamError::Unavailable);
-    };
-    if provider.commit(request).await? != result
-        || provider.tail(inherited.clone()).await? != 1
-        || provider.tail(child.clone()).await? != 2
-        || provider.tail(destination.clone()).await? != 1
-    {
-        return Err(StreamError::Unavailable);
-    }
+    })
+}
+
+async fn verify_subtree_records(
+    provider: &(impl StreamProvider + ?Sized),
+    seed: crate::CommitId,
+    committed: crate::CommitId,
+) -> Result<(), StreamError> {
+    let destination = path("conformance/tree/children/fork")?;
+    let inherited = path("conformance/tree/children/fork/a/events")?;
+    let marker = path("conformance/adopted")?;
     let records: Vec<_> = provider
         .read(ReadRequest {
             path: inherited.clone(),
@@ -599,7 +626,7 @@ pub async fn verify_subtree_fork(
     if records.len() != 1
         || records
             .first()
-            .is_none_or(|record| record.commit_id != seed.commit_id)
+            .is_none_or(|record| record.commit_id != seed)
     {
         return Err(StreamError::Unavailable);
     }
@@ -619,7 +646,7 @@ pub async fn verify_subtree_fork(
         if records.len() != 1
             || records
                 .first()
-                .is_none_or(|record| record.commit_id != envelope.commit_id)
+                .is_none_or(|record| record.commit_id != committed)
         {
             return Err(StreamError::Unavailable);
         }
@@ -644,13 +671,22 @@ pub async fn verify_subtree_fork(
         .await?;
     if bound
         .first()
-        .is_none_or(|record| record.commit_id != envelope.commit_id)
+        .is_none_or(|record| record.commit_id != committed)
         || adopted
             .first()
-            .is_none_or(|record| record.commit_id != envelope.commit_id)
+            .is_none_or(|record| record.commit_id != committed)
     {
         return Err(StreamError::Unavailable);
     }
+    Ok(())
+}
+
+async fn verify_subtree_private_writes(
+    provider: &(impl StreamProvider + ?Sized),
+) -> Result<(), StreamError> {
+    let child = path("conformance/tree/a/events")?;
+    let destination = path("conformance/tree/children/fork")?;
+    let inherited = path("conformance/tree/children/fork/a/events")?;
     provider
         .append(AppendRequest {
             path: inherited.clone(),
@@ -815,6 +851,61 @@ pub async fn verify_page_tails(
         .tail(path("conformance/page-tails/c/status")?)
         .await
         != Err(StreamError::NotFound)
+    {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(())
+}
+
+/// Projected values, headers and protobuf framing share the command byte ceiling.
+pub async fn verify_page_tail_bytes(
+    provider: &(impl StreamProvider + ?Sized),
+) -> Result<(), StreamError> {
+    // Values alone fit; the indexed headers take the complete page over the bound.
+    let value = Bytes::from(vec![0; crate::MAX_RECORD_BYTES / 2]);
+    let headers = crate::RecordHeaders::new(vec![vec![1; 512].into()], vec![])?;
+    let count = crate::MAX_COMMAND_BYTES / value.len();
+    for index in 0..count {
+        let target = path(&format!("conformance/page-bytes/{index:04}/status"))?;
+        let outcome = provider
+            .append(AppendRequest {
+                idempotency_key: Some(IdempotencyKey::new(target.as_str().as_bytes().to_vec())?),
+                path: target,
+                records: vec![crate::AppendRecord {
+                    value: value.clone(),
+                    headers: headers.clone(),
+                }],
+                if_tail: Some(0),
+            })
+            .await?;
+        if !matches!(outcome, AppendOutcome::Committed(_)) {
+            return Err(StreamError::Unavailable);
+        }
+    }
+    let page = match provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(path("conformance/page-bytes")?),
+            after: None,
+            hierarchy_version: None,
+            limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
+            tail_stream: Some(path("status")?),
+        })
+        .await
+    {
+        Err(StreamError::LimitExceeded) => return Ok(()),
+        result => result?,
+    };
+    if page.children.is_empty()
+        || page.children.len() > count
+        || (page.children.len() < count && page.next_after.is_none())
+        || page.children.iter().any(|child| {
+            child
+                .tail_record
+                .as_ref()
+                .is_none_or(|record| record.value != value || record.headers != headers)
+        })
+        || prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
+            > crate::MAX_COMMAND_BYTES
     {
         return Err(StreamError::Unavailable);
     }

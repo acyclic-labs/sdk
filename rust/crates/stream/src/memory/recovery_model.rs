@@ -14,6 +14,7 @@ pub(crate) enum Fault {
     IgnoreHead,
     RootOnlyFork,
     IgnoreForkExclusions,
+    IgnorePageRecordBytes,
     OmitPoisonPublication,
     HoldPublicationDuringMaintenance,
 }
@@ -546,6 +547,24 @@ pub fn subtree_exclusions(ignore: bool) {
         assert_eq!(
             block_on(provider.tail(StreamPath::new("tree/children/old/events")?))?,
             1
+        );
+        Ok(())
+    });
+}
+
+/// Runs the public byte-bound oracle through actual projection accounting.
+///
+/// # Panics
+/// Panics when projected record bytes bypass the page bound.
+pub fn page_tail_bytes(ignore: bool) {
+    check_with_bound(Some(0), move || {
+        let provider = MemoryStream::default();
+        if ignore {
+            set_fault(Fault::IgnorePageRecordBytes);
+        }
+        assert!(
+            block_on(crate::conformance::verify_page_tail_bytes(&provider)).is_ok(),
+            "projected record headers and values must fit the page byte bound"
         );
         Ok(())
     });

@@ -8,10 +8,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
     ) -> Result<(), StreamError> {
         if let Some(channel) = self.channels.get(&identity.channel_id)
             && channel.generation == identity.generation
+            && let Err(reason) = self.validate_authority(identity.channel_id)
         {
-            if let Err(reason) = self.validate_authority(identity.channel_id) {
-                return self.close_authority(identity, reason);
-            }
+            return self.close_authority(identity, reason);
         }
         let Some(channel) = self.channels.get(&identity.channel_id).filter(|channel| {
             channel.generation == identity.generation && channel.ending.is_none()
@@ -89,6 +88,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
         };
+        self.enqueue(identity, after, item, key)
+    }
+
+    fn enqueue(
+        &mut self,
+        identity: wire::SessionChannel,
+        after: wire::SessionCursor,
+        item: Item,
+        key: Option<Bytes>,
+    ) -> Result<(), StreamError> {
         let next = after.next;
         let frame = frame(
             identity.channel_id,

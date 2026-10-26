@@ -1,3 +1,61 @@
+fn namespace_page(
+    index: &Index,
+    lower: Option<&str>,
+    parent: Option<&StreamPath>,
+    limit: usize,
+    out: &mut Vec<StreamPath>,
+) -> Result<(), StreamError> {
+    let Some(edge) = index else {
+        return Ok(());
+    };
+    if lower.is_none_or(|after| edge.name.text.as_str() > after) {
+        namespace_page(&edge.left, lower, parent, limit, out)?;
+        if out.len() == limit {
+            return Ok(());
+        }
+        out.push(StreamPath::new(parent.map_or_else(
+            || edge.name.text.to_string(),
+            |parent| format!("{}/{}", parent.as_str(), edge.name.text),
+        ))?);
+    }
+    if out.len() < limit {
+        namespace_page(&edge.right, lower, parent, limit, out)?;
+    }
+    Ok(())
+}
+
+fn projected_tail(
+    paths: &Namespace,
+    path: &StreamPath,
+    relative: Option<&StreamPath>,
+) -> Result<Option<Record>, StreamError> {
+    let Some(relative) = relative else {
+        return Ok(None);
+    };
+    let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
+    let Some(stream) = paths.get(&target) else {
+        return Ok(None);
+    };
+    let Some(from) = stream.tail.checked_sub(1) else {
+        return Ok(None);
+    };
+    if let Some(window) = stream.prefix_window(from, stream.tail) {
+        return Ok(window.records.records.get(window.start).cloned());
+    }
+    Ok(
+        HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
+            |(history, ceiling)| {
+                if let History::Batch { records, .. } = history {
+                    history_window(Arc::clone(records), ceiling, from)
+                        .and_then(|window| window.records.records.get(window.start).cloned())
+                } else {
+                    None
+                }
+            },
+        ),
+    )
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
@@ -189,34 +247,9 @@ impl StreamProvider for MemoryStream {
             .after
             .as_ref()
             .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
-        fn page(
-            index: &Index,
-            lower: Option<&str>,
-            parent: Option<&StreamPath>,
-            limit: usize,
-            out: &mut Vec<StreamPath>,
-        ) -> Result<(), StreamError> {
-            let Some(edge) = index else {
-                return Ok(());
-            };
-            if lower.is_none_or(|after| edge.name.text.as_str() > after) {
-                page(&edge.left, lower, parent, limit, out)?;
-                if out.len() == limit {
-                    return Ok(());
-                }
-                out.push(StreamPath::new(parent.map_or_else(
-                    || edge.name.text.to_string(),
-                    |parent| format!("{}/{}", parent.as_str(), edge.name.text),
-                ))?);
-            }
-            if out.len() < limit {
-                page(&edge.right, lower, parent, limit, out)?;
-            }
-            Ok(())
-        }
         let mut paths = Vec::new();
         if let Some(children) = children {
-            page(
+            namespace_page(
                 children,
                 lower,
                 request.parent.as_ref(),
@@ -236,42 +269,26 @@ impl StreamProvider for MemoryStream {
         let children = paths
             .into_iter()
             .map(|path| {
-                let tail_record = request
-                    .tail_stream
-                    .as_ref()
-                    .map(|relative| {
-                        let target =
-                            StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
-                        Ok::<_, StreamError>(state.paths.get(&target).and_then(|stream| {
-                            let from = stream.tail.checked_sub(1)?;
-                            if let Some(window) = stream.prefix_window(from, stream.tail) {
-                                return window.records.records.get(window.start).cloned();
-                            }
-                            HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
-                                |(history, ceiling)| {
-                                    if let History::Batch { records, .. } = history {
-                                        history_window(Arc::clone(records), ceiling, from).and_then(
-                                            |window| {
-                                                window.records.records.get(window.start).cloned()
-                                            },
-                                        )
-                                    } else {
-                                        None
-                                    }
-                                },
-                            )
-                        }))
-                    })
-                    .transpose()?
-                    .flatten();
+                let tail_record =
+                    projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
                 let child = Child { path, tail_record };
-                let size = prost::Message::encoded_len(&crate::wire::Child {
+                let encoded = crate::wire::Child {
                     path: child.path.to_string(),
                     tail_record: child
                         .tail_record
                         .clone()
                         .map(crate::wire_codec::record_wire),
-                });
+                };
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                let size = if crate::verification::fault_is(
+                    crate::verification::Fault::IgnorePageRecordBytes,
+                ) {
+                    encoded.path.len()
+                } else {
+                    prost::Message::encoded_len(&encoded)
+                };
+                #[cfg(not(all(acyclic_loom, feature = "local")))]
+                let size = prost::Message::encoded_len(&encoded);
                 page_bytes = page_bytes.saturating_add(size).saturating_add(10);
                 if page_bytes > crate::MAX_COMMAND_BYTES {
                     return Err(StreamError::LimitExceeded);

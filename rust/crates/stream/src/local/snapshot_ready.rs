@@ -150,7 +150,8 @@ fn compare<T: Send + Debug + Eq + 'static>(
                 trace.push((step, true));
             }
             let mut times = elapsed.get();
-            times[index] = start.elapsed().as_nanos();
+            *times.get_mut(index).expect("one of two compared streams") =
+                start.elapsed().as_nanos();
             elapsed.set(times);
             (output, trace)
         }
@@ -181,7 +182,7 @@ fn compare<T: Send + Debug + Eq + 'static>(
 async fn prepare<P: StreamProvider>(
     old: &P,
     candidate: &P,
-    baseline: BaselineProvider,
+    baseline: &BaselineProvider,
 ) -> ReadyPair {
     let path = StreamPath::new("root").unwrap();
     // Compare exact errors as well as all record bytes/metadata and observer order.
@@ -197,7 +198,7 @@ async fn prepare<P: StreamProvider>(
     assert_eq!(candidate_error.await.err(), Some(StreamError::OutOfRange));
     {
         ReadyPair::Records(
-            records(baseline).await,
+            records(baseline.clone()).await,
             candidate
                 .follow(
                     StreamPath::new("root").unwrap(),
@@ -225,7 +226,7 @@ fn sample<P: StreamProvider>(
     runtime: &tokio::runtime::Runtime,
     old: &P,
     candidate: &P,
-    baseline: BaselineProvider,
+    baseline: &BaselineProvider,
     negative: bool,
     label: &str,
 ) {
@@ -236,7 +237,7 @@ fn sample<P: StreamProvider>(
     let mut before = Vec::with_capacity(31);
     let mut after = Vec::with_capacity(31);
     for _ in 0..31 {
-        let ready = runtime.block_on(prepare(old, candidate, baseline.clone()));
+        let ready = runtime.block_on(prepare(old, candidate, baseline));
         // Ready polling is measured outside the executor's cooperative budget.
         let (old, candidate) = ready.measure(negative, label);
         before.push(old);
@@ -246,9 +247,9 @@ fn sample<P: StreamProvider>(
     after.sort_unstable();
     println!(
         "{label}: records={COUNT} samples=31 baseline_ns={} candidate_ns={} candidate_p95_ns={} baseline_allocations={} candidate_allocations=0 candidate_bytes=0",
-        before[15],
-        after[15],
-        after[29],
+        before.get(15).expect("31 samples"),
+        after.get(15).expect("31 samples"),
+        after.get(29).expect("31 samples"),
         if label.starts_with("local_") {
             COUNT
         } else {
@@ -269,7 +270,7 @@ fn run(negative: bool) {
             &runtime,
             &old,
             &candidate,
-            BaselineProvider::Memory(old.clone()),
+            &BaselineProvider::Memory(old.clone()),
             negative,
             "memory_follow",
         );
@@ -293,7 +294,7 @@ fn run(negative: bool) {
             &runtime,
             &old,
             &candidate,
-            BaselineProvider::Local(old.clone()),
+            &BaselineProvider::Local(old.clone()),
             negative,
             "local_follow",
         );

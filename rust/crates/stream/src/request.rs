@@ -306,16 +306,14 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
             destination,
             ..
         } = mutation
-        {
-            if source == destination
+            && (source == destination
                 || request.mutations.iter().any(|other| {
                     let path = mutation_path(other).as_str();
                     path.strip_prefix(destination.as_str())
                         .is_some_and(|suffix| suffix.starts_with('/'))
-                })
-            {
-                return Err(StreamError::InvalidArgument);
-            }
+                }))
+        {
+            return Err(StreamError::InvalidArgument);
         }
         let condition = request
             .conditions
