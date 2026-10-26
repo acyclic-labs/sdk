@@ -29,8 +29,8 @@ impl Schedule {
     ///
     /// # Panics
     ///
-    /// Panics after dispatch, while owned work is active, or if a process
-    /// provider is already installed.
+    /// Panics after dispatch or cancellation, while owned work is active, or
+    /// if a process provider is already installed.
     pub fn set_process_provider(
         &self,
         provider: impl Fn(

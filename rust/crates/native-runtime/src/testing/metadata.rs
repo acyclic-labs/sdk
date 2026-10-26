@@ -36,8 +36,8 @@ impl Schedule {
     ///
     /// # Panics
     ///
-    /// Panics after dispatch, while owned work is active, or if a timestamp
-    /// provider is already installed.
+    /// Panics after dispatch or cancellation, while owned work is active, or
+    /// if a timestamp provider is already installed.
     pub fn set_native_times_provider(
         &self,
         provider: impl Fn(NativeMetadataInput) -> NativeTimes + Send + Sync + 'static,
