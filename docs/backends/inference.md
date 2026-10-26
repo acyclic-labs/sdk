@@ -23,7 +23,8 @@ result from the output under test. The llama.cpp fixture is real; cloud provider
 qualification requires separate captured-real families.
 
 A manifest records the provider ID, original `ProviderSpec` without credentials,
-model/options, UTC capture time, origin and all six real response bodies (`text`,
+model/options, UTC capture time, origin, the actual overflowing `context_input`,
+and all six real response bodies (`text`,
 `tool`, `result`, `rate`, `context`, `auth`). Each body has its original HTTP status
 and SHA-256 digest. Optional request URL and JSON-pointer assertions bind the
 replay to its original route and paired-result request. Replays supply an isolated

@@ -68,6 +68,8 @@ pub struct Manifest {
     pub usage: ExpectedUsage,
     /// Independent expected counters for tool and result completions.
     pub tool_usage: [ExpectedUsage; 2],
+    /// Original input that actually exceeded this model's context capacity.
+    pub context_input: String,
     captures: BTreeMap<String, FileCapture>,
 }
 fn options() -> Value {
@@ -211,6 +213,7 @@ fn read(root: &Path, capture: &FileCapture) -> Result<Capture> {
 fn prepare(
     provider: &acyclic_harness_providers::ResolvedModel,
     scenario: Scenario,
+    context_input: &str,
 ) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let tools = matches!(scenario, Scenario::Tools);
     let request = PreparedModelRequest::prepare(
@@ -220,7 +223,7 @@ fn prepare(
                 role: ModelRole::User,
                 content: ModelContent::Text(match scenario {
                     Scenario::Tools => "Call echo with value 1.".into(),
-                    Scenario::ContextOverflow => "overflow ".repeat(3000),
+                    Scenario::ContextOverflow => context_input.into(),
                     _ => "Reply with exactly: hello".into(),
                 }),
             }],
@@ -335,7 +338,7 @@ impl Backend for Captured {
             .map(|name| self.capture(name))
             .collect::<Result<_>>()?;
         let (provider, transport) = provider(&self.manifest, captures)?;
-        let (request, dispatch) = prepare(&provider, scenario)?;
+        let (request, dispatch) = prepare(&provider, scenario, &self.manifest.context_input)?;
         Ok(Session {
             provider: Arc::new(provider),
             request,
@@ -405,7 +408,7 @@ impl Backend for Local {
             &format!("local/{}", manifest.model),
             manifest.options.clone(),
         )?;
-        let (request, dispatch) = prepare(&provider, scenario)?;
+        let (request, dispatch) = prepare(&provider, scenario, &manifest.context_input)?;
         Ok(Session {
             provider: Arc::new(provider),
             request,
