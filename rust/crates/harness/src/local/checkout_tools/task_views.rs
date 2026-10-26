@@ -162,7 +162,6 @@ impl CheckoutTools {
             state: StateArc::clone(&workspace.state),
             selected: true,
         })
-        .await
     }
     pub(super) async fn selected_workspace(
         &self,
