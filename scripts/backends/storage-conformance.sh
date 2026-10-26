@@ -63,6 +63,11 @@ for _ in {1..40}; do
     sleep 0.25
 done
 docker exec "$pg" pg_isready -U postgres -d storage
+step=postgres-isolation-fixture
+# Exercise a nondefault server setting: publication must choose its own fresh
+# statement snapshots after waiting for the namespace advisory lock.
+docker exec "$pg" psql -U postgres -d storage -v ON_ERROR_STOP=1 -c "ALTER DATABASE storage SET default_transaction_isolation TO 'repeatable read'"
+docker exec "$pg" psql -U postgres -d storage -Atc 'SHOW default_transaction_isolation'
 step=minio-ready
 for _ in {1..40}; do
     if curl -fsS "$STORAGE_S3_ENDPOINT/minio/health/ready" >/dev/null 2>&1; then break; fi

@@ -14,7 +14,9 @@ Pass `Arc<PostgresStream>` to `StreamAuthorityStore::new`, combine with
 capabilities. Filesystem does not inspect backend types.
 
 Postgres commits an ordered command journal under a transaction-scoped namespace
-advisory lock. The canonical shared Stream core owns append-if-tail CAS, exact
+advisory lock. Publication explicitly uses READ COMMITTED so catch-up obtains a
+fresh snapshot after lock acquisition, even when the database's default isolation
+is REPEATABLE READ. The canonical shared Stream core owns append-if-tail CAS, exact
 idempotency, hierarchical fork/commit, filters and bounded public paging. Commands
 include the database clock sample, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
@@ -66,6 +68,12 @@ uses the canonical public smoke export, which main explicitly distinguishes from
 full filesystem qualification; its full workload corpus has no executable runner.
 The conformance README labels the provider suites v2; its unchanged Stream export
 currently invokes the v1-protocol `acyclic_stream::conformance::verify`.
+
+The runner also passed with REPEATABLE READ as the database default, proving that
+publication does not inherit that setting: job `1793045764125-91178-f115db47`, log
+`/home/var/log/buildbox/1793045746441-91178-9785d9f7.log`. Concurrent CAS,
+notifications, reopen and listener-loss checks passed; 100,000 streams plus
+subscriptions took 16.274 s with the same connection/task/thread counts.
 
 ## Live steps
 

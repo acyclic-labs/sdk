@@ -264,7 +264,15 @@ impl PostgresStream {
         self.check()?;
         let mut session = self.inner.session.lock().await;
         let Session { client, cursor } = &mut *session;
-        let tx = client.transaction().await.map_err(unavailable)?;
+        // Acquire the namespace lock before taking the catch-up snapshot. A
+        // caller-configured repeatable-read default could otherwise preserve a
+        // snapshot from before a competing publisher released the lock.
+        let tx = client
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await
+            .map_err(unavailable)?;
         // Hash collisions only serialize unrelated namespaces; they cannot
         // weaken isolation. The lock is held through the durable SQL commit.
         tx.execute(

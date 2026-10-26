@@ -1,4 +1,4 @@
-BEGIN;
+BEGIN ISOLATION LEVEL READ COMMITTED;
 -- Serialize first-open DDL across independent processes, including an empty DB.
 SELECT pg_advisory_xact_lock(hashtextextended('acyclic-stream-schema', 1937006962));
 CREATE TABLE IF NOT EXISTS acyclic_stream_journal (
