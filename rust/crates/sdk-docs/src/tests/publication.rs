@@ -32,8 +32,8 @@ fn publication_data(version: &str, revision: char) -> DocsData {
 
 #[test]
 fn release_publication_rejects_unbound_source_before_creating_output() {
-    let output = std::env::temp_dir().join(format!("sdk-docs-provenance-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let mut data = publication_data("1.0.0", 'a');
     data.source.source_state = "working-tree".into();
     data.source.source_sha256 = None;
@@ -54,8 +54,8 @@ fn release_publication_rejects_unbound_source_before_creating_output() {
 
 #[test]
 fn version_index_must_be_a_regular_non_reparse_file() {
-    let output = std::env::temp_dir().join(format!("sdk-docs-index-kind-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     fs::create_dir_all(output.join("sdk-docs-versions.v1.json"))
         .expect("index directory should be creatable");
     let data = publication_data("1.0.0", 'a');
@@ -66,13 +66,13 @@ fn version_index_must_be_a_regular_non_reparse_file() {
         .contains("version index is not a regular file"));
     assert!(output.join("sdk-docs-versions.v1.json").is_dir());
     assert!(!output.join("releases").exists());
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }
 
 #[test]
 fn version_index_rejects_a_conflicting_release_rewrite() {
-    let output = std::env::temp_dir().join(format!("sdk-docs-index-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let mut data = publication_data("1.0.0", 'a');
     data.source.rustdoc_format_versions = vec![60];
     write_bundle(&data, &output, false).expect("initial release should write");
@@ -80,14 +80,13 @@ fn version_index_rejects_a_conflicting_release_rewrite() {
     conflicting.source.revision = "b".repeat(40);
     let error = write_bundle(&conflicting, &output, false).expect_err("release rewrite must fail");
     assert!(error.to_string().contains("refusing to rewrite"));
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }
 
 #[test]
 fn malformed_prior_version_index_is_rejected_without_mutation() {
-    let output =
-        std::env::temp_dir().join(format!("sdk-docs-malformed-index-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     fs::create_dir_all(&output).expect("output directory should be creatable");
     let malformed = VersionIndex {
         release_candidates: Vec::new(),
@@ -139,14 +138,13 @@ fn malformed_prior_version_index_is_rejected_without_mutation() {
         prior_data,
         fs::read(&data_path).expect("prior data should remain unchanged")
     );
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }
 
 #[test]
 fn version_index_rejects_invalid_docs_json_even_when_hash_matches() {
-    let output =
-        std::env::temp_dir().join(format!("sdk-docs-invalid-bundle-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let data = publication_data("1.0.0", 'a');
     write_bundle(&data, &output, false).expect("initial release should write");
     let data_path = output.join("release-candidates/1.0.0/sdk-docs-data.v1.json");
@@ -255,14 +253,13 @@ fn version_index_rejects_invalid_docs_json_even_when_hash_matches() {
         before,
         fs::read(&index_path).expect("index should be unchanged")
     );
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }
 
 #[test]
 fn version_index_rejects_bundle_revision_mismatch() {
-    let output =
-        std::env::temp_dir().join(format!("sdk-docs-revision-index-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let data = publication_data("1.0.0", 'a');
     write_bundle(&data, &output, false).expect("initial release should write");
     let index_path = output.join("sdk-docs-versions.v1.json");
@@ -290,13 +287,13 @@ fn version_index_rejects_bundle_revision_mismatch() {
         before,
         fs::read(&index_path).expect("index should be unchanged")
     );
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }
 
 #[test]
 fn version_index_advances_candidates_and_preview_without_rewriting_data() {
-    let output = std::env::temp_dir().join(format!("sdk-docs-lifecycle-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let mut data = publication_data("1.0.0", 'a');
     data.source.revision = "1".repeat(40);
     data.source.rustdoc_format_versions = vec![60];
@@ -367,7 +364,7 @@ fn version_index_advances_candidates_and_preview_without_rewriting_data() {
     assert!(output
         .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
         .is_file());
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }
 
 #[test]
@@ -416,8 +413,8 @@ fn version_index_latest_must_be_the_maximum_release() {
 
 #[test]
 fn concurrent_publications_preserve_both_entries_and_index_hashes() {
-    let output = std::env::temp_dir().join(format!("sdk-docs-concurrent-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let first_data = publication_data("1.0.0", 'a');
     let second_data = publication_data("2.0.0", 'b');
     let barrier = Arc::new(Barrier::new(2));
@@ -462,5 +459,5 @@ fn concurrent_publications_preserve_both_entries_and_index_hashes() {
         let bytes = fs::read(output.join(&entry.data_file)).expect("bundle should exist");
         assert_eq!(sha256_hex(&bytes), entry.data_sha256);
     }
-    fs::remove_dir_all(output).expect("test output should be removable");
+    directory.close().expect("test output should be removable");
 }

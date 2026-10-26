@@ -322,15 +322,8 @@ fn equivalent_rustdoc_source_paths_are_deduplicated() {
 #[test]
 fn existing_external_rustdoc_span_keeps_canonical_input_path() {
     let root = test_root("existing-external-generated-span");
-    let external = std::env::temp_dir()
-        .join(format!(
-            "sdk-generation-existing-span-{}",
-            std::process::id()
-        ))
-        .join("wire.rs");
-    if let Some(parent) = external.parent() {
-        fs::create_dir_all(parent).expect("external fixture directory should be writable");
-    }
+    let directory = tempfile::tempdir().expect("external fixture directory should be writable");
+    let external = directory.path().join("wire.rs");
     fs::write(&external, b"pub struct Wire;\n").expect("external source should be writable");
     let receipt = root.join("receipt.json");
     fs::write(
@@ -352,7 +345,6 @@ fn existing_external_rustdoc_span_keeps_canonical_input_path() {
             .expect("external source should canonicalize")
     );
     let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_dir_all(external.parent().unwrap());
 }
 
 #[test]

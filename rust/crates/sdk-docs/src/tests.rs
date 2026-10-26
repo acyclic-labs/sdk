@@ -173,17 +173,13 @@ fn preview_version_paths_are_injective_and_portable() {
 
 #[test]
 fn generated_source_spans_require_attestation_and_preserve_lines() {
-    let suffix = std::process::id();
-    let repository_root =
-        std::env::temp_dir().join(format!("sdk-docs-generated-source-root-{suffix}"));
-    let external_root =
-        std::env::temp_dir().join(format!("sdk-docs-generated-source-external-{suffix}"));
-    let _ = fs::remove_dir_all(&repository_root);
-    let _ = fs::remove_dir_all(&external_root);
+    let repository_directory = tempfile::tempdir().expect("repository fixture should be writable");
+    let external_directory = tempfile::tempdir().expect("external fixture should be writable");
+    let repository_root = repository_directory.path().to_path_buf();
+    let external_root = external_directory.path().to_path_buf();
     fs::create_dir_all(repository_root.join("src")).expect("repository root should be writable");
     fs::create_dir_all(repository_root.join("target/out"))
         .expect("generated checkout directory should be writable");
-    fs::create_dir_all(&external_root).expect("external source root should be writable");
 
     let inside = repository_root.join("src/inside.rs");
     fs::write(&inside, b"pub struct Inside;\n").expect("checkout source should be writable");
@@ -353,20 +349,21 @@ fn generated_source_spans_require_attestation_and_preserve_lines() {
         .expect_err("generated source mutation must invalidate attestation");
     assert!(error.to_string().contains("digest does not match"));
 
-    fs::remove_dir_all(&repository_root).expect("repository fixture should be removed");
-    fs::remove_dir_all(&external_root).expect("external fixture should be removed");
+    repository_directory
+        .close()
+        .expect("repository fixture should be removed");
+    external_directory
+        .close()
+        .expect("external fixture should be removed");
 }
 
 #[cfg(windows)]
 #[test]
 fn generated_sources_reject_junction_ancestors() {
-    let suffix = std::process::id();
-    let repository_root = std::env::temp_dir().join(format!("sdk-docs-junction-root-{suffix}"));
-    let external_root = std::env::temp_dir().join(format!("sdk-docs-junction-external-{suffix}"));
-    let _ = fs::remove_dir_all(&repository_root);
-    let _ = fs::remove_dir_all(&external_root);
-    fs::create_dir_all(&repository_root).expect("repository fixture should be writable");
-    fs::create_dir_all(&external_root).expect("external fixture should be writable");
+    let repository_directory = tempfile::tempdir().expect("repository fixture should be writable");
+    let external_directory = tempfile::tempdir().expect("external fixture should be writable");
+    let repository_root = repository_directory.path().to_path_buf();
+    let external_root = external_directory.path().to_path_buf();
     let external_file = external_root.join("wire.rs");
     let bytes = b"pub struct Wire;\n";
     fs::write(&external_file, bytes).expect("generated source should be writable");
@@ -383,8 +380,6 @@ fn generated_sources_reject_junction_ancestors() {
         .status()
         .expect("PowerShell should launch");
     if !status.success() {
-        let _ = fs::remove_dir_all(&repository_root);
-        let _ = fs::remove_dir_all(&external_root);
         panic!("PowerShell should create the junction");
     }
     let error = canonical_repository_root(&junction)
@@ -399,14 +394,18 @@ fn generated_sources_reject_junction_ancestors() {
         .expect_err("junction ancestors must be rejected");
     assert!(error.to_string().contains("reparse point or symlink"));
     fs::remove_dir(&junction).expect("junction itself should be removable");
-    fs::remove_dir_all(&repository_root).expect("repository fixture should be removed");
-    fs::remove_dir_all(&external_root).expect("external fixture should be removed");
+    repository_directory
+        .close()
+        .expect("repository fixture should be removed");
+    external_directory
+        .close()
+        .expect("external fixture should be removed");
 }
 
 #[test]
 fn publication_rejects_navigation_that_does_not_match_sorted_families() {
-    let output = std::env::temp_dir().join(format!("sdk-docs-navigation-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&output);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let output = directory.path().join("output");
     let data = DocsData {
         schema: DATA_SCHEMA_VERSION.into(),
         schema_version: DATA_SCHEMA_VERSION.into(),
@@ -668,8 +667,8 @@ fn inherited_local_trait_associated_members_use_typed_membership() {
 
 #[test]
 fn build_family_keeps_inherited_local_trait_member_and_source_span() {
-    let root = std::env::temp_dir().join(format!("sdk-docs-inherited-impl-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let root = directory.path().to_path_buf();
     fs::create_dir_all(root.join("src")).expect("fixture source directory should be creatable");
     fs::write(
         root.join("src/lib.rs"),
@@ -806,7 +805,7 @@ fn build_family_keeps_inherited_local_trait_member_and_source_span() {
     let message = error.to_string();
     assert!(message.contains("does not resolve to the crate root"));
     assert!(message.contains("String::default"));
-    fs::remove_dir_all(root).expect("fixture directory should be removable");
+    directory.close().expect("fixture directory should be removable");
 }
 
 mod projection;

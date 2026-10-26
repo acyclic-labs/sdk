@@ -2,9 +2,8 @@ use super::*;
 
 #[test]
 fn typed_rustdoc_projection_respects_public_reachability_and_use_aliases() {
-    let root = std::env::temp_dir().join(format!("sdk-docs-rustdoc-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("fixture directory should be creatable");
+    let directory = tempfile::tempdir().expect("fixture directory should be creatable");
+    let root = directory.path().to_path_buf();
     let rustdoc_path = root.join("demo.json");
     let fixture = serde_json::json!({
         "root": 0,
@@ -381,5 +380,5 @@ fn typed_rustdoc_projection_respects_public_reachability_and_use_aliases() {
     mismatched_input.package_metadata[0].rustdoc_file = mismatched_path;
     let error = build_data(&mismatched_input, &[]).expect_err("crate version mismatch must fail");
     assert!(error.to_string().contains("reports crate version 9.9.9"));
-    fs::remove_dir_all(root).expect("fixture directory should be removable");
+    directory.close().expect("fixture directory should be removable");
 }

@@ -703,8 +703,8 @@ fn real_cargo_profiles_have_distinct_public_items_when_requested() {
                 && profile.features.contains("local")
         })
         .unwrap();
-    let out_dir = std::env::temp_dir().join("rust-docs-profile-receipts");
-    fs::create_dir_all(&out_dir).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let out_dir = directory.path();
     let first = out_dir.join("objects-json.json");
     let second = out_dir.join("objects-all-features.json");
     let first_observation = execute_profile(
