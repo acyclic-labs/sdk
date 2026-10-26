@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-10-26T20:22:29.518378+00:00",
+  "captured_at": "2026-10-26T20:41:24.528109+00:00",
   "source": "bb2 llama.cpp",
   "model": "conformance-tiny",
   "adapter": "chat",
@@ -7,20 +7,20 @@
     "text": {
       "status": 200,
       "file": "text.body",
-      "sha256": "57eeb9c825b165dd8b278356c18c38c6d7b871ebcc2faf78e7d79c94bf7b4083",
-      "request_url": "http://127.0.0.1:33934/v1/chat/completions"
+      "sha256": "9291f29c22062298aff55dd764b31a3632d9e6560fd55da78a35ed1673c5bd54",
+      "request_url": "http://127.0.0.1:15480/v1/chat/completions"
     },
     "tool": {
       "status": 200,
       "file": "tool.body",
-      "sha256": "45b9eb1ad2ae015adf36448a4dfce7b997d6769d61551ec30f3989d2871ded0e",
-      "request_url": "http://127.0.0.1:33934/v1/chat/completions"
+      "sha256": "a9082672c8daaafe09acbee0138fee4f6bb7e251b4d88c8416da19eb7e7350b1",
+      "request_url": "http://127.0.0.1:15480/v1/chat/completions"
     },
     "result": {
       "status": 200,
       "file": "result.body",
-      "sha256": "8604dc16e8ecdf7c24cb94364b085cb42dbc31188501a5eae73a4675ef5c498d",
-      "request_url": "http://127.0.0.1:33934/v1/chat/completions",
+      "sha256": "fff99863227e9cb3c64f6fcc1b34234e362696a686640d6904313a81d80339c7",
+      "request_url": "http://127.0.0.1:15480/v1/chat/completions",
       "assertions": {
         "/messages": [
           {
@@ -32,7 +32,7 @@
             "content": null,
             "tool_calls": [
               {
-                "id": "JjhaWHlgvY01k11VtykilbyYvtGjBmm9",
+                "id": "oq0f13tGxLaMTQkPxpsr5CLdwy3lkZK0",
                 "type": "function",
                 "function": {
                   "name": "echo",
@@ -43,7 +43,7 @@
           },
           {
             "role": "tool",
-            "tool_call_id": "JjhaWHlgvY01k11VtykilbyYvtGjBmm9",
+            "tool_call_id": "oq0f13tGxLaMTQkPxpsr5CLdwy3lkZK0",
             "content": "{\"value\":1}"
           }
         ]
@@ -53,13 +53,13 @@
       "status": 400,
       "file": "context.body",
       "sha256": "6515306c8730bef8473d3afe900e9ac87c7def5a13d86e6ebee325b3b02339ed",
-      "request_url": "http://127.0.0.1:33934/v1/chat/completions"
+      "request_url": "http://127.0.0.1:15480/v1/chat/completions"
     },
     "auth": {
       "status": 401,
       "file": "auth.body",
       "sha256": "9956a1bd32a70211ff9f3c2e1af8a868de778deffa0689020fe5bea61027c713",
-      "request_url": "http://127.0.0.1:33934/v1/chat/completions"
+      "request_url": "http://127.0.0.1:15480/v1/chat/completions"
     },
     "rate": {
       "status": 429,
@@ -71,7 +71,7 @@
   "endpoint": {
     "adapter": "chat",
     "authentication": "optional",
-    "base_url": "http://127.0.0.1:33934/v1",
+    "base_url": "http://127.0.0.1:15480/v1",
     "max_event_bytes": 1048576,
     "models": {
       "conformance-tiny": {
