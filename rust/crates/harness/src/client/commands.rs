@@ -52,11 +52,6 @@ pub fn encode_command_result(
 ) -> crate::Result<Vec<u8>> {
     session::output_bytes(sequence, result, maximum)
 }
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "tui",
-    not(target_arch = "wasm32")
-))]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
