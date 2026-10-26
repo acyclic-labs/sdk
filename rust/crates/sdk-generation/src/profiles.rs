@@ -225,17 +225,7 @@ pub(super) fn execute_historical_profiles(
         .flatten()
         .collect()
     };
-    // Retained aliases form one shared inventory, so publish them serially
-    // after every compiler has finished and before admitting any manifest.
-    for profile in &executed {
-        retain_profile_generated_sources(root, &profile.receipt)?;
-        fs::write(
-            profile.receipt.with_extension("source.sha256"),
-            source_sha256,
-        )
-        .map_err(io_error)?;
-    }
-    Ok(executed)
+    retain_executed_profiles(root, source_sha256, executed)
 }
 
 fn distinct_receipt_names<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
@@ -252,20 +242,7 @@ fn historical_targets(
     sdk_docs::rustdoc_profiles::RustdocTarget,
 )> {
     use sdk_docs::rustdoc_profiles::RustdocTarget;
-    let library = package.targets.iter().find(|target| {
-        target.kind.iter().any(|kind| {
-            matches!(
-                kind,
-                TargetKind::ProcMacro
-                    | TargetKind::Lib
-                    | TargetKind::RLib
-                    | TargetKind::CDyLib
-                    | TargetKind::StaticLib
-                    | TargetKind::DyLib
-            )
-        })
-    });
-    if let Some(target) = library {
+    if let Some(target) = library_target(package) {
         vec![(target, RustdocTarget::Library)]
     } else {
         package
@@ -277,6 +254,22 @@ fn historical_targets(
     }
 }
 
+fn library_target(package: &Package) -> Option<&cargo_metadata::Target> {
+    package.targets.iter().find(|target| {
+        target.kind.iter().any(|kind| {
+            matches!(
+                kind,
+                TargetKind::ProcMacro
+                    | TargetKind::Lib
+                    | TargetKind::RLib
+                    | TargetKind::CDyLib
+                    | TargetKind::StaticLib
+                    | TargetKind::DyLib
+            )
+        })
+    })
+}
+
 fn compile_historical_profiles(
     root: &Path,
     output: &Path,
@@ -285,7 +278,7 @@ fn compile_historical_profiles(
     cargo: &Path,
     (plan, releases): (&historical::Plan, &[sdk_docs::historical::ReleasedPackage]),
 ) -> Result<Vec<ExecutedProfile>, CliError> {
-    use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
+    use sdk_docs::rustdoc_profiles::{CargoExecutionContext, RustdocTarget, execute_profile};
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
@@ -408,6 +401,16 @@ pub(super) fn execute_default_profiles(
     cargo_path: &Path,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     let executed = compile_default_profiles(root, output, rustdoc_dir, metadata, cargo_path)?;
+    retain_executed_profiles(root, source_sha256, executed)
+}
+
+fn retain_executed_profiles(
+    root: &Path,
+    source_sha256: &str,
+    executed: Vec<ExecutedProfile>,
+) -> Result<Vec<ExecutedProfile>, CliError> {
+    // Retained aliases form one shared inventory, so publish them serially
+    // after every compiler has finished and before admitting any manifest.
     for profile in &executed {
         retain_profile_generated_sources(root, &profile.receipt)?;
         fs::write(
@@ -477,19 +480,7 @@ fn compile_default_profiles(
                 sdk_docs::rustdoc_profiles::LockSelection::SourceAdjacent(&selected_lock),
             ),
         };
-        let Some(target) = package.targets.iter().find(|target| {
-            target.kind.iter().any(|kind| {
-                matches!(
-                    kind,
-                    TargetKind::ProcMacro
-                        | TargetKind::Lib
-                        | TargetKind::RLib
-                        | TargetKind::CDyLib
-                        | TargetKind::StaticLib
-                        | TargetKind::DyLib
-                )
-            })
-        }) else {
+        let Some(target) = library_target(package) else {
             for target in package
                 .targets
                 .iter()
