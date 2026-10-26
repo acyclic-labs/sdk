@@ -1,4 +1,4 @@
-use super::{Error, NativeProcessRequest, Result};
+use super::{Error, Result};
 use std::{collections::BTreeMap, path::Path};
 
 pub(super) fn validate(
@@ -40,7 +40,7 @@ pub(super) fn validate(
     Ok(())
 }
 
-/// Owned process input, shared by approved effects and task workspace commands.
+/// Owned process input of one shell command.
 #[doc(hidden)]
 pub struct Invocation {
     pub executable: std::path::PathBuf,
@@ -51,27 +51,8 @@ pub struct Invocation {
     pub timeout_ms: u32,
     pub control_timeout_ms: u32,
     pub maximum_output_bytes: usize,
-    pub mcp_stdio: Option<crate::mcp::stdio::McpStdioRequest>,
     pub standard_input: Option<Vec<u8>>,
     /// Owner custody that ties the process tree to this host and fences it
     /// on reopen; `None` spawns an ordinary owned tree.
     pub process_custody: Option<std::sync::Arc<acyclic_native_runtime::ProcessCustody>>,
-}
-
-impl From<&NativeProcessRequest> for Invocation {
-    fn from(request: &NativeProcessRequest) -> Self {
-        Self {
-            executable: request.executable.clone(),
-            argv: request.argv.clone(),
-            cwd: request.cwd.clone(),
-            environment: request.environment.clone(),
-            inherit_environment: false,
-            timeout_ms: request.timeout_ms,
-            control_timeout_ms: request.control_timeout_ms,
-            maximum_output_bytes: request.maximum_output_bytes as usize,
-            mcp_stdio: request.mcp_stdio.clone(),
-            standard_input: request.standard_input.clone(),
-            process_custody: None,
-        }
-    }
 }

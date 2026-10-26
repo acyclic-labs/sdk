@@ -19,12 +19,10 @@ pub(super) mod capture;
 mod child_progress_tests;
 pub(super) mod child_views;
 mod children;
-pub(in crate::local) mod diff;
 mod git;
 #[cfg(test)]
 #[cfg(all(unix, not(acyclic_harness_loom)))]
 mod git_mount_tests;
-mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
@@ -49,7 +47,8 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
+    /// The signed scope's authenticated expiry; a running command stops there.
+    expiry_unix_ms: u64,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -104,8 +103,9 @@ impl CheckoutTools {
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
-        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
+        verifier: &AuthorityVerifier,
     ) -> Result<Self> {
+        let expiry_unix_ms = verifier.expiry(signed)?.saturating_mul(1000);
         if workspace
             .filesystem
             .workspace_id(&project.storage_name(&mut None)?)
@@ -144,7 +144,7 @@ impl CheckoutTools {
             capture_policy,
             workspace,
             clock,
-            task_files,
+            expiry_unix_ms,
             state: shared,
             selected: false,
         })
@@ -183,10 +183,7 @@ impl CheckoutTools {
                 maximum,
             } = command;
             let result = serialized(&self.state, async |mut state| {
-                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                    Error::Unauthorized("checkout command has no execution owner".into())
-                })?;
-                owner.verify_owner(None)?.await?;
+                let owner = context.task();
                 let workspace = self.selected_workspace(&mut state, owner).await?;
                 let view = state
                     .active
@@ -198,11 +195,7 @@ impl CheckoutTools {
                     invocation.name == "fs",
                 )
                 .await?;
-                if reconciliation::recover(&workspace, view, &|| async {
-                    owner.verify_owner(None)?.await
-                })
-                .await?
-                {
+                if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
                     state.watcher = None;
                 }
                 workspace::volumes::sync(&state.mounts).await?;
@@ -256,17 +249,11 @@ impl CheckoutTools {
                 invocation.operation_id,
                 0,
                 PublicationPermit::Unrestricted,
-                Some((
-                    context.task().ordinary_journal_owner::<LocalStream>()?,
-                    false,
-                )),
             )?
             .await?;
             let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
-            let files =
-                output::Output::open(context, Arc::clone(&self.task_files), request).await?;
+            let files = output::Output::open(context, request).await?;
             let mounts = Arc::clone(&state.mounts);
-            let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
             let (result, mut state, mut files) =
                 workspace::volumes::native_scope(&mounts, async |claims| {
                     let (result, state, files, claims) =
@@ -279,8 +266,6 @@ impl CheckoutTools {
                     }) {
                         return Err(Error::Indeterminate(invocation.operation_id));
                     }
-                    // Verify the journal owner before the scope publishes.
-                    publication.verify(true, &mut None).await?;
                     Ok(((result, state, files), claims))
                 })
                 .await?;
@@ -294,10 +279,8 @@ impl CheckoutTools {
                 invocation.operation_id,
                 1,
                 PublicationPermit::Unrestricted,
-                Some((Arc::clone(&publication), true)),
             )?
             .await?;
-            publication.verify(true, &mut None).await?;
             if let Ok(result) = &result {
                 files.finish(result).await?;
             }
@@ -307,25 +290,6 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
-    fn run_hooks<'a>(
-        &'a self,
-        configuration: (&'a crate::hooks::Hooks, [u8; 32]),
-        event: crate::hooks::HookEvent,
-        input: crate::hooks::HookInput<'a>,
-        registry: &'a ToolRegistry,
-        context: ToolContext,
-        reconcile_only: bool,
-    ) -> BoxProviderFuture<'a, Result<Option<crate::hooks::HookOutput>>> {
-        Box::pin(self.configured_hooks(
-            configuration,
-            event,
-            input,
-            registry,
-            context,
-            reconcile_only,
-        ))
-    }
-
     fn authorize(
         &self,
         _scope: Option<&RuntimeScope>,

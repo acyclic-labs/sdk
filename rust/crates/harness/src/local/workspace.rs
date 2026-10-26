@@ -84,6 +84,8 @@ pub struct LocalWorkspace {
     /// Custody of this owner's tool process trees; absent in an embedded
     /// binding, whose state directory has no exclusive owner to fence it.
     pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
+    /// Diff baselines of the workspaces this owner selected, shared with the
+    /// views it derives.
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
     #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -291,7 +293,7 @@ impl LocalWorkspace {
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
-        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
+        verifier: &crate::core::AuthorityVerifier,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
             super::checkout_tools::CheckoutTools::new(
@@ -299,7 +301,7 @@ impl LocalWorkspace {
                 project,
                 clock,
                 signed,
-                task_files,
+                verifier,
             )
             .await?,
         ))

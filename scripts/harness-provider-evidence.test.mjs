@@ -161,21 +161,10 @@ test("one executable scenario may assert multiple independently named contracts"
 });
 
 import { createHash } from "node:crypto";
-import { verifyNativeConsumerTranscript, verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
+import { verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
 const sourceRevision = "a".repeat(40);
-const packageDigests = new Map(["acyclic-harness.tgz", "CONFORMANCE-EVIDENCE.json", "NATIVE-CONSUMER.log"].map(name => [name, createHash("sha256").update(name).digest("hex")]));
+const packageDigests = new Map(["acyclic-harness.tgz", "CONFORMANCE-EVIDENCE.json"].map(name => [name, createHash("sha256").update(name).digest("hex")]));
 const packageChecksums = [...packageDigests].map(([name, digest]) => `${digest}  ${name}`).join("\n") + "\n";
-const nativeConsumerTranscript = "approved native execution, SDK publication and receipt-only recovery passed\n";
-
-test("native consumer requires one exact successful terminal marker", () => {
-  for (const valid of [nativeConsumerTranscript, `Running archived consumer\r\n${nativeConsumerTranscript.replace(/\n/g, "\r\n")}`]) {
-    verifyNativeConsumerTranscript(valid);
-  }
-  for (const invalid of ["", "native consumer FAILED\n", `documentation: ${nativeConsumerTranscript}`,
-    nativeConsumerTranscript.repeat(2), `${nativeConsumerTranscript}fatal runtime error\n`]) {
-    assert.throws(() => verifyNativeConsumerTranscript(invalid), /native consumer/);
-  }
-});
 
 test("package provenance binds source and every consumed archive/evidence digest", () => {
   verifyPackageProvenance(sourceRevision + "\n", packageChecksums, sourceRevision, packageDigests);
@@ -309,10 +298,7 @@ test("runner rejects stale source and substituted package inputs before qualific
     });
     writeFileSync(join(directory, archiveName), archive);
     writeFileSync(join(directory, "CONFORMANCE-EVIDENCE.json"), evidenceBytes);
-    const nativeConsumerPath = join(directory, "NATIVE-CONSUMER.log");
-    writeFileSync(nativeConsumerPath, nativeConsumerTranscript);
-    const checksums = native => `${digest(archive)}  ${archiveName}\n${digest(evidenceBytes)}  CONFORMANCE-EVIDENCE.json\n${digest(native)}  NATIVE-CONSUMER.log\n`;
-    writeFileSync(join(directory, "SHA256SUMS"), checksums(nativeConsumerTranscript));
+    writeFileSync(join(directory, "SHA256SUMS"), `${digest(archive)}  ${archiveName}\n${digest(evidenceBytes)}  CONFORMANCE-EVIDENCE.json\n`);
     const report = join(directory, "runner-report.json");
     const receipt = join(directory, "qualification-receipt.json");
     const reject = pattern => {
@@ -331,16 +317,6 @@ test("runner rejects stale source and substituted package inputs before qualific
     writeFileSync(join(directory, "CONFORMANCE-EVIDENCE.json"), evidenceBytes + "\n");
     reject(/package checksum does not match CONFORMANCE-EVIDENCE.json/);
     writeFileSync(join(directory, "CONFORMANCE-EVIDENCE.json"), evidenceBytes);
-    rmSync(nativeConsumerPath);
-    reject(/NATIVE-CONSUMER\.log/);
-    for (const invalid of ["native consumer FAILED\n", nativeConsumerTranscript.repeat(2)]) {
-      writeFileSync(nativeConsumerPath, invalid);
-      writeFileSync(join(directory, "SHA256SUMS"), checksums(invalid));
-      reject(/native consumer did not complete exactly once/);
-    }
-    writeFileSync(nativeConsumerPath, `substituted header\n${nativeConsumerTranscript}`);
-    writeFileSync(join(directory, "SHA256SUMS"), checksums(nativeConsumerTranscript));
-    reject(/package checksum does not match NATIVE-CONSUMER.log/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

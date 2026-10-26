@@ -30,7 +30,6 @@ impl CheckoutTools {
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             maximum_output_bytes: maximum_output,
             standard_input: None,
-            mcp_stdio: None,
             process_custody: workspace.processes.clone(),
         };
         let invocation = native_process::shell::prepare(
@@ -39,15 +38,15 @@ impl CheckoutTools {
             invocation,
             self.clock.now_unix_millis() / 1000,
         )?;
-        let check_owner = Arc::clone(&files.owner);
-        let control = native_process::capture::OwnerControl::open(Arc::clone(&check_owner)).await?;
+        let control = native_process::capture::OwnerControl::open(self.expiry_unix_ms)?;
+        // A dropped turn stops its command; the worker still reaps the tree.
+        let _stop = StopOnDrop(control.clone());
         let wake = control.wake();
         files
             .health
             .wake_on_failure(wake.clone())
             .map_err(storage)?;
         let output_health = files.health.clone();
-        let runtime = tokio::runtime::Handle::current();
         let (output, (state, files, claims)) = native_process::capture::capture_with_custody(
             invocation,
             |(_, files, _): &mut (
@@ -67,16 +66,7 @@ impl CheckoutTools {
                         "checkout root was replaced",
                     ));
                 }
-                // Completes when the journal confirms the fence or reports
-                // it lost; no wall-clock deadline applies.
-                control.check(|| {
-                    output::await_fence(&runtime, || async {
-                        check_owner
-                            .verify(false, &mut None)
-                            .await
-                            .map_err(native_process::capture::control_error)
-                    })
-                })
+                control.check()
             },
             (state, files, claims),
             Some(wake),
@@ -93,6 +83,14 @@ impl CheckoutTools {
                 }),
             });
         Ok((result, state, files, claims))
+    }
+}
+
+struct StopOnDrop(native_process::capture::OwnerControl);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.stop();
     }
 }
 

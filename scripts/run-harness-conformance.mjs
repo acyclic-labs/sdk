@@ -1,4 +1,4 @@
-import { verifyNativeConsumerTranscript, verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
+import { verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
 import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -80,9 +80,6 @@ const artifactEvidence = artifacts.map(name => ({
 }));
 const packageDigests = new Map(artifactEvidence.map(item => [item.name, item.sha256]));
 packageDigests.set("CONFORMANCE-EVIDENCE.json", sha256(evidenceBytes));
-const nativeConsumerBytes = readFileSync(resolve(artifactDirectory, "NATIVE-CONSUMER.log"));
-verifyNativeConsumerTranscript(nativeConsumerBytes.toString("utf8"));
-packageDigests.set("NATIVE-CONSUMER.log", sha256(nativeConsumerBytes));
 const packageSource = readFileSync(resolve(artifactDirectory, "SOURCE_COMMIT"), "utf8");
 const packageChecksums = readFileSync(resolve(artifactDirectory, "SHA256SUMS"), "utf8");
 verifyPackageProvenance(packageSource, packageChecksums, sourceRevision, packageDigests);

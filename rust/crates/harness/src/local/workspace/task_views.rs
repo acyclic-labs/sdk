@@ -43,7 +43,7 @@ impl LocalWorkspace {
         &self,
         task: TaskId,
         view: &workspace::View,
-        owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
+        owner: &dyn super::owner::ViewOwner,
     ) -> Result<workspace::View> {
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -52,7 +52,7 @@ impl LocalWorkspace {
             work: &work,
             cancellation: &cancellation,
         };
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         let name = format!("task-{task}");
         // Reopening a task retains its original fork even if the
         // parent's selected branch changed after child admission.
@@ -99,7 +99,7 @@ impl LocalWorkspace {
             )
             .await
             .map_err(storage)?;
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         Ok(view)
     }
 

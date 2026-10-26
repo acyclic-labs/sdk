@@ -104,7 +104,7 @@ pub use native_execution::{
 #[doc(hidden)]
 pub mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessObserver, NativeProcessProvider};
+pub use native_process::NativeProcessObserver;
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(all(

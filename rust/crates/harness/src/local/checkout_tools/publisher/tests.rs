@@ -18,7 +18,6 @@ struct Fixture {
     project: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     workspace: Option<Arc<LocalWorkspace>>,
     _state: tempfile::TempDir,
 }
@@ -121,21 +120,13 @@ async fn open_fixture(
         Some(agent),
         &mut None,
     )?;
-    let stream = Arc::new(
-        LocalStream::open(state.path().join("stream"), Default::default())
-            .await
-            .map_err(storage)?,
-    );
-    let task_files = Arc::new(
-        crate::task_volume::TaskFiles::open(stream, &private, &verifier, &signed, 65536).await?,
-    );
     let tools = Arc::new(
         CheckoutTools::new(
             workspace.clone(),
             &project,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &signed,
-            task_files.clone(),
+            &verifier,
         )
         .await?,
     );
@@ -147,7 +138,6 @@ async fn open_fixture(
             project,
             verifier,
             signed,
-            task_files,
             workspace: Some(workspace),
             _state: state,
         },
@@ -232,7 +222,7 @@ async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> 
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
-        Arc::clone(&harness.task_files),
+        &harness.verifier,
     )
     .await?;
     assert_eq!(
@@ -469,7 +459,6 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
                 operation,
                 1,
                 PublicationPermit::Unrestricted,
-                None,
             )?
             .await?;
         assert!(
@@ -663,7 +652,6 @@ fn checkout_publication_preserves_caller_ceilings() {
                                     OperationId::new(),
                                     0,
                                     PublicationPermit::Unrestricted,
-                                    None,
                                 )?
                                 .await?;
                             let host = harness
@@ -1112,7 +1100,7 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
-        Arc::clone(&harness.task_files),
+        &harness.verifier,
     )
     .await?;
     assert_eq!(

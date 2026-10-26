@@ -52,7 +52,7 @@ async fn a_child_command_runs_while_its_parent_command_holds_the_checkout() -> R
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
-        Arc::clone(&harness.task_files),
+        &harness.verifier,
     )
     .await?;
     let operation = OperationId::new();

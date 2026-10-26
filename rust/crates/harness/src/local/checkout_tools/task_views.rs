@@ -4,17 +4,6 @@ use acyclic_fs::{
     CancellationToken, LazyWorkspaceStore as _, WorkBudget, kernel::KernelAccounting,
 };
 
-#[cfg(test)]
-pub(super) async fn with_mount_owner<T>(
-    owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
-    mount: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    owner.verify_owner(None)?.await?;
-    let mounted = mount.await?;
-    owner.verify_owner(None)?.await?;
-    Ok(mounted)
-}
-
 impl CheckoutTools {
     pub(super) async fn select(
         &self,
@@ -159,7 +148,7 @@ impl CheckoutTools {
             capture_options,
             capture_policy,
             clock: Arc::clone(&self.clock),
-            task_files: Arc::clone(&self.task_files),
+            expiry_unix_ms: self.expiry_unix_ms,
             state: StateArc::clone(&workspace.state),
             selected: true,
         })

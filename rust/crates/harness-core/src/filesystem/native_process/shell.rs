@@ -92,7 +92,6 @@ pub fn prepare<T>(
         .chain([command])
         .collect();
     invocation.standard_input = standard_input;
-    invocation.mcp_stdio = None;
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,

@@ -213,7 +213,6 @@ case "$lane" in
         --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate
     nextest --workspace --all-features --locked
-    cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
   mount-exclusion)
     bash scripts/fuzz-mount-exclusion.sh -runs=64 -max_len=4096 -timeout=2

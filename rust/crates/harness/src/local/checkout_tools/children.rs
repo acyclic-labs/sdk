@@ -37,12 +37,6 @@ impl CheckoutTools {
                 .await?;
             tools.read_grant = project.capability(VolumeOperation::Read, &mut None)?;
             tools.write_grant = project.capability(VolumeOperation::Write, &mut None)?;
-            tools.task_files = Arc::new(
-                self.task_files
-                    .for_created_task(context.task(), context.effective_scope())
-                    .await?
-                    .ok_or_else(|| Error::Unauthorized("child private files are absent".into()))?,
-            );
             owner.verify_owner(None)?.await?;
             Ok(tools)
         };

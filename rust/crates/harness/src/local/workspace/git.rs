@@ -273,7 +273,6 @@ impl Commands<'_> {
                 watcher,
                 (context.operation, 0),
                 lease.publication_permit(),
-                context.owner.journal()?.map(|journal| (journal, false)),
             )
             .await?;
         }

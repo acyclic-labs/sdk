@@ -128,10 +128,9 @@ impl CheckoutPublisher {
                 } else if mount.view.source.is_none()
                     && matches!(&publication, Publication::Replace(_))
                 {
-                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None)?.await?;
+                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
                 }
             }
-            self.tools.retain_diff_base(workspace, false).await?;
             let file = match publication {
                 Publication::Once { media, display, .. } => {
                     writer.stage_once(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0

@@ -117,6 +117,10 @@ pub use meter::{
 };
 mod wake;
 pub use wake::NativeWake;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+mod wall_alarm;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub use wall_alarm::{AlarmCallback, WallAlarm};
 mod blocking;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "testing/resources.rs"]

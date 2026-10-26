@@ -149,9 +149,6 @@ cd "$work/crates"
 "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   --target-dir "$cargo_package_target" \
   -- --test-threads="${RUST_TEST_THREADS:-1}" 2>&1 | tee "$work/rust-package-test.log"
-"$cargo_bin" run --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
-  --target-dir "$cargo_package_target" \
-  --example approved-native-process 2>&1 | tee "$work/rust-native-consumer.log"
 
 mkdir -p "$output"
 install -m 0644 "$archive" "$output/"
@@ -159,7 +156,6 @@ for name in "${dependency_names[@]}"; do
   install -m 0644 "$package_target/package/$name-$harness_version.crate" "$output/"
 done
 install -m 0644 "$harness_crate" "$output/"
-install -m 0644 "$work/rust-native-consumer.log" "$output/NATIVE-CONSUMER.log"
 cmp --silent "$archive" "$output/acyclic-harness.tgz"
 for name in "${dependency_names[@]}"; do
   cmp --silent "$package_target/package/$name-$harness_version.crate" "$output/$name-$harness_version.crate"
@@ -192,5 +188,5 @@ repeat_evidence_arg="$repeat_evidence"
 bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence_arg" "${evidence_artifacts[@]}"
 cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"
 cd "$output"
-sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json NATIVE-CONSUMER.log > SHA256SUMS
+sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json > SHA256SUMS
 printf '%s\n' "$source_sha" > SOURCE_COMMIT

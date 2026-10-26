@@ -10,10 +10,6 @@ pub(in crate::local) trait ViewOwner: Send + Sync {
     fn verify(&self) -> BoxProviderFuture<'_, Result<()>>;
     /// Identity of `operation`'s publication window under this owner.
     fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId;
-    /// Journal recording this owner's captures, when it has one.
-    fn journal(&self) -> Result<Option<Arc<crate::durable_host::TaskJournalOwner<LocalStream>>>> {
-        Ok(None)
-    }
 }
 
 fn identity(domain: &str, fields: &[&[u8]]) -> acyclic_fs::OperationLeaseId {
@@ -55,28 +51,16 @@ pub(super) fn lease_identity(
     acyclic_fs::OperationLeaseId::from_bytes(identity)
 }
 
+/// A tool call of an agent turn. The turn's actor commit is its single
+/// writer, so the call itself carries no lease to verify.
 impl ViewOwner for TaskContext {
     fn verify(&self) -> BoxProviderFuture<'_, Result<()>> {
-        Box::pin(async move { task_owner(self)?.verify().await })
+        Box::pin(std::future::ready(Ok(())))
     }
 
     fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
-        self.owned_mailbox.as_ref().map_or_else(
-            || identity("acyclic.local.git-task/v1", &[&operation.into_bytes()]),
-            |owner| owner.lease(operation),
-        )
+        identity("acyclic.local.git-task/v1", &[&operation.into_bytes()])
     }
-
-    fn journal(&self) -> Result<Option<Arc<crate::durable_host::TaskJournalOwner<LocalStream>>>> {
-        self.ordinary_journal_owner::<LocalStream>().map(Some)
-    }
-}
-
-fn task_owner(context: &TaskContext) -> Result<&Arc<dyn OwnedTaskMailbox>> {
-    context
-        .owned_mailbox
-        .as_ref()
-        .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))
 }
 
 /// An agent of this process's native-host runtime. The runtime's exclusive

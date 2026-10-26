@@ -806,6 +806,12 @@ impl AuthorityVerifier {
         self.verify_scope_for_with_work(&self.audience, scope, work)
     }
 
+    /// Verifies `scope` for this audience and returns its authenticated
+    /// expiry in Unix seconds, the bound a command acting under it stops at.
+    pub fn expiry(&self, scope: &Scope) -> Result<u64> {
+        self.scope_expiry(&self.audience, scope, &mut None)
+    }
+
     /// Rebinds only the authenticated audience, retaining this original key.
     pub(crate) fn verify_scope_for_with_work(
         &self,

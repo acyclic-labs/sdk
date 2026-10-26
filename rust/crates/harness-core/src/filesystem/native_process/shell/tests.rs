@@ -90,7 +90,6 @@ fn invocation(root: &Path) -> Invocation {
         timeout_ms: 300_000,
         control_timeout_ms: 1000,
         maximum_output_bytes: 32_768,
-        mcp_stdio: None,
         process_custody: None,
         standard_input: None,
     }
@@ -228,8 +227,9 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
     broken.environment = mounts.environment()?;
     broken.environment.insert("HOME".into(), home.into());
     assert!(
-        !capture::capture_checked(broken, None, || Ok(()), None)
+        !capture::capture_with_custody(broken, |(), _| Ok(()), || Ok(()), (), None)
             .await?
+            .0
             .unwrap()
             .success
     );

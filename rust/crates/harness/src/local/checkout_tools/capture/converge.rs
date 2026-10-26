@@ -52,7 +52,6 @@ impl Cursor {
                 if !optional_before_images || !unreadable {
                     return Err(storage(failure));
                 }
-                self.unreadable_diff_source = true;
             }
             #[cfg(all(test, not(acyclic_harness_loom)))]
             self.inject("baseline")?;

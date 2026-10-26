@@ -1,25 +1,18 @@
-//! Tool output is replayable task files, published under the current task fence.
+//! Tool output is staged on the agent's private volume while the command runs.
 use super::*;
-use crate::{durable_host::TaskJournalOwner, task_volume::TaskFiles};
 use acyclic_native_runtime::ProcessOutput;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, oneshot};
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
-mod tests;
 mod writer;
 
-/// The native contract's bound on one host control check. Checkout checks
-/// never apply it as a wall-clock deadline: each completes when the journal
-/// answers or the task fence is lost, so host load can delay a successful
-/// command but never fail it.
+/// The native contract's bound on one host control check.
 pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
 const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Waits, from a native capture worker, for a fenced journal step: an output
-/// publication or an owner check. It completes when the journal answers or
-/// reports the fence lost, never on a wall-clock deadline.
-pub(super) fn await_fence<T, F: std::future::Future<Output = std::io::Result<T>>>(
+/// Waits, from a native capture worker, for one output publication. It
+/// completes when the volume answers, never on a wall-clock deadline.
+pub(super) fn await_publication<T, F: std::future::Future<Output = std::io::Result<T>>>(
     runtime: &tokio::runtime::Handle,
     step: impl FnOnce() -> F,
 ) -> std::io::Result<T> {
@@ -27,7 +20,6 @@ pub(super) fn await_fence<T, F: std::future::Future<Output = std::io::Result<T>>
 }
 
 pub(super) struct Output {
-    pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
     writer: Arc<Mutex<writer::Writer>>,
     ready: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
@@ -92,13 +84,8 @@ impl Health {
 }
 
 impl Output {
-    pub(super) async fn open(
-        context: &ToolContext,
-        volume: Arc<TaskFiles<LocalStream>>,
-        request: Vec<u8>,
-    ) -> Result<Self> {
-        let writer = writer::Writer::open(context, volume, request).await?;
-        let owner = Arc::clone(&writer.owner);
+    pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
+        let writer = writer::Writer::open(context, request).await?;
         let writer = Arc::new(Mutex::new(writer));
         let ready = Arc::new(Notify::new());
         let health = Health::default();
@@ -110,7 +97,6 @@ impl Output {
             stopped,
         ));
         Ok(Self {
-            owner,
             writer,
             ready,
             stop: Some(stop),
@@ -166,7 +152,7 @@ impl Drop for Output {
         let writer = Arc::clone(&self.writer);
         // Capture owns Output until the physical worker has drained and reaped
         // its process tree. If the awaiting caller disappears, that worker's
-        // final drop still settles the accepted bytes under the original fence.
+        // final drop still stages the accepted bytes.
         self.runtime.spawn(async move {
             if let Some(timer) = timer
                 && let Err(cause) = timer.await
@@ -175,8 +161,8 @@ impl Drop for Output {
             }
             let mut writer = writer.lock().await;
             let result = async {
-                writer.flush(false, true).await?;
-                writer.flush(true, true).await
+                writer.flush(false).await?;
+                writer.flush(true).await
             }
             .await;
             if let Err(cause) = result {
@@ -208,8 +194,8 @@ async fn flush_ready(
         }
         let mut writer = writer.lock().await;
         let result = async {
-            writer.flush(false, false).await?;
-            writer.flush(true, false).await
+            writer.flush(false).await?;
+            writer.flush(true).await
         }
         .await;
         if let Err(cause) = result {

@@ -79,8 +79,8 @@ impl LocalHarness {
             workspace.as_ref(),
             volume,
             config.clock.clone(),
-            &task_files,
             signed,
+            verifier,
         )
         .await?;
         #[cfg(any(test, feature = "native-execution"))]
@@ -303,8 +303,8 @@ async fn checkout_runtime(
     workspace: Option<&Arc<workspace::LocalWorkspace>>,
     volume: &VolumeRef,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    task_files: &Arc<crate::task_volume::TaskFiles<LocalStream>>,
     signed: &Scope,
+    verifier: &AuthorityVerifier,
 ) -> Result<LocalTaskRuntime> {
     Ok(if let Some(workspace) = workspace {
         runtime.with_workspace_tools(Arc::new(
@@ -313,7 +313,7 @@ async fn checkout_runtime(
                 volume,
                 clock,
                 signed,
-                Arc::clone(task_files),
+                verifier,
             )
             .await?,
         ))?

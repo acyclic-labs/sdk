@@ -1,72 +1,39 @@
-//! Targeted journal changes wake the retained native worker, including after
-//! the future awaiting that worker has been dropped.
+//! Stops a running command when its signed scope expires or its caller goes
+//! away. Expiry is an absolute wall-clock alarm shared by every command, so a
+//! quiet command needs no timer, poll or journal change of its own.
 use super::*;
-use acyclic_native_runtime::ProcessWake;
-use std::sync::{
-    Condvar, Mutex, OnceLock, Weak,
-    atomic::{AtomicBool, Ordering},
-};
-#[cfg(test)]
-mod tests;
+use acyclic_native_runtime::{ProcessWake, WallAlarm};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct State {
-    dirty: AtomicBool,
-    signals: crate::durable_host::OwnerSignals,
-    gate: Mutex<Gate>,
-    checked: Condvar,
     wake: ProcessWake,
-    driver: OnceLock<tokio::task::AbortHandle>,
+    stopped: Arc<AtomicBool>,
+    expiry_unix_ms: u64,
+    _alarm: WallAlarm,
 }
 
-#[derive(Default)]
-struct Gate {
-    failure: Option<String>,
-    checking: bool,
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        if let Some(driver) = self.driver.get() {
-            driver.abort();
-        }
-    }
-}
-
-/// One running command's authenticated ownership-change control.
+/// One running command's stop control. The native worker retains a clone
+/// through reaping, even if its awaiting task exits.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct OwnerControl(Arc<State>);
 
 impl OwnerControl {
-    /// Subscribes before initial physical dispatch verification. The worker
-    /// retains this control through reaping, even if its awaiting task exits.
-    pub async fn open<P: StreamProvider + 'static>(
-        owner: Arc<TaskJournalOwner<P>>,
-    ) -> Result<Self> {
-        let mut changes = owner.owner_changes().await?;
-        let state = Arc::new(State {
-            dirty: AtomicBool::new(true),
-            signals: changes.signals(),
-            gate: Mutex::new(Gate::default()),
-            checked: Condvar::new(),
-            wake: ProcessWake::new().map_err(io_error)?,
-            driver: OnceLock::new(),
-        });
-        let active = Arc::downgrade(&state);
-        let driver = tokio::spawn(async move {
-            loop {
-                let result = match changes.changed().await {
-                    Ok(()) => owner.verify(false, &mut None).await,
-                    Err(cause) => Err(cause),
-                };
-                let failed = result.is_err();
-                if !publish(&active, result) || failed {
-                    return;
-                }
-            }
-        });
-        let _ = state.driver.set(driver.abort_handle());
-        Ok(Self(state))
+    /// Arms the stop for `expiry_unix_ms`, the command's signed-scope expiry.
+    pub fn open(expiry_unix_ms: u64) -> Result<Self> {
+        let wake = ProcessWake::new().map_err(storage)?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let alarm = WallAlarm::register(expiry_unix_ms, {
+            let (wake, stopped) = (wake.clone(), Arc::clone(&stopped));
+            Arc::new(move || stop(&wake, &stopped))
+        })
+        .map_err(storage)?;
+        Ok(Self(Arc::new(State {
+            wake,
+            stopped,
+            expiry_unix_ms,
+            _alarm: alarm,
+        })))
     }
 
     /// Signal passed to the kernel readiness wait owned by the native worker.
@@ -75,100 +42,78 @@ impl OwnerControl {
         self.0.wake.clone()
     }
 
-    /// Reauthenticates once at dispatch and after each relevant change. The
-    /// flag is cleared before verification so a concurrent change stays dirty.
-    pub fn check(&self, verify: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
-        // A resumed worker or a just-cancelled invocation must not use a
-        // cached authorization before its asynchronous driver gets a turn.
-        if self.0.signals.needs_verification() {
-            self.0.dirty.store(true, Ordering::Release);
+    /// Stops the command, as when the turn awaiting it is dropped.
+    pub fn stop(&self) {
+        stop(&self.0.wake, &self.0.stopped);
+    }
+
+    /// Fails once the command was stopped or its scope expired. The clock is
+    /// read here too, so a dispatch after expiry cannot race the alarm.
+    pub fn check(&self) -> std::io::Result<()> {
+        if self.0.stopped.load(Ordering::Acquire) {
+            return Err(control_error("native command was stopped"));
         }
-        let mut gate = self
-            .0
-            .gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            if let Some(cause) = &gate.failure {
-                return Err(control_error(cause.clone()));
-            }
-            if !gate.checking {
-                break;
-            }
-            gate = self
-                .0
-                .checked
-                .wait(gate)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            });
+        if now >= self.0.expiry_unix_ms {
+            self.stop();
+            return Err(control_error("native command scope expired"));
         }
-        if !self.0.dirty.swap(false, Ordering::AcqRel) {
-            return Ok(());
-        }
-        gate.checking = true;
-        // No runtime task waits on this gate while the native worker drives
-        // its asynchronous verification. Concurrent hooks wait on the worker.
-        drop(gate);
-        let verified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(verify));
-        let mut gate = self
-            .0
-            .gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        gate.checking = false;
-        match &verified {
-            Ok(Err(cause)) => {
-                gate.failure.get_or_insert_with(|| cause.to_string());
-            }
-            Err(_) => {
-                gate.failure
-                    .get_or_insert_with(|| "owner verification panicked".into());
-            }
-            Ok(Ok(())) => {}
-        }
-        let failure = gate.failure.clone();
-        self.0.checked.notify_all();
-        drop(gate);
-        if failure.is_some() {
-            let _ = self.0.wake.stop();
-        }
-        match verified {
-            Ok(Err(cause)) => Err(cause),
-            Ok(Ok(())) => failure.map_or(Ok(()), |cause| Err(control_error(cause))),
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
+        Ok(())
     }
 }
 
-fn publish(active: &Weak<State>, result: Result<()>) -> bool {
-    let Some(active) = active.upgrade() else {
-        return false;
-    };
-    let failed = result.is_err();
-    if let Err(cause) = result {
-        active
-            .gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failure
-            .get_or_insert_with(|| cause.to_string());
+fn stop(wake: &ProcessWake, stopped: &AtomicBool) {
+    stopped.store(true, Ordering::Release);
+    // A wake that cannot signal leaves the flag, which the next check of the
+    // worker observes.
+    let _ = wake.stop();
+}
+
+fn storage(error: std::io::Error) -> Error {
+    Error::Storage(format!("native command control: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_unix_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
     }
-    active.dirty.store(true, Ordering::Release);
-    active.checked.notify_all();
-    // The signal stays owned by this same state; a full coalescing queue is
-    // already readable. Any unexpected OS failure is retained as control loss.
-    if let Err(cause) = if failed {
-        active.wake.stop()
-    } else {
-        active.wake.notify()
-    } {
-        active
-            .gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failure
-            .get_or_insert_with(|| cause.to_string());
-        active.checked.notify_all();
-        return false;
+
+    #[test]
+    fn signed_scope_expiry_wakes_a_quiet_owner_without_a_task_deadline() -> Result<()> {
+        let control = OwnerControl::open(now_unix_ms() + 50)?;
+        control.check().map_err(storage)?;
+        // Nothing checks or publishes: only the shared alarm can stop it.
+        let started = std::time::Instant::now();
+        while !control.0.stopped.load(Ordering::Acquire) {
+            assert!(
+                started.elapsed().as_secs() < 30,
+                "expiry never stopped the command"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(control.check().is_err());
+        Ok(())
     }
-    true
+
+    #[test]
+    fn an_expired_scope_refuses_dispatch_before_its_alarm_runs() -> Result<()> {
+        let control = OwnerControl::open(0)?;
+        let failure = control.check().err();
+        assert_eq!(
+            failure.map(|failure| failure.kind()),
+            Some(std::io::ErrorKind::Interrupted)
+        );
+        Ok(())
+    }
 }

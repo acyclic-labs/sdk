@@ -39,12 +39,6 @@ name = "native-process-approval"
 required-features = ["filesystem"]
 
 [[example]]
-name = "approved-native-process"
-required-features = ["native-execution", "test-support"]
-test = true
-harness = false
-
-[[example]]
 name = "custom_executor"
 required-features = ["test-support"]
 

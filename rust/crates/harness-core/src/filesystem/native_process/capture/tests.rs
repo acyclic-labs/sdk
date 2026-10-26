@@ -42,7 +42,6 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         control_timeout_ms: 1000,
         maximum_output_bytes: 32_768,
         standard_input: None,
-        mcp_stdio: None,
         process_custody: None,
     };
     let observer = Arc::new(move |_: acyclic_native_runtime::ProcessOutput<'_>| {
@@ -62,34 +61,17 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
             .map_err(std::io::Error::other)
         })
     });
-    let output = runtime.block_on(capture_checked(invocation, Some(observer), || Ok(()), None))?;
+    let (output, ()) = runtime.block_on(capture_with_custody(
+        invocation,
+        move |(), chunk| observer(chunk),
+        || Ok(()),
+        (),
+        None,
+    ))?;
     let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
     assert!(output.success, "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("captured"));
     assert!(observed.load(Ordering::SeqCst) > 0);
-    Ok(())
-}
-
-#[test]
-fn capture_owner_check_constructs_its_timer_on_the_runtime()
--> std::result::Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let handle = runtime.handle().clone();
-    let check = acyclic_native_runtime::run_blocking_io(
-        move || {
-            assert!(tokio::runtime::Handle::try_current().is_err());
-            check_on_runtime(&handle, Duration::from_millis(1000), async {
-                // Construct and await a real timer on the production owner-check path.
-                tokio::time::sleep(Duration::ZERO).await;
-                Ok(())
-            })
-        },
-        None,
-    )?;
-    runtime.block_on(check)??;
     Ok(())
 }
 
@@ -171,7 +153,6 @@ mod simulation {
                 timeout_ms: 1000,
                 control_timeout_ms: 1000,
                 maximum_output_bytes: 3,
-                mcp_stdio: None,
                 process_custody: None,
                 standard_input: None,
             };

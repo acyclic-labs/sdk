@@ -1,13 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 
-export function verifyNativeConsumerTranscript(transcript) {
-  const marker = "approved native execution, SDK publication and receipt-only recovery passed";
-  const lines = transcript.split(/\r?\n/).filter(line => line.length);
-  if (lines.at(-1) !== marker || lines.filter(line => line === marker).length !== 1) {
-    throw new Error("native consumer did not complete exactly once");
-  }
-}
-
 // Packaging owns these bytes. This checks their binding, not their authenticity.
 export function verifyPackageProvenance(sourceCommit, checksums, sourceRevision, files) {
   if (sourceCommit.trim() !== sourceRevision) throw new Error("package source does not match the conformance checkout");

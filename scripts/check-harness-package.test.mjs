@@ -34,7 +34,7 @@ test("stack check rejects both former stack enlargements", () => {
   }
 });
 
-test("packaged Harness tests and native consumer use the private target despite an inherited shared target", () => {
+test("packaged Harness tests use the private target despite an inherited shared target", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf('"$cargo_bin" test --manifest-path');
   const end = source.indexOf('mkdir -p "$output"', start);
@@ -64,13 +64,13 @@ cargo() {
     [[ "$*" == "test --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target -- --test-threads=16" ]]
     return ${status}
   fi
-  [[ "$*" == "run --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target --example approved-native-process" ]]
+  return 1
 }
 ${commands}
 `], { encoding: "utf8", timeout: 60_000, env: { ...process.env, SDK_TARGET_FIXTURE: directory.replaceAll("\\", "/") } });
       assert.ifError(result.error);
       assert.equal(result.status, status, result.stderr);
-      assert.equal(readFileSync(join(directory, "calls"), "utf8"), status ? "test\n" : "test\nrun\n");
+      assert.equal(readFileSync(join(directory, "calls"), "utf8"), "test\n");
     } finally {
       assert.ok(resolve(directory).startsWith(resolve(".tools") + sep));
       rmSync(directory, { recursive: true, force: true });

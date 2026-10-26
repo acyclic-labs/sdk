@@ -27,7 +27,6 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
-    unreadable_diff_source: bool,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     injection: Option<tests::Injection>,
 }
@@ -70,7 +69,6 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
-            unreadable_diff_source: false,
             #[cfg(all(test, not(acyclic_harness_loom)))]
             injection: None,
         })
@@ -94,10 +92,6 @@ impl CheckoutTools {
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
-        owner: Option<(
-            Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
-            bool,
-        )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             capture(
@@ -106,18 +100,8 @@ impl CheckoutTools {
                 slot,
                 (operation, phase),
                 permit,
-                owner,
             )
-            .await?;
-            if phase == 0 {
-                self.retain_diff_base(
-                    selected.1.workspace(),
-                    slot.as_ref()
-                        .is_some_and(|cursor| cursor.unreadable_diff_source),
-                )
-                .await?;
-            }
-            Ok(())
+            .await
         })
     }
     /// Records, before a file publication's physical write, that the write
@@ -164,31 +148,26 @@ impl CheckoutTools {
         })
     }
 }
-/// Captures native effects with the original task journal's publication fence.
+/// Captures native effects of `operation` into the selected workspace.
 pub(in crate::local) async fn capture(
     configuration: (&CaptureOptions, &CapturePolicy),
     selected: (&LocalWorkspace, &workspace::View),
     slot: &mut Option<Cursor>,
     operation: (OperationId, u8),
     permit: PublicationPermit,
-    owner: Option<(
-        Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
-        bool,
-    )>,
 ) -> Result<()> {
     let (physical, _) = selected;
     if let Some(mount) = &physical.mounted {
         mount
-            .sync_with_permit(permit, &mount.native_work()?, move |_| {
-                let owner = owner.clone();
-                async move { verify_owner(&owner).await }
+            .sync_with_permit(permit, &mount.native_work()?, |_| async {
+                Ok::<(), Error>(())
             })
             .await
             .map_err(|failure| failure.cause)?;
         return Ok(());
     }
     // Settle a file publication under its own operation before this capture.
-    let verify = || async { verify_owner(&owner).await };
+    let verify = || async { Ok(()) };
     finish_owed_write(configuration, selected, slot, permit, &verify).await?;
     record_changes(
         configuration,
@@ -202,17 +181,6 @@ pub(in crate::local) async fn capture(
     .await
 }
 
-async fn verify_owner(
-    owner: &Option<(
-        Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
-        bool,
-    )>,
-) -> Result<()> {
-    if let Some((owner, settlement)) = owner {
-        owner.verify(*settlement, &mut None).await?;
-    }
-    Ok(())
-}
 pub(in crate::local) async fn finish_owed_write<F, Fut>(
     configuration: (&CaptureOptions, &CapturePolicy),
     selected: (&LocalWorkspace, &workspace::View),

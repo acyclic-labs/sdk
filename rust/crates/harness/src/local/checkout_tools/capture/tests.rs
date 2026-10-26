@@ -64,7 +64,7 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
-        harness.task_files.clone(),
+        &harness.verifier,
     )
     .await?;
     Ok((directory, harness, tools))
@@ -155,7 +155,6 @@ async fn run(tools: &CheckoutTools, slot: &mut Option<Cursor>) -> Result<()> {
             OperationId::new(),
             0,
             PublicationPermit::Unrestricted,
-            None,
         )?
         .await
 }
@@ -511,7 +510,6 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
             OperationId::from_bytes([1; 16]),
             0,
             PublicationPermit::Unrestricted,
-            None,
         )
     });
     let owed = capture_operation_bytes(|(tools, selected, slot): Inputs| {
@@ -525,7 +523,6 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
             OperationId::from_bytes([1; 16]),
             1,
             PublicationPermit::Unrestricted,
-            None,
         )
     });
     eprintln!("capture retained bytes: [{capture}, {owed}, {changes}]");

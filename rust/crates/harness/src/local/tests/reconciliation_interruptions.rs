@@ -17,7 +17,7 @@ async fn capture(harness: &LocalHarness) -> Result<()> {
         harness.project(),
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
-        Arc::clone(harness.task_files()),
+        &harness.verifier,
     ))
     .await?;
     let mut state = super::super::workspace::lock_owned(super::super::workspace::StateArc::clone(
@@ -35,7 +35,6 @@ async fn capture(harness: &LocalHarness) -> Result<()> {
             OperationId::new(),
             0,
             acyclic_fs::PublicationPermit::Unrestricted,
-            None,
         )?
         .await
 }
@@ -278,7 +277,7 @@ async fn sweep(text: &str, partition: usize) -> Result<()> {
             harness.project(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &harness.signed,
-            Arc::clone(harness.task_files()),
+            &harness.verifier,
         ))
         .await?;
         assert_published(&harness, &expected).await?;

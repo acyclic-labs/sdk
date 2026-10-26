@@ -111,7 +111,7 @@ pub(super) async fn open(
                     config.project,
                     config.clock,
                     &signed,
-                    Arc::clone(&projection_files),
+                    config.verifier,
                 )
                 .await?,
             );

@@ -56,7 +56,7 @@ async fn child_view_projects_volumes_outside_itself() -> Result<()> {
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
-        Arc::clone(&harness.task_files),
+        &harness.verifier,
     )
     .await?;
     let operation = OperationId::new();
