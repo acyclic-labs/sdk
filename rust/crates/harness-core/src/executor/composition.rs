@@ -1,6 +1,12 @@
 use super::*;
 
 impl StockExecutor {
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
+        self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
+        self
+    }
+
     /// Creates the stock loop without installing hidden stages or tools.
     #[must_use]
     pub fn new(

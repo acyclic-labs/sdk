@@ -54,6 +54,21 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    pub(crate) fn append(&mut self, other: Self) {
+        self.bindings.extend(other.bindings);
+    }
+
+    /// Whether any command fires at a site the stock execution loop owns.
+    pub(crate) fn has_execution_hooks(&self) -> bool {
+        self.bindings.iter().any(|binding| {
+            let execution = match binding.event.site() {
+                HookSite::Prompt => false,
+                HookSite::BeforeTool | HookSite::AfterTool | HookSite::TurnEnd => true,
+            };
+            execution && !binding.commands.is_empty()
+        })
+    }
+
     /// Media type for normalized rules retained as a configuration file.
     pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.hooks+json";
 

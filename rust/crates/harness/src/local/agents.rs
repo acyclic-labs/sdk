@@ -112,7 +112,7 @@ impl TurnExecutors for Executors {
                     Arc::clone(effects),
                     Arc::clone(writer),
                     local.limits.file_bytes,
-                    local.max_children,
+                    (&local.agent_tools, local.max_children),
                 )?;
             }
             let executor = StockExecutor::new(

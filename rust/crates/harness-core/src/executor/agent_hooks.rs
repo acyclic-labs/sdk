@@ -107,14 +107,18 @@ impl StockExecutor {
         context: &Arc<TaskContext>,
         turn: OperationId,
     ) -> Result<std::result::Result<Option<Vec<String>>, String>> {
-        if bound.rules.commands(event, input, &self.tools)?.next().is_none() {
+        if bound
+            .rules
+            .commands(event, input, &self.tools)?
+            .next()
+            .is_none()
+        {
             return Ok(Ok(None));
         }
-        let executor = context
-            .harness
-            .workspace_tools
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("hook workspace execution is not bound".into()))?;
+        let executor =
+            context.harness.workspace_tools.as_ref().ok_or_else(|| {
+                Error::Unsupported("hook workspace execution is not bound".into())
+            })?;
         let issued = ToolContext::new(Arc::clone(context), turn, prompt_call(event))?;
         let mut output = executor
             .run_hooks(
@@ -164,6 +168,8 @@ async fn prompt_text(context: &TaskContext, prompt: &ModelContent) -> Result<Str
             _ => {}
         }
     }
-    Ok(text.join("
-"))
+    Ok(text.join(
+        "
+",
+    ))
 }

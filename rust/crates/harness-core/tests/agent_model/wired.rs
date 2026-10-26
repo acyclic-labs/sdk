@@ -534,7 +534,7 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
                 effects.clone(),
                 Arc::new(Writer(volume)),
                 1024,
-                limit,
+                (&acyclic_harness_core::tools::default_names(), limit),
             )?;
             let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
             let mut refused = Vec::new();

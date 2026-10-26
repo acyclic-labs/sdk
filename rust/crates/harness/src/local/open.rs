@@ -395,6 +395,13 @@ impl Opening {
             context_manifest: self.config.context_manifest,
             prompt: self.config.prompt,
             max_children: self.config.max_children,
+            agent_tools: self
+                .config
+                .default_tools
+                .iter()
+                .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
+                .cloned()
+                .collect(),
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
             #[cfg(test)]
