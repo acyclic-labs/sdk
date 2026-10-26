@@ -1,16 +1,20 @@
 import { expect, test } from "bun:test";
 import fc from "fast-check";
 import {
-  DEFAULT_LIMITS, ModelRegistry, initializeModelProviders,
-  type ModelEvent, type ModelProvider, type ModelRequest,
+  ModelRegistry, initializeModelProviders,
 } from "../src/index.js";
-import { prepareModelRequest } from "../generated/wasm/acyclic_harness_wasm.js";
+import {
+  prepareModelRequest, type PublicModelEvent as ModelEvent,
+  type WasmModelProvider as ModelProvider,
+} from "../generated/wasm/acyclic_harness_wasm.js";
+
+import { MODEL_TEST_LIMITS as limits } from "./support/model-limits.mjs";
 
 test("Rust model registry implements the public TS provider contract", async () => {
   await initializeModelProviders();
   let submitted: Record<string, unknown> | undefined;
   let headers: Headers | undefined;
-  const registry = new ModelRegistry({}, DEFAULT_LIMITS, async (url, init) => {
+  const registry = new ModelRegistry({}, limits, async (url, init) => {
     if (String(url).endsWith("/count_tokens")) return Response.json({ input_tokens: 10 });
     headers = new Headers(init?.headers);
     if (!(init?.body instanceof Uint8Array)) throw new Error("Rust fetch body must be bytes");
@@ -31,8 +35,8 @@ test("Rust model registry implements the public TS provider contract", async () 
   const selected = registry.resolve("ollama/fixture", { temperature: 0.1 });
   const provider: ModelProvider = selected;
   const model = selected.model;
-  const request: ModelRequest = { model, messages: [{ role: "user", content: "hello" }], tools: [] };
-  const admitted = { ...request, serializedInput: prepareModelRequest(request, DEFAULT_LIMITS) };
+  const request = { model, messages: [{ role: "user" as const, content: "hello" }], tools: [] };
+  const admitted = { ...request, serializedInput: prepareModelRequest(request, limits) };
   expect(provider.contextCapacity(model)).toEqual({ contextTokens: 4096, outputTokens: 512 });
   using prepared = await provider.prepare(admitted);
   const count = await prepared.countTokens();
@@ -64,7 +68,7 @@ test("Rust model registry implements the public TS provider contract", async () 
 test("generated alloy bindings use full-width durable turns and minimum capacity", async () => {
   await initializeModelProviders();
   fc.assert(fc.property(fc.array(fc.integer({min:1024,max:65536}), {minLength:2,maxLength:6}), fc.bigInt({min:0n,max:0xffff_ffff_ffff_ffffn}), (capacities, ordinal) => {
-    const registry = new ModelRegistry({}, DEFAULT_LIMITS, async () => { throw new Error("alloy resolution performed HTTP"); });
+    const registry = new ModelRegistry({}, limits, async () => { throw new Error("alloy resolution performed HTTP"); });
     registry.register("local", {
       adapter:"chat", authentication:"optional", base_url:"http://localhost/v1", max_event_bytes:4096,
       token_counter:{path:"count_tokens",adapter:"chat",response_field:"input_tokens",framing_tokens:0},

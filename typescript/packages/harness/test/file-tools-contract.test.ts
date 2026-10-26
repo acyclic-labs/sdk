@@ -1,17 +1,17 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
-import { DEFAULT_LIMITS } from "../src/index.js";
-import { NativeContracts } from "../src/native-contracts.js";
-import type { ToolDefinition } from "../src/model.js";
+import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmToolDefinitionInput } from "../generated/wasm/acyclic_harness_wasm.js";
+import { initializeModelProviders } from "../src/providers.js";
+import { MODEL_TEST_LIMITS as limits } from "./support/model-limits.mjs";
 
-const contracts = await NativeContracts.create();
+await initializeModelProviders();
 // Generated only by the native file-tools-contract executable. A missing file
 // fails this qualification instead of substituting a handwritten contract.
 const fixture = JSON.parse(await readFile(
   new URL("../../../../fixtures/harness/v2/file-tools-contract.json", import.meta.url), "utf8",
 ));
-type Definition = Pick<ToolDefinition,
-  "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">;
+type Definition = WasmToolDefinitionInput;
 const definitions = new Map<string, Definition>();
 
 test("native file-tool definitions retain their exact identities through WASM", () => {
@@ -20,9 +20,7 @@ test("native file-tool definitions retain their exact identities through WASM", 
     const definition = {
       name: wire.name, revision: wire.revision, description: wire.description,
       inputSchema: wire.input_schema, outputSchema: wire.output_schema,
-      projection: { schema: wire.projection_schema, project: () => {
-        throw new Error("this fixture validates Rust-produced projections only");
-      } },
+      projectionSchema: wire.projection_schema,
     };
     contracts.validateToolDefinition(definition);
     expect(Array.from(contracts.digestCanonicalJson(wire))).toEqual(entry.definition_digest);
@@ -45,9 +43,7 @@ function definition(variant: string): Definition {
   return {
     name: wire.name, revision: wire.revision, description: wire.description,
     inputSchema: wire.input_schema, outputSchema: wire.output_schema,
-    projection: { schema: wire.projection_schema, project: () => {
-        throw new Error("this fixture validates Rust-produced projections only");
-      } },
+    projectionSchema: wire.projection_schema,
   };
 }
 
@@ -61,11 +57,11 @@ test("native file results and Full/Reference projections pass actual WASM contra
       const tool = definition(`${prefix}_${mode}`);
       contracts.validateToolInvocation(tool, { callId: "contract-1", name: tool.name, arguments: value.input });
       contracts.validateToolResult(tool, { value: value.canonical });
-      contracts.validateToolProjection(tool, value[mode], DEFAULT_LIMITS);
+      contracts.validateToolProjection(tool, value[mode], limits);
       expect(() => contracts.validateToolInvocation(tool, {
         callId: "contract-1", name: tool.name, arguments: { ...value.input, unknown: true },
       })).toThrow();
-      expect(() => contracts.validateToolProjection(tool, value.canonical, DEFAULT_LIMITS)).toThrow();
+      expect(() => contracts.validateToolProjection(tool, value.canonical, limits)).toThrow();
     }
     expect(JSON.stringify(value.canonical)).toBe(canonical);
     expect(value.reference.parts[1].file).toEqual(fixture.source.file);
@@ -74,7 +70,7 @@ test("native file results and Full/Reference projections pass actual WASM contra
   for (const mode of ["full", "reference"]) {
     const tool = definition(`write_${mode}`);
     contracts.validateToolResult(tool, { value: fixture.file_result.canonical });
-    contracts.validateToolProjection(tool, fixture.file_result[mode], DEFAULT_LIMITS);
+    contracts.validateToolProjection(tool, fixture.file_result[mode], limits);
     expect(() => contracts.validateToolResult(tool, { value: { file: {} } })).toThrow();
   }
   expect(definition("range_read_full")).toMatchObject({
@@ -84,5 +80,5 @@ test("native file results and Full/Reference projections pass actual WASM contra
   });
   const wrongReference = structuredClone(fixture.range_read.reference);
   wrongReference.parts[1].policy = "bounded_full";
-  expect(() => contracts.validateToolProjection(definition("range_read_reference"), wrongReference, DEFAULT_LIMITS)).toThrow();
+  expect(() => contracts.validateToolProjection(definition("range_read_reference"), wrongReference, limits)).toThrow();
 });

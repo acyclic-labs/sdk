@@ -6,6 +6,5 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"],
-  "references": [{ "path": "../objects" }]
+  "include": ["src/**/*.ts"]
 }

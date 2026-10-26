@@ -5,12 +5,13 @@
 <body>
 <pre id="result" data-status="pending">Loading generated Rust contracts</pre>
 <script type="module">
-import { NativeContracts } from "../dist/native-contracts.js";
-import { HARNESS_LIMITS_DEFAULT } from "../dist/limits-contract.js";
+import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
+import { initializeModelProviders } from "../dist/providers.js";
+import { MODEL_TEST_LIMITS as limits } from "./support/model-limits.mjs";
 
 const result = document.querySelector("#result");
 try {
-  const contracts = await NativeContracts.create();
+  await initializeModelProviders();
   let checks = 0;
   function check(value, label) {
     checks += 1;
@@ -33,9 +34,11 @@ try {
   const decodedCheckpoint = contracts.decodeExecutionEventJson(checkpointBytes);
   check(decodedCheckpoint.kind === "context_compacted" && decodedCheckpoint.step === 7, "native checkpoint event");
   check(decodedCheckpoint.accounting.descriptor.byte_length === 4, "exact FileRef descriptor projection");
-  check(Object.isFrozen(decodedCheckpoint.projection.descriptor), "immutable nested checkpoint refs");
   check(new TextDecoder().decode(contracts.encodeCanonicalJson(decodedCheckpoint)) ===
     new TextDecoder().decode(checkpointBytes), "native checkpoint canonical correspondence");
+  decodedCheckpoint.projection.descriptor.byte_length = 5;
+  check(contracts.decodeExecutionEventJson(checkpointBytes).projection.descriptor.byte_length === 4,
+    "mutating an owned decoded ref never changes the canonical checkpoint");
   for (const malformed of [
     { ...checkpoint, step: -1 }, { ...checkpoint, step: 0.5 }, { ...checkpoint, step: 4_294_967_296 },
     { ...checkpoint, accounting: null }, { ...checkpoint, projection: { ...file, path: "../private" } },
@@ -47,62 +50,67 @@ try {
   check(policy.kind === "threshold", "stock threshold policy");
   check(policy.config.response_reserve_tokens === 16_384 && policy.config.recent_tokens === 20_000,
     "Rust default budgets");
-  check(Object.isFrozen(policy.config), "immutable consumer policy");
+  const otherPolicy = contracts.defaultCompactionPolicy();
+  otherPolicy.config.recent_tokens = 1;
+  check(policy.config.recent_tokens === 20_000 &&
+    contracts.defaultCompactionPolicy().config.recent_tokens === 20_000, "Rust policy outputs have separate ownership");
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
-  check(contracts.validateThresholdCompaction(policy.config, capacity) === 4_096, "finite selected output");
+  check(contracts.validateThresholdCompaction(policy.config, capacity, undefined) === 4_096, "finite selected output");
   check(contracts.validateThresholdCompaction({ ...policy.config, response_reserve_tokens: 1_024,
-    recent_tokens: 2_048 }, capacity) === 1_024, "replaceable reserve");
+    recent_tokens: 2_048 }, capacity, undefined) === 1_024, "replaceable reserve");
   rejects(() => contracts.validateThresholdCompaction(policy.config,
-    { ...capacity, context_tokens: 32_768 }), "impossible selected capacity");
+    { ...capacity, context_tokens: 32_768 }, undefined), "impossible selected capacity");
   rejects(() => contracts.validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
   const request = {
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
-    messages: [{ role: "user", content: "Ã©ðŸ¦€" }], tools: [], max_output_tokens: 1_024,
+    messages: [{ role: "user", content: "é🦀" }], tools: [], max_output_tokens: 1_024,
   };
   // This host's declared token units are UTF-8 bytes plus fixed framing.
   const count = { request_digest: Array.from(contracts.digestCanonicalJson(request)),
-    fixed_tokens: 100, message_tokens: [new TextEncoder().encode("Ã©ðŸ¦€").byteLength + 10] };
+    input_tokens: 116n, fixed_tokens: 100, message_tokens: [new TextEncoder().encode("é🦀").byteLength + 10] };
   for (const value of ["replacement \ufffd", "paired \ud83d\ude00", "\u0000"]) {
-    const decoded = contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value })));
+    const decoded = contracts.decodeClientJson(new TextEncoder().encode(JSON.stringify({ value })));
     check(decoded.value === value, "native valid Unicode round trip");
     const roundTrip = JSON.parse(new TextDecoder().decode(contracts.encodeCanonicalJson({ [value]: value })));
     check(roundTrip[value] === value, "canonical valid Unicode string and key");
   }
   for (const invalid of ["\ud800", "\udc00", "\ud800x", "x\udc00"]) {
-    rejects(() => contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value: invalid }))),
+    rejects(() => contracts.decodeClientJson(new TextEncoder().encode(JSON.stringify({ value: invalid }))),
       "native unpaired surrogate rejection");
     for (const value of [{ value: invalid }, { [invalid]: 1 }, new Map([[invalid, 1]])]) {
       rejects(() => contracts.encodeCanonicalJson(value), "canonical unpaired surrogate rejection");
     }
     const replacement = new TextDecoder().decode(new TextEncoder().encode(invalid));
     const normalized = { ...request, messages: [{ role: "user", content: replacement }] };
-    const normalizedCount = { ...count, request_digest: Array.from(contracts.digestCanonicalJson(normalized)) };
+    const normalizedCount = { ...count, request_digest: Array.from(contracts.digestCanonicalJson(normalized)),
+      input_tokens: BigInt(110 + new TextEncoder().encode(replacement).byteLength),
+      message_tokens: [new TextEncoder().encode(replacement).byteLength + 10] };
     rejects(() => contracts.validateModelTokenCount({ ...request,
-      messages: [{ role: "user", content: invalid }] }, normalizedCount, HARNESS_LIMITS_DEFAULT),
+      messages: [{ role: "user", content: invalid }] }, normalizedCount, limits),
       "accounting cannot admit a lossy replacement request");
   }
-  check(contracts.validateModelTokenCount(request, count, HARNESS_LIMITS_DEFAULT) === 116n,
+  check(contracts.validateModelTokenCount(request, count, limits) === 116n,
     "exact prepared request accounting");
   check(contracts.validateModelTokenCount(request,
-    { ...count, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, HARNESS_LIMITS_DEFAULT)
+    { ...count, input_tokens: 8_589_934_590n, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, limits)
     === 8_589_934_590n, "portable exact sum");
   rejects(() => contracts.validateModelTokenCount({ ...request,
-    messages: [{ role: "user", content: "changed" }] }, count, HARNESS_LIMITS_DEFAULT), "changed request");
+    messages: [{ role: "user", content: "changed" }] }, count, limits), "changed request");
   rejects(() => contracts.validateModelTokenCount(request,
-    { ...count, message_tokens: [] }, HARNESS_LIMITS_DEFAULT), "count dimensions");
+    { ...count, message_tokens: [] }, limits), "count dimensions");
   rejects(() => contracts.validateModelTokenCount(request,
-    { ...count, fixed_tokens: -1 }, HARNESS_LIMITS_DEFAULT), "negative tokens");
+    { ...count, fixed_tokens: -1 }, limits), "negative tokens");
   rejects(() => contracts.validateModelTokenCount(request,
-    { ...count, message_tokens: [0.5] }, HARNESS_LIMITS_DEFAULT), "fractional tokens");
+    { ...count, message_tokens: [0.5] }, limits), "fractional tokens");
   rejects(() => contracts.validateModelTokenCount(request,
-    { ...count, unexpected: true }, HARNESS_LIMITS_DEFAULT), "unknown accounting fields");
+    { ...count, unexpected: true }, limits), "unknown accounting fields");
   const source = { instructions: [], skills: [] };
   const standalone = contracts.projectDiscoveredContext(source,
-    { messages: [], metadata: {} }, "prepend", HARNESS_LIMITS_DEFAULT);
+    { messages: [], metadata: {} }, "prepend", limits);
   check(!Object.hasOwn(standalone, "current_input_index"), "absent standalone current input");
   const current = contracts.projectDiscoveredContext(source,
     { messages: [{ role: "user", content: "current" }], metadata: {}, current_input_index: 0 },
-    "prepend", HARNESS_LIMITS_DEFAULT);
+    "prepend", limits);
   check(current.current_input_index === 0, "retained zero current input index");
   result.dataset.status = "passed";
   result.textContent = JSON.stringify({ checks, runtime: "browser", implementation: "Rust WASM" });

@@ -1,41 +1,41 @@
-import { expect, test } from "bun:test";
-import { validateComponentLabel } from "../src/model.js";
+import { beforeAll, expect, test } from "bun:test";
+import { initializeClientQueries } from "../src/index.js";
 import {
-  validateAuthorityPathSegment as validateAuthorityPathSegmentWasm,
-  validateComponentLabel as validateComponentLabelWasm,
+  validateAuthorityPathSegment,
+  validateComponentLabel,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 
-test("component labels preserve the Rust portable-count contract", async () => {
-  await expect(validateComponentLabel("a".repeat(255), "label")).resolves.toBeUndefined();
-  await expect(validateComponentLabel("a".repeat(256), "label")).resolves.toBeUndefined();
-  await expect(validateComponentLabel("é".repeat(127), "label")).resolves.toBeUndefined();
-  await expect(validateComponentLabel("é".repeat(128), "label")).resolves.toBeUndefined();
-  await expect(validateComponentLabel("😀".repeat(63), "label")).resolves.toBeUndefined();
-  await expect(validateComponentLabel("😀".repeat(64), "label")).resolves.toBeUndefined();
-});
+beforeAll(initializeClientQueries);
 
-test("component labels reject Rust whitespace, controls, separators, and dot segments", async () => {
-  for (const value of ["", ".", "..", "/", "\\", "a\n", "a\u{00a0}", "a\u{2003}", "a\u{007f}"]) {
-    await expect(validateComponentLabel(value, "component")).rejects.toThrow();
+test("component labels preserve the Rust portable-count contract", () => {
+  for (const value of ["a".repeat(255), "a".repeat(256), "é".repeat(127),
+    "é".repeat(128), "😀".repeat(63), "😀".repeat(64)]) {
+    expect(() => validateComponentLabel(value)).not.toThrow();
   }
-  await expect(validateComponentLabel("a\u{1f600}", "component")).resolves.toBeUndefined();
 });
 
-test("component labels reject unpaired UTF-16 surrogates before UTF-8 encoding", async () => {
-  await expect(validateComponentLabel("a\ud800", "component")).rejects.toThrow();
+test("component labels reject Rust whitespace, controls, separators, and dot segments", () => {
+  for (const value of ["", ".", "..", "/", "\\", "a\n", "a\u{00a0}", "a\u{2003}", "a\u{007f}"]) {
+    expect(() => validateComponentLabel(value)).toThrow();
+  }
+  expect(() => validateComponentLabel("a\u{1f600}")).not.toThrow();
+});
+
+test("component labels reject unpaired UTF-16 surrogates before UTF-8 encoding", () => {
+  expect(() => validateComponentLabel("a\ud800")).toThrow();
 });
 
 test("Rust WASM owns the same label and authority policy after initialization", () => {
   for (const value of ["tool", "é".repeat(127), "😀".repeat(63)]) {
-    expect(() => validateComponentLabelWasm(value)).not.toThrow();
+    expect(() => validateComponentLabel(value)).not.toThrow();
   }
   for (const value of ["", ".", "..", "a/b", "a\\b", "a\n", "a\ud800"]) {
-    expect(() => validateComponentLabelWasm(value)).toThrow();
+    expect(() => validateComponentLabel(value)).toThrow();
   }
   for (const value of ["agent-1", "é", "😀"]) {
-    expect(validateAuthorityPathSegmentWasm(value)).toBe(value);
+    expect(validateAuthorityPathSegment(value)).toBe(value);
   }
   for (const value of ["", ".", "..", "a/b", "a\\b", "a\n"]) {
-    expect(() => validateAuthorityPathSegmentWasm(value)).toThrow();
+    expect(() => validateAuthorityPathSegment(value)).toThrow();
   }
 });
