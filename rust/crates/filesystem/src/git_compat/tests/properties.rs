@@ -65,6 +65,7 @@ proptest! {
         }
         let pending = GitPendingTransition {
             id: GitTransitionId::from_bytes([0; 16]),
+            request: None,
             action: GitFilesystemAction::SwitchWorkspace { workspace_id: ids[action] },
             mutation: GitPendingMutation::Switch { branch: "child".into() },
         };

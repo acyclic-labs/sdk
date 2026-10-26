@@ -8,6 +8,7 @@ pub(super) fn prepare_transition(
     let transition = GitTransitionId::new();
     state.pending = Some(GitPendingTransition {
         id: transition,
+        request: None,
         action: action.clone(),
         mutation,
     });

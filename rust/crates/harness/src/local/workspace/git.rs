@@ -7,6 +7,9 @@ pub(in crate::local) struct CommandContext<'a> {
     pub(in crate::local) owner: &'a dyn ViewOwner,
     pub(in crate::local) operation: OperationId,
     pub(in crate::local) scope: &'a RuntimeScope,
+    /// The native request this command runs as, whose saved result a
+    /// replay returns.
+    pub(in crate::local) request: Option<acyclic_fs::GitRequest>,
 }
 
 pub(in crate::local) struct Commands<'a> {
@@ -295,9 +298,7 @@ impl Commands<'_> {
                 author: "LocalHarness",
                 authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),
-                request: Some(acyclic_fs::OperationId::from_bytes(
-                    context.operation.into_bytes(),
-                )),
+                request: context.request.clone(),
             },
             arguments,
             || owner.verify(),
@@ -333,14 +334,11 @@ impl Commands<'_> {
             state.active = Some(switched.into_checkout()?);
             workspace.selected_workspace(state, owner).await?;
         }
-        // Persist the selected view in memory even when a recovered transition
-        // has no command result or closing the old workspace failed.
+        // Persist the selected view in memory even when closing the old
+        // workspace failed.
         publication?;
         advanced?;
-        let command = output.command.ok_or_else(|| {
-            Error::Conflict("recovered a pending fs transition; retry the command".into())
-        })?;
-        Ok(Outcome::Completed(Box::new(command)))
+        Ok(Outcome::Completed(Box::new(output.command)))
     }
 
     async fn prepare_reconciliation(

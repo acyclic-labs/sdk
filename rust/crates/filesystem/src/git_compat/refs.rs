@@ -55,18 +55,14 @@ pub struct GitCompatState {
     pub write_capture: Option<(OperationId, GitGenerationRef)>,
     /// Active first-parent bisection, if any.
     pub bisect: Option<GitBisectState>,
-    /// The results of the latest state-changing requests, oldest first and
-    /// at most `REQUEST_RESULTS`, each keyed by its request operation and
-    /// committed with the request's own effect, so a replayed request
-    /// returns its saved result instead of running again. Records written
-    /// before it existed hold none.
-    #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]
-    pub requests: std::collections::VecDeque<(OperationId, GitCommandOutput)>,
+    /// The results of state-changing requests, each keyed by the request
+    /// that started the command and committed with the command's own effect,
+    /// so a replayed request returns its saved result instead of running
+    /// again. A result is kept while its request's record is retained.
+    /// Records written before it existed hold none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requests: BTreeMap<OperationId, GitCommandOutput>,
 }
-
-/// Request results one repository retains for replay: enough for every
-/// request one owner can have outstanding.
-pub(crate) const REQUEST_RESULTS: usize = 16;
 
 impl GitCompatState {
     /// Creates an unborn branch for one SDK workspace.
@@ -98,34 +94,33 @@ impl GitCompatState {
             checkout_reconciliation: None,
             write_capture: None,
             bisect: None,
-            requests: std::collections::VecDeque::new(),
+            requests: BTreeMap::new(),
         }
     }
 
     /// The saved result of request `operation`.
     #[must_use]
     pub fn request(&self, operation: OperationId) -> Option<&GitCommandOutput> {
-        self.requests
-            .iter()
-            .find(|(request, _)| *request == operation)
-            .map(|(_, output)| output)
+        self.requests.get(&operation)
     }
 
-    /// Saves `output` as request `operation`'s result, in the commit that
-    /// carries its effect.
+    /// Saves `output` as the result of `operation`, the request that started
+    /// the command, in the commit that carries its effect, dropping the
+    /// results of requests whose records `retention` no longer retains.
     pub(super) fn record_request(
         &mut self,
         operation: Option<OperationId>,
+        retention: Option<&GitRequestRetention>,
         output: &GitCommandOutput,
     ) {
-        let Some(operation) = operation else {
-            return;
-        };
-        self.requests.retain(|(request, _)| *request != operation);
-        if self.requests.len() == REQUEST_RESULTS {
-            self.requests.pop_front();
+        if let Some(retained) = retention {
+            self.requests.retain(|request, _| retained(*request));
         }
-        self.requests.push_back((operation, output.clone()));
+        if let Some(operation) = operation
+            && retention.is_none_or(|retained| retained(operation))
+        {
+            self.requests.insert(operation, output.clone());
+        }
     }
 
     pub(super) fn current(&self) -> Result<&GitBranch, ()> {
@@ -264,6 +259,11 @@ pub struct GitBisectResult {
 pub struct GitPendingTransition {
     /// Stable retry identity.
     pub id: GitTransitionId,
+    /// The request that started the command, whose result its settlement
+    /// saves, whichever request resumes it. Records written before it
+    /// existed name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<OperationId>,
     /// Filesystem action to execute idempotently.
     pub action: GitFilesystemAction,
     /// Mutation finalized only after successful action execution.

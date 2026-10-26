@@ -100,6 +100,8 @@ pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
     native: agents::NativeAgents,
     views: BTreeMap<AgentPath, host_workspace::HostWorkspace>,
+    /// The native request files, whose retention keeps saved results.
+    requests: Option<std::path::PathBuf>,
     #[cfg(test)]
     retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
 }
@@ -116,9 +118,18 @@ impl HostWorkspaceOwner {
             native: agents::NativeAgents::new(&local)?,
             local,
             views: BTreeMap::new(),
+            requests: None,
             #[cfg(test)]
             retirement_observer: None,
         })
+    }
+
+    /// Keeps each native request's saved result while its file under
+    /// `requests` is retained.
+    #[must_use]
+    pub fn with_requests(mut self, requests: std::path::PathBuf) -> Self {
+        self.requests = Some(requests);
+        self
     }
 
     /// Joins native view retirement while the coordination runtime can still
@@ -271,7 +282,23 @@ impl HostWorkspaceOwner {
                 ));
             }
         }
-        serde_json::to_value(self.view(task)?.fs(operation, command).await?).map_err(storage)
+        // A native request's saved result lives while its request file does.
+        let request = self
+            .requests
+            .clone()
+            .map(|requests| acyclic_fs::GitRequest {
+                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                retained: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
+                    requests
+                        .join(format!(
+                            "{}.json",
+                            OperationId::from_bytes(request.into_bytes())
+                        ))
+                        .exists()
+                }),
+            });
+        serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)
+            .map_err(storage)
     }
 
     fn view(&self, agent: &AgentPath) -> Result<&host_workspace::HostWorkspace> {

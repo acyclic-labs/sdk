@@ -170,7 +170,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 return Err(GitCompatError::StaleTransition);
             }
             state.pending = None;
-            state.record_request(self.request, &output);
+            state.record_request(pending.request, self.retention(), &output);
             Ok(())
         })
         .await?;
@@ -246,8 +246,11 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             if state == before {
                 return Ok(output);
             }
-            if !matches!(output, GitCommandOutput::Prepared { .. }) {
-                state.record_request(self.request, &output);
+            if let Some(pending) = state.pending.as_mut() {
+                // Prepared work settles under the request that started it.
+                pending.request = self.request_operation();
+            } else {
+                state.record_request(self.request_operation(), self.retention(), &output);
             }
             if self.publish(state).await? {
                 return Ok(output);

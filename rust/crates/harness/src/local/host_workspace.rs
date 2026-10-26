@@ -181,6 +181,7 @@ impl HostWorkspace {
         &self,
         operation: OperationId,
         command: &str,
+        request: Option<acyclic_fs::GitRequest>,
     ) -> Result<acyclic_fs::GitCommandOutput> {
         self.verify().await?;
         verify_root(&self.mount_root)?;
@@ -214,6 +215,7 @@ impl HostWorkspace {
                     owner,
                     operation,
                     scope: &self.scope,
+                    request,
                 },
                 &mut state,
                 &physical,

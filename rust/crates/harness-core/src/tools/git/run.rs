@@ -27,13 +27,13 @@ pub struct Workspace<'a> {
     pub authored_at_seconds: i64,
     /// The request this command runs as: a state-changing command saves its
     /// result with its effect, and a replay returns that result.
-    pub request: Option<acyclic_fs::OperationId>,
+    pub request: Option<acyclic_fs::GitRequest>,
 }
 
 /// A facade result and any branch view selected by checkout.
 pub struct Output {
-    /// Absent when an earlier pending transition was recovered instead.
-    pub command: Option<GitCommandOutput>,
+    /// The command's result.
+    pub command: GitCommandOutput,
     /// The newly selected view, if the command switched branches.
     pub switched: Option<OwnedView>,
 }
@@ -108,7 +108,7 @@ where
         execute(&workspace, args, tree, patch.as_deref(), &executor).await?
     };
     Ok(Output {
-        command: command.map(|output| without_host_paths(output, &executor.repository)),
+        command: without_host_paths(command, &executor.repository),
         switched: executor.switched_workspace()?,
     })
 }
@@ -145,10 +145,10 @@ async fn execute<E: GitFilesystemExecutor<Error = Error>>(
     tree: GitTreeRef,
     patch: Option<&[u8]>,
     executor: &E,
-) -> crate::Result<Option<GitCommandOutput>> {
+) -> crate::Result<GitCommandOutput> {
     let repository = GitCompatRepository::new(workspace.repository, workspace.store.clone());
     run_git_command(
-        &match workspace.request {
+        &match workspace.request.clone() {
             Some(request) => repository.for_request(request),
             None => repository,
         },

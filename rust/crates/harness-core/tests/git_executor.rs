@@ -126,7 +126,7 @@ async fn run_reserving(
     )
     .await?;
     Ok((
-        output.command.ok_or("pending git transition")?,
+        output.command,
         output
             .switched
             .map(git::OwnedView::into_checkout)
@@ -641,7 +641,6 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
         &["diff".into(), "agents/child".into()],
     )
     .await?;
-    assert!(output.command.is_some());
     assert_eq!(
         child
             .read(
@@ -1250,7 +1249,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                 &argv,
             )
             .await?;
-            if let Some(GitCommandOutput::Commits(commits)) = output.command {
+            if let GitCommandOutput::Commits(commits) = output.command {
                 log = Some(commits);
                 break;
             }
@@ -1557,7 +1556,7 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                 &["status".to_owned()],
             )
             .await?;
-            if output.command.is_some() {
+            if !matches!(output.command, GitCommandOutput::Prepared { .. }) {
                 answered = true;
                 break;
             }
@@ -1858,6 +1857,7 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
     state.revision += 1;
     state.pending = Some(GitPendingTransition {
         id: GitTransitionId::new(),
+        request: None,
         action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
         mutation: GitPendingMutation::NoOp,
     });
@@ -1880,13 +1880,18 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
         &["status".into()],
     )
     .await?;
-    assert!(recovered.command.is_none());
+    // Recovery settles the pending transition, then runs this command.
+    assert!(!matches!(
+        recovered.command,
+        GitCommandOutput::Prepared { .. }
+    ));
 
     state = GitCompatStore::load(store, root)
         .await?
         .ok_or("missing recovered state")?;
     state.pending = Some(GitPendingTransition {
         id: GitTransitionId::new(),
+        request: None,
         action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
         mutation: GitPendingMutation::NoOp,
     });
