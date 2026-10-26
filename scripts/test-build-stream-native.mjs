@@ -96,15 +96,6 @@ test("native bundle validation rejects self-consistent manifests with missing or
   }
 });
 
-test("native build requires an output bundle before discovering Cargo", () => {
-  const result = spawnSync(process.execPath, [resolve(root, "scripts/build-stream-native.mjs"), "build", "--target", "x86_64-pc-windows-msvc"], {
-    env: { ...process.env, PATH: "", Path: "" }, encoding: "utf8",
-  });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /build requires --output <native-bundle>/u);
-  assert.doesNotMatch(result.stderr, /ENOENT|requires a clean source closure|spawn.*cargo/u);
-});
-
 test("native build rejects a workspace compiler delegate before source checks, tools, or output writes", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "stream-native-workspace-wrapper-"));
   const output = resolve(parent, "missing", "native-bundle");

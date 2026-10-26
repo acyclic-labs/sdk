@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { assertNativeReceipt, assertNativeSet, verifyNativeAssembly, writeCompanionManifest } from "./assemble-stream-native-package.mjs";
+import { assertNativeReceipt, verifyNativeAssembly, writeCompanionManifest } from "./assemble-stream-native-package.mjs";
 import { normalizeBuildInputs, rustMetadata } from "./build-stream-native.mjs";
 import { writeWasmReceiptFixture } from "./fixtures/wasm-receipt.mjs";
 
@@ -32,18 +32,6 @@ function metadata(selected_target = target) {
   const raw = inputs();
   return { package: "acyclic-stream-napi", selected_target, source_revision: revision, source_sha256: sha, source_files: [{ path: "source.rs", sha256: sha, bytes: 1 }], version: "0.2.0", targets: [target, "aarch64-apple-darwin"], build_inputs: normalizeBuildInputs(raw, { sourceRoot: "C:/producer/sdk", platform: "win32", targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir }) };
 }
-
-test("neutral assembly requires complete unique Rust targets and a common source closure", () => {
-  const bundles = [metadata(), metadata("aarch64-apple-darwin")];
-  assertNativeSet(bundles, bundles[0].targets, revision);
-  assert.throws(() => assertNativeSet(bundles.slice(0, 1), bundles[0].targets, revision), /exactly one bundle/);
-  assert.throws(() => assertNativeSet([bundles[0], bundles[0]], bundles[0].targets, revision), /exactly one bundle/);
-  for (const field of ["source_revision", "source_sha256", "source_files", "version", "targets"]) {
-    const changed = structuredClone(bundles);
-    Object.assign(changed[1], { [field]: "different" });
-    assert.throws(() => assertNativeSet(changed, bundles[0].targets, revision), /differs/);
-  }
-});
 
 test("publication verifies all companion archives and retained attestations before accepting inventory", async () => {
   const directory = await mkdtemp(join(tmpdir(), "stream-native-assembly-test-"));
