@@ -11,7 +11,8 @@ calls/results, usage, auth and context errors. The rate response comes from an
 actual nginx rate limiter. The fixture README records exact provenance. No
 Ollama-specific behavior has been qualified by this llama.cpp capture.
 
-Reproduce capture, then replay and exercise the same positive assertions live:
+Reproduce capture, then run the complete common suite in replay and against the
+live server (with an actual rate limiter and captured deterministic replay):
 
 ```powershell
 pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BE_EDGE_RUN_SUITE=1 bash scripts/be-edge-local.sh
