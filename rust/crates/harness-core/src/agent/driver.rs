@@ -257,13 +257,22 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     wait: Wait::Input,
                 });
             }
-            let progress = progress.map_err(host_error)?;
             let failed = |message: &str| TurnStep {
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Done(AgentOutcome::Failed {
                     message: message.to_owned(),
                 }),
+            };
+            let progress = match progress {
+                Ok(progress) => progress,
+                // A provider owns bounded retry/recovery and returns these typed
+                // outcomes only when it is finished. Settle through the normal
+                // agent commit so status followers and parents observe failure.
+                Err(error) if error.is_model_failure() => {
+                    return Ok(failed(&error.to_string()));
+                }
+                Err(error) => return Err(host_error(error)),
             };
             Ok(match progress {
                 ExecutionProgress::Ready(output) => {

@@ -33,14 +33,25 @@ async fn provider_scenarios() -> TestResult {
     paths.sort();
     assert!(!paths.is_empty());
     for path in paths {
-        let mut value = scenario_data::load_value(&root, &path)?;
-        assert_eq!(
-            value.as_object_mut().ok_or("scenario")?.remove("driver"),
-            Some("provider".into())
-        );
-        let case = serde_json::from_value(value)?;
-        stall::guarded(&path, providers::run(case)).await??;
+        run_provider_scenario(&root, &path).await?;
         println!("PASS {}", path.strip_prefix(&root)?.display());
     }
     Ok(())
+}
+
+async fn run_provider_scenario(root: &std::path::Path, path: &std::path::Path) -> TestResult {
+    let mut value = scenario_data::load_value(root, path)?;
+    assert_eq!(
+        value.as_object_mut().ok_or("scenario")?.remove("driver"),
+        Some("provider".into())
+    );
+    let case = serde_json::from_value(value)?;
+    stall::guarded(path, providers::run(case)).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn exhausted_provider_retries_settle_failed() -> TestResult {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    run_provider_scenario(&root, &root.join("providers/anthropic/exhausted-500.json")).await
 }

@@ -111,6 +111,7 @@ impl ExecutionJournal for Unused {
 #[derive(Default)]
 struct Script {
     progress: Mutex<VecDeque<ExecutionProgress<TurnOutput>>>,
+    failure: Mutex<Option<CoreError>>,
     operations: Mutex<Vec<OperationId>>,
 }
 
@@ -133,7 +134,13 @@ impl Executor for Script {
             .expect("lock")
             .push(input.operation_id);
         let next = self.progress.lock().expect("lock").pop_front();
-        Box::pin(async move { next.map_or_else(unused, Ok) })
+        let failure = self.failure.lock().expect("lock").take();
+        Box::pin(async move {
+            match failure {
+                Some(error) => Err(error),
+                None => next.map_or_else(unused, Ok),
+            }
+        })
     }
 }
 
@@ -186,6 +193,93 @@ fn request(id: &str) -> Result<(InboxRecord, TurnInput)> {
             id: intent(id),
         },
     ))
+}
+
+#[tokio::test]
+async fn provider_failures_commit_terminal_status_while_uncertain_errors_propagate() -> Result {
+    use acyclic_harness_core::ModelTransportFailure;
+    let mut cases = vec![
+        (
+            CoreError::ModelUnavailable {
+                failure: ModelTransportFailure::Status(500),
+                excerpt: "exhausted".into(),
+            },
+            true,
+        ),
+        (
+            CoreError::ModelUnavailable {
+                failure: ModelTransportFailure::Connect,
+                excerpt: String::new(),
+            },
+            true,
+        ),
+        (
+            CoreError::ModelUnavailable {
+                failure: ModelTransportFailure::Interrupted,
+                excerpt: String::new(),
+            },
+            true,
+        ),
+        (CoreError::Storage("unreadable journal".into()), false),
+        (
+            CoreError::Indeterminate(OperationId::from_bytes([8; 16])),
+            false,
+        ),
+        (CoreError::Cancelled, false),
+        (
+            CoreError::Invalid("unclassified executor error".into()),
+            false,
+        ),
+    ];
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    cases.push((
+        CoreError::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Unavailable,
+            reason: "native admission refused",
+        },
+        false,
+    ));
+    for (error, terminal) in cases.drain(..) {
+        let diagnostic = error.to_string();
+        let path = AgentPath::root(&id(1));
+        let script = Arc::new(Script {
+            failure: Mutex::new(Some(error)),
+            ..Script::default()
+        });
+        let driver = ExecutorDriver::new(Host(script, None));
+        let result = step(
+            &driver,
+            &path,
+            Some(AgentState::adopted(path.clone(), &adopted(id(1)))),
+            1,
+            Wake::Inbox {
+                sequence: 1,
+                record: request("failed")?.0,
+            },
+        )
+        .await;
+        if terminal {
+            let settled = result?;
+            assert_eq!(
+                settled.state.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed {
+                        message: diagnostic
+                    }
+                }
+            );
+            let status = settled.status.ok_or("missing terminal status")?;
+            assert_eq!(status.phase, settled.state.phase);
+            assert_eq!(status.cursor, 1);
+            assert!(settled.state.turn.is_none());
+        } else {
+            assert!(
+                matches!(result, Err(Error::Turn(_))),
+                "uncertain failure was settled: {diagnostic}"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
