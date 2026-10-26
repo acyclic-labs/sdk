@@ -14,7 +14,7 @@ use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
     StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
 };
-use acyclic_stream::{CommitOutcome, CommitRequest};
+use acyclic_stream::{CommitOutcome, CommitRequest, StreamError};
 use std::sync::Arc;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
@@ -220,10 +220,15 @@ where
         })
     }
 
-    fn settle<'a>(self: Box<Self>, outcome: &'a CommitOutcome) -> GuestFuture<'a, ()> {
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
         Box::pin(async move {
             let Self { host, commit, .. } = *self;
-            if let Some(commit) = commit {
+            // A definite refusal committed nothing: dropping the commit
+            // releases its prepared holds.
+            if let (Some(commit), Ok(outcome)) = (commit, outcome) {
                 host.filesystem
                     .settle_commit(
                         commit,
