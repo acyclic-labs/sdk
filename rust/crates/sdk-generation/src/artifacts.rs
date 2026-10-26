@@ -445,7 +445,12 @@ pub(super) fn write_immutable(path: &Path, bytes: &[u8]) -> Result<(), CliError>
     }
     let mut file = tempfile::Builder::new()
         .prefix(".tmp-")
-        .tempfile_in(path.parent().unwrap_or(path))
+        .make_in(path.parent().unwrap_or(path), |temp| {
+            fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(temp)
+        })
         .map_err(io_error)?;
     file.write_all(bytes).map_err(io_error)?;
     file.as_file().sync_all().map_err(io_error)?;
