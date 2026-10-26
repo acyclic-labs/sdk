@@ -133,7 +133,9 @@ pub async fn prompt_settled(
             return Ok(PromptOutcome::Settled(entry, output));
         }
     }
-    Err(crate::Error::NotFound(format!("settled turn of prompt {id}")))
+    Err(crate::Error::NotFound(format!(
+        "settled turn of prompt {id}"
+    )))
 }
 
 /// The composition's actual task provider, for scenario wire-frame assertions.

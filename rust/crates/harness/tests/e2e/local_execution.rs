@@ -47,8 +47,16 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     verify_model_requests(&case.expect, &requests, steps)?;
     if let Some(expected) = &case.expect.diffs {
         let current = host.resolve(&workspace, None).await?.generation;
-        verify_diffs(&volume, base, current, &case.seed, &case.expect.files, &reader, expected)
-            .await?;
+        verify_diffs(
+            &volume,
+            base,
+            current,
+            &case.seed,
+            &case.expect.files,
+            &reader,
+            expected,
+        )
+        .await?;
     }
     verify_prompt(&harness, &requests, entry, &case.prompt).await?;
     // Fs::local reuses live roots. Release every holder before a cold reopen.
@@ -334,11 +342,13 @@ fn verify_outcome(
             Ok(Some(entry))
         }
         // A failed or uncertain turn ends the agent with its cause.
-        (ExpectedOutcome::Failed | ExpectedOutcome::Indeterminate, PromptOutcome::Failed(message))
-            if expect
-                .error
-                .as_deref()
-                .is_none_or(|expected| message.contains(expected)) =>
+        (
+            ExpectedOutcome::Failed | ExpectedOutcome::Indeterminate,
+            PromptOutcome::Failed(message),
+        ) if expect
+            .error
+            .as_deref()
+            .is_none_or(|expected| message.contains(expected)) =>
         {
             Ok(None)
         }

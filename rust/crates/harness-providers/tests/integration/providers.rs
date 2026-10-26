@@ -241,9 +241,10 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         case.expect.outcome,
         prompt_settled(&harness, "provider", &case.prompt).await?,
     ) {
-        (super::expected_outcome::ExpectedOutcome::Succeeded, PromptOutcome::Settled(_, output))
-            if output.text == case.expect.text
-                && output.steps as usize == completed_steps(case) => {}
+        (
+            super::expected_outcome::ExpectedOutcome::Succeeded,
+            PromptOutcome::Settled(_, output),
+        ) if output.text == case.expect.text && output.steps as usize == completed_steps(case) => {}
         (super::expected_outcome::ExpectedOutcome::Failed, PromptOutcome::Failed(_)) => {}
         (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
     }

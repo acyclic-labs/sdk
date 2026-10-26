@@ -197,7 +197,11 @@ fn agent_records(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<Vec<Vec<
         let mut records = Vec::new();
         for path in [root.conversation(), root.status()] {
             let path = path.map_err(storage)?;
-            let tail = agents.provider().tail(path.clone()).await.map_err(storage)?;
+            let tail = agents
+                .provider()
+                .tail(path.clone())
+                .await
+                .map_err(storage)?;
             let read = agents
                 .provider()
                 .read(ReadRequest {
@@ -256,7 +260,10 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
         drop(harness);
         let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
         let restored = agent_records(&reopened).await?;
-        assert_eq!(records, restored, "cold reopen lost acknowledged agent records");
+        assert_eq!(
+            records, restored,
+            "cold reopen lost acknowledged agent records"
+        );
         prompt(&reopened, "reopened", "submit after reopening", "reopened").await?;
         let records = agent_records(&reopened).await?;
         Ok((
@@ -392,9 +399,6 @@ fn seeded_production_turn_and_reopen_trace_controls() -> Result<()> {
         );
         Ok(())
     });
-    eprintln!(
-        "prompt/reopen replay elapsed: {:?}",
-        started.elapsed()
-    );
+    eprintln!("prompt/reopen replay elapsed: {:?}", started.elapsed());
     result
 }
