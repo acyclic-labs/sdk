@@ -26,12 +26,7 @@ pub use crate::resources::{
     sample_process_resources,
 };
 pub use process::{ProcessCapture, capture_process};
-mod resources;
 pub mod scale;
-pub use resources::{
-    Descriptor, ProcessResources, descriptors, descriptors_naming, process_resources,
-    sample_process_resources,
-};
 mod metadata;
 pub mod snapshot;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
