@@ -5,62 +5,42 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let (generation, main) = fixture(&store).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let src_id = FileId::from_bytes([2; 16]);
-    let metadata = put(
+    let metadata = put_file_metadata(
         &store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            metadata(),
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        metadata(),
     )
     .await?;
-    let leaf = put(
+    let leaf = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
-                file_id: src_id,
-                kind: FileKind::Directory,
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(vec![TreeEntry {
+            name: LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
+            file_id: src_id,
+            kind: FileKind::Directory,
+        }]),
+        8,
     )
     .await?;
-    let malformed_root_tree = put(
+    let malformed_root_tree = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Internal(vec![Child {
-                first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
-                page: leaf,
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Internal(vec![Child {
+            first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
+            page: leaf,
+        }]),
+        8,
     )
     .await?;
-    let file_table = put(
+    let file_table = put_file_table_page(
         &store,
-        ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
-                file_id: root_id,
-                kind: FileKind::Directory,
-                link_count: 1,
-                metadata,
-                payload: FilePayload::Directory {
-                    entries: malformed_root_tree,
-                },
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &FileTablePage::Leaf(vec![FileRecord {
+            file_id: root_id,
+            kind: FileKind::Directory,
+            link_count: 1,
+            metadata,
+            payload: FilePayload::Directory {
+                entries: malformed_root_tree,
+            },
+        }]),
+        8,
     )
     .await?;
     let malformed_generation = GenerationRoot {

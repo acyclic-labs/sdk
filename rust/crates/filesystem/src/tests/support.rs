@@ -137,5 +137,6 @@ pub(crate) fn finish_physical_cuts<F: FnOnce() -> usize + Send>(jobs: Vec<F>) ->
 #[path = "support/objects.rs"]
 mod objects;
 pub(crate) use objects::{
-    put_attribute_page, put_extent_page, put_file_table_page, put_object, put_tree_page,
+    put_attribute_page, put_blob_page, put_extent_page, put_file_metadata, put_file_table_page,
+    put_generation_root, put_object, put_tree_page,
 };

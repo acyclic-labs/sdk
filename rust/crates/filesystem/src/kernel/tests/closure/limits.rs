@@ -213,32 +213,22 @@ async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn
         kind: ObjectKind::Metadata,
         digest: Digest::from_bytes([7; 32]),
     };
-    let tree = put(
+    let tree = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(Vec::new()),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(Vec::new()),
+        8,
     )
     .await?;
-    let table = put(
+    let table = put_file_table_page(
         &store,
-        ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
-                file_id: FileId::from_bytes([1; 16]),
-                kind: FileKind::Directory,
-                link_count: 1,
-                metadata: missing,
-                payload: FilePayload::Directory { entries: tree },
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &FileTablePage::Leaf(vec![FileRecord {
+            file_id: FileId::from_bytes([1; 16]),
+            kind: FileKind::Directory,
+            link_count: 1,
+            metadata: missing,
+            payload: FilePayload::Directory { entries: tree },
+        }]),
+        8,
     )
     .await?;
     let (generation, _, _) = minimal_generation(&store, Some(table)).await?;

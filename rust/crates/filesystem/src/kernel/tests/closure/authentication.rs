@@ -40,38 +40,28 @@ async fn authenticated_generation_counts_sparse_logical_bytes()
 async fn authenticated_generation_counts_hardlinked_inline_file_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put(
+    let metadata_id = put_file_metadata(
         &store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            metadata(),
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        metadata(),
     )
     .await?;
     let root_id = FileId::from_bytes([1; 16]);
     let file_id = FileId::from_bytes([2; 16]);
-    let entries = put(
+    let entries = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
-                TreeEntry {
-                    name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
-                    file_id,
-                    kind: FileKind::Regular,
-                },
-                TreeEntry {
-                    name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
-                    file_id,
-                    kind: FileKind::Regular,
-                },
-            ]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(vec![
+            TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                file_id,
+                kind: FileKind::Regular,
+            },
+            TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                file_id,
+                kind: FileKind::Regular,
+            },
+        ]),
+        8,
     )
     .await?;
     let generation = generation_with_records(
@@ -106,79 +96,54 @@ async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let value = internal_blob(&store).await?;
-    let first_leaf = put(
+    let first_leaf = put_attribute_page(
         &store,
-        ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
-                name: attribute_name("a")?,
-                value_bytes: 4,
-                value,
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &AttributePage::Leaf(vec![AttributeEntry {
+            name: attribute_name("a")?,
+            value_bytes: 4,
+            value,
+        }]),
+        8,
     )
     .await?;
-    let second_leaf = put(
+    let second_leaf = put_attribute_page(
         &store,
-        ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
-                name: attribute_name("z")?,
-                value_bytes: 4,
-                value,
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &AttributePage::Leaf(vec![AttributeEntry {
+            name: attribute_name("z")?,
+            value_bytes: 4,
+            value,
+        }]),
+        8,
     )
     .await?;
-    let attributes = put(
+    let attributes = put_attribute_page(
         &store,
-        ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Internal(vec![
-                Child {
-                    first: attribute_name("a")?,
-                    page: first_leaf,
-                },
-                Child {
-                    first: attribute_name("z")?,
-                    page: second_leaf,
-                },
-            ]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &AttributePage::Internal(vec![
+            Child {
+                first: attribute_name("a")?,
+                page: first_leaf,
+            },
+            Child {
+                first: attribute_name("z")?,
+                page: second_leaf,
+            },
+        ]),
+        8,
     )
     .await?;
     let mut complete_metadata = metadata();
     complete_metadata.named_attributes = MetadataField::Value(attributes);
     complete_metadata.acl = MetadataField::Value(value);
     complete_metadata.security_descriptor = MetadataField::Value(value);
-    let metadata_id = put(
+    let metadata_id = put_file_metadata(
         &store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            complete_metadata,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        complete_metadata,
     )
     .await?;
-    let tree = put(
+    let tree = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(Vec::new()),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(Vec::new()),
+        8,
     )
     .await?;
     let root_id = FileId::from_bytes([1; 16]);
@@ -290,42 +255,27 @@ async fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_
 async fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let value = blob_with_bytes(&store, b"data").await?;
-    let attributes = put(
+    let attributes = put_attribute_page(
         &store,
-        ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
-                name: attribute_name("wrong-length")?,
-                value_bytes: 5,
-                value,
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &AttributePage::Leaf(vec![AttributeEntry {
+            name: attribute_name("wrong-length")?,
+            value_bytes: 5,
+            value,
+        }]),
+        8,
     )
     .await?;
     let mut complete_metadata = metadata();
     complete_metadata.named_attributes = MetadataField::Value(attributes);
-    let metadata_id = put(
+    let metadata_id = put_file_metadata(
         &store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            complete_metadata,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        complete_metadata,
     )
     .await?;
-    let tree = put(
+    let tree = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(Vec::new()),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(Vec::new()),
+        8,
     )
     .await?;
     let root_id = FileId::from_bytes([1; 16]);
@@ -356,40 +306,30 @@ async fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn st
 async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put(
+    let metadata_id = put_file_metadata(
         &store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            metadata(),
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        metadata(),
     )
     .await?;
     let payload = blob_with_bytes(&store, b"data").await?;
     let root_id = FileId::from_bytes([1; 16]);
     let symlink_id = FileId::from_bytes([2; 16]);
     let reparse_id = FileId::from_bytes([3; 16]);
-    let tree = put(
+    let tree = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
-                TreeEntry {
-                    name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec(), 255)?,
-                    file_id: symlink_id,
-                    kind: FileKind::SymbolicLink,
-                },
-                TreeEntry {
-                    name: LogicalName::new(NameEncoding::Utf8, b"reparse".to_vec(), 255)?,
-                    file_id: reparse_id,
-                    kind: FileKind::ReparsePoint,
-                },
-            ]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(vec![
+            TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec(), 255)?,
+                file_id: symlink_id,
+                kind: FileKind::SymbolicLink,
+            },
+            TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"reparse".to_vec(), 255)?,
+                file_id: reparse_id,
+                kind: FileKind::ReparsePoint,
+            },
+        ]),
+        8,
     )
     .await?;
     let records = |symlink_bytes, reparse_bytes| {
@@ -470,57 +410,42 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
 async fn shared_regular_data_and_metadata_are_authenticated_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put(
+    let metadata_id = put_file_metadata(
         &store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            metadata(),
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        metadata(),
     )
     .await?;
     let blob = blob_with_bytes(&store, b"body").await?;
-    let extents = put(
+    let extents = put_extent_page(
         &store,
-        ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
-                offset: 0,
-                length: 4,
-                kind: ExtentKind::Content {
-                    object: blob,
-                    object_offset: 0,
-                },
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 4,
+            kind: ExtentKind::Content {
+                object: blob,
+                object_offset: 0,
+            },
+        }]),
+        8,
     )
     .await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_ids = [FileId::from_bytes([2; 16]), FileId::from_bytes([3; 16])];
-    let tree = put(
+    let tree = put_tree_page(
         &store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
-                TreeEntry {
-                    name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
-                    file_id: child_ids[0],
-                    kind: FileKind::Regular,
-                },
-                TreeEntry {
-                    name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
-                    file_id: child_ids[1],
-                    kind: FileKind::Regular,
-                },
-            ]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &TreePage::Leaf(vec![
+            TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                file_id: child_ids[0],
+                kind: FileKind::Regular,
+            },
+            TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                file_id: child_ids[1],
+                kind: FileKind::Regular,
+            },
+        ]),
+        8,
     )
     .await?;
     let mut records = vec![directory_record(root_id, 1, metadata_id, tree)];
