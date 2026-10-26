@@ -1,7 +1,5 @@
-//! Filesystem-driven headless policy, shared by native clients.
+//! Settled task outcomes and their process exit codes.
 use crate::{Error, wire};
-mod runner;
-pub use runner::{HeadlessClient, run_headless, run_jsonl};
 
 /// Settled task outcome with stable process exit codes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

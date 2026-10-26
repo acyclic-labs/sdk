@@ -26,7 +26,7 @@ mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 mod headless;
 pub mod jsonl;
-pub use headless::{HeadlessClient, HeadlessOutcome, run_headless, run_jsonl};
+pub use headless::HeadlessOutcome;
 mod commands;
 pub use commands::*;
 mod command_execution;
@@ -169,60 +169,3 @@ pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod local;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, disconnect_local, local_prompt};
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "tui",
-    not(target_arch = "wasm32")
-))]
-pub use local::{local_completions, local_ui};
-#[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
-mod native_input;
-#[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
-pub use native_input::stdin_jsonl;
-#[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
-pub use native_input::{InputBatch, terminal_events};
-
-#[cfg(feature = "tui")]
-mod input_files;
-#[cfg(feature = "tui")]
-pub use input_files::{
-    apply_tui_input, file_tui_input, file_tui_inputs, handle_tui_input, restore_tui_prompt,
-    save_tui_draft,
-};
-#[cfg(feature = "tui")]
-mod prompt_files;
-#[cfg(feature = "tui")]
-pub use prompt_files::PromptFiles;
-
-#[cfg(feature = "tui")]
-mod scroll_files;
-#[cfg(feature = "tui")]
-pub use scroll_files::{
-    frame_due, input_burst, scroll_tui, transcript_motion, tui_anchor, tui_modal_scroll,
-};
-
-#[cfg(all(
-    feature = "terminal",
-    feature = "tui",
-    feature = "filesystem-local",
-    not(target_arch = "wasm32")
-))]
-pub use native_input::next_file_tui_event;
-
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod local_headless;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};
-
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod local_identity;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local_identity::{local_identity, resume_local_identity, select_local_identity};
-
-#[cfg(test)]
-#[cfg(all(feature = "tui", not(acyclic_harness_loom)))]
-mod task_files_tests;

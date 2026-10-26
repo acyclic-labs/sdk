@@ -221,7 +221,8 @@ pub enum InboxRecord {
     Hook(Hook),
 }
 
-/// Current phase of an agent, appended to its status stream on change.
+/// Current phase of an agent, appended to its status stream on change and on
+/// the step that creates its conversation stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]

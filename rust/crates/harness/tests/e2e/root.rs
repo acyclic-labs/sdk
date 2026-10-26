@@ -1,7 +1,6 @@
 // Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod case_workers;
 mod composer;
-mod composer_entry;
 mod deadline_tests;
 mod discovery;
 mod drivers;

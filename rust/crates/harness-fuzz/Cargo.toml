@@ -326,14 +326,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "ui_prompt"
-path = "fuzz_targets/ui_prompt.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "model_request"
 path = "fuzz_targets/model_request.rs"
 required-features = ["runtime"]

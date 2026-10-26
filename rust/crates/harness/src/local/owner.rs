@@ -450,15 +450,6 @@ impl Owner {
         }
     }
 
-    #[cfg(test)]
-    fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
-        self.publish_as(
-            directory,
-            path,
-            acyclic_native_runtime::RenameMode::NoReplace,
-            None,
-        )
-    }
 
     fn publish_as(
         &self,

@@ -213,49 +213,6 @@ async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() 
     Ok(())
 }
 
-#[cfg(feature = "tui")]
-#[tokio::test]
-async fn dispatch_and_input_follow_the_same_catalog_and_theme_files() -> Result<()> {
-    use acyclic_harness::{
-        tui::{Editor, PromptInput},
-        tui_files::CompletionFiles,
-    };
-    let volume = volume().await?;
-    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
-    let mut input = PromptInput::new(Editor::new("/SH"));
-    let mut completions = CompletionFiles::observe(&volume, &mut input, None, 128)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let candidate = input.completion.items().next().unwrap();
-    assert_eq!(candidate.value, "shell");
-    assert!(candidate.tool);
-    assert!(input.completion.accept(&mut input.editor, 0));
-    assert_eq!(input.editor.text(), "/shell ");
-    publish(
-        &volume,
-        "commands/themes.json",
-        br#"["Solarized Light"]"#.to_vec(),
-    )
-    .await?;
-    client.observe_change().await?;
-    completions
-        .next(&mut input)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    input.editor.set_text("/THEME sol", 1);
-    input.refresh_completions();
-    assert!(input.completion.accept(&mut input.editor, 2));
-    assert_eq!(input.editor.text(), "/THEME Solarized Light");
-    client.submit(input.editor.text(), &DeniedReader).await?;
-    assert_eq!(
-        client
-            .state(CommandFileRoot::Config, "theme.json")?
-            .unwrap()["name"],
-        "Solarized Light"
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn cancelling_a_claimed_dispatch_keeps_it_uncertain_without_resending() -> Result<()> {
     let volume = volume().await?;

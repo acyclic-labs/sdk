@@ -57,7 +57,6 @@ pub fn encode_command_result(
     feature = "tui",
     not(target_arch = "wasm32")
 ))]
-pub(crate) use session::ComposerResolver;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

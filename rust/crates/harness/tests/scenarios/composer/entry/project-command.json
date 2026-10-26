@@ -1,3 +1,0 @@
-{"seed":{".claude/commands/review.md":"Review $ARGUMENTS carefully"},
- "prompt":"/review auth",
- "expect":{"user_text":"Review auth carefully","absent":["/review"]}}

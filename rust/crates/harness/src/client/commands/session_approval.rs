@@ -125,35 +125,6 @@ mod tests {
                         &json!({"selected_task":task,"open_view":form,"view_input":form}),
                     )
                     .await?;
-                #[cfg(all(feature = "tui", feature = "terminal"))]
-                if form == "feedback" {
-                    use crate::tui::{
-                        ClientRenderer, PromptInput, Viewport,
-                        ratatui::{Terminal, backend::TestBackend},
-                    };
-                    let mut renderer = ClientRenderer::default();
-                    let screen = renderer.screen_for(&client)?;
-                    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-                    terminal
-                        .draw(|frame| {
-                            screen.render(
-                                frame,
-                                &PromptInput::default(),
-                                &mut Viewport::default(),
-                                0,
-                                0,
-                            );
-                        })
-                        .unwrap();
-                    let visible = terminal
-                        .backend()
-                        .buffer()
-                        .content
-                        .iter()
-                        .map(|cell| cell.symbol())
-                        .collect::<String>();
-                    assert!(visible.contains("Enter saves locally"));
-                }
                 client.submit(text, &NoReads).await?;
                 if form == "theme" {
                     assert_eq!(

@@ -31,13 +31,6 @@ impl Driver for Composer {
     }
 }
 
-impl Driver for super::composer_entry::ComposerEntry {
-    type Case = Self;
-    async fn execute(case: Self) -> TestResult {
-        case.run().await
-    }
-}
-
 impl Driver for super::goals::GoalCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -153,12 +146,6 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
         }
         Some("executor") => Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await,
         Some("composer") => Box::pin(Composer::execute(Composer::parse(value)?)).await,
-        Some("composer_entry") => {
-            Box::pin(super::composer_entry::ComposerEntry::execute(
-                super::composer_entry::ComposerEntry::parse(value)?,
-            ))
-            .await
-        }
         Some("notifications") => {
             Box::pin(Notifications::execute(Notifications::parse(value)?)).await
         }

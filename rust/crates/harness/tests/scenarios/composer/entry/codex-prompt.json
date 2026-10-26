@@ -1,3 +1,0 @@
-{"home":{".codex/prompts/tests.md":"Run the tests for $ARGUMENTS"},
- "prompt":"/tests parser",
- "expect":{"user_text":"Run the tests for parser","absent":["/tests"]}}

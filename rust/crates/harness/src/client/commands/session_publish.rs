@@ -3,39 +3,6 @@ use super::*;
 pub(super) const PUBLICATION_ATTEMPTS: usize = 8;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
-    /// Recompute a UI edit from the followed file after a competing publication.
-    /// Only the pure edit is replayed; execution requests retain their own CAS.
-    #[cfg(any(test, feature = "tui"))]
-    pub(crate) async fn update_state(
-        &mut self,
-        root: CommandFileRoot,
-        name: &str,
-        mut edit: impl FnMut(&mut Value) -> Result<bool>,
-    ) -> Result<()> {
-        for _ in 0..PUBLICATION_ATTEMPTS {
-            let mut value = self.state(root, name)?.unwrap_or_else(|| json!({}));
-            if !edit(&mut value)? {
-                return Ok(());
-            }
-            let before = self.generation;
-            // Retry only publication. Once accepted, a later settings/follow
-            // failure must never apply the movement a second time.
-            match self.publish_state(root, name, &value).await {
-                Err(Error::Conflict(_)) if self.generation != before => continue,
-                Err(error) => return Err(error),
-                Ok(()) => {
-                    if root == CommandFileRoot::Session && name == "layout.json" {
-                        self.load_task_settings().await?;
-                    }
-                    return Ok(());
-                }
-            }
-        }
-        Err(Error::Conflict(
-            "UI file remained busy; retry the input".into(),
-        ))
-    }
-
     pub(super) async fn publish_state(
         &mut self,
         root: CommandFileRoot,

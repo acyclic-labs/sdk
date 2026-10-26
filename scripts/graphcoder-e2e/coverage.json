@@ -171,8 +171,6 @@
       "cases": [
         "jsonl-input",
         "jsonl-malformed",
-        "jsonl-other-session",
-        "jsonl-prompt-replacement",
         "text-responses",
         "provider-error"
       ]

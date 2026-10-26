@@ -24,7 +24,6 @@ mod progress_guard;
 #[path = "../../../harness/tests/support/progress_registry.rs"]
 mod progress_registry;
 mod provider_case;
-mod provider_failure_exit;
 mod provider_http;
 mod provider_tests;
 mod providers;

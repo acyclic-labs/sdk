@@ -29,9 +29,6 @@ mod input;
 mod publication;
 #[path = "session_resume.rs"]
 mod resume;
-#[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
-#[path = "session_scroll_models.rs"]
-mod scroll_models;
 #[path = "session_state.rs"]
 mod state;
 #[path = "session_view.rs"]
@@ -44,14 +41,6 @@ pub(crate) trait ApprovalResponder: acyclic_stream::ProviderPlatform {
         request: &'a files::FileValue,
         approved: bool,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
-}
-
-pub(crate) trait ComposerResolver: acyclic_stream::ProviderPlatform {
-    fn resolve<'a>(
-        &'a self,
-        operation: OperationId,
-        input: &'a str,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<CommandResolution>>;
 }
 
 /// Disposable command/UI fold. All authoritative contents and execution markers
@@ -71,7 +60,6 @@ pub struct CommandSession<P: ?Sized> {
     cleared_output: u64,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
-    composer: Option<Arc<dyn ComposerResolver>>,
     approvals: Option<Arc<dyn ApprovalResponder>>,
     loaded_task: Option<Option<TaskId>>,
     observed_change: Option<bool>,
@@ -114,14 +102,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     ) -> Result<()> {
         self.approvals = Some(Arc::new(local.human_approval_connection()?));
         Ok(())
-    }
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "tui",
-        not(target_arch = "wasm32")
-    ))]
-    pub(crate) fn bind_composer(&mut self, composer: Arc<dyn ComposerResolver>) {
-        self.composer = Some(composer);
     }
 
     /// Open one atomic snapshot and its exact cursor follow. Reopening discovers
@@ -232,7 +212,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             outputs: BTreeMap::new(),
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
-            composer: None,
             approvals: None,
             loaded_task: None,
             observed_change: None,

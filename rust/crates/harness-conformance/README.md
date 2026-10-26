@@ -80,7 +80,7 @@ Both substrates declare it; all 177 composer cases run through the package.
 
 The resolved recipe driver tags cases requiring native fixture introspection as
 `local-driver:<driver>`, where `<driver>` is `local`, `goal-local`, `agents`,
-`composer_entry`, `notifications`, `task_query`, `subagents`,
+`notifications`, `task_query`, `subagents`,
 `swarm` or `plans`. They inspect native scheduler state, UI
 entrypoints, process fixtures, fixture-owned projections, native builder/run_prompt
 fixtures or instrumented provider counters outside the #1359 package adapter,

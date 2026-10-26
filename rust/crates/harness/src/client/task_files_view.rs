@@ -4,8 +4,6 @@ use crate::task_volume::{
     Channel, Component, Cursor, FileKey, HeadFile, Query, TaskFile, ToolFile,
 };
 use std::collections::BTreeMap;
-#[cfg(feature = "tui")]
-use std::sync::Arc;
 
 /// One task at an accepted query cut; payloads remain shared file segments.
 #[derive(Clone)]
@@ -14,10 +12,6 @@ pub struct TaskQueryView<'a> {
     pub cursor: &'a Cursor,
     /// Canonical task identity.
     pub task: &'a Component,
-    #[cfg(feature = "tui")]
-    pub(crate) source: &'a Arc<Query>,
-    #[cfg(feature = "tui")]
-    selection: &'a FileQueryView,
     files: &'a BTreeMap<FileKey, HeadFile>,
     selected: std::collections::btree_map::Range<'a, FileKey, HeadFile>,
 }
@@ -53,10 +47,6 @@ impl FileQueryView {
         TaskQueryView {
             cursor: self.cursor(),
             task,
-            #[cfg(feature = "tui")]
-            source: self.source(),
-            #[cfg(feature = "tui")]
-            selection: self,
             files: self.files(),
             selected: self.files().range(range),
         }
@@ -73,17 +63,6 @@ impl ClientViews {
     }
 }
 impl<'a> TaskQueryView<'a> {
-    #[cfg(feature = "tui")]
-    pub(crate) fn selection(&self) -> &'a FileQueryView {
-        self.selection
-    }
-    #[cfg(feature = "tui")]
-    pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
-        match key {
-            FileKey::Task { task, .. } if task == self.task => self.files.get(key),
-            _ => None,
-        }
-    }
     pub(crate) fn text_from(
         &self,
         from: Option<&FileKey>,
@@ -116,26 +95,6 @@ impl<'a> TaskQueryView<'a> {
                 file,
             })
         })
-    }
-    #[cfg(feature = "tui")]
-    pub(crate) fn changes_since(
-        &self,
-        after: u64,
-    ) -> Option<impl Iterator<Item = &'a FileKey> + use<'a>> {
-        let task = self.task;
-        self.selection.changes_since(after).map(move |changes| {
-            changes.filter(
-                move |key| matches!(key, FileKey::Task { task: owner, .. } if owner == task),
-            )
-        })
-    }
-    #[cfg(feature = "tui")]
-    pub(crate) fn tool<'b>(&'b self, turn: u64, call: &'b Component) -> ToolQueryView<'b> {
-        ToolQueryView {
-            turn,
-            call,
-            task: self.clone(),
-        }
     }
     /// Exact task files in numeric identity order, retaining canonical metadata.
     pub fn files(&self) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
@@ -190,39 +149,6 @@ impl<'a> TaskQueryView<'a> {
     }
 }
 impl<'a> ToolQueryView<'a> {
-    #[cfg(feature = "tui")]
-    pub(crate) fn exists(&self) -> bool {
-        self.range(ToolFile::Request, ToolFile::Result)
-            .next()
-            .is_some()
-    }
-    #[cfg(feature = "tui")]
-    pub(crate) fn source(&self) -> &'a Arc<Query> {
-        self.task.source
-    }
-    #[cfg(feature = "tui")]
-    pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
-        self.task.file(key).filter(|file| matches!(&file.key,
-            FileKey::Task { file: TaskFile::Tool { turn, call, .. }, .. } if *turn == self.turn && call == self.call))
-    }
-    #[cfg(feature = "tui")]
-    pub(crate) fn output_from(
-        &self,
-        stderr: bool,
-        from: Option<&FileKey>,
-    ) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
-        let leaf = |sequence| {
-            if stderr {
-                ToolFile::Stderr(sequence)
-            } else {
-                ToolFile::Stdout(sequence)
-            }
-        };
-        self.task
-            .files
-            .range(from.cloned().unwrap_or_else(|| self.key(leaf(0)))..=self.key(leaf(u64::MAX)))
-            .map(|(_, file)| file)
-    }
     fn key(&self, file: ToolFile) -> FileKey {
         FileKey::Task {
             task: self.task.task.clone(),

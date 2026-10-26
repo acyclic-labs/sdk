@@ -39,10 +39,6 @@ pub mod package;
 pub mod test_support;
 #[cfg(feature = "tui")]
 pub mod tui;
-#[cfg(feature = "tui")]
-pub mod tui_config;
-#[cfg(feature = "tui")]
-pub mod tui_files;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

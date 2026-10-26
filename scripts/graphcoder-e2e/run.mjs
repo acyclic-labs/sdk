@@ -59,11 +59,17 @@ function expand(value, fixture) {
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${fixture.id}/v1` } : {}) });
 }
-function files(frames) {
-  return [...(frames[0]?.[1]?.files ?? []), ...frames.slice(1).flatMap(change => [change.file, ...(change.files ?? [])].filter(Boolean))];
-}
-function outcomes(frames, operation) {
-  return files(frames).filter(file => file.key.Session?.file.ExecutionResult === operation).map(file => JSON.parse(file.bytes.text));
+// GraphCoder's headless outcome: `-p` prints the answer text and exits 0;
+// JSONL prints one `{"id", "inbox", "text"}` (or `"error"`) line per prompt.
+function outcome(input, result) {
+  if (input.mode !== "jsonl") {
+    return result.code === 0 ? { completion: "completed", ok: { text: result.stdout.replace(/\r?\n$/, "") } }
+      : { completion: "failed", error: result.stderr.trim() };
+  }
+  const results = result.stdout.trim().split("\n").filter(Boolean).map(JSON.parse).filter(line => line.id !== undefined);
+  assert.equal(results.length, 1, "one authoritative result");
+  const [line] = results;
+  return line.error === undefined ? { completion: "completed", ok: { text: line.text } } : { completion: "failed", error: line.error };
 }
 function checkTree(test) {
   if (test.assert.dead_tree) {
@@ -119,24 +125,20 @@ async function execute(test, gitOrigin) {
         interrupted.push(running.closed.then(capture => captures.push(capture)));
         continue;
       } else if (input.mode === "jsonl") {
-        const request = { key: { Session: { session: op, file: { Request: op } } }, channel: null,
-          bytes: { text: JSON.stringify(input.resolution ?? { kind: "prompt", text: input.text ?? "hello", source: null, mentions: [] }) } };
-        running.child.stdin.end(input.stdin ?? (input.reopen ? "" : JSON.stringify(request) + "\n"));
+        // Message `<operation>:e2e`: rerunning the operation replays its answer.
+        running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: "e2e" }) + "\n");
       } else running.child.stdin.end();
       const result = await running.closed; captures.push(result);
       assert.equal(result.code, input.exit ?? 0, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
       if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}`);
       if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
-        const frames = result.stdout.trim().split("\n").map(JSON.parse);
-        assert.equal(frames[0][0].TaskSession.session, op);
-        const results = outcomes(frames, op);
-        assert.equal(results.length, 1, "one authoritative result");
-        const outcome = results[0];
+        const settled = outcome(input, result);
         if (input.outcome !== undefined) {
-          assert.ok(subset(outcome, input.outcome), `terminal outcome mismatch: ${JSON.stringify(outcome)}`);
-        } else assert.equal(outcome.completion, "completed", JSON.stringify(outcome));
-        if (input.answer !== undefined) assert.equal(outcome.ok.text, input.answer);
+          assert.equal(settled.completion, input.outcome.completion, `terminal outcome mismatch: ${JSON.stringify(settled)}`);
+          if (input.outcome.error !== undefined) assert.ok(settled.error.includes(input.outcome.error), `terminal error mismatch: ${JSON.stringify(settled)}`);
+        } else assert.equal(settled.completion, "completed", JSON.stringify(settled));
+        if (input.answer !== undefined) assert.equal(settled.ok.text, input.answer);
       }
     }
     // Check while the mock's held response is still open. Killing the mock

@@ -4,7 +4,6 @@ use crate::{
     client::{CommandCatalog, CommandResolution},
     context::ContextRoot,
     conversation::ContentResidencyVerifier,
-    task_volume::{FileKey, Query},
 };
 
 #[cfg(any(test, feature = "native-execution"))]
@@ -29,13 +28,6 @@ struct Held<T, A> {
 struct PromptInput {
     text: String,
     content: ModelContent,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResolvedInput {
-    text: String,
-    resolution: CommandResolution,
 }
 
 fn prompt_operation(operation: OperationId) -> OperationId {
@@ -159,15 +151,6 @@ impl LocalHarness {
         }
         Ok(input.content)
     }
-    pub(crate) async fn resolve_input(
-        &self,
-        operation: OperationId,
-        text: &str,
-    ) -> Result<CommandResolution> {
-        let composer = self.composer_input()?;
-        composer.resolve_input(operation, text).await
-    }
-
     async fn resolve_prompt_mentions(
         &self,
         operation: OperationId,
@@ -178,15 +161,10 @@ impl LocalHarness {
             .await
     }
 
-    #[cfg(feature = "tui")]
-    pub(crate) fn composer_resolver(&self) -> Result<Arc<dyn crate::client::ComposerResolver>> {
-        Ok(Arc::new(self.composer_input()?))
-    }
 
     fn composer_input(&self) -> Result<ComposerInput> {
         Ok(ComposerInput {
             files: Arc::clone(&self.files),
-            task_files: Arc::clone(&self.task_files),
             project: self.project.clone(),
             #[cfg(any(test, feature = "native-execution"))]
             journal: self.journal.clone(),
@@ -204,7 +182,6 @@ impl LocalHarness {
 // The input binding retains authority and source handles, not an execution runtime.
 struct ComposerInput {
     files: Arc<LocalFilesystem>,
-    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     #[cfg(any(test, feature = "native-execution"))]
     journal: VolumeRef,
@@ -217,114 +194,7 @@ struct ComposerInput {
     settings: Arc<crate::native_settings::SettingsConfig>,
 }
 
-#[cfg(feature = "tui")]
-impl crate::client::ComposerResolver for ComposerInput {
-    fn resolve<'a>(
-        &'a self,
-        operation: OperationId,
-        text: &'a str,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<CommandResolution>> {
-        Box::pin(self.resolve_input(operation, text))
-    }
-}
-
 impl ComposerInput {
-    pub(crate) async fn resolve_input(
-        &self,
-        operation: OperationId,
-        text: &str,
-    ) -> Result<CommandResolution> {
-        if text.is_empty() || text.len() as u64 > self.maximum_bytes {
-            return Err(Error::Invalid(
-                "local input is empty or exceeds byte bound".into(),
-            ));
-        }
-        if !text.trim_start().starts_with('/')
-            && crate::client::file_mention_paths(text)?.is_empty()
-        {
-            return Ok(CommandResolution::Prompt {
-                text: text.into(),
-                source: None,
-                mentions: Vec::new(),
-            });
-        }
-        let publisher = Arc::clone(&self.publisher);
-        let identity = context::publication_operation(
-            b"acyclic.local.resolved-input/v1\0",
-            &operation.into_bytes(),
-        );
-        let path = format!("inputs/{operation}.resolution.json");
-        let reader = Arc::clone(&self.reader);
-        let (saved, _) = publisher
-            .observe_staged_once(
-                identity,
-                self.maximum_bytes,
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
-        if let Some(saved) = saved {
-            if saved.path() != path {
-                return Err(Error::Conflict(
-                    "resolved input has another identity".into(),
-                ));
-            }
-            let bytes = reader.read(&saved, self.maximum_bytes, None, None)?.await?;
-            let saved: ResolvedInput = serde_json::from_slice(&bytes).map_err(storage)?;
-            if saved.text != text {
-                return Err(Error::Conflict("operation input changed".into()));
-            }
-            return Ok(saved.resolution);
-        }
-        let resolution = self.resolve_fresh_input(operation, text).await?;
-        let bytes = serde_json::to_vec(&ResolvedInput {
-            text: text.into(),
-            resolution: resolution.clone(),
-        })
-        .map_err(storage)?;
-        publisher
-            .stage_once(
-                identity,
-                &path,
-                &bytes,
-                "application/json",
-                "resolved composer input",
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
-        Ok(resolution)
-    }
-
-    async fn resolve_fresh_input(
-        &self,
-        operation: OperationId,
-        text: &str,
-    ) -> Result<CommandResolution> {
-        let saved = self
-            .task_files
-            .inner
-            .snapshot(
-                &Query::File(FileKey::parse("commands/catalog.json").map_err(storage)?),
-                1,
-            )
-            .await
-            .map_err(storage)?;
-        let catalog = match saved.files.first() {
-            Some(file) => CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?,
-            None => CommandCatalog::builtins()?,
-        };
-        let reader = Arc::clone(&self.reader);
-        #[cfg(any(test, feature = "native-execution"))]
-        if let Some(workspace) = &self.workspace {
-            return self
-                .resolve_checkout_input(operation, text, catalog, workspace, reader.as_ref(), true)
-                .await;
-        }
-        let _ = operation;
-        catalog
-            .resolve(text, reader.as_ref(), self.maximum_bytes)
-            .await
-    }
-
     async fn resolve_prompt_mentions(
         &self,
         operation: OperationId,

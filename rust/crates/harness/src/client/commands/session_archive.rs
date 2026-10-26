@@ -346,7 +346,3 @@ pub(in crate::client::commands) fn output_bytes(
     Ok(output.bytes)
 }
 
-#[cfg(test)]
-#[cfg(all(feature = "tui", not(acyclic_harness_loom)))]
-#[path = "session_settings_tests.rs"]
-mod settings_tests;

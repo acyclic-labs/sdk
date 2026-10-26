@@ -304,9 +304,6 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
     );
 }
 
-#[cfg(all(feature = "tui", feature = "terminal"))]
-mod retention;
-
 async fn replacement_sequence(tasks: &[u8], retain_old: bool) {
     let volume = TaskVolume::open(
         Arc::new(MemoryStream::default()),

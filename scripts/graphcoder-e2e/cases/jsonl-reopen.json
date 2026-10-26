@@ -16,13 +16,13 @@
   },
   "inputs": [
     {
-      "mode": "headless",
+      "mode": "jsonl",
       "text": "hello",
       "answer": "done"
     },
     {
       "mode": "jsonl",
-      "reopen": true,
+      "text": "hello",
       "answer": "done"
     }
   ],

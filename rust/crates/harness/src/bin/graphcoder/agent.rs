@@ -219,58 +219,59 @@ impl Conversation {
                 }
             }
         });
+        // Register, then check: the status follow is open before the first
+        // conversation follow, and the step that creates the conversation
+        // stream also appends a status, so a missing stream is retried only
+        // after the agent's next status.
         let status = self.agent.status().map_err(failed)?;
         let latest = provider.tail(status.clone()).await.map_err(failed)?;
         let statuses = provider
             .follow(status, latest.saturating_sub(1), FollowFilter::default())
             .await
-            .map_err(failed)?
-            .map_err(failed)
-            .and_then(|record| async move {
-                let status = StatusRecord::decode(&record.value).map_err(failed)?;
-                tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
-                Ok(Event::Status(status))
-            });
+            .map_err(failed)?;
         let path = self.agent.conversation().map_err(failed)?;
-        // The conversation stream starts with the agent's first settled turn.
-        let turns = futures::stream::try_unfold(
-            (provider, path, from, None),
-            |(provider, path, next, mut follow)| async move {
-                loop {
-                    let Some(records) = follow.as_mut() else {
-                        match provider
-                            .follow(path.clone(), next, FollowFilter::default())
-                            .await
-                        {
-                            Ok(records) => follow = Some(records),
-                            Err(StreamError::NotFound) => {
-                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            }
-                            Err(error) => return Err(failed(error)),
-                        }
-                        continue;
-                    };
-                    let record = records
-                        .try_next()
+        let observed = futures::stream::try_unfold(
+            (provider, path, statuses, from, None, true),
+            |(provider, path, mut statuses, next, mut turns, mut retry)| async move {
+                if turns.is_none() && retry {
+                    retry = false;
+                    match provider
+                        .follow(path.clone(), next, FollowFilter::default())
                         .await
-                        .map_err(failed)?
-                        .ok_or_else(|| Error::Conflict("conversation follow ended".into()))?;
-                    let entry = ConversationEntry::decode(&record.value).map_err(failed)?;
-                    let inbox = match &entry.input {
-                        TurnInput::Message { inbox, .. } => Some(*inbox),
-                        _ => None,
-                    };
-                    let state = (provider, path, record.sequence + 1, follow);
-                    return Ok(Some((Event::Turn { inbox, entry }, state)));
+                    {
+                        Ok(records) => turns = Some(records),
+                        Err(StreamError::NotFound) => {}
+                        Err(error) => return Err(failed(error)),
+                    }
                 }
+                let ended = || Error::Conflict("agent follow ended".into());
+                let event = match turns.as_mut() {
+                    Some(records) => tokio::select! {
+                        record = statuses.try_next() => Err(record.map_err(failed)?.ok_or_else(ended)?),
+                        record = records.try_next() => Ok(record.map_err(failed)?.ok_or_else(ended)?),
+                    },
+                    None => Err(statuses.try_next().await.map_err(failed)?.ok_or_else(ended)?),
+                };
+                let (event, next) = match event {
+                    Err(record) => {
+                        let status = StatusRecord::decode(&record.value).map_err(failed)?;
+                        tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
+                        retry = true;
+                        (Event::Status(status), next)
+                    }
+                    Ok(record) => {
+                        let entry = ConversationEntry::decode(&record.value).map_err(failed)?;
+                        let inbox = match &entry.input {
+                            TurnInput::Message { inbox, .. } => Some(*inbox),
+                            _ => None,
+                        };
+                        (Event::Turn { inbox, entry }, record.sequence + 1)
+                    }
+                };
+                Ok(Some((event, (provider, path, statuses, next, turns, retry))))
             },
         );
-        Ok(futures::stream::select_all([
-            statuses.boxed_local(),
-            turns.boxed_local(),
-            failures.boxed_local(),
-        ])
-        .boxed_local())
+        Ok(futures::stream::select(observed.boxed_local(), failures.boxed_local()).boxed_local())
     }
 }
 

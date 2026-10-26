@@ -10,9 +10,6 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(feature = "tui")]
-mod revisions;
-
 fn goal_revision(file: Option<&FileValue>) -> Option<crate::OperationId> {
     file.and_then(|file| file.publication)
 }
@@ -64,8 +61,6 @@ type ViewIndex<V> = BTreeMap<FileKey, V>;
 #[derive(Clone, Debug)]
 pub struct FileQueryView {
     query: Arc<Query>,
-    #[cfg(feature = "tui")]
-    revisions: revisions::Revisions,
     pub(super) outputs: super::command_output::Outputs,
     storage: super::FileViews,
     rows: BTreeMap<FileKey, Arc<[String]>>,
@@ -203,8 +198,6 @@ impl FileQueryView {
             .collect();
         let mut view = Self {
             query: Arc::new(query),
-            #[cfg(feature = "tui")]
-            revisions: revisions::Revisions::new(storage.cursor().position),
             outputs: super::command_output::Outputs::default(),
             storage,
             rows: BTreeMap::new(),
@@ -270,16 +263,6 @@ impl FileQueryView {
         &self.query
     }
 
-    #[cfg(feature = "tui")]
-    pub(crate) fn source(&self) -> &Arc<Query> {
-        &self.query
-    }
-
-    #[cfg(feature = "tui")]
-    pub(crate) fn changes_since(&self, after: u64) -> Option<impl Iterator<Item = &FileKey>> {
-        self.revisions.since(after)
-    }
-
     /// Exact resume cut; it advances even for nonmatching publications.
     pub fn cursor(&self) -> &Cursor {
         self.storage.cursor()
@@ -334,11 +317,6 @@ impl FileQueryView {
         self.rows
             .values()
             .flat_map(|rows| rows.iter().map(String::as_str))
-    }
-
-    #[cfg(feature = "tui")]
-    pub(crate) fn plan_files(&self) -> impl Iterator<Item = &crate::task_volume::HeadFile> {
-        self.rows.keys().filter_map(|key| self.storage.file(key))
     }
 
     /// Collects plain rows for consumers that require an owned export.
@@ -445,8 +423,6 @@ impl FileQueryView {
         let apply = self.storage.prepare(change).map_err(super::query_error)?;
         self.project(change);
         apply(&mut self.storage).map_err(super::query_error)?;
-        #[cfg(feature = "tui")]
-        self.revisions.record(change, self.maximum_files);
         Ok(())
     }
 
@@ -563,8 +539,6 @@ impl FileQueryView {
         }
         self.project(&change);
         self.storage.replace(&change, &self.rejected_models);
-        #[cfg(feature = "tui")]
-        self.revisions.record(&change, self.maximum_files);
         Ok(changed)
     }
 }

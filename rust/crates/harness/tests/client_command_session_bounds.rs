@@ -232,29 +232,6 @@ async fn full_prompt_state(history: usize, draft: usize, live: bool) {
             .unwrap(),
         Some(draft.clone())
     );
-    #[cfg(feature = "tui")]
-    {
-        let mut renderer = acyclic_harness::tui::ClientRenderer::default();
-        renderer.update_files(&display, &owner);
-        renderer
-            .configure(display.views(), &owner, &commands)
-            .unwrap();
-        assert!(!renderer.screen().transcript.is_empty());
-        commands
-            .write_state(
-                CommandFileRoot::Session,
-                "layout.json",
-                &json!({"history_after":commands.output_sequence(),"selected_task":null}),
-            )
-            .await
-            .unwrap();
-        // The answer selection contains no layout file. Its existing session
-        // query must still clear archived answers, even at the same render cut.
-        renderer
-            .configure(display.views(), &owner, &commands)
-            .unwrap();
-        assert!(renderer.screen().transcript.is_empty());
-    }
     commands.submit("/quit", &DeniedReader).await.unwrap();
     assert!(commands.exit_requested().unwrap());
     let reopened = CommandSession::open(volume, session_id(), 65_536, 128)

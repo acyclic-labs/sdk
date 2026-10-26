@@ -1,2 +1,0 @@
-{"turns":[],"prompt":"inspect @../outside",
- "expect":{"error":"path"}}

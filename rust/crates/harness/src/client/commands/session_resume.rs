@@ -20,7 +20,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             // Build the complete disposable fold before publishing the reset.
             // The volume primitive validates the snapshot's history identity.
             let progress = snapshot.cursor != self.cursor;
-            let mut replacement = Self::from_snapshot(
+            let replacement = Self::from_snapshot(
                 self.volume.clone(),
                 self.writer.clone(),
                 self.session,
@@ -29,7 +29,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 snapshot,
                 observed.changes,
             )?;
-            replacement.composer = self.composer.clone();
             *self = replacement;
             return Ok(progress);
         }

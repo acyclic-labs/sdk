@@ -368,7 +368,6 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
         "local",
         "goal-local",
         "agents",
-        "composer_entry",
         "notifications",
         "task_query",
         "subagents",

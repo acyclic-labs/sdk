@@ -403,20 +403,6 @@ impl super::FileQueryView {
         };
         command_prompt(&request, bytes)
     }
-    #[cfg(feature = "tui")]
-    pub(crate) fn pending_prompts<'a>(
-        &'a self,
-        owner: &OutputOwner,
-    ) -> impl Iterator<Item = &'a FileKey> + use<'a> {
-        [
-            Some(Scope::Owner(owner.clone())),
-            matches!(owner, OutputOwner::Session(_)).then_some(Scope::Unscoped),
-        ]
-        .into_iter()
-        .flatten()
-        .filter_map(|scope| self.outputs.pending.get(&scope))
-        .flat_map(|keys| keys.iter())
-    }
     fn output<'a>(&'a self, key: &'a FileKey) -> Option<(&'a FileKey, CommandOutputView<'a>)> {
         let file = self.files().get(key)?;
         let [bytes] = file.segments.as_slice() else {

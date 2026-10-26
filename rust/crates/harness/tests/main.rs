@@ -66,13 +66,6 @@ use acyclic_harness::{Error, Result};
 #[path = "cases/client_mention_attachments.rs"]
 mod client_mention_attachments;
 
-#[cfg(feature = "tui")]
-#[path = "cases/tui_config.rs"]
-mod tui_config;
-
-#[cfg(all(feature = "tui", feature = "test-support"))]
-#[path = "cases/tui_completion.rs"]
-mod tui_completion;
 
 #[cfg(feature = "test-support")]
 #[path = "cases/decoder_properties.rs"]

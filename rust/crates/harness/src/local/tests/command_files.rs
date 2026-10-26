@@ -224,5 +224,3 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
     Ok(())
 }
 
-#[path = "command_files/claim_gap.rs"]
-mod claim_gap;

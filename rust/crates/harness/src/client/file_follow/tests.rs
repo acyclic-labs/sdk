@@ -1,8 +1,6 @@
 use super::*;
 use crate::{
     task_volume::{FileKey, FileValue, Observation, TaskVolume},
-    tui::PromptInput,
-    tui_files::CompletionFiles,
 };
 use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamPath};
 use futures::FutureExt as _;
@@ -142,46 +140,6 @@ async fn documents_resume_exact_cuts_after_cancel_and_reset_atomically() {
     }
 }
 #[tokio::test]
-async fn completion_resume_keeps_unpublished_reset_and_invalid_files_atomic() {
-    let source = fixture(true, false).await.unwrap();
-    write(&source, "commands/old.json", br#"[{"name":"old"}]"#)
-        .await
-        .unwrap();
-    let mut input = PromptInput::new(crate::tui::Editor::new("/"));
-    let mut completion = CompletionFiles::observe_source(&source, &mut input, None, 8)
-        .await
-        .unwrap();
-    let cut = completion.cursor.clone();
-    write(&source, "commands/old.json", br#"[{"name":"new"}]"#)
-        .await
-        .unwrap();
-    let start = std::time::Instant::now();
-    let update = completion.read_change().await.unwrap();
-    assert!(!update.is_checkpoint());
-    assert_eq!(completion.cursor, cut);
-    assert_eq!(input.completion.items().next().unwrap().value, "old");
-    let mut broken = update.clone();
-    let FileUpdate::Snapshot(snapshot) = &mut broken else {
-        panic!("reset")
-    };
-    snapshot.files.push(FileValue::new(
-        FileKey::parse("commands/bad.json").unwrap(),
-        b"[".to_vec(),
-    ));
-    assert!(completion.apply_change(broken, &mut input).is_err());
-    assert_eq!(completion.cursor, cut);
-    assert_eq!(input.completion.items().next().unwrap().value, "old");
-    let update = completion.read_change().await.unwrap();
-    completion.apply_change(update, &mut input).unwrap();
-    assert_eq!(input.completion.items().next().unwrap().value, "new");
-    assert_ne!(completion.cursor, cut);
-    eprintln!(
-        "CLIENT_COMPLETION_RESUME os={} elapsed_us={}",
-        std::env::consts::OS,
-        start.elapsed().as_micros()
-    );
-}
-#[tokio::test]
 async fn negative_control_exiting_the_document_reader_loses_a_publication() {
     let source = fixture(false, false).await.unwrap();
     let (mut follow, _) = FileFollow::open(&source, Query::File(FileKey::Goal), None, 1, 4096)
@@ -235,28 +193,6 @@ async fn invalid_document_reset_preserves_the_fold_and_selected_delivery_survive
         3,
         "retry uses the retained delivery, not another observe"
     );
-}
-
-#[tokio::test]
-async fn completion_direct_resume_commits_only_after_the_selected_fold() {
-    let source = fixture(false, false).await.unwrap();
-    let mut input = PromptInput::new(crate::tui::Editor::new("/"));
-    let mut completion = CompletionFiles::observe_source(&source, &mut input, None, 8)
-        .await
-        .unwrap();
-    let cut = completion.cursor.clone();
-    write(&source, "commands/new.json", br#"[{"name":"new"}]"#)
-        .await
-        .unwrap();
-    drop(completion.read_change().await.unwrap());
-    assert_eq!(completion.cursor, cut);
-    assert!(input.completion.items().next().is_none());
-    let update = completion.read_change().await.unwrap();
-    assert!(matches!(update, FileUpdate::Change(_)));
-    completion.apply_change(update, &mut input).unwrap();
-    assert_eq!(input.completion.items().next().unwrap().value, "new");
-    assert_ne!(completion.cursor, cut);
-    assert_eq!(source.attempts.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

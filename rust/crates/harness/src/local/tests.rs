@@ -30,10 +30,6 @@ mod hermetic;
 mod hook_configuration;
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 mod hook_lifecycle;
-#[cfg(any(test, feature = "native-execution"))]
-mod input;
-#[cfg(any(test, feature = "native-execution"))]
-mod input_user;
 mod pre_dispatch;
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 mod tool_hooks;
@@ -830,16 +826,7 @@ mod mcp;
 #[path = "tests/command_files.rs"]
 mod command_files;
 
-#[path = "tests/headless.rs"]
-mod headless;
-
 #[path = "tests/task_files.rs"]
 mod task_files;
 
-#[cfg(all(feature = "tui", feature = "terminal"))]
-#[path = "tests/live_ui.rs"]
-mod live_ui;
 
-mod package_subscription;
-
-mod package_idle;

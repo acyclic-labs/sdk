@@ -3,8 +3,6 @@
 use crate::TestResult;
 use serde_json::Value;
 
-#[path = "../../harness/tests/support/schema/composer_entry.rs"]
-mod composer_entry;
 #[path = "../../harness/tests/support/expected_outcome.rs"]
 mod expected_outcome;
 #[path = "../../harness/tests/e2e/goals.rs"]
@@ -31,9 +29,6 @@ pub(super) fn validate(mut value: Value) -> TestResult {
     match driver.as_str() {
         Some("goal-local") => {
             goals::GoalCase::parse(value)?;
-        }
-        Some("composer_entry") => {
-            composer_entry::ComposerEntry::parse(value)?;
         }
         Some("local") => {
             let case: local::LocalCase = serde_json::from_value(value)?;
