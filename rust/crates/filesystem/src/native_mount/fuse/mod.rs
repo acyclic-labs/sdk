@@ -140,13 +140,18 @@ mod packet_dispatch;
 mod packet_publication;
 mod packet_router;
 mod packet_session;
+mod vhost_control;
 mod vring;
+mod vring_control;
+mod vring_event;
+mod vring_memory;
 mod vring_packet;
 use notification::CacheNotifier;
 mod host_io;
 mod host_session;
 mod shared;
 mod shared_instance;
+mod transport_io;
 
 #[cfg(test)]
 pub(in crate::native_mount) mod tests;

@@ -65,6 +65,7 @@ mod native;
 pub(super) mod packets;
 pub(in crate::native_mount) mod retirement;
 mod shared;
+mod vring;
 
 use cache::*;
 use native::*;

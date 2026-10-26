@@ -1,22 +1,18 @@
 //! Physical split-ring completion over the one FUSE packet entry.
 //!
-//! rust-vmm owns descriptor traversal, memory mappings and ring publication.
+//! rust-vmm owns descriptor layout, memory mappings and ring publication.
 //! Snapshot each descriptor once before dispatch: constructing separate Readers
 //! and Writers would walk mutable guest descriptor storage twice.
 
 use super::packet::PacketRequest;
 use super::packet_buffers::PacketBuffers;
 use super::packet_session::PacketSession;
-use super::vring::PacketVring;
+use super::vring::{PacketVring, RingFeatures};
+use super::vring_memory::GuestRam;
 use super::*;
 use std::io::IoSlice;
-use std::ops::Deref;
-use virtio_queue::{DescriptorChain, QueueOwnedT, QueueT};
-use vm_memory::{
-    GuestAddressSpace, GuestMemory, GuestMemoryAtomic, GuestMemoryMmap, VolatileSlice,
-};
-
-pub(super) type GuestRam = GuestMemoryAtomic<GuestMemoryMmap<()>>;
+use virtio_queue::{QueueOwnedT, QueueT, desc::split::Descriptor};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
 pub(super) enum QueueProgress {
     Empty,
@@ -38,30 +34,65 @@ struct VringPacket<'a> {
 }
 
 impl<'a> VringPacket<'a> {
-    fn snapshot<M>(
+    fn snapshot(
         memory: &'a GuestMemoryMmap<()>,
-        chain: DescriptorChain<M>,
+        head: u16,
+        mut table: GuestAddress,
         capacity: usize,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Self, NativeMountError>
-    where
-        M: Deref<Target = GuestMemoryMmap<()>>,
-    {
+        indirect_enabled: bool,
+    ) -> Result<Self, NativeMountError> {
         let mut packet = Self {
-            head: chain.head_index(),
+            head,
             segments: fuse_vec(capacity, work)?,
             readable: 0,
             writable: 0,
         };
         let mut count = 0_usize;
-        let mut ended = false;
+        let mut table_size = capacity;
+        let mut index = head;
+        let mut indirect = false;
+        let mut total_bytes = 0_u32;
         let mut writable_seen = false;
-        for descriptor in chain {
+        loop {
             work.charge(Items.delta(1))?;
-            count = count.checked_add(1).ok_or(libc::EOVERFLOW)?;
-            if count > capacity || ended || descriptor.flags() & !3 != 0 {
+            if usize::from(index) >= table_size || count >= capacity {
                 return Err(libc::EPROTO.into());
             }
+            let address = table
+                .checked_add(u64::from(index) * 16)
+                .ok_or(libc::EOVERFLOW)?;
+            let descriptor = memory
+                .read_obj::<Descriptor>(address)
+                .map_err(transport_error)?;
+            if descriptor.flags() & !7 != 0 {
+                return Err(libc::EPROTO.into());
+            }
+            // DescriptorChain::next hides the indirect wrapper. Read each
+            // maintained POD descriptor once so unnegotiated/nested indirect
+            // tables cannot be accepted or re-read under guest mutation.
+            if descriptor.refers_to_indirect_table() {
+                let length = descriptor.len() as usize;
+                if !indirect_enabled
+                    || indirect
+                    || descriptor.has_next()
+                    || length == 0
+                    || length % 16 != 0
+                    || length / 16 > usize::from(u16::MAX) + 1
+                    || !memory.check_range(descriptor.addr(), length)
+                {
+                    return Err(libc::EPROTO.into());
+                }
+                table = descriptor.addr();
+                table_size = length / 16;
+                index = 0;
+                indirect = true;
+                continue;
+            }
+            count += 1;
+            total_bytes = total_bytes
+                .checked_add(descriptor.len())
+                .ok_or(libc::EOVERFLOW)?;
             let writable = descriptor.is_write_only();
             if writable_seen && !writable {
                 return Err(libc::EPROTO.into());
@@ -84,12 +115,10 @@ impl<'a> VringPacket<'a> {
                     writable,
                 });
             }
-            ended = !descriptor.has_next();
-        }
-        // The maintained iterator stops on malformed pointers and cycles too.
-        // Those are failures, never a successful truncated request.
-        if count == 0 || !ended {
-            return Err(libc::EPROTO.into());
+            if !descriptor.has_next() {
+                break;
+            }
+            index = descriptor.next();
         }
         Ok(packet)
     }
@@ -173,7 +202,7 @@ impl<'a> VringPacket<'a> {
             .map_err(transport_error)?;
         if !event_idx || queue.needs_notification(memory).map_err(transport_error)? {
             if let Some(call) = &vring.call {
-                call.notify()?;
+                call.event.notify()?;
             }
         }
         Ok(())
@@ -184,6 +213,7 @@ fn pop_packet<'a>(
     vring: &mut PacketVring,
     memory: &'a Arc<GuestMemoryMmap<()>>,
     work: &crate::NativeMaterializationWork,
+    indirect: bool,
 ) -> Result<Option<VringPacket<'a>>, NativeMountError> {
     work.admit(crate::WorkCounters::UNCHARGED)?;
     // A control operation may have disabled this ring since the kick was read.
@@ -203,12 +233,21 @@ fn pop_packet<'a>(
     if usize::from(pending) > capacity {
         return Err(libc::EPROTO.into());
     }
+    let table = GuestAddress(queue.desc_table());
     let chain = queue
         .iter(memory.clone())
         .map_err(transport_error)?
         .next()
         .ok_or(libc::EPROTO)?;
-    VringPacket::snapshot(memory.as_ref(), chain, capacity, work).map(Some)
+    VringPacket::snapshot(
+        memory.as_ref(),
+        chain.head_index(),
+        table,
+        capacity,
+        work,
+        indirect,
+    )
+    .map(Some)
 }
 
 /// Caller holds this exact vring's lock throughout callback and publication.
@@ -223,11 +262,11 @@ pub(super) fn serve_vring_packet(
     buffers: &mut PacketBuffers,
     work: &crate::NativeMaterializationWork,
     hiprio: bool,
-    event_idx: bool,
+    features: RingFeatures,
 ) -> Result<QueueProgress, NativeMountError> {
     let result = (|| {
-        let memory = memory.memory().into_inner();
-        let Some(packet) = pop_packet(vring, &memory, work)? else {
+        let memory = memory.memory();
+        let Some(packet) = pop_packet(vring, memory, work, features.indirect)? else {
             return Ok(QueueProgress::Empty);
         };
         let input = buffers
@@ -245,7 +284,7 @@ pub(super) fn serve_vring_packet(
         let running = session
             .publish(&request, response, |reply| {
                 let reply = IoSlice::new(reply.unwrap_or_default());
-                packet.complete(vring, memory.as_ref(), &[reply], work, event_idx)
+                packet.complete(vring, memory.as_ref(), &[reply], work, features.event_idx)
             })
             .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
         Ok(if running {
@@ -276,17 +315,17 @@ pub(super) fn serve_vring_notification(
     memory: &GuestRam,
     message: &[IoSlice<'_>],
     work: &crate::NativeMaterializationWork,
-    event_idx: bool,
+    features: RingFeatures,
 ) -> Result<bool, NativeMountError> {
     let result = (|| {
-        let memory = memory.memory().into_inner();
-        let Some(packet) = pop_packet(vring, &memory, work)? else {
+        let memory = memory.memory();
+        let Some(packet) = pop_packet(vring, memory, work, features.indirect)? else {
             return Ok(false);
         };
         if packet.readable != 0 {
             return Err(libc::EPROTO.into());
         }
-        packet.complete(vring, memory.as_ref(), message, work, event_idx)?;
+        packet.complete(vring, memory.as_ref(), message, work, features.event_idx)?;
         Ok(true)
     })();
     if result.is_err() {
