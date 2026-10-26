@@ -70,7 +70,7 @@ pub struct TurnLimits {
 
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
-pub struct FilesystemTurnHost<P, A, O> {
+pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityRoot,
