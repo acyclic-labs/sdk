@@ -38,25 +38,15 @@ fn empty_metadata() -> FileMetadata {
 }
 
 use crate::test_support::{
-    put_file_metadata, put_file_table_page, put_generation_root,
-    put_tree_page,
+    put_file_metadata, put_file_table_page, put_generation_root, put_tree_page,
 };
 
 async fn minimal_generation(
     store: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let metadata = put_file_metadata(
-        store,
-        empty_metadata(),
-    )
-    .await?;
-    let entries = put_tree_page(
-        store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata = put_file_metadata(store, empty_metadata()).await?;
+    let entries = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_file_id = FileId::from_bytes([41; 16]);
     let table = put_file_table_page(
         store,

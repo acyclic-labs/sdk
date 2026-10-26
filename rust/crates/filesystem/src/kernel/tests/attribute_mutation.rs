@@ -1,10 +1,10 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::CancellationToken;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
+use crate::kernel::AttributePage;
 use crate::kernel::decode_attribute_page;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::AttributePage;
 use crate::memory::MemoryObjectStore;
 
 use crate::kernel::Child;

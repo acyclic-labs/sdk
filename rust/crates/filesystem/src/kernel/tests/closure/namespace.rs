@@ -5,17 +5,8 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
     let child_file_id = FileId::from_bytes([2; 16]);
 
     let missing_root_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &missing_root_store,
-        metadata(),
-    )
-    .await?;
-    let empty_tree = put_tree_page(
-        &missing_root_store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&missing_root_store, metadata()).await?;
+    let empty_tree = put_tree_page(&missing_root_store, &TreePage::Leaf(Vec::new()), 8).await?;
     let missing_root = generation_with_records(
         &missing_root_store,
         root_file_id,
@@ -46,11 +37,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
     ));
 
     let non_directory_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &non_directory_store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&non_directory_store, metadata()).await?;
     let non_directory = generation_with_records(
         &non_directory_store,
         root_file_id,
@@ -79,11 +66,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
     ));
 
     let absent_child_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &absent_child_store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&absent_child_store, metadata()).await?;
     let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
     let dangling_tree = put_tree_page(
         &absent_child_store,
@@ -124,11 +107,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
     ));
 
     let mismatched_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &mismatched_store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&mismatched_store, metadata()).await?;
     let mismatched_tree = put_tree_page(
         &mismatched_store,
         &TreePage::Leaf(vec![TreeEntry {
@@ -182,11 +161,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
 async fn closure_rejects_kinds_outside_the_declared_volume_profile()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
+    let metadata = put_file_metadata(&store, metadata()).await?;
     let root_file_id = FileId::from_bytes([1; 16]);
     let fifo_file_id = FileId::from_bytes([2; 16]);
     let tree = put_tree_page(
@@ -255,11 +230,7 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
     let child_id = FileId::from_bytes([2; 16]);
 
     let mismatch_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &mismatch_store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&mismatch_store, metadata()).await?;
     let root_tree = put_tree_page(
         &mismatch_store,
         &TreePage::Leaf(vec![TreeEntry {
@@ -300,17 +271,8 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
     ));
 
     let hard_link_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &hard_link_store,
-        metadata(),
-    )
-    .await?;
-    let empty_tree = put_tree_page(
-        &hard_link_store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&hard_link_store, metadata()).await?;
+    let empty_tree = put_tree_page(&hard_link_store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_tree = put_tree_page(
         &hard_link_store,
         &TreePage::Leaf(vec![
@@ -352,17 +314,8 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
     ));
 
     let disconnected_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &disconnected_store,
-        metadata(),
-    )
-    .await?;
-    let root_tree = put_tree_page(
-        &disconnected_store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&disconnected_store, metadata()).await?;
+    let root_tree = put_tree_page(&disconnected_store, &TreePage::Leaf(Vec::new()), 8).await?;
     let first_id = FileId::from_bytes([2; 16]);
     let second_id = FileId::from_bytes([3; 16]);
     let first_tree = put_tree_page(

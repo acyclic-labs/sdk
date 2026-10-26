@@ -382,7 +382,8 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
             current.clone()
         ])
     );
-    let (sources, authority) = original_sources(&repository, fixture.path(), &revisions, true).unwrap();
+    let (sources, authority) =
+        original_sources(&repository, fixture.path(), &revisions, true).unwrap();
     assert_eq!(
         authority,
         BTreeSet::from(["current-owner".into(), "retired-owner".into()])
@@ -697,7 +698,11 @@ impl Fixture {
             entry.join("examples/old-example.rs"),
         )
         .unwrap();
-        fs::copy(self.path().join("Cargo.toml"), entry.join("Cargo.toml.orig")).unwrap();
+        fs::copy(
+            self.path().join("Cargo.toml"),
+            entry.join("Cargo.toml.orig"),
+        )
+        .unwrap();
         let archive = self.path().join("release.crate");
         command_output(
             Command::new("tar")

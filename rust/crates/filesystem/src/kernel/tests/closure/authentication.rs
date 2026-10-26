@@ -40,11 +40,7 @@ async fn authenticated_generation_counts_sparse_logical_bytes()
 async fn authenticated_generation_counts_hardlinked_inline_file_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, metadata()).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let file_id = FileId::from_bytes([2; 16]);
     let entries = put_tree_page(
@@ -135,17 +131,8 @@ async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
     complete_metadata.named_attributes = MetadataField::Value(attributes);
     complete_metadata.acl = MetadataField::Value(value);
     complete_metadata.security_descriptor = MetadataField::Value(value);
-    let metadata_id = put_file_metadata(
-        &store,
-        complete_metadata,
-    )
-    .await?;
-    let tree = put_tree_page(
-        &store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, complete_metadata).await?;
+    let tree = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &store,
@@ -267,17 +254,8 @@ async fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn st
     .await?;
     let mut complete_metadata = metadata();
     complete_metadata.named_attributes = MetadataField::Value(attributes);
-    let metadata_id = put_file_metadata(
-        &store,
-        complete_metadata,
-    )
-    .await?;
-    let tree = put_tree_page(
-        &store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, complete_metadata).await?;
+    let tree = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &store,
@@ -306,11 +284,7 @@ async fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn st
 async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, metadata()).await?;
     let payload = blob_with_bytes(&store, b"data").await?;
     let root_id = FileId::from_bytes([1; 16]);
     let symlink_id = FileId::from_bytes([2; 16]);
@@ -410,11 +384,7 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
 async fn shared_regular_data_and_metadata_are_authenticated_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, metadata()).await?;
     let blob = blob_with_bytes(&store, b"body").await?;
     let extents = put_extent_page(
         &store,

@@ -1,9 +1,7 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
-use crate::kernel::{
-    Extent, ExtentKind, ExtentPage, decode_extent_page,
-};
+use crate::kernel::{Extent, ExtentKind, ExtentPage, decode_extent_page};
 use crate::memory::MemoryObjectStore;
 
 async fn put(

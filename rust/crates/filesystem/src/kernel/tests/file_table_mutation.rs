@@ -3,9 +3,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::kernel::decode_file_table_page;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::{
-    FileKind, FilePayload, FileTablePage
-};
+use crate::kernel::{FileKind, FilePayload, FileTablePage};
 use crate::memory::MemoryObjectStore;
 
 use crate::kernel::Child;

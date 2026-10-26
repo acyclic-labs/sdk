@@ -25,9 +25,24 @@ fn entry(value: &str, byte: u8) -> Result<TreeEntry, Box<dyn std::error::Error>>
 use crate::test_support::put_tree_page as put;
 
 async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let a = put(store, &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]), 8).await?;
-    let c = put(store, &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]), 8).await?;
-    let e = put(store, &TreePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]), 8).await?;
+    let a = put(
+        store,
+        &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
+        8,
+    )
+    .await?;
+    let c = put(
+        store,
+        &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        8,
+    )
+    .await?;
+    let e = put(
+        store,
+        &TreePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]),
+        8,
+    )
+    .await?;
     put(
         store,
         &TreePage::Internal(vec![

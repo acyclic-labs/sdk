@@ -79,7 +79,10 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         .arg(fixture.path().join("Cargo.toml"));
     context.configure(&mut generate).unwrap();
     command_output(&mut generate).unwrap();
-    assert_eq!(fs::read(fixture.path().join("Cargo.lock")).unwrap(), original);
+    assert_eq!(
+        fs::read(fixture.path().join("Cargo.lock")).unwrap(),
+        original
+    );
     assert!(external_lock.is_file());
     let mut producer = ProducerResolution {
         lock_path: format!("{prefix}Cargo.lock"),
@@ -117,7 +120,8 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     )
     .unwrap();
     let metadata =
-        sdk_docs::rustdoc_profiles::load_metadata(fixture.path().join("Cargo.toml"), context).unwrap();
+        sdk_docs::rustdoc_profiles::load_metadata(fixture.path().join("Cargo.toml"), context)
+            .unwrap();
     assert_eq!(
         metadata.packages[0].name,
         relocated_metadata.packages[0].name
@@ -155,7 +159,10 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         .unwrap();
         assert_eq!(fs::read(root.join("Cargo.lock")).unwrap(), original);
     }
-    assert_eq!(fs::read(relocated.path().join("Cargo.lock")).unwrap(), original);
+    assert_eq!(
+        fs::read(relocated.path().join("Cargo.lock")).unwrap(),
+        original
+    );
     let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
     let imported_lock = fixture.path().join(directory).join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
@@ -208,8 +215,12 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     )
     .unwrap();
     assert_eq!(executed.len(), 1);
-    assert_eq!(fs::read(fixture.path().join("Cargo.lock")).unwrap(), original);
-    let (_, inputs) = verify_imported_archive(fixture.path(), &release, &archive, &identity).unwrap();
+    assert_eq!(
+        fs::read(fixture.path().join("Cargo.lock")).unwrap(),
+        original
+    );
+    let (_, inputs) =
+        verify_imported_archive(fixture.path(), &release, &archive, &identity).unwrap();
     assert_eq!(inputs.get(&producer.lock_path), Some(&producer.lock_sha256));
     fs::write(&imported_lock, "changed original lock").unwrap();
     assert!(verify_imported_archive(fixture.path(), &release, &archive, &identity).is_err());
@@ -241,7 +252,10 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     producer.config_sha256 = crate::sha256_file(&producer_dir.join("config.toml")).unwrap();
     producer.lock_path = "../Cargo.lock".into();
     assert!(verify_producer_resolution(fixture.path(), directory, &producer).is_err());
-    assert_eq!(fs::read(fixture.path().join("Cargo.lock")).unwrap(), original);
+    assert_eq!(
+        fs::read(fixture.path().join("Cargo.lock")).unwrap(),
+        original
+    );
     producer.lock_path = format!("{prefix}Cargo.lock");
     fs::remove_file(producer_dir.join("config.toml")).unwrap();
     assert!(verify_producer_resolution(fixture.path(), directory, &producer).is_err());
@@ -253,7 +267,8 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
     let (release, archive) = fixture.archive(&revision, "");
-    let accepted = verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+    let accepted =
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
     assert!(accepted.0.yanked);
     assert_eq!(
         accepted.1.get("src/lib.rs"),
@@ -288,11 +303,15 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
             .unwrap_err()
             .contains("checksum differs")
     );
-    assert!(
-        verify_archive(&metadata, fixture.path(), &"c".repeat(40), &release, &archive)
-            .unwrap_err()
-            .contains("revision differs")
-    );
+    assert!(verify_archive(
+        &metadata,
+        fixture.path(),
+        &"c".repeat(40),
+        &release,
+        &archive
+    )
+    .unwrap_err()
+    .contains("revision differs"));
     let (escaping, archive) = fixture.archive(&revision, "../outside");
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &escaping, &archive)
@@ -359,8 +378,16 @@ fn archive_rejects_unarchived_module_in_maintained_native_source_closure() {
     let package = fixture.path().join("rust/crates/historical-fixture");
     fs::create_dir_all(package.join("src")).unwrap();
     fs::create_dir_all(package.join("examples")).unwrap();
-    fs::copy(fixture.path().join("Cargo.toml"), package.join("Cargo.toml")).unwrap();
-    fs::copy(fixture.path().join("src/lib.rs"), package.join("src/lib.rs")).unwrap();
+    fs::copy(
+        fixture.path().join("Cargo.toml"),
+        package.join("Cargo.toml"),
+    )
+    .unwrap();
+    fs::copy(
+        fixture.path().join("src/lib.rs"),
+        package.join("src/lib.rs"),
+    )
+    .unwrap();
     fs::copy(
         fixture.path().join("examples/old-example.rs"),
         package.join("examples/old-example.rs"),

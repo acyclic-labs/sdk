@@ -1,8 +1,6 @@
 use super::*;
 use crate::foundation::Digest;
-use crate::kernel::{
-    AttributeClass, AttributePage, DirectoryReadError
-};
+use crate::kernel::{AttributeClass, AttributePage, DirectoryReadError};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use crate::{CachedObjectStore, ObjectCacheOptions};

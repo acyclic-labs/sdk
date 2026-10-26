@@ -8,9 +8,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::{CaseSensitivity, ConcurrencyMode, Lifecycle, UnicodePolicy, VolumeLimits};
-use crate::storage::{
-    ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError
-};
+use crate::storage::{ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -50,10 +48,8 @@ fn metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-use crate::test_support::{
-    put_file_metadata, put_file_table_page, put_tree_page,
-};
 use crate::test_support::put_object as put;
+use crate::test_support::{put_file_metadata, put_file_table_page, put_tree_page};
 
 struct CancellingStore {
     inner: MemoryObjectStore,
@@ -119,11 +115,7 @@ async fn fixture(
     let root_id = FileId::from_bytes([1; 16]);
     let src_id = FileId::from_bytes([2; 16]);
     let file_id = FileId::from_bytes([3; 16]);
-    let metadata = put_file_metadata(
-        store,
-        metadata(),
-    )
-    .await?;
+    let metadata = put_file_metadata(store, metadata()).await?;
     let main_name = LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec(), 255)?;
     let src_tree = put_tree_page(
         store,
@@ -201,11 +193,7 @@ async fn binding_fixture(
 ) -> Result<(GenerationRoot, NamespacePath), Box<dyn std::error::Error>> {
     let root_id = FileId::from_bytes([21; 16]);
     let child_id = FileId::from_bytes([22; 16]);
-    let metadata = put_file_metadata(
-        store,
-        metadata(),
-    )
-    .await?;
+    let metadata = put_file_metadata(store, metadata()).await?;
     let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
     let root_tree = put_tree_page(
         store,
@@ -227,12 +215,7 @@ async fn binding_fixture(
     if let Some(kind) = recorded_kind {
         let payload = match kind {
             FileKind::Directory => {
-                let empty_tree = put_tree_page(
-                    store,
-                    &TreePage::Leaf(Vec::new()),
-                    8,
-                )
-                .await?;
+                let empty_tree = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
                 FilePayload::Directory {
                     entries: empty_tree,
                 }
@@ -248,12 +231,7 @@ async fn binding_fixture(
             payload,
         });
     }
-    let file_table = put_file_table_page(
-        store,
-        &FileTablePage::Leaf(records),
-        8,
-    )
-    .await?;
+    let file_table = put_file_table_page(store, &FileTablePage::Leaf(records), 8).await?;
     Ok((
         GenerationRoot {
             volume_id: VolumeId::from_bytes([23; 16]),

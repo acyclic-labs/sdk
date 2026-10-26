@@ -6,7 +6,9 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
-use crate::test_support::{put_file_metadata as put_metadata, put_generation_root as put_generation};
+use crate::test_support::{
+    put_file_metadata as put_metadata, put_generation_root as put_generation,
+};
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
     ObjectId {
@@ -91,12 +93,8 @@ async fn put_table(
     store: &MemoryObjectStore,
     records: Vec<FileRecord>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    crate::test_support::put_file_table_page(
-        store,
-        &crate::kernel::FileTablePage::Leaf(records),
-        8,
-    )
-    .await
+    crate::test_support::put_file_table_page(store, &crate::kernel::FileTablePage::Leaf(records), 8)
+        .await
 }
 
 async fn stored_request(

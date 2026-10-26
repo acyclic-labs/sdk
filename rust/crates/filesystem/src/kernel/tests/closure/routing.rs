@@ -40,17 +40,8 @@ async fn blob_page_aliases_cannot_enter_a_generation_closure()
     .await?;
     let mut blob_metadata = metadata();
     blob_metadata.acl = MetadataField::Value(aliased_blob);
-    let metadata_id = put_file_metadata(
-        &blob_store,
-        blob_metadata,
-    )
-    .await?;
-    let empty_tree = put_tree_page(
-        &blob_store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&blob_store, blob_metadata).await?;
+    let empty_tree = put_tree_page(&blob_store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &blob_store,
@@ -107,17 +98,8 @@ async fn attribute_page_aliases_cannot_enter_a_generation_closure()
     .await?;
     let mut attribute_metadata = metadata();
     attribute_metadata.named_attributes = MetadataField::Value(aliased_attributes);
-    let metadata_id = put_file_metadata(
-        &attribute_store,
-        attribute_metadata,
-    )
-    .await?;
-    let empty_tree = put_tree_page(
-        &attribute_store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&attribute_store, attribute_metadata).await?;
+    let empty_tree = put_tree_page(&attribute_store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &attribute_store,
@@ -146,17 +128,8 @@ async fn attribute_page_aliases_cannot_enter_a_generation_closure()
 async fn file_table_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
-    let empty_tree = put_tree_page(
-        &store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, metadata()).await?;
+    let empty_tree = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let leaf = put_file_table_page(
         &store,
@@ -201,11 +174,7 @@ async fn file_table_page_aliases_cannot_enter_a_generation_closure()
 async fn directory_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let tree_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &tree_store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&tree_store, metadata()).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
     let tree_leaf = put_tree_page(
@@ -269,11 +238,7 @@ async fn directory_page_aliases_cannot_enter_a_generation_closure()
 async fn extent_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let extent_store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &extent_store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&extent_store, metadata()).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
     let namespace = put_tree_page(
@@ -352,11 +317,7 @@ async fn extent_page_aliases_cannot_enter_a_generation_closure()
 async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelated_data()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, metadata()).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let first_id = FileId::from_bytes([2; 16]);
     let second_id = FileId::from_bytes([3; 16]);
@@ -452,18 +413,10 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
             payload: FilePayload::InlineRegular(InlineFileData::new(b"inline")?),
         },
     ];
-    let first_table_leaf = put_file_table_page(
-        &store,
-        &FileTablePage::Leaf(records[..1].to_vec()),
-        8,
-    )
-    .await?;
-    let second_table_leaf = put_file_table_page(
-        &store,
-        &FileTablePage::Leaf(records[1..].to_vec()),
-        8,
-    )
-    .await?;
+    let first_table_leaf =
+        put_file_table_page(&store, &FileTablePage::Leaf(records[..1].to_vec()), 8).await?;
+    let second_table_leaf =
+        put_file_table_page(&store, &FileTablePage::Leaf(records[1..].to_vec()), 8).await?;
     let table = put_file_table_page(
         &store,
         &FileTablePage::Internal(vec![
@@ -507,17 +460,8 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
 async fn forged_file_table_lower_bound_fails_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata_id = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
-    let tree = put_tree_page(
-        &store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata_id = put_file_metadata(&store, metadata()).await?;
+    let tree = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let leaf = put_file_table_page(
         &store,
         &FileTablePage::Leaf(vec![FileRecord {

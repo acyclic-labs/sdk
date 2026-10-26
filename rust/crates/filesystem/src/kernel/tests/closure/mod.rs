@@ -26,28 +26,18 @@ fn metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-use crate::test_support::{
-    put_attribute_page, put_blob_page, put_extent_page,
-    put_file_metadata, put_file_table_page, put_generation_root,
-    put_tree_page,
-};
 use crate::test_support::put_object as put;
+use crate::test_support::{
+    put_attribute_page, put_blob_page, put_extent_page, put_file_metadata, put_file_table_page,
+    put_generation_root, put_tree_page,
+};
 
 async fn minimal_generation(
     store: &MemoryObjectStore,
     file_table: Option<ObjectId>,
 ) -> Result<(ObjectId, FileId, ObjectId), Box<dyn std::error::Error>> {
-    let metadata = put_file_metadata(
-        store,
-        metadata(),
-    )
-    .await?;
-    let tree = put_tree_page(
-        store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let metadata = put_file_metadata(store, metadata()).await?;
+    let tree = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_file_id = FileId::from_bytes([1; 16]);
     let table = match file_table {
         Some(table) => table,
@@ -85,12 +75,7 @@ async fn generation_with_records(
     root_file_id: FileId,
     records: Vec<FileRecord>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let table = put_file_table_page(
-        store,
-        &FileTablePage::Leaf(records),
-        16,
-    )
-    .await?;
+    let table = put_file_table_page(store, &FileTablePage::Leaf(records), 16).await?;
     put_generation_root(
         store,
         &GenerationRoot {
@@ -124,11 +109,7 @@ async fn generation_with_regular_extent(
     extent_kind: ExtentKind,
     logical_bytes: u64,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let metadata_id = put_file_metadata(
-        store,
-        metadata(),
-    )
-    .await?;
+    let metadata_id = put_file_metadata(store, metadata()).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
     let entries = put_tree_page(

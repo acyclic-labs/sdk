@@ -805,7 +805,9 @@ fn build_family_keeps_inherited_local_trait_member_and_source_span() {
     let message = error.to_string();
     assert!(message.contains("does not resolve to the crate root"));
     assert!(message.contains("String::default"));
-    directory.close().expect("fixture directory should be removable");
+    directory
+        .close()
+        .expect("fixture directory should be removable");
 }
 
 mod projection;

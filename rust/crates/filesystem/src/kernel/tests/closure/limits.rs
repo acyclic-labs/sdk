@@ -213,12 +213,7 @@ async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn
         kind: ObjectKind::Metadata,
         digest: Digest::from_bytes([7; 32]),
     };
-    let tree = put_tree_page(
-        &store,
-        &TreePage::Leaf(Vec::new()),
-        8,
-    )
-    .await?;
+    let tree = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let table = put_file_table_page(
         &store,
         &FileTablePage::Leaf(vec![FileRecord {

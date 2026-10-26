@@ -5,11 +5,7 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let (generation, main) = fixture(&store).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let src_id = FileId::from_bytes([2; 16]);
-    let metadata = put_file_metadata(
-        &store,
-        metadata(),
-    )
-    .await?;
+    let metadata = put_file_metadata(&store, metadata()).await?;
     let leaf = put_tree_page(
         &store,
         &TreePage::Leaf(vec![TreeEntry {

@@ -2,8 +2,7 @@ use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreePage};
-use crate::kernel::{
-    FilePayload, FileRecord, FileTablePage, InlineFileData};
+use crate::kernel::{FilePayload, FileRecord, FileTablePage, InlineFileData};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use crate::storage::ObjectStoreError;
@@ -300,7 +299,8 @@ async fn internal_file_table_diff_aligns_shared_and_one_sided_children()
     let shared = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(1)?]), 8).await?;
     let removed = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(3)?]), 8).await?;
     let added_left = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(2)?]), 8).await?;
-    let added_right = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(4)?]), 8).await?;
+    let added_right =
+        put_file_table(&store, &FileTablePage::Leaf(vec![file_record(4)?]), 8).await?;
     let before = put_file_table(
         &store,
         &FileTablePage::Internal(vec![

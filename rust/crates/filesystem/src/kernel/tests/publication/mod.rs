@@ -1,7 +1,7 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::GuardedAppend;
 use crate::async_storage::AsyncAuthorityStore;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::FileId;
 use crate::foundation::Sequence;
 use crate::kernel::{
@@ -47,7 +47,7 @@ async fn initialized(
 ) -> TestResult<Head> {
     use crate::model::{
         CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
-};
+    };
     let authority_id = volume_authority_id(volume_id);
     created(authority, authority_id).await?;
     let creation = crate::kernel::VolumeCreated {
