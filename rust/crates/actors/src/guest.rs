@@ -21,7 +21,9 @@ pub use body::*;
 mod state;
 pub use state::GuestState;
 mod handler;
-pub use handler::{AlarmChange, Composition, Delivery, Effect, Handler, Manifest, Transition, Trigger};
+pub use handler::{
+    AlarmChange, Composition, Delivery, Effect, Handler, Manifest, Transition, Trigger,
+};
 
 /// Required named export and its lifecycle hooks; HTTP enters through default.fetch.
 pub const ACTOR_EXPORT: &str = "actor";

@@ -15,8 +15,8 @@ use acyclic_actors::{
     addressing::ActorReference,
     domain::{ActorLimits, CodeSha256},
     guest::{
-        AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture,
-        Handler, Manifest, Transition, Trigger,
+        AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
+        Manifest, Transition, Trigger,
     },
     local::{PreparedPublish, Store, Subscription},
 };
@@ -103,9 +103,10 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         let created = create_root(intent, adopted)?;
         let actor = Self::actor(within, &created.child.id())?;
         let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
-        let effects = effects(created.request)
-            .into_iter()
-            .chain(self.create(&actor, &created.child, 0)?);
+        let effects =
+            effects(created.request)
+                .into_iter()
+                .chain(self.create(&actor, &created.child, 0)?);
         for effect in effects {
             publish
                 .join(effect)
@@ -142,7 +143,12 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             from,
             limit,
         };
-        let mut records = self.store.provider().read(request).await.map_err(Error::Stream)?;
+        let mut records = self
+            .store
+            .provider()
+            .read(request)
+            .await
+            .map_err(Error::Stream)?;
         let mut read = Vec::new();
         while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
             if record.sequence >= end {
@@ -182,12 +188,16 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         };
         let path = match (&saved, &wake) {
             (Some(saved), _) => saved.state.path.clone(),
-            (None, Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) => {
-                match &adopted.parent {
-                    Some(parent) => parent.child(&adopted.agent)?,
-                    None => AgentPath::root(&adopted.agent),
-                }
-            }
+            (
+                None,
+                Wake::Inbox {
+                    record: InboxRecord::ForkAdopted(adopted),
+                    ..
+                },
+            ) => match &adopted.parent {
+                Some(parent) => parent.child(&adopted.agent)?,
+                None => AgentPath::root(&adopted.agent),
+            },
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
         let mut state = saved.map(|saved| saved.state);

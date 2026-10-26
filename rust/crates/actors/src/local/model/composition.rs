@@ -2,6 +2,10 @@
 use super::*;
 use crate::guest::{Composition, GuestFuture};
 
+fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
+    IdempotencyKey::new(value.as_bytes().to_vec())
+}
+
 #[derive(Default)]
 struct Counts {
     seals: AtomicUsize,
@@ -52,14 +56,19 @@ async fn placed(provider: Arc<Faulty>) -> Result<(Store<Faulty>, ActorReference)
         &actor,
         BTreeMap::from([(
             "inbox".to_owned(),
-            Subscription { path: path("participant/inbox")?, cursor: 0 },
+            Subscription {
+                path: path("participant/inbox")?,
+                cursor: 0,
+            },
         )]),
         None,
     )? {
         create.join(effect)?;
     }
     store.submit(create).await?;
-    store.claim(&store.load(&actor).await?, 1, key("place-participant")?).await?;
+    store
+        .claim(&store.load(&actor).await?, 1, key("place-participant")?)
+        .await?;
     Ok((store, actor))
 }
 
@@ -68,13 +77,18 @@ fn transition(counts: Arc<Counts>, remove_actor_fence: bool) -> Result<Transitio
         checkpoint: checkpoint(1),
         alarm: AlarmChange::Keep,
         effects: vec![Effect {
-            conditions: vec![CommitCondition::Absent { path: path("participant/child")? }],
+            conditions: vec![CommitCondition::Absent {
+                path: path("participant/child")?,
+            }],
             mutation: CommitMutation::Append {
                 path: path("participant/child")?,
                 records: vec![Bytes::from_static(b"joined volume").into()],
             },
         }],
-        composition: Some(Box::new(Participant { counts, remove_actor_fence })),
+        composition: Some(Box::new(Participant {
+            counts,
+            remove_actor_fence,
+        })),
     })
 }
 
@@ -88,11 +102,18 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
     let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
     let snapshot = store.load(&actor).await?;
-    let result = store.publish(
-        &snapshot, 1,
-        &Trigger::Record { subscription: "inbox".into(), sequence: 0 },
-        transition(counts.clone(), false)?, key("joined-publication")?,
-    ).await;
+    let result = store
+        .publish(
+            &snapshot,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            transition(counts.clone(), false)?,
+            key("joined-publication")?,
+        )
+        .await;
     let Err(Error::Unknown { publication, .. }) = result else {
         return Err("lost acknowledgement did not retain the publication".into());
     };
@@ -106,28 +127,57 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
     assert_eq!(counts.rejected.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
-    assert_eq!(store.load(&actor).await?.state().and_then(|state| state.cursor("inbox")), Some(1));
+    assert_eq!(
+        store
+            .load(&actor)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result<(), Failure> {
     let provider = Arc::new(Faulty {
-        inner: MemoryStream::default(), plan: Vec::new(), calls: AtomicUsize::new(0),
+        inner: MemoryStream::default(),
+        plan: Vec::new(),
+        calls: AtomicUsize::new(0),
     });
     let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
     let snapshot = store.load(&actor).await?;
     let before = provider.calls.load(Ordering::SeqCst);
-    let result = store.publish(
-        &snapshot, 1,
-        &Trigger::Record { subscription: "inbox".into(), sequence: 0 },
-        transition(counts.clone(), true)?, key("broken-participant")?,
-    ).await;
-    assert!(matches!(result, Err(Error::Invalid("composition changed the actor publication"))));
+    let result = store
+        .publish(
+            &snapshot,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            transition(counts.clone(), true)?,
+            key("broken-participant")?,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::Invalid("composition changed the actor publication"))
+    ));
     assert_eq!(provider.calls.load(Ordering::SeqCst), before);
-    assert_eq!(provider.inner.tail(path("participant/child")?).await, Err(StreamError::NotFound));
-    assert_eq!(store.load(&actor).await?.state().and_then(|state| state.cursor("inbox")), Some(0));
+    assert_eq!(
+        provider.inner.tail(path("participant/child")?).await,
+        Err(StreamError::NotFound)
+    );
+    assert_eq!(
+        store
+            .load(&actor)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -135,7 +185,9 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
 #[tokio::test]
 async fn rejected_companion_settles_without_consuming_the_actor_input() -> Result<(), Failure> {
     let provider = Arc::new(Faulty {
-        inner: MemoryStream::default(), plan: Vec::new(), calls: AtomicUsize::new(0),
+        inner: MemoryStream::default(),
+        plan: Vec::new(),
+        calls: AtomicUsize::new(0),
     });
     let (store, actor) = placed(provider.clone()).await?;
     let counts = Arc::new(Counts::default());
@@ -149,17 +201,31 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
         },
     })?;
     store.submit(competing).await?;
-    let result = store.publish(
-        &snapshot, 1,
-        &Trigger::Record { subscription: "inbox".into(), sequence: 0 },
-        transition(counts.clone(), false)?, key("rejected-participant")?,
-    ).await;
+    let result = store
+        .publish(
+            &snapshot,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            transition(counts.clone(), false)?,
+            key("rejected-participant")?,
+        )
+        .await;
     assert!(matches!(result, Err(Error::Conflict)));
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     assert_eq!(counts.rejected.load(Ordering::SeqCst), 1);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
-    assert_eq!(store.load(&actor).await?.state().and_then(|state| state.cursor("inbox")), Some(0));
+    assert_eq!(
+        store
+            .load(&actor)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
     Ok(())
 }

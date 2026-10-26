@@ -184,7 +184,9 @@ impl PreparedPublish {
     /// stream cannot be named; disagreeing cuts on one path are refused.
     pub fn join(&mut self, effect: Effect) -> Result<(), Error> {
         if self.sealed {
-            return Err(Error::Invalid("sealed actor publication cannot accept effects"));
+            return Err(Error::Invalid(
+                "sealed actor publication cannot accept effects",
+            ));
         }
         let Self { own, request, .. } = self;
         let touches_own = |path: &StreamPath| own.as_ref() == Some(path);
@@ -234,7 +236,9 @@ impl PreparedPublish {
     /// Take the request to submit it through another commit owner.
     pub fn into_request(self) -> Result<CommitRequest, Error> {
         if self.composition.is_some() {
-            return Err(Error::Invalid("composed publication must retain participant custody"));
+            return Err(Error::Invalid(
+                "composed publication must retain participant custody",
+            ));
         }
         Ok(self.request)
     }
@@ -458,8 +462,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             if let Some(composition) = &mut prepared.composition {
                 let original = &prepared.request;
                 let request = composition.seal(original.clone()).await?;
-                if !original.conditions.iter().all(|entry| request.conditions.contains(entry))
-                    || !original.mutations.iter().all(|entry| request.mutations.contains(entry))
+                if !original
+                    .conditions
+                    .iter()
+                    .all(|entry| request.conditions.contains(entry))
+                    || !original
+                        .mutations
+                        .iter()
+                        .all(|entry| request.mutations.contains(entry))
                     || prepared.own.as_ref().is_some_and(|own| {
                         request.mutations.iter().filter(|mutation| {
                             matches!(mutation, CommitMutation::Append { path, .. } if path == own)
@@ -474,10 +484,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         let outcome = match self.provider.commit(prepared.request.clone()).await {
             Ok(outcome) => outcome,
-            Err(source) => return Err(Error::Unknown {
-                publication: Box::new(prepared),
-                source,
-            }),
+            Err(source) => {
+                return Err(Error::Unknown {
+                    publication: Box::new(prepared),
+                    source,
+                });
+            }
         };
         if let Some(composition) = prepared.composition {
             if let Err(source) = composition.settle(&outcome).await {
