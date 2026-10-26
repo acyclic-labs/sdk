@@ -20,7 +20,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     verifier.refresh(&source, now).await?;
     let original = claims(now);
     let valid = token(7, "one", &original)?;
-    admit(backend, &verifier, &source, &valid, now, true, 60).await?;
+    admit(backend, &verifier, &source, &valid, now, true).await?;
     external(backend, &verifier, &valid, SUBJECT, now).await?;
     admit(
         backend,
@@ -29,7 +29,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         &token(8, "one", &original)?,
         now,
         false,
-        60,
     )
     .await?;
     for (field, value) in [
@@ -49,7 +48,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
             &token(7, "one", &changed)?,
             now,
             false,
-            60,
         )
         .await?;
     }
@@ -70,7 +68,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
             &header_mutation(&valid, field, value)?,
             now,
             false,
-            60,
         )
         .await?;
     }
@@ -81,7 +78,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         &token(7, "unknown", &original)?,
         now,
         false,
-        60,
     )
     .await?;
     let mut multi = original.clone();
@@ -93,7 +89,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         &token(7, "one", &multi)?,
         now,
         false,
-        60,
     )
     .await?;
     multi["azp"] = json!("another-client");
@@ -104,7 +99,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         &token(7, "one", &multi)?,
         now,
         false,
-        60,
     )
     .await?;
     multi["azp"] = json!(AUDIENCE);
@@ -115,7 +109,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         &token(7, "one", &multi)?,
         now,
         true,
-        60,
     )
     .await?;
     let mut short = original.clone();
@@ -127,7 +120,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         &token(7, "one", &short)?,
         now,
         true,
-        20,
     )
     .await?;
     rotation(backend, now).await?;
@@ -142,7 +134,6 @@ async fn admit(
     token: &str,
     now: u64,
     allowed: bool,
-    lifetime: u64,
 ) -> Result {
     let key_reads = source.reads.load(Ordering::SeqCst);
     let result = check(
@@ -154,7 +145,7 @@ async fn admit(
             subject: SUBJECT,
             allowed,
             maximum: Some(60),
-            lifetime,
+            expires_at: expires(token)?,
         },
     )
     .await;
@@ -168,7 +159,7 @@ struct Expected<'a> {
     subject: &'a str,
     allowed: bool,
     maximum: Option<u32>,
-    lifetime: u64,
+    expires_at: u64,
 }
 
 pub(crate) async fn external(
@@ -178,11 +169,7 @@ pub(crate) async fn external(
     subject: &str,
     now: u64,
 ) -> Result {
-    let lifetime = verifier
-        .verify(token, now)?
-        .expires_at()
-        .saturating_sub(now)
-        .min(900);
+    let expires_at = verifier.verify(token, now)?.expires_at();
     check(
         backend,
         verifier,
@@ -192,7 +179,7 @@ pub(crate) async fn external(
             subject,
             allowed: true,
             maximum: None,
-            lifetime,
+            expires_at,
         },
     )
     .await
@@ -234,6 +221,9 @@ async fn check(
         Some(seconds) => policy.with_maximum_seconds(seconds)?,
         None => policy,
     };
+    // The parent was minted above using the runtime clock. Do not verify that
+    // newly minted scope at the earlier instant when this vector began.
+    let now = now.max(acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000);
     let admission = verifier.admit(token, &root, &policy, now);
     if !fixture.no_turn_io() {
         return Err("OIDC token admission performed turn IO".into());
@@ -249,9 +239,12 @@ async fn check(
                 return Err("OIDC widened or changed the host grant".into());
             }
             let trust = root.public_workload_trust()?;
-            scope.verify_workload(&trust, &audience, now + expected.lifetime - 1, &mut None)?;
+            let deadline = expected
+                .expires_at
+                .min(now + u64::from(expected.maximum.unwrap_or(900)));
+            scope.verify_workload(&trust, &audience, deadline - 1, &mut None)?;
             if scope
-                .verify_workload(&trust, &audience, now + expected.lifetime, &mut None)
+                .verify_workload(&trust, &audience, deadline, &mut None)
                 .is_ok()
             {
                 return Err("OIDC scope exceeded the token/host deadline".into());
@@ -272,6 +265,7 @@ async fn check(
 }
 
 async fn rotation(backend: &dyn Backend, now: u64) -> Result {
+    let now = now.max(acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000);
     let mut source = Source::keys(&[(7, "one")]);
     let limits = oidc::Limits {
         refresh_interval_seconds: 1,
@@ -282,15 +276,15 @@ async fn rotation(backend: &dyn Backend, now: u64) -> Result {
     verifier.refresh(&source, now).await?;
     let one = token(7, "one", &claims(now))?;
     let two = token(8, "two", &claims(now))?;
-    admit(backend, &verifier, &source, &two, now, false, 60).await?;
+    admit(backend, &verifier, &source, &two, now, false).await?;
     source.bytes = Source::keys(&[(7, "one"), (8, "two")]).bytes;
     verifier.refresh(&source, now + 1).await?;
     verifier.verify(&one, now + 1)?;
     verifier.verify(&two, now + 1)?;
     source.bytes = Source::keys(&[(8, "two")]).bytes;
     verifier.refresh(&source, now + 2).await?;
-    admit(backend, &verifier, &source, &one, now + 2, false, 60).await?;
-    admit(backend, &verifier, &source, &two, now + 2, true, 60).await?;
+    admit(backend, &verifier, &source, &one, now + 2, false).await?;
+    admit(backend, &verifier, &source, &two, now + 2, true).await?;
     source.fail = true;
     if verifier.refresh(&source, now + 3).await.is_ok() {
         return Err("failed refresh was accepted".into());
@@ -302,7 +296,7 @@ async fn rotation(backend: &dyn Backend, now: u64) -> Result {
         return Err("failed JWKS refresh bypassed rate bounds".into());
     }
     verifier.verify(&two, now + 6)?;
-    admit(backend, &verifier, &source, &two, now + 7, false, 60).await?;
+    admit(backend, &verifier, &source, &two, now + 7, false).await?;
     Ok(())
 }
 

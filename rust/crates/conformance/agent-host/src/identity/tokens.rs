@@ -77,6 +77,17 @@ pub(super) fn claims(now: u64) -> Value {
     json!({"iss":ISSUER,"aud":AUDIENCE,"sub":SUBJECT,"exp":now+3600})
 }
 
+// Independent deadline oracle reads the original signed test payload; it does
+// not ask the verifier under test what expiry it decided to accept.
+pub(super) fn expires(token: &str) -> Result<u64> {
+    let payload = token.split('.').nth(1).ok_or("missing token payload")?;
+    let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?;
+    claims
+        .get("exp")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "missing test token expiry".into())
+}
+
 pub(super) fn token(seed: u8, kid: &str, claims: &Value) -> Result<String> {
     // RFC 8410 PKCS#8 encoding of a fixed disposable Ed25519 test seed.
     let mut der = vec![
