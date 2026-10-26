@@ -29,7 +29,6 @@ void xdr_reset(xdr_buf_t *xdr);
 /* ---- Encode primitives (big-endian, 4-byte aligned) ---- */
 
 void     xdr_encode_uint32(xdr_buf_t *xdr, uint32_t val);
-void     xdr_encode_int32(xdr_buf_t *xdr, int32_t val);
 void     xdr_encode_uint64(xdr_buf_t *xdr, uint64_t val);
 void     xdr_encode_int64(xdr_buf_t *xdr, int64_t val);
 void     xdr_encode_opaque(xdr_buf_t *xdr, const void *data, uint32_t len);
@@ -40,7 +39,6 @@ void     xdr_encode_bool(xdr_buf_t *xdr, int val);
 /* ---- Decode primitives ---- */
 
 uint32_t xdr_decode_uint32(xdr_buf_t *xdr);
-int32_t  xdr_decode_int32(xdr_buf_t *xdr);
 uint64_t xdr_decode_uint64(xdr_buf_t *xdr);
 int64_t  xdr_decode_int64(xdr_buf_t *xdr);
 

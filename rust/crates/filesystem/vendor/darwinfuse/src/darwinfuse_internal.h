@@ -29,7 +29,6 @@
 
 /* Reply stat */
 #define MSG_ACCEPTED        0
-#define MSG_DENIED          1
 
 /* Accept stat */
 #define ACCEPT_SUCCESS      0

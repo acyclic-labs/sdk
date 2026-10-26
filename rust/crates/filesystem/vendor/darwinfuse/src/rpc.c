@@ -119,18 +119,6 @@ void rpc_encode_reply_error(xdr_buf_t *xdr, uint32_t xid, uint32_t stat)
     }
 }
 
-void rpc_encode_reply_denied(xdr_buf_t *xdr, uint32_t xid)
-{
-    xdr_encode_uint32(xdr, xid);
-    xdr_encode_uint32(xdr, RPC_REPLY);
-    xdr_encode_uint32(xdr, MSG_DENIED);
-
-    /* RPC_MISMATCH, version range 2..2 */
-    xdr_encode_uint32(xdr, 0);  /* RPC_MISMATCH */
-    xdr_encode_uint32(xdr, RPC_MSG_VERSION);
-    xdr_encode_uint32(xdr, RPC_MSG_VERSION);
-}
-
 /* ---- TCP Record Marking ---- */
 
 void rpc_encode_record_mark(uint8_t *buf, uint32_t payload_len, int last_fragment)

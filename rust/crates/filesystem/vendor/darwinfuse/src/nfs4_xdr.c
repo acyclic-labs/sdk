@@ -17,16 +17,7 @@ static inline size_t xdr_pad(size_t len)
     return (len + 3) & ~(size_t)3;
 }
 
-static inline int xdr_check_encode(xdr_buf_t *xdr, size_t needed)
-{
-    if (xdr->error || xdr->pos + needed > xdr->capacity) {
-        xdr->error = 1;
-        return 0;
-    }
-    return 1;
-}
-
-static inline int xdr_check_decode(xdr_buf_t *xdr, size_t needed)
+static inline int xdr_check(xdr_buf_t *xdr, size_t needed)
 {
     if (xdr->error || xdr->pos + needed > xdr->capacity) {
         xdr->error = 1;
@@ -55,15 +46,10 @@ void xdr_reset(xdr_buf_t *xdr)
 
 void xdr_encode_uint32(xdr_buf_t *xdr, uint32_t val)
 {
-    if (!xdr_check_encode(xdr, 4)) return;
+    if (!xdr_check(xdr, 4)) return;
     uint32_t net = htonl(val);
     memcpy(xdr->data + xdr->pos, &net, 4);
     xdr->pos += 4;
-}
-
-void xdr_encode_int32(xdr_buf_t *xdr, int32_t val)
-{
-    xdr_encode_uint32(xdr, (uint32_t)val);
 }
 
 void xdr_encode_uint64(xdr_buf_t *xdr, uint64_t val)
@@ -80,7 +66,7 @@ void xdr_encode_int64(xdr_buf_t *xdr, int64_t val)
 void xdr_encode_opaque(xdr_buf_t *xdr, const void *data, uint32_t len)
 {
     size_t padded = xdr_pad(len);
-    if (!xdr_check_encode(xdr, 4 + padded)) return;
+    if (!xdr_check(xdr, 4 + padded)) return;
 
     xdr_encode_uint32(xdr, len);
     if (len > 0)
@@ -97,7 +83,7 @@ void xdr_encode_opaque(xdr_buf_t *xdr, const void *data, uint32_t len)
 void xdr_encode_opaque_fixed(xdr_buf_t *xdr, const void *data, uint32_t len)
 {
     size_t padded = xdr_pad(len);
-    if (!xdr_check_encode(xdr, padded)) return;
+    if (!xdr_check(xdr, padded)) return;
 
     if (len > 0)
         memcpy(xdr->data + xdr->pos, data, len);
@@ -124,16 +110,11 @@ void xdr_encode_bool(xdr_buf_t *xdr, int val)
 
 uint32_t xdr_decode_uint32(xdr_buf_t *xdr)
 {
-    if (!xdr_check_decode(xdr, 4)) return 0;
+    if (!xdr_check(xdr, 4)) return 0;
     uint32_t net;
     memcpy(&net, xdr->data + xdr->pos, 4);
     xdr->pos += 4;
     return ntohl(net);
-}
-
-int32_t xdr_decode_int32(xdr_buf_t *xdr)
-{
-    return (int32_t)xdr_decode_uint32(xdr);
 }
 
 uint64_t xdr_decode_uint64(xdr_buf_t *xdr)
@@ -154,7 +135,7 @@ uint32_t xdr_decode_opaque(xdr_buf_t *xdr, void *out, uint32_t maxlen)
     if (xdr->error) return 0;
 
     size_t padded = xdr_pad(len);
-    if (!xdr_check_decode(xdr, padded)) return 0;
+    if (!xdr_check(xdr, padded)) return 0;
 
     uint32_t copy_len = len < maxlen ? len : maxlen;
     if (copy_len > 0 && out)
@@ -167,7 +148,7 @@ uint32_t xdr_decode_opaque(xdr_buf_t *xdr, void *out, uint32_t maxlen)
 void xdr_decode_opaque_fixed(xdr_buf_t *xdr, void *out, uint32_t len)
 {
     size_t padded = xdr_pad(len);
-    if (!xdr_check_decode(xdr, padded)) return;
+    if (!xdr_check(xdr, padded)) return;
 
     if (len > 0 && out)
         memcpy(out, xdr->data + xdr->pos, len);
@@ -181,7 +162,7 @@ void xdr_decode_string(xdr_buf_t *xdr, char *out, uint32_t maxlen)
     if (xdr->error) return;
 
     size_t padded = xdr_pad(len);
-    if (!xdr_check_decode(xdr, padded)) return;
+    if (!xdr_check(xdr, padded)) return;
 
     uint32_t copy_len = len < (maxlen - 1) ? len : (maxlen - 1);
     if (copy_len > 0 && out)
@@ -199,7 +180,7 @@ int xdr_decode_bool(xdr_buf_t *xdr)
 
 void xdr_skip(xdr_buf_t *xdr, size_t nbytes)
 {
-    if (!xdr_check_decode(xdr, nbytes)) return;
+    if (!xdr_check(xdr, nbytes)) return;
     xdr->pos += nbytes;
 }
 

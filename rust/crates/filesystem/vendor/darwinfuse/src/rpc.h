@@ -52,11 +52,6 @@ void rpc_encode_reply_accepted(xdr_buf_t *xdr, uint32_t xid);
  */
 void rpc_encode_reply_error(xdr_buf_t *xdr, uint32_t xid, uint32_t stat);
 
-/*
- * Encode a MSG_DENIED reply (e.g., RPC version mismatch).
- */
-void rpc_encode_reply_denied(xdr_buf_t *xdr, uint32_t xid);
-
 /* ---- TCP Record Marking (RFC 5531 §11) ---- */
 
 /*
