@@ -8,6 +8,9 @@ const productDocs = new Set(JSON.parse(readFileSync(
 export function laneArtifactViolation(path) {
   const lower = path.toLowerCase();
   const name = lower.slice(lower.lastIndexOf('/') + 1);
+  // Keep captured inputs scoped to the canonical proof-policy fixture root.
+  // Ordinary lane logs, adjacent roots and general test directories stay refused.
+  if (path.startsWith('scripts/tests/fixtures/proof-policy/')) return;
   // These are test inputs, not lane artifacts. Keep this exception scoped to
   // actual Rust fixture/corpus directories, never a general "test" exemption.
   if (/^rust\/(?:crates\/[^/]+|fuzz\/[^/]+)\/(?:tests\/fixtures|fuzz\/corpus|corpus)\//.test(path)) return;

@@ -26,3 +26,13 @@ test('product documentation, production receipts and parser fixture bytes remain
     'rust/fuzz/native-callback-path/corpus/callback_path/build.log',
   ]) assert.equal(laneArtifactViolation(path), undefined, path);
 });
+
+test('proof-policy captures have one exact fixture root', () => {
+  assert.equal(laneArtifactViolation('scripts/tests/fixtures/proof-policy/tests-20261026T005441Z.log'), undefined);
+  for (const path of [
+    'scripts/tests/fixtures/proof-policy-other/build.log',
+    'scripts/tests/fixtures/proof-policy.log',
+    'scripts/tests/fixtures/lane-logs/build.log',
+    'docs/proofs/evidence/build.log',
+  ]) assert.ok(laneArtifactViolation(path), path);
+});
