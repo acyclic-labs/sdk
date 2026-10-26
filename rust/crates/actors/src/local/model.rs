@@ -18,13 +18,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod composition;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Fault {
     None,
     /// The commit never reaches the provider.
     Drop,
     /// The commit applies, then the acknowledgement is lost.
     LoseAck,
+    /// The provider refuses this request before applying it.
+    Refuse(StreamError),
 }
 
 struct Faulty {
@@ -53,9 +55,10 @@ macro_rules! delegate {
             }
             async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
-                match self.plan.get(call).copied().unwrap_or(Fault::None) {
+                match self.plan.get(call).cloned().unwrap_or(Fault::None) {
                     Fault::None => self.inner.commit(request).await,
                     Fault::Drop => Err(StreamError::Unavailable),
+                    Fault::Refuse(error) => Err(error),
                     Fault::LoseAck => {
                         self.inner.commit(request).await?;
                         Err(StreamError::Unavailable)

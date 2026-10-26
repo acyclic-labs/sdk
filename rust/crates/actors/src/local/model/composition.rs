@@ -11,6 +11,7 @@ struct Counts {
     seals: AtomicUsize,
     committed: AtomicUsize,
     rejected: AtomicUsize,
+    refused: AtomicUsize,
     dropped: AtomicUsize,
 }
 
@@ -36,16 +37,193 @@ impl Composition for Participant {
         })
     }
 
-    fn settle<'a>(self: Box<Self>, outcome: &'a CommitOutcome) -> GuestFuture<'a, ()> {
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
         Box::pin(async move {
             let counter = match outcome {
-                CommitOutcome::Committed(_) => &self.counts.committed,
-                CommitOutcome::Conflict(_) => &self.counts.rejected,
+                Ok(CommitOutcome::Committed(_)) => &self.counts.committed,
+                Ok(CommitOutcome::Conflict(_)) => &self.counts.rejected,
+                Err(_) => &self.counts.refused,
             };
             counter.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
     }
+}
+
+/// This oracle also rejects the former all-errors-are-unknown implementation.
+fn refusal_was_settled(result: &Result<(), Error>, counts: &Counts, refusal: &StreamError) -> bool {
+    matches!(result, Err(Error::Stream(error)) if error == refusal)
+        && counts.refused.load(Ordering::SeqCst) == 1
+        && counts.committed.load(Ordering::SeqCst) == 0
+        && counts.rejected.load(Ordering::SeqCst) == 0
+        && counts.dropped.load(Ordering::SeqCst) == 1
+}
+
+#[tokio::test]
+async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), Failure> {
+    for refusal in StreamError::ALL {
+        if matches!(
+            refusal,
+            StreamError::Unavailable | StreamError::InvalidResponse
+        ) {
+            continue;
+        }
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::Refuse(refusal.clone())],
+            calls: AtomicUsize::new(0),
+        });
+        let (store, actor) = placed(provider.clone()).await?;
+        let counts = Arc::new(Counts::default());
+        let snapshot = store.load(&actor).await?;
+        let trigger = Trigger::Record {
+            subscription: "inbox".into(),
+            sequence: 0,
+        };
+        let result = store
+            .publish(
+                &snapshot,
+                1,
+                &trigger,
+                transition(counts.clone(), false)?,
+                key("refused")?,
+            )
+            .await;
+        assert!(
+            refusal_was_settled(&result, &counts, &refusal),
+            "{refusal:?}: {result:?}"
+        );
+        assert_eq!(
+            store
+                .load(&actor)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(0)
+        );
+        assert_eq!(
+            provider.inner.tail(path("participant/child")?).await,
+            Err(StreamError::NotFound)
+        );
+        // A new attempt can publish; it is not pinned to the refused request.
+        store
+            .publish(
+                &snapshot,
+                1,
+                &trigger,
+                transition(Arc::new(Counts::default()), false)?,
+                key("after-refusal")?,
+            )
+            .await?;
+        assert_eq!(
+            store
+                .load(&actor)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(1)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn negative_control_all_errors_unknown_fails_the_refusal_oracle() -> Result<(), Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![
+            Fault::None,
+            Fault::None,
+            Fault::Refuse(StreamError::InvalidArgument),
+        ],
+        calls: AtomicUsize::new(0),
+    });
+    let (store, actor) = placed(provider.clone()).await?;
+    let counts = Arc::new(Counts::default());
+    let snapshot = store.load(&actor).await?;
+    let mut publication = store.prepare_publish(
+        &snapshot,
+        1,
+        &Trigger::Record {
+            subscription: "inbox".into(),
+            sequence: 0,
+        },
+        transition(counts.clone(), false)?,
+        key("negative-refusal")?,
+    )?;
+    let participant = publication
+        .composition
+        .as_mut()
+        .ok_or("missing participant")?;
+    publication.request = participant.seal(publication.request.clone()).await?;
+    publication.sealed = true;
+    let source = provider
+        .commit(publication.request.clone())
+        .await
+        .err()
+        .ok_or("missing refusal")?;
+    // The removed implementation retained even a definite refusal as unknown.
+    let result = Err(Error::Unknown {
+        publication: Box::new(publication),
+        source,
+    });
+    assert!(!refusal_was_settled(
+        &result,
+        &counts,
+        &StreamError::InvalidArgument
+    ));
+    assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![
+            Fault::None,
+            Fault::None,
+            Fault::LoseAck,
+            Fault::Refuse(StreamError::AccessDenied),
+        ],
+        calls: AtomicUsize::new(0),
+    });
+    let (store, actor) = placed(provider.clone()).await?;
+    let counts = Arc::new(Counts::default());
+    let result = store
+        .publish(
+            &store.load(&actor).await?,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            transition(counts.clone(), false)?,
+            key("lost-then-refused")?,
+        )
+        .await;
+    let Err(Error::Unknown { publication, .. }) = result else {
+        return Err("lost acknowledgement did not retain custody".into());
+    };
+    let Err(Error::Unknown {
+        publication,
+        source: StreamError::AccessDenied,
+    }) = store.submit(*publication).await
+    else {
+        return Err("retry refusal incorrectly settled an uncertain publication".into());
+    };
+    assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
+    store.submit(*publication).await?;
+    assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
+    Ok(())
 }
 
 async fn placed(provider: Arc<Faulty>) -> Result<(Store<Faulty>, ActorReference), Failure> {

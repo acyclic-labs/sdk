@@ -26,14 +26,14 @@ pub enum Error {
     Unknown {
         /// The sealed publication to pass back to [`Store::submit`].
         publication: Box<PreparedPublish>,
-        /// The original provider refusal or transport failure.
+        /// The original uncertain provider response or transport failure.
         source: StreamError,
     },
     /// Publication has a terminal outcome, but participant settlement failed.
     #[error("actor participant settlement failed: {source}")]
     Settlement {
         /// The already decided provider outcome, never replaced by this error.
-        outcome: CommitOutcome,
+        outcome: Result<CommitOutcome, StreamError>,
         /// Why local participant settlement failed.
         source: GuestError,
     },
@@ -150,12 +150,14 @@ pub struct PreparedPublish {
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
     sealed: bool,
+    acknowledgement_unknown: bool,
 }
 impl std::fmt::Debug for PreparedPublish {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PreparedPublish")
             .field("sealed", &self.sealed)
+            .field("acknowledgement_unknown", &self.acknowledgement_unknown)
             .field("has_composition", &self.composition.is_some())
             .finish_non_exhaustive()
     }
@@ -168,6 +170,7 @@ impl PreparedPublish {
             own: None,
             composition: None,
             sealed: false,
+            acknowledgement_unknown: false,
             request: CommitRequest {
                 conditions: Vec::new(),
                 mutations: Vec::new(),
@@ -482,21 +485,47 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }
             prepared.sealed = true;
         }
-        let outcome = match self.provider.commit(prepared.request.clone()).await {
-            Ok(outcome) => outcome,
-            Err(source) => {
+        let outcome = self.provider.commit(prepared.request.clone()).await;
+        // A retry refusal cannot undo an earlier attempt that may have applied.
+        if prepared.acknowledgement_unknown {
+            if let Err(source) = &outcome {
                 return Err(Error::Unknown {
                     publication: Box::new(prepared),
-                    source,
+                    source: source.clone(),
                 });
             }
-        };
+        }
+        match &outcome {
+            Err(source @ (StreamError::Unavailable | StreamError::InvalidResponse)) => {
+                prepared.acknowledgement_unknown = true;
+                return Err(Error::Unknown {
+                    publication: Box::new(prepared),
+                    source: source.clone(),
+                });
+            }
+            Ok(_)
+            | Err(
+                StreamError::InvalidPath
+                | StreamError::InvalidArgument
+                | StreamError::LimitExceeded
+                | StreamError::NotFound
+                | StreamError::AlreadyExists
+                | StreamError::PrefixNotRetained
+                | StreamError::OutOfRange
+                | StreamError::HierarchyChanged
+                | StreamError::IdempotencyMismatch
+                | StreamError::Capacity
+                | StreamError::AccessDenied
+                | StreamError::DeadlineElapsed
+                | StreamError::Unsupported,
+            ) => {}
+        }
         if let Some(composition) = prepared.composition {
-            if let Err(source) = composition.settle(&outcome).await {
+            if let Err(source) = composition.settle(outcome.as_ref()).await {
                 return Err(Error::Settlement { outcome, source });
             }
         }
-        PreparedPublish::settle(&outcome)
+        PreparedPublish::settle(&outcome?)
     }
 
     fn prepare(
@@ -526,6 +555,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             own: Some(previous.path.clone()),
             composition: None,
             sealed: false,
+            acknowledgement_unknown: false,
             request: CommitRequest {
                 conditions: vec![own],
                 mutations: vec![CommitMutation::Append {
