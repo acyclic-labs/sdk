@@ -145,50 +145,48 @@ fn claude_user_settings_follow_the_configuration_directory_claude_reads() {
 #[test]
 fn host_commands_resolve_package_manager_launchers_through_pathext() {
     let fixture = Fixture::new();
-    let first = fixture.data.join("first");
-    let second = fixture.data.join("second");
-    fs::create_dir_all(&first).unwrap();
-    fs::create_dir_all(&second).unwrap();
-    let executable = |path: PathBuf| {
-        fs::write(&path, "").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-    };
-    executable(second.join("codex.cmd"));
-    executable(second.join("codex"));
-    // On Unix a file without execute permission earlier on PATH does not
-    // hide the command, exactly as execvp skips it.
+    let bin = fixture.data.join("host & % launchers");
+    fs::create_dir(&bin).unwrap();
+    let name = if cfg!(windows) { "codex.cmd" } else { "codex" };
+    let launcher = bin.join(name);
+    fs::write(&launcher, "").unwrap();
     #[cfg(unix)]
-    fs::write(first.join("codex"), "").unwrap();
-    let directories = || [first.clone(), second.clone()];
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let environment = |key: &str| match key {
+        "PATH" => Some(bin.as_os_str().to_owned()),
+        "PATHEXT" => Some(".EXE;.BAT;.CMD".into()),
+        _ => None,
+    };
     assert_eq!(
-        executable_in(
-            directories(),
-            "codex",
-            Some(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))
+        Path::new(
+            host_command_in("codex", &fixture.data, environment)
+                .unwrap()
+                .get_program()
         ),
-        Some(second.join("codex.cmd"))
+        launcher,
     );
-    assert_eq!(
-        executable_in(directories(), "codex", None),
-        Some(second.join("codex"))
-    );
-    executable(first.join("codex.exe"));
-    assert_eq!(
-        executable_in(
-            directories(),
-            "codex",
-            Some(std::ffi::OsStr::new(".EXE;.CMD"))
-        ),
-        Some(first.join("codex.exe"))
-    );
-    assert_eq!(
-        executable_in(directories(), "claude", Some(std::ffi::OsStr::new(".EXE"))),
-        None
-    );
+    assert!(host_command_in("absent", &fixture.data, environment).is_err());
+    #[cfg(windows)]
+    for extension in ["cmd", "bat"] {
+        let name = format!("codex-fixture-{extension}");
+        let path = bin.join(format!("{name}.{extension}"));
+        fs::write(&path, "@echo off\r\n@echo host-launcher-ran\r\n").unwrap();
+        let mut command = host_command_in(&name, &fixture.data, environment).unwrap();
+        let output = acyclic_native_runtime::process_output(
+            &mut command,
+            std::time::Duration::from_secs(1),
+            1_024,
+        )
+        .unwrap();
+        assert!(output.status.success(), "{extension}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "host-launcher-ran"
+        );
+    }
 }
 
 #[test]

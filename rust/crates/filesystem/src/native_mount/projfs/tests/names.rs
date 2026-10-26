@@ -1,33 +1,5 @@
 use super::*;
 
-pub(super) fn callback_runtime(
-    source: Arc<MemorySource>,
-    root: &std::path::Path,
-    work: &crate::NativeMaterializationWork,
-) -> Result<Runtime, Box<dyn std::error::Error>> {
-    Ok(Runtime {
-        _policy_lease: Box::new(()),
-        source,
-        work: Mutex::new(work.clone()),
-        active_work: Mutex::new(Default::default()),
-        original_work: Mutex::new(None),
-        callback_guard: None,
-        root: root.to_path_buf(),
-        metadata_root: HostRoot::open(root, &mut &*work)?,
-        staging: Mutex::new(None),
-        creating_name: RwLock::new((MountPath::root(), None)),
-        writable: true,
-        metadata_baselines: Mutex::new(HashMap::new()),
-        projection: Mutex::new(HashMap::new()),
-        projector: Arc::new(Projector::new()),
-        metadata_probes: Mutex::new(HashMap::new()),
-        metadata_edits: FileLocks::default(),
-        post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
-        callbacks: CallbackGate::start()?,
-        _allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-    })
-}
-
 fn cached_name_query(runtime: &Runtime, file_id: FileId, basis: ReadBasis) -> HRESULT {
     let mut path = windows_path("leaf");
     with_creating_name(&runtime.creating_name, &mut path, (file_id, basis), |_| {

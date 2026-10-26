@@ -60,26 +60,56 @@ fn deepest_stack<T: Send>(callback: impl FnOnce() -> T + Send) -> (T, usize) {
     })
 }
 
-fn measure<T: Send>(
-    kind: &str,
-    callback: impl FnOnce() -> Result<T, MountSourceError> + Send,
-) -> Result<T, MountSourceError> {
-    let (_, debug, release) = BUDGETS
-        .iter()
-        .find(|(name, _, _)| *name == kind)
-        .expect("callback has a budget");
-    let budget = if cfg!(debug_assertions) {
-        *debug
-    } else {
-        *release
-    };
-    let (result, used) = tokio::task::block_in_place(|| deepest_stack(callback));
-    assert!(
-        used.div_ceil(1024) <= budget,
-        "{kind}: {} KiB exceeds {budget} KiB",
-        used.div_ceil(1024)
-    );
-    result
+struct StackMeasurements {
+    used: [Option<usize>; BUDGETS.len()],
+}
+
+impl StackMeasurements {
+    fn new() -> Self {
+        Self {
+            used: [None; BUDGETS.len()],
+        }
+    }
+
+    fn measure<T: Send>(
+        &mut self,
+        kind: &str,
+        callback: impl FnOnce() -> Result<T, MountSourceError> + Send,
+    ) -> Result<T, MountSourceError> {
+        let index = BUDGETS
+            .iter()
+            .position(|(name, _, _)| *name == kind)
+            .expect("callback has a budget");
+        assert!(self.used[index].is_none(), "callback measured exactly once");
+        let (result, used) = tokio::task::block_in_place(|| deepest_stack(callback));
+        // Collect outside the painted callback so diagnostics do not change
+        // its measured depth. Check all limits after exercising every entry.
+        self.used[index] = Some(used);
+        result
+    }
+
+    fn assert_budgets(&self, require_all: bool) {
+        let mut failures = Vec::new();
+        for ((kind, debug, release), used) in BUDGETS.iter().zip(self.used) {
+            let budget = if cfg!(debug_assertions) {
+                *debug
+            } else {
+                *release
+            };
+            if let Some(used) = used {
+                eprintln!("stack {kind}: {used} bytes / {budget} KiB");
+                if used.div_ceil(1024) > budget {
+                    failures.push(format!(
+                        "{kind}: {} KiB exceeds {budget} KiB",
+                        used.div_ceil(1024)
+                    ));
+                }
+            } else if require_all {
+                failures.push(format!("{kind}: callback was not measured"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
 }
 
 fn path(name: &str) -> MountPath {
@@ -202,40 +232,41 @@ async fn lazy_workspace(
 }
 
 fn measure_common(view: &dyn MountFilesystem) -> TestResult {
+    let mut measured = StackMeasurements::new();
     let work = crate::NativeMaterializationWork::new(
         crate::performance::BOUNDARY_BUDGET,
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
     let read = path("read.txt");
-    measure("readdir-root", || {
+    measured.measure("readdir-root", || {
         view.read_directory(&MountPath::root(), None, 256)
     })?;
-    measure("readdir", || view.read_directory(&path("dir"), None, 256))?;
-    measure("lookup", || view.lookup(&read))?;
-    measure("binding-lease", || view.acquire_view_lease())?;
-    let pinned = measure("lookup-pinned", || view.lookup_pinned(&read))?;
-    let opened = measure("open", || view.open_file(&read))?;
-    measure("getattr", || opened.lookup())?;
-    measure("read", || opened.read_range(0, CONTENT))?;
+    measured.measure("readdir", || view.read_directory(&path("dir"), None, 256))?;
+    measured.measure("lookup", || view.lookup(&read))?;
+    measured.measure("binding-lease", || view.acquire_view_lease())?;
+    let pinned = measured.measure("lookup-pinned", || view.lookup_pinned(&read))?;
+    let opened = measured.measure("open", || view.open_file(&read))?;
+    measured.measure("getattr", || opened.lookup())?;
+    measured.measure("read", || opened.read_range(0, CONTENT))?;
     if let Some((_, Some(pin))) = pinned {
-        measure("read-pinned", || {
+        measured.measure("read-pinned", || {
             view.read_pinned(&read, pin, 0, CONTENT.into(), 16 * 1024, &mut |_, _| Ok(()))
         })?;
     } else {
-        measure("read-pinned", || view.read_range(&read, 0, CONTENT))?;
+        measured.measure("read-pinned", || view.read_range(&read, 0, CONTENT))?;
     }
-    measure("create", || {
+    measured.measure("create", || {
         view.create_file(&path("created.txt"), FileMetadata::default(), None, &work)
     })?;
     let created = view.open_file(&path("created.txt"))?;
-    measure("write", || {
+    measured.measure("write", || {
         created.write_range(0, Bytes::from_static(b"written"))
     })?;
-    measure("mkdir", || {
+    measured.measure("mkdir", || {
         view.create_directory(&path("made"), FileMetadata::default(), &work)
     })?;
-    measure("rename", || {
+    measured.measure("rename", || {
         view.rename(
             &path("created.txt"),
             &path("made/created.txt"),
@@ -243,7 +274,7 @@ fn measure_common(view: &dyn MountFilesystem) -> TestResult {
             &work,
         )
     })?;
-    measure("write-existing", || {
+    measured.measure("write-existing", || {
         view.open_file(&path("write.txt"))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
@@ -252,21 +283,22 @@ fn measure_common(view: &dyn MountFilesystem) -> TestResult {
         .lookup(&attributes)?
         .ok_or(MountSourceError::NotFound)?
         .metadata;
-    measure("setattr-existing", || {
+    measured.measure("setattr-existing", || {
         view.set_attributes(&attributes, metadata, Some(1), &work)
     })?;
-    measure("rename-existing", || {
+    measured.measure("rename-existing", || {
         view.rename(&path("rename.txt"), &path("renamed.txt"), false, &work)
     })?;
-    measure("remove-existing", || {
+    measured.measure("remove-existing", || {
         view.remove(&path("remove.txt"), None, &work)
     })?;
-    measure("lookup-deep", || view.lookup(&path(&deep("read.txt"))))?;
-    measure("write-deep", || {
+    measured.measure("lookup-deep", || view.lookup(&path(&deep("read.txt"))))?;
+    measured.measure("write-deep", || {
         view.open_file(&path(&deep("write.txt")))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
-    measure("flush", || view.flush(&work))?;
+    measured.measure("flush", || view.flush(&work))?;
+    measured.assert_budgets(true);
     Ok(())
 }
 
@@ -358,6 +390,8 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
 async fn binding_leases_fit_the_existing_callback_stack_margin() -> TestResult {
     let root = tempfile::tempdir()?;
     let (_lazy, authored) = lazy_workspace(root.path()).await?;
-    measure("binding-lease", || authored.acquire_view_lease())?;
+    let mut measured = StackMeasurements::new();
+    measured.measure("binding-lease", || authored.acquire_view_lease())?;
+    measured.assert_budgets(false);
     Ok(())
 }

@@ -49,10 +49,22 @@ fn capture_meter(
         .map_err(|(error, _)| MountSourceError::NativeWork(error))
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static CALLBACK_BOUNDARIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::native_mount) fn callback_boundary_count() -> usize {
+    CALLBACK_BOUNDARIES.get()
+}
+
 pub(super) fn boundary<T>(
     cancellation: &CancellationToken,
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
+    #[cfg(test)]
+    CALLBACK_BOUNDARIES.with(|count| count.set(count.get() + 1));
     let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation)?;
     operation(&work)
 }

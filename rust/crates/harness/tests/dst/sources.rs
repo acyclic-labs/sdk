@@ -4,7 +4,7 @@
 //! Mount clock reads are checked separately below over the whole native_mount
 //! tree in every spelling. Host fallbacks live in the captured clock seam and
 //! the macOS uptime fallback; mount start/stop deadlines have exact counts.
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 /// Crates linked into the DST closure whose sources reach simulated paths.
 const CRATES: [&str; 7] = [
@@ -119,41 +119,20 @@ fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<Str
     violations
 }
 
-// Both scans share one read of the tree.
+// Both scans use the same build-host inventory as the other source policies.
 fn sources() -> &'static [(String, String)] {
     static FILES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     FILES.get_or_init(|| {
-        read_sources(&acyclic_test_support::source_path("rust/crates/harness").join(".."))
+        acyclic_test_support::repository_rust_sources()
+            .iter()
+            .filter_map(|(path, text)| {
+                let relative = path.strip_prefix("rust/crates/")?;
+                let (name, source) = relative.split_once('/')?;
+                (CRATES.contains(&name) && source.starts_with("src/") && !test_only(relative))
+                    .then(|| (relative.to_owned(), (*text).to_owned()))
+            })
+            .collect()
     })
-}
-
-fn read_sources(root: &Path) -> Vec<(String, String)> {
-    let mut files = Vec::new();
-    for name in CRATES {
-        let mut pending = vec![root.join(name).join("src")];
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(&directory).expect("source directory") {
-                let path = entry.expect("source entry").path();
-                if path.is_dir() {
-                    pending.push(path);
-                    continue;
-                }
-                if path.extension().is_none_or(|extension| extension != "rs") {
-                    continue;
-                }
-                let relative = path
-                    .strip_prefix(root)
-                    .expect("crate source")
-                    .to_str()
-                    .expect("UTF-8 source path")
-                    .replace('\\', "/");
-                if !test_only(&relative) {
-                    files.push((relative, std::fs::read_to_string(&path).expect("source")));
-                }
-            }
-        }
-    }
-    files
 }
 
 #[test]

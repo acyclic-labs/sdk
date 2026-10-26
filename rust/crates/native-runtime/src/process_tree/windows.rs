@@ -24,6 +24,10 @@ pub(super) use std::os::windows::io::AsRawHandle as Pipe;
 #[path = "windows_wait.rs"]
 pub(super) mod wait;
 pub(super) use wait::wait_for_exit;
+
+pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()> {
+    crate::process_identity::ProcessProbe::from_process(child)?.await_exit()
+}
 #[cfg(test)]
 pub(super) use wait::wait_for_exit_coarse;
 
@@ -199,6 +203,11 @@ pub(super) fn spawn_named(
     name: &[u16],
     record: &mut super::custody::Record,
 ) -> io::Result<()> {
+    let job = name.strip_suffix(&[0]).ok_or(io::ErrorKind::InvalidInput)?;
+    command.env(
+        "ACYCLIC_PROCESS_CUSTODY_JOB",
+        String::from_utf16(job).map_err(|_| io::ErrorKind::InvalidInput)?,
+    );
     spawn_in_job(command, None, custody, Some((name, record)))
 }
 
@@ -226,17 +235,20 @@ fn spawn_in_job(
     initialized?;
     let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
     // A named tree's custodian holds its Job until every member has exited.
-    let custodian = named
+    let mut custodian = named
         .as_mut()
         .map(|(_, record)| super::custodian::launch(tree.guard.job, record))
         .transpose()?;
-    let started = start_in_job(command, meter, tree);
+    if let Some(custodian) = &custodian {
+        command.env(super::custodian_admission::ENV, &custodian.endpoint);
+    }
+    let started = start_in_job(command, meter, tree, custodian.as_ref());
     if started.is_err()
-        && let Some(mut custodian) = custodian
+        && let Some(custodian) = custodian.as_mut()
     {
         // Never started, the tree has no member for the custodian to await.
-        let _ = custodian.kill();
-        let _ = custodian.wait();
+        let _ = custodian.child.kill();
+        let _ = custodian.child.wait();
     }
     started
 }
@@ -245,6 +257,7 @@ fn start_in_job(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
     tree: &mut super::ProcessTree,
+    custodian: Option<&super::custodian::Custodian>,
 ) -> io::Result<()> {
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -252,6 +265,12 @@ fn start_in_job(
         Ok(())
     })?;
     let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
+    // Packaged applications can use desktop-app breakaway even when their
+    // assigned Job disallows ordinary breakaway. Check the actual suspended
+    // process, so aliases and a replaced executable cannot bypass admission.
+    super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+        crate::executable::require_unpackaged(child.as_raw_handle().cast())
+    })?;
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         // SAFETY: both handles are owned and the child is still suspended.
         if unsafe { AssignProcessToJobObject(tree.guard.job, child.as_raw_handle().cast()) } == 0 {
@@ -261,6 +280,9 @@ fn start_in_job(
             Ok(())
         }
     })?;
+    if let Some(custodian) = custodian {
+        super::custodian_admission::admit(&custodian.endpoint, child.id())?;
+    }
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         #[link(name = "ntdll")]
         unsafe extern "system" {

@@ -92,7 +92,17 @@ fn resolve(read: Read<'_>) -> Option<OsString> {
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         Read::Home => dirs::home_dir().map(PathBuf::into_os_string),
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-        Read::State(None) => dirs::data_local_dir().map(PathBuf::into_os_string),
+        Read::State(None) => {
+            // Known Folder lookup does not honor an explicitly isolated Windows
+            // profile. All native owners must use the caller's local-data root.
+            #[cfg(windows)]
+            if let Some(directory) =
+                std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty())
+            {
+                return Some(directory);
+            }
+            dirs::data_local_dir().map(PathBuf::into_os_string)
+        }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         Read::State(Some(directory)) => Some(directory.as_os_str().to_owned()),
     }
@@ -102,6 +112,38 @@ fn resolve(read: Read<'_>) -> Option<OsString> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[cfg(all(windows, feature = "filesystem-local"))]
+    #[test]
+    fn native_state_honors_literal_local_app_data() {
+        const EXPECTED: &str = "ACYCLIC_STATE_LOCATION_TEST";
+        if let Some(expected) = variable(EXPECTED) {
+            assert_eq!(state(None), Some(PathBuf::from(&expected)));
+            let injected = PathBuf::from(expected).join("explicit");
+            assert_eq!(state(Some(&injected)), Some(injected));
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let local = fixture.path().join("local & % data-λ");
+        std::fs::create_dir(&local).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_environment::tests::native_state_honors_literal_local_app_data",
+                "--test-threads=1",
+            ])
+            .env("LOCALAPPDATA", &local)
+            .env(EXPECTED, &local)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+    }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]

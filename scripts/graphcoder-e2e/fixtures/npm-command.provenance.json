@@ -1,0 +1,14 @@
+{
+  "attribution": "Codex",
+  "captured_at": "2026-10-25",
+  "tool": "npm cmd-shim",
+  "version": "7.0.0",
+  "generator_sha256": "4e5f3fcf05a00ece29888768a5f91b52d15ef736cfefab452ca77b66aa71b234",
+  "source": "https://github.com/npm/cmd-shim/tree/v7.0.0",
+  "capture": "D:/lane-scratch/windows/npm-shim-r2289/capture.json",
+  "command": "await require(\"C:/Program Files/nodejs/node_modules/npm/node_modules/cmd-shim\")(copiedWindowsWhereExe, ownedShimDestination)",
+  "input": "An unmodified copy of this Windows host's System32/where.exe, named where.exe beside the generated shim.",
+  "input_sha256": "f51fab8041e5023d7290b540a2106f051ef0bd2bc3443c9daf318628b560fa29",
+  "fixture_sha256": "287faa31aa305116e6cc97b81706f56f636c0689698a7740598b01192b13d97f",
+  "note": "Exact external-tool output, captured on real Windows under the canonical native host and fleet lease. Runtime tests supply their own real OS executable; no binary is vendored."
+}

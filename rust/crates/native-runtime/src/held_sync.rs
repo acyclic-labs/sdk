@@ -1,10 +1,13 @@
 //! One native full flush of a held descriptor, with no internal retry.
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd as _, BorrowedFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
 
 /// Issues exactly one native full flush of `descriptor`: `fcntl(F_FULLFSYNC)`
 /// on Apple, where a bare `fsync` stops at the drive cache, and `fsync` on
-/// Linux. `EINTR` and every other failure return to the caller, whose metered
+/// Linux, and `FlushFileBuffers` on Windows. Every failure returns to the caller, whose metered
 /// loop owns retry, charging and cancellation for each native attempt.
 /// Unlike std's `sync_all`, nothing is retried here, and Apple never falls
 /// back to a weaker flush.
@@ -12,19 +15,36 @@ use std::os::fd::{AsRawFd as _, BorrowedFd};
     unsafe_code,
     reason = "one flush call on the caller's borrowed descriptor"
 )]
-pub fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+pub fn sync_descriptor_once(
+    #[cfg(unix)] descriptor: BorrowedFd<'_>,
+    #[cfg(windows)] descriptor: BorrowedHandle<'_>,
+) -> io::Result<()> {
     #[cfg(target_vendor = "apple")]
     // SAFETY: the borrowed descriptor stays open for this one flush.
     let result = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_FULLFSYNC) };
     #[cfg(target_os = "linux")]
     // SAFETY: the borrowed descriptor stays open for this one flush.
     let result = unsafe { libc::fsync(descriptor.as_raw_fd()) };
-    if result == -1 {
+    #[cfg(unix)]
+    let failed = result == -1;
+    #[cfg(windows)]
+    // SAFETY: the borrowed handle stays open for this one flush.
+    let failed = unsafe {
+        windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(descriptor.as_raw_handle())
+    } == 0;
+    if failed {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "held_sync_sources_tests.rs"]
+mod source_tests;
+#[cfg(all(test, windows))]
+#[path = "held_sync_windows_tests.rs"]
+mod windows_tests;
 
 #[cfg(test)]
 #[cfg(target_vendor = "apple")]

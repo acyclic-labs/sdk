@@ -14,10 +14,8 @@ mod job;
 pub(crate) struct NativeWorkers {
     pub(crate) sender: mpsc::SyncSender<NativeJob>,
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
-    /// Worker threads draining `sender`. Private: a test reads it only through
-    /// [`NativeWorkers::exclusive_threads`], which proves the test owns the pool.
-    #[cfg(test)]
-    threads: usize,
+    /// Existing service width; batches never create another pool or enlarge it.
+    pub(crate) threads: usize,
     #[cfg(feature = "test-support")]
     pub(crate) host_pool: Arc<crate::testing::HostPool>,
 }
@@ -137,7 +135,6 @@ pub(crate) fn start_workers(
     Ok(NativeWorkers {
         sender,
         admission,
-        #[cfg(test)]
         threads: worker_count,
         #[cfg(feature = "test-support")]
         host_pool,

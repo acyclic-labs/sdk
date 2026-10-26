@@ -5,8 +5,8 @@ Windows MSVC executables must be cross-built on bb2; run Windows suites serially
 ConPTY preparation has no local PowerShell compiler entry point: cross-build
 `scripts/graphcoder-conpty.cs` on bb2 and supply its executable as
 `E2E_CONPTY_HOST` before running a Windows PTY case.
-The Windows `owned-process.cs` host must also be cross-compiled on bb2 and
-its absolute executable supplied as `E2E_PROCESS_HOST`. External acceptance
+Cross-build the native-runtime `acyclic-process-host` binary on bb2 and supply
+its absolute executable as `E2E_PROCESS_HOST`. External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.
 Linux external acceptance also leases its fresh fixture directory. After all

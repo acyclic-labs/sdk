@@ -41,7 +41,7 @@ async fn native_access_projfs_cached_opens_require_current_list_authority()
         )?;
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("read.txt"), b"cached host contents")?;
-        let runtime = metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &work)?;
+        let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
         let stamp = source.view_stamp_with_meter(&work)?;
         publish_test_access(&source, vec![deny("no-disclosure", &[Action::List], path)])?;
         assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
@@ -257,7 +257,7 @@ async fn cached_read_close_rechecks_source_changes_and_keeps_both_host_probes()
     source.write_range(&path, 0, Bytes::from_static(b"contents"))?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("read.txt"), b"contents")?;
-    let runtime = metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &work)?;
+    let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
     close_read(&runtime, &work);
     let binding = lock_recover(&runtime.projection)
         .get(&path)
@@ -305,7 +305,7 @@ async fn a_current_source_binding_still_captures_a_host_metadata_edit()
     let root = tempfile::tempdir()?;
     let host = root.path().join("read.txt");
     std::fs::write(&host, b"contents")?;
-    let runtime = metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &work)?;
+    let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
     close_read(&runtime, &work);
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source is unstable")?;
     assert_eq!(notify(&runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
@@ -346,7 +346,7 @@ async fn cached_read_close_charges_source_validation_to_its_callback_meter()
     source.write_range(&path, 0, Bytes::from_static(b"contents"))?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("read.txt"), b"contents")?;
-    let warm = metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &setup)?;
+    let warm = callback_runtime(Arc::clone(&source), root.path(), &setup)?;
     close_read(&warm, &setup);
     let binding = lock_recover(&warm.projection)
         .get(&path)
@@ -362,9 +362,8 @@ async fn cached_read_close_charges_source_validation_to_its_callback_meter()
         ..ProptestConfig::default()
     });
     runner.run(&limits, |items_examined| {
-        let mut runtime =
-            metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &setup)
-                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let mut runtime = callback_runtime(Arc::clone(&source), root.path(), &setup)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
         lock_recover(&runtime.projection).insert(path.clone(), binding);
         prop_assert_eq!(notify(&runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
         let work = crate::NativeMaterializationWork::new(

@@ -258,6 +258,11 @@ where
         &self,
         wait: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError> {
+        // A completed source owns no remaining wait. A later caller's cancelled
+        // token cannot revoke the physical drain already proved by this owner.
+        if self.physically_retired()? {
+            return Ok(());
+        }
         self.authored.cancel_cleanup(wait)?;
         if let Some(wait) = wait {
             wait.check().map_err(|_| MountSourceError::Cancelled)?;

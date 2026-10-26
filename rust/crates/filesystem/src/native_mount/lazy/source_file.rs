@@ -41,10 +41,10 @@ where
     ) -> Result<T, MountSourceError> {
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-            self.runtime.wait_prepared(prepared, || async {
+            let (lease, file) = self.runtime.wait_prepared(prepared, || async {
                 let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
-                let _lease = self
+                let lease = self
                     .source_view
                     .read_for_callback_with_carrier(
                         owner,
@@ -55,18 +55,22 @@ where
                     )
                     .await?;
                 let file = self.current_authored(owner, carrier).await?;
-                let bytes = file.as_ref().map_or(0, |(_, bytes)| *bytes);
-                let result = operation(
-                    file.as_ref().map(|(file, _)| file.as_ref()),
-                    self.source_node,
-                    carrier,
-                );
-                drop(file);
-                carrier
-                    .with_work(|work| work.release(bytes))
-                    .map_err(MountSourceError::from)?;
-                result
-            })
+                Ok::<_, MountSourceError>((lease, file))
+            })?;
+            // The authored callback can enter the runtime itself. Retire this
+            // poll frame before invoking it, retaining the lease and custody.
+            let bytes = file.as_ref().map_or(0, |(_, bytes)| *bytes);
+            let result = operation(
+                file.as_ref().map(|(file, _)| file.as_ref()),
+                self.source_node,
+                carrier,
+            );
+            drop(file);
+            carrier
+                .with_work(|work| work.release(bytes))
+                .map_err(MountSourceError::from)?;
+            drop(lease);
+            result
         })
     }
 
@@ -77,10 +81,13 @@ where
     ) -> Result<T, MountSourceError> {
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-            self.runtime.wait_prepared(prepared, || async {
+            // Resolve under the async lease phase, then retire its polling
+            // frame before entering the authored file callback. The returned
+            // lease and file keep identity and allocation custody throughout.
+            let (lease, file) = self.runtime.wait_prepared(prepared, || async {
                 let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
-                let _lease = self
+                let lease = self
                     .source_view
                     .write_stable_with_carrier(
                         Some(self.source_generation),
@@ -106,14 +113,16 @@ where
                         .await?
                         .ok_or(MountSourceError::Stale)?
                 };
-                let result = operation(file.0.as_ref());
-                let bytes = file.1;
-                drop(file);
-                carrier
-                    .with_work(|work| work.release(bytes))
-                    .map_err(MountSourceError::from)?;
-                result
-            })
+                Ok::<_, MountSourceError>((lease, file))
+            })?;
+            let result = operation(file.0.as_ref());
+            let bytes = file.1;
+            drop(file);
+            carrier
+                .with_work(|work| work.release(bytes))
+                .map_err(MountSourceError::from)?;
+            drop(lease);
+            result
         })
     }
 
@@ -140,6 +149,8 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    adapter::ordinary_file_callbacks!(self, self.authored.cancellation());
+
     fn clone_source(
         &self,
         checkout: &(dyn std::any::Any + Send + Sync),
@@ -486,67 +497,5 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.mutate(work, |file| file.write_sparse_range(offset, range, work))
-    }
-    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.lookup_with_meter(work)
-        })
-    }
-    fn read_range(&self, offset: u64, length: u32) -> Result<OwnedBytes, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.read_range_with_meter(offset, length, work)
-                .map(|packet| packet.bytes)
-        })
-    }
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<OwnedBytes, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.read_up_to_with_meter(offset, maximum_bytes, work)
-                .map(|packet| packet.bytes)
-        })
-    }
-    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.seek_with_meter(offset, target, work)
-        })
-    }
-    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.write_range_with_meter(
-                offset,
-                crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0),
-                work,
-            )
-        })
-    }
-    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.mutate(work, |file| file.append_range(offset, bytes))
-        })
-    }
-
-    fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.resize_with_meter(logical_bytes, work)
-        })
-    }
-    fn allocate_range(
-        &self,
-        offset: u64,
-        length: u64,
-        operation: MountRangeAllocation,
-    ) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.allocate_range_with_meter(offset, length, operation, work)
-        })
-    }
-    fn list_attributes(
-        &self,
-        cursor: Option<&[u8]>,
-        maximum_entries: u32,
-    ) -> Result<MountAttributePage, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.list_attributes_with_meter(cursor, maximum_entries, work)
-                .map(|(page, _)| page)
-        })
     }
 }

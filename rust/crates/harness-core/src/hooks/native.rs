@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_native_runtime::{
-    CaptureInput, ProcessInput, ProcessTree, run_blocking_io, shell_command,
+    CaptureInput, ExecutableSearch, ProcessInput, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
     path::{Path, PathBuf},
@@ -87,7 +87,12 @@ pub(super) async fn run_hook(
                 owner_check()
             };
             check().map_err(Error::process_io)?;
-            let mut command = hook_command(&hook, &request.0)?;
+            let mut command = hook_command(
+                &hook,
+                &request.0,
+                &request.1,
+                crate::native_environment::variable,
+            )?;
             command
                 .current_dir(&request.1)
                 .env("CLAUDE_PROJECT_DIR", &request.0)
@@ -121,18 +126,26 @@ pub(super) async fn run_hook(
     .map_err(Error::process_io)?
 }
 
-fn hook_command(hook: &HookSpec, workspace: &Path) -> Result<Command> {
+fn hook_command(
+    hook: &HookSpec,
+    workspace: &Path,
+    cwd: &Path,
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Command> {
     Ok(match &hook.run {
         HookRun::Executable { executable, argv } => {
-            let environment = crate::native_environment::variable;
-            let executable = expand_exec_path(executable, workspace, environment)?;
-            let mut command = Command::new(&*executable);
+            let executable = expand_exec_path(executable, workspace, &environment)?;
+            let mut command = ExecutableSearch::from_environment(cwd, &environment)
+                .command(&*executable)
+                .map_err(Error::process_io)?;
             for argument in argv {
-                command.arg(&*expand_exec_path(argument, workspace, environment)?);
+                command.arg(&*expand_exec_path(argument, workspace, &environment)?);
             }
             command
         }
-        HookRun::Shell { command, shell } => shell_command(command, shell.as_deref()),
+        HookRun::Shell { command, shell } => {
+            shell_command(command, shell.as_deref()).map_err(Error::process_io)?
+        }
     })
 }
 
@@ -141,42 +154,24 @@ pub(super) fn expand_exec_path<'a>(
     workspace: &Path,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<std::borrow::Cow<'a, std::ffi::OsStr>> {
-    let mut expanded = None;
-    let mut consumed = 0;
-    for (start, _) in value.match_indices("${") {
-        let tail = &value[start..];
-        let name = [
-            "CLAUDE_PROJECT_DIR",
-            "CLAUDE_PLUGIN_ROOT",
-            "CLAUDE_PLUGIN_DATA",
-        ]
-        .into_iter()
-        .find(|name| {
-            tail.strip_prefix("${")
-                .and_then(|tail| tail.strip_prefix(name))
-                .is_some_and(|tail| tail.starts_with('}'))
-        });
-        let Some(name) = name else {
-            continue;
+    acyclic_native_runtime::expand_environment(value, |reference| {
+        let Some(reference) = reference else {
+            return Ok(None);
         };
-        let output = expanded.get_or_insert_with(std::ffi::OsString::new);
-        output.push(&value[consumed..start]);
+        if reference.fallback.is_some() {
+            return Ok(None);
+        }
+        let name = reference.name;
         if name == "CLAUDE_PROJECT_DIR" {
-            output.push(workspace);
-        } else {
-            output.push(environment(name).ok_or_else(|| {
+            Ok(Some(workspace.as_os_str().to_owned()))
+        } else if matches!(name, "CLAUDE_PLUGIN_ROOT" | "CLAUDE_PLUGIN_DATA") {
+            environment(name).map(Some).ok_or_else(|| {
                 Error::Invalid(format!("hook path placeholder {name} is not configured"))
-            })?);
+            })
+        } else {
+            Ok(None)
         }
-        consumed = start + name.len() + 3;
-    }
-    match expanded {
-        Some(mut expanded) => {
-            expanded.push(&value[consumed..]);
-            Ok(std::borrow::Cow::Owned(expanded))
-        }
-        None => Ok(std::borrow::Cow::Borrowed(std::ffi::OsStr::new(value))),
-    }
+    })
 }
 
 struct HookCancellation(Arc<AtomicBool>);
@@ -204,6 +199,111 @@ fn check_cancelled(cancelled: &AtomicBool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_hook_shell_uses_the_pinned_platform_contract() -> Result<()> {
+        let hook = HookSpec {
+            run: HookRun::Shell {
+                command: "echo literal-source".into(),
+                shell: None,
+            },
+            timeout_ms: 1_000,
+            failure: HookFailure::Report,
+        };
+        let command = hook_command(
+            &hook,
+            Path::new("workspace"),
+            Path::new("workspace"),
+            |_| None,
+        )?;
+        assert_eq!(
+            Path::new(command.get_program()),
+            acyclic_native_runtime::platform_shell().map_err(Error::process_io)?
+        );
+        let args: Vec<_> = command.get_args().collect();
+        let mut expected: Vec<_> = acyclic_native_runtime::shell_spec::PLATFORM
+            .arguments
+            .iter()
+            .map(std::ffi::OsStr::new)
+            .collect();
+        expected.push(std::ffi::OsStr::new("echo literal-source"));
+        assert_eq!(args, expected);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn imported_batch_hooks_resolve_pathext_through_the_owned_process_core() -> Result<()> {
+        let fixture = tempfile::tempdir().map_err(Error::process_io)?;
+        let bin = fixture.path().join("hook & % launchers");
+        std::fs::create_dir(&bin).map_err(Error::process_io)?;
+        let registry = ToolRegistry::default();
+        for extension in ["cmd", "bat"] {
+            let name = format!("hook-{extension}");
+            let path = bin.join(format!("{name}.{extension}"));
+            std::fs::write(&path, "@echo off\r\n@echo batch-hook-ran\r\n")
+                .map_err(Error::process_io)?;
+            // JSON is the Claude/Codex adapter, TOML the Codex adapter;
+            // normalized rules are also the native and plugin entry point.
+            for adapter in ["json", "toml", "normalized"] {
+                let mut hooks = Hooks::default();
+                match adapter {
+                    "json" => hooks.add_json(
+                        serde_json::json!({"hooks":{"Stop":[{"hooks":[{
+                            "type":"command", "command":name, "args":[]
+                        }]}]}}).to_string().as_bytes(),
+                    )?,
+                    "toml" => hooks.add_toml(&format!(
+                        "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = '{name}'\nargs = []\n"
+                    ))?,
+                    _ => hooks.add_rules([HookRule {
+                        on: HookEvent::Stop,
+                        matcher: String::new(),
+                        hooks: vec![HookSpec {
+                            run: HookRun::Executable { executable: name.clone(), argv: vec![] },
+                            timeout_ms: 1_000,
+                            failure: HookFailure::Report,
+                        }],
+                    }])?,
+                }
+                let input = serde_json::json!({});
+                let hook = hooks
+                    .commands(HookEvent::Stop, &input, &registry)?
+                    .next()
+                    .ok_or_else(|| Error::Invalid("missing imported batch hook".into()))?;
+                let mut command =
+                    hook_command(hook, fixture.path(), fixture.path(), |key| match key {
+                        "PATH" => Some(bin.as_os_str().to_owned()),
+                        "PATHEXT" => Some(".EXE;.BAT;.CMD".into()),
+                        _ => None,
+                    })?;
+                assert_eq!(Path::new(command.get_program()), path);
+                command
+                    .current_dir(fixture.path())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
+                let output = tree
+                    .wait_with_output(
+                        Duration::from_secs(1),
+                        1_024,
+                        None,
+                        || Ok(()),
+                        |_| Ok(ProcessInput::default()),
+                        None,
+                        None,
+                    )
+                    .map_err(|error| Error::process_io(error.error))?;
+                assert!(output.status.success(), "{adapter}/{extension}: {output:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    "batch-hook-ran"
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn exec_path_placeholders_are_single_pass_literal_native_paths() -> Result<()> {

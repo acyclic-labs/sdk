@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-host-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Dependency-free host platform contracts shared by native, browser and build adapters"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

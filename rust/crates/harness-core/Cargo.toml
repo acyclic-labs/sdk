@@ -53,7 +53,7 @@ native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml"]
-mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml"]
 # Native environment access for acyclic-harness-search credentials.
 search-http = []
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
@@ -62,6 +62,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 zeroize.workspace = true
@@ -107,6 +108,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 dirs.workspace = true
 blake3.workspace = true
 prost-build.workspace = true
@@ -122,7 +124,6 @@ same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
-which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]

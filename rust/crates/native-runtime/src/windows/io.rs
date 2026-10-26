@@ -19,7 +19,7 @@ use windows_sys::{
         Storage::FileSystem::{
             FILE_END_OF_FILE_INFO, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
             FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileEndOfFileInfo,
-            FileIdInfo, FlushFileBuffers, GetFileInformationByHandleEx, ReOpenFile, ReadFile,
+            FileIdInfo, GetFileInformationByHandleEx, ReOpenFile, ReadFile,
             SetFileInformationByHandle, WriteFile,
         },
         System::{
@@ -439,15 +439,6 @@ pub(crate) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
         )
     } == 0
     {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn sync_once(file: &File) -> io::Result<()> {
-    // SAFETY: this one syscall acts only on the held handle.
-    if unsafe { FlushFileBuffers(file.as_raw_handle()) } == 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())

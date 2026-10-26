@@ -187,6 +187,23 @@ fn independent_box_payloads_release_non_lifo_without_losing_quota() {
     assert_eq!(work.work.items_examined, before + 2);
     assert_eq!(work.live_allocation_bytes(), live - bytes * 2);
     assert_eq!(work.budget.items_examined, u64::MAX);
+    // Finished leases release their payloads; the original meter still owns
+    // the physical registry which records those finished releases.
+    let registry_bytes = {
+        let state = gate.state.lock().expect("owned reader registry");
+        assert_eq!(state.readers, 0);
+        (state.reader_slots.capacity() * std::mem::size_of::<Option<ReadSlot>>()) as u64
+    };
+    assert_eq!(work.live_allocation_bytes(), registry_bytes);
+    drop(work);
+    assert_eq!(
+        gate.state
+            .lock()
+            .expect("retired reader registry")
+            .reader_slots
+            .capacity(),
+        0
+    );
 }
 
 #[tokio::test]

@@ -36,13 +36,7 @@ impl Wake for ParkedCallback {
 /// Wake owner reserved before the future borrows its invocation.
 pub(in crate::native_mount) struct PreparedCallbackWait {
     parked: Arc<ParkedCallback>,
-    bytes: u64,
-}
-
-impl PreparedCallbackWait {
-    pub(in crate::native_mount) fn logical_owned_bytes(&self) -> u64 {
-        self.bytes
-    }
+    work: crate::NativeMaterializationWork,
 }
 
 struct RuntimeAllocation<'a> {
@@ -119,29 +113,6 @@ impl CallbackRuntime {
         }
     }
 
-    pub(in crate::native_mount) fn prepare_wait(
-        &self,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<PreparedCallbackWait, MountSourceError> {
-        work.check()
-            .map_err(crate::native_mount::MountSourceError::from)?;
-        let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.claim_allocation(
-            bytes,
-            u64::from((bytes) != 0),
-            crate::WorkCounters::UNCHARGED,
-        )
-        .map_err(crate::native_mount::MountSourceError::from)?;
-        Ok(PreparedCallbackWait {
-            parked: Arc::new(ParkedCallback {
-                woken: StdMutex::new(false),
-                changed: std::sync::Condvar::new(),
-                _allocation: None,
-            }),
-            bytes,
-        })
-    }
-
     fn enter<T>(&self, poll: impl FnOnce() -> T) -> T {
         let poll = || {
             let _runtime = self.handle.enter();
@@ -158,19 +129,36 @@ impl CallbackRuntime {
         }
     }
 
-    pub(in crate::native_mount) fn wait_prepared<F: Future>(
+    pub(in crate::native_mount) fn wait_prepared<T, E, F>(
         &self,
         prepared: PreparedCallbackWait,
         create: impl FnOnce() -> F,
-    ) -> F::Output {
-        let PreparedCallbackWait { parked, .. } = prepared;
-        self.enter(|| {
-            let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
-            Self::poll(future.as_mut(), &parked)
-        })
+    ) -> Result<T, E>
+    where
+        F: Future<Output = Result<T, E>>,
+        E: From<crate::NativeTreeMaterializationError>,
+    {
+        // Admit the actual future before its constructor can run. Its box dies
+        // before the allocation guard, including on cancellation and unwind.
+        let mut future =
+            self.enter(|| native_future(&prepared.work, || tokio::task::unconstrained(create())))?;
+        self.poll_prepared(prepared, Pin::new(&mut future))
     }
 
-    pub(super) fn prepare_native_wait(
+    // Callers with existing pinned storage lend only its pointer to the bridge.
+    // The lease callback keeps its small future in its own measured stack frame;
+    // large callback state uses the admitted box above. Neither is constructed
+    // inside the polling frame.
+    pub(super) fn poll_prepared<F: Future>(
+        &self,
+        prepared: PreparedCallbackWait,
+        future: Pin<&mut F>,
+    ) -> F::Output {
+        let PreparedCallbackWait { parked, .. } = prepared;
+        self.enter(|| Self::poll(future, &parked))
+    }
+
+    pub(in crate::native_mount) fn prepare_native_wait(
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<PreparedCallbackWait, crate::NativeTreeMaterializationError> {
@@ -185,8 +173,19 @@ impl CallbackRuntime {
                 changed: std::sync::Condvar::new(),
                 _allocation: Some(allocation),
             }),
-            bytes: 0,
+            work: work.clone(),
         })
+    }
+
+    // A callback phase lends its original ledger to the future owner. Keeping
+    // each phase behind a pointer prevents its state from being embedded in
+    // every enclosing callback frame, without losing allocation custody.
+    pub(in crate::native_mount) fn prepare_future<F: Future>(
+        &self,
+        work: &crate::NativeMaterializationWork,
+        create: impl FnOnce() -> F,
+    ) -> Result<impl Future<Output = F::Output>, crate::NativeTreeMaterializationError> {
+        native_future(work, create)
     }
 
     pub(in crate::native_mount) fn verify_callback<
@@ -267,4 +266,200 @@ pub(super) fn invoke<T, F: Future<Output = Result<T, MountSourceError>>>(
         )
         .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
         .map_err(|_| MountSourceError::Stale)?
+}
+
+#[cfg(test)]
+mod future_custody_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct Callback<'a> {
+        body: [u8; 4096],
+        work: &'a crate::NativeMaterializationWork,
+        dropped: &'a Cell<bool>,
+        charged_at_drop: &'a Cell<bool>,
+        panic: bool,
+    }
+
+    impl Future for Callback<'_> {
+        type Output = Result<(), MountSourceError>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            assert!(
+                self.work.live_allocation_bytes()
+                    >= crate::NativeMaterializationWork::accounting_state_bytes()
+                        + std::mem::size_of::<Self>() as u64
+            );
+            std::hint::black_box(&self.body);
+            assert!(!self.panic, "callback unwind control");
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Drop for Callback<'_> {
+        fn drop(&mut self) {
+            self.charged_at_drop.set(
+                self.work.live_allocation_bytes()
+                    >= crate::NativeMaterializationWork::accounting_state_bytes()
+                        + std::mem::size_of::<Self>() as u64,
+            );
+            self.dropped.set(true);
+        }
+    }
+
+    #[test]
+    fn prepared_future_constructor_keeps_its_runtime_context()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        let work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        let prepared = runtime.prepare_native_wait(&work)?;
+        runtime.wait_prepared(prepared, || {
+            // Construct before returning the future: this requires the bridge's
+            // runtime even when its caller has no Tokio context.
+            let timer = tokio::time::sleep(std::time::Duration::ZERO);
+            async move {
+                // Construction itself needs the reactor. Do not register a
+                // wake that the timer driver may still own after this returns.
+                drop(timer);
+                Ok::<_, MountSourceError>(())
+            }
+        })?;
+        assert_eq!(
+            work.live_allocation_bytes(),
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_callback_waker_keeps_only_its_live_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        let work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        let retained = std::cell::RefCell::new(None);
+        let baseline = work.live_allocation_bytes();
+        let prepared = runtime.prepare_native_wait(&work)?;
+        runtime.wait_prepared(prepared, || {
+            std::future::poll_fn(|context| {
+                retained.replace(Some(context.waker().clone()));
+                Poll::Ready(Ok::<_, MountSourceError>(()))
+            })
+        })?;
+        // Completion drops the future, but an external wake owner is still
+        // alive. Its allocation must stay charged until that owner is dropped.
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline + std::mem::size_of::<ParkedCallback>() as u64
+        );
+        drop(retained.into_inner());
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_future_is_admitted_before_construction() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        let work = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                // Exactly fund the original ledger and parked waiter, leaving
+                // no bytes for the callback frame. Neither owner is free.
+                peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes()
+                    + std::mem::size_of::<ParkedCallback>() as u64,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)?;
+        let constructed = Cell::new(false);
+        let dropped = Cell::new(false);
+        let charged_at_drop = Cell::new(false);
+        let prepared = runtime.prepare_native_wait(&work)?;
+        let result = runtime.wait_prepared(prepared, || {
+            constructed.set(true);
+            Callback {
+                body: [1; 4096],
+                work: &work,
+                dropped: &dropped,
+                charged_at_drop: &charged_at_drop,
+                panic: false,
+            }
+        });
+        assert!(matches!(result, Err(MountSourceError::NativeWork(_))));
+        assert!(!constructed.get());
+        assert!(!dropped.get());
+        assert_eq!(
+            work.live_allocation_bytes(),
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_future_releases_after_an_unpolled_callback_is_dropped() {
+        let work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .unwrap();
+        let dropped = Cell::new(false);
+        let charged_at_drop = Cell::new(false);
+        let future = native_future(&work, || Callback {
+            body: [1; 4096],
+            work: &work,
+            dropped: &dropped,
+            charged_at_drop: &charged_at_drop,
+            panic: false,
+        })
+        .unwrap();
+        assert!(!dropped.get());
+        drop(future);
+        assert!(dropped.get());
+        assert!(charged_at_drop.get());
+        assert_eq!(
+            work.live_allocation_bytes(),
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        );
+    }
+
+    #[test]
+    fn prepared_future_custody_outlives_completion_and_unwind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        for panic in [false, true] {
+            let work = crate::NativeMaterializationWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .map_err(|(error, _)| error)?;
+            let dropped = Cell::new(false);
+            let charged_at_drop = Cell::new(false);
+            let prepared = runtime.prepare_native_wait(&work)?;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.wait_prepared(prepared, || Callback {
+                    body: [1; 4096],
+                    work: &work,
+                    dropped: &dropped,
+                    charged_at_drop: &charged_at_drop,
+                    panic,
+                })
+            }));
+            if panic {
+                assert!(result.is_err());
+            } else {
+                match result {
+                    Ok(value) => value?,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            assert!(dropped.get());
+            assert!(charged_at_drop.get());
+            assert_eq!(
+                work.live_allocation_bytes(),
+                crate::NativeMaterializationWork::accounting_state_bytes()
+            );
+        }
+        Ok(())
+    }
 }

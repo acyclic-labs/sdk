@@ -32,6 +32,7 @@ pub(super) fn command(directory: &Path) -> Result<Command> {
         )
         .map_err(Error::process_io)?;
         acyclic_native_runtime::shell_command(&format!(". \"{}\"", path.display()), Some("sh"))
+            .map_err(Error::process_io)?
     };
     command.current_dir(directory);
     Ok(command)

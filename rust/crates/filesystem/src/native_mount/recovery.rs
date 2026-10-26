@@ -464,12 +464,11 @@ impl NativeRecoveryState {
     ) -> Result<(), NativeMountError> {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if let Some(directory) = parent {
-            MountDestinationGuard::acquire_in_directory(
+            MountDestinationGuard::acquire_recovery_in_directory(
                 destination,
                 directory,
                 work,
                 &mut self.guard,
-                true,
             )?;
         } else {
             MountDestinationGuard::acquire_with_work(

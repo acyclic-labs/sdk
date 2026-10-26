@@ -93,9 +93,7 @@ pub(super) fn sync_held_descriptor_once(file: &impl std::os::fd::AsFd) -> io::Re
 
 #[cfg(windows)]
 pub(super) fn sync_held_descriptor_once(
-    file: &impl std::os::windows::io::AsRawHandle,
+    file: &impl std::os::windows::io::AsHandle,
 ) -> io::Result<()> {
-    // SAFETY: this held file/directory handle has genuine write access.
-    unsafe { fs::FlushFileBuffers(win::HANDLE(file.as_raw_handle())) }
-        .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))
+    acyclic_native_runtime::sync_descriptor_once(file.as_handle())
 }

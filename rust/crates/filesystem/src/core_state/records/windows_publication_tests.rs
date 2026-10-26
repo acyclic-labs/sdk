@@ -172,19 +172,31 @@ fn every_physical_record_write_recovers_and_retries() -> TestResult {
             writes > 4,
             "write and durability boundaries were not exercised"
         );
-        for cut in 1..=writes + 1 {
-            let root = directory.path().join(format!("{existing}-{cut}"));
-            seed(&root, existing)?;
-            let output = spawn_write(&root, cut)?.wait_with_output()?;
-            assert_eq!(
-                output.status.code(),
-                Some(if cut <= writes { 86 } else { 0 }),
-                "cut {cut}: {}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            recover_and_retry(&root, existing)?;
-        }
+        let jobs = (1..=writes + 1)
+            .map(|cut| {
+                let root = directory.path().join(format!("{existing}-{cut}"));
+                move || {
+                    seed(&root, existing).unwrap();
+                    let output = spawn_write(&root, cut).unwrap().wait_with_output().unwrap();
+                    assert_eq!(
+                        output.status.code(),
+                        Some(if cut <= writes { 86 } else { 0 }),
+                        "cut {cut}: {}\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    recover_and_retry(&root, existing).unwrap();
+                    usize::try_from(cut).unwrap()
+                }
+            })
+            .collect();
+        let completed = crate::test_support::finish_physical_cuts(jobs);
+        assert_eq!(
+            completed,
+            (1..=writes + 1)
+                .map(|cut| usize::try_from(cut).unwrap())
+                .collect::<Vec<_>>()
+        );
     }
     Ok(())
 }

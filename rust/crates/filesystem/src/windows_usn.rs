@@ -261,6 +261,7 @@ pub enum WindowsUsnError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn checkpoint_encoding_is_canonical_versioned_and_bounded() {
@@ -335,27 +336,75 @@ mod tests {
         );
     }
 
+    proptest! {
+        #[test]
+        fn unchanged_requires_the_same_retained_volume_boundary(
+            marker in 0_u64..=i64::MAX as u64,
+            observed in proptest::option::of(0_u64..=i64::MAX as u64),
+            lowest_valid in 0_u64..=i64::MAX as u64,
+            same_root in any::<bool>(),
+            same_journal in any::<bool>(),
+        ) {
+            let root = NativeRootIdentity::from_bytes([1; 16]);
+            let checkpoint = WindowsUsnCheckpoint {
+                root_identity: root,
+                journal_id: 2,
+                next_usn: marker,
+            };
+            let observed_root = if same_root {
+                root
+            } else {
+                NativeRootIdentity::from_bytes([3; 16])
+            };
+            let next_usn = observed.unwrap_or(marker);
+            let journal = JournalSnapshot {
+                journal_id: if same_journal { 2 } else { 4 },
+                lowest_valid_usn: lowest_valid,
+                next_usn,
+            };
+            prop_assert_eq!(
+                classify_continuity(observed_root, checkpoint, &journal)
+                    == WindowsUsnContinuity::Unchanged,
+                same_root && same_journal && lowest_valid <= marker && next_usn == marker,
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires a live local Windows volume with a readable USN journal"]
     fn live_journal_proves_unchanged_restart_and_fences_a_write()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let checkpoint = capture_windows_usn_checkpoint(root.path())?;
-        assert_eq!(
-            validate_windows_usn_checkpoint(root.path(), checkpoint)?,
-            WindowsUsnContinuity::Unchanged
-        );
-        let changed = root.path().join("changed");
-        std::fs::write(&changed, b"changed")?;
-        // FlushFileBuffers requires write access to the flushed handle.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&changed)?
-            .sync_all()?;
-        assert_eq!(
-            validate_windows_usn_checkpoint(root.path(), checkpoint)?,
-            WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::VolumeAdvanced)
-        );
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("watched");
+        std::fs::create_dir(&root)?;
+        let flush_change = |path: &Path| -> std::io::Result<()> {
+            std::fs::write(path, b"changed")?;
+            // FlushFileBuffers requires write access to the flushed handle.
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .sync_all()
+        };
+
+        let checkpoint = capture_windows_usn_checkpoint(&root)?;
+        // This fixture owns the interleaving, not the volume: another subtree
+        // can advance its journal between two reads even while this root is
+        // untouched. The exact unchanged case is proved on immutable journal
+        // observations by the classifier tests above.
+        flush_change(&directory.path().join("outside-watched-root"))?;
+        assert!(matches!(
+            validate_windows_usn_checkpoint(&root, checkpoint)?,
+            WindowsUsnContinuity::BaselineRequired(_)
+        ));
+
+        let checkpoint = capture_windows_usn_checkpoint(&root)?;
+        flush_change(&root.join("changed"))?;
+        // A concurrent journal reset/truncation also requires a baseline;
+        // the live host cannot promise one particular discontinuity reason.
+        assert!(matches!(
+            validate_windows_usn_checkpoint(&root, checkpoint)?,
+            WindowsUsnContinuity::BaselineRequired(_)
+        ));
         Ok(())
     }
 }

@@ -171,7 +171,7 @@ impl ControlPlane {
         .await
         .map_err(|error| format!("physical root observation worker failed: {error}"))??;
         let source_advanced_elsewhere =
-            binding.created()?.source_epoch != observation.prior_source.epoch;
+            binding.created()?.source_epoch != observation.0.prior_source.epoch;
         // On a file system that may drop a change without a trace (`ReFS`),
         // no batch proves the root unchanged: every path the root workspace
         // records is checked against the disk at each refresh. What it does
@@ -181,14 +181,14 @@ impl ControlPlane {
             .lock()
             .map_err(|_| "physical root watcher state is poisoned".to_owned())?
             .reports_every_change();
-        if !observation_consumes_changes(&observation.batch)
+        if !observation_consumes_changes(&observation.0.batch)
             && !source_advanced_elsewhere
             && !unreported
         {
             return Ok(());
         }
         #[cfg(test)]
-        if (observation_consumes_changes(&observation.batch) || source_advanced_elsewhere)
+        if (observation_consumes_changes(&observation.0.batch) || source_advanced_elsewhere)
             && self.fail_after_watch_poll
         {
             self.fail_after_watch_poll = false;
@@ -219,8 +219,8 @@ impl ControlPlane {
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(display)?;
-        let consumes_changes = observation_consumes_changes(&observation.batch);
-        match observation.batch {
+        let consumes_changes = observation_consumes_changes(&observation.0.batch);
+        match observation.0.batch {
             WatchBatch::Changes { .. } if source_advanced_elsewhere => {
                 // The whole tree is captured, so all of it must report.
                 physical
@@ -368,7 +368,7 @@ impl ControlPlane {
             .roots
             .get_mut(&key)
             .ok_or_else(|| "physical root binding is missing".to_owned())?;
-        binding.created_mut()?.source_epoch = observation.source.epoch;
+        binding.created_mut()?.source_epoch = observation.0.source.epoch;
         self.persist()
     }
 

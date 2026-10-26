@@ -237,3 +237,34 @@ async fn tls_failure_is_typed_and_never_redelivered() -> Result<()> {
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn refused_socket_is_a_typed_connect_failure() -> Result<()> {
+    // Retain ownership of the address without listening. Releasing a listener before
+    // connecting lets another process acquire it and changes the failure under test.
+    let socket = tokio::net::TcpSocket::new_v4().map_err(|_| invalid("socket"))?;
+    socket
+        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .map_err(|_| invalid("bind"))?;
+    let port = socket.local_addr().map_err(|_| invalid("addr"))?.port();
+    assert_ne!(port, 0);
+    let response = ReqwestTransport::new()?
+        .send(HttpRequest {
+            url: format!("http://127.0.0.1:{port}/v1"),
+            headers: [("authorization".into(), "Bearer scripted-key".into())].into(),
+            body: bytes::Bytes::from_static(b"{}"),
+        })
+        .await;
+    let Err(error) = response else {
+        return Err(invalid("non-listening socket accepted a request"));
+    };
+    assert_eq!(
+        failure(&error),
+        Some(ModelTransportFailure::Connect),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("127.0.0.1"), "{error}");
+    assert!(!error.to_string().contains("scripted-key"));
+    drop(socket);
+    Ok(())
+}

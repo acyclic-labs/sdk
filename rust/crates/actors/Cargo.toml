@@ -47,6 +47,9 @@ tracing.workspace = true
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
 url = "=2.5.8"
 
+[dev-dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 async-trait.workspace = true
 acyclic-test-support = { path = "../test-support" }
@@ -62,6 +65,7 @@ tracing-subscriber.workspace = true
 loom = { version = "0.7.2", features = ["futures"] }
 
 [build-dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
 protoc-bin-vendored = "=3.3.0"

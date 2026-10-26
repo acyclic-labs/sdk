@@ -4,29 +4,28 @@ use acyclic_fs::model::{
     VolumeConfig,
 };
 use acyclic_fs::{
-    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountOptions,
-    MountPath, MountPublication, SharedCheckout, WorkBudget,
+    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountPath,
+    SharedCheckout, WorkBudget,
 };
 use bytes::Bytes;
 use std::sync::Arc;
 
-pub(super) type MemorySource =
+pub type MemorySource =
     CheckoutMountSource<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
-pub(super) fn windows_name(name: &str) -> Vec<u8> {
+pub fn windows_name(name: &str) -> Vec<u8> {
     name.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
-pub(super) fn windows_path(name: &str) -> MountPath {
+pub fn windows_path(name: &str) -> MountPath {
     MountPath::root().child(windows_name(name))
 }
 
-pub(super) async fn windows_checkout_source()
--> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
+pub async fn windows_checkout_source() -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
     windows_checkout_source_with_files(0).await
 }
 
-pub(super) async fn windows_checkout_source_with_files(
+pub async fn windows_checkout_source_with_files(
     files: usize,
 ) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
     let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
@@ -71,13 +70,14 @@ pub(super) async fn windows_checkout_source_with_files(
             .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
     }
-    Ok(Arc::new(CheckoutMountSource::new(
-        Arc::new(SharedCheckout::new(checkout)),
-        config,
-    )?))
+    let view = native_access::checkout_view(&mut checkout).await?;
+    Ok(Arc::new(
+        CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?
+            .with_access_view(view)?,
+    ))
 }
 
-pub(super) fn mount_source(
+pub fn mount_source(
     source: &Arc<MemorySource>,
 ) -> Result<
     (
@@ -102,8 +102,7 @@ pub(super) fn mount_source(
     Ok((root, destination, session))
 }
 
-pub(super) fn setup_work()
--> Result<acyclic_fs::NativeMaterializationWork, Box<dyn std::error::Error>> {
+pub fn setup_work() -> Result<acyclic_fs::NativeMaterializationWork, Box<dyn std::error::Error>> {
     acyclic_fs::initialize_native_mount_services()?;
     Ok(
         acyclic_fs::NativeMaterializationWork::new(
@@ -114,7 +113,7 @@ pub(super) fn setup_work()
     )
 }
 
-pub(super) async fn local_workspace(
+pub async fn local_workspace(
     root: &std::path::Path,
     name: &str,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -130,6 +129,6 @@ pub(super) async fn local_workspace(
         .value)
 }
 
-pub(super) fn manual_mount_options() -> MountOptions {
-    MountOptions::read_write().publication(MountPublication::Manual)
-}
+#[path = "support/native_access.rs"]
+mod native_access;
+pub use native_access::manual_mount_options;

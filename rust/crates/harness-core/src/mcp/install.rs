@@ -14,8 +14,6 @@ use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 
 mod cancellation;
-#[cfg(feature = "mcp-stdio")]
-mod executable;
 mod native;
 use cancellation::CancelOnDrop;
 

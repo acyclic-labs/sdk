@@ -3,11 +3,12 @@
 #![cfg(windows)]
 
 use acyclic_fs::kernel::FileMetadata;
-use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication, WorkBudget,
-};
+use acyclic_fs::{CancellationToken, Fs, IdempotencyKey, LocalOptions, WorkBudget};
 use bytes::Bytes;
 use std::time::Instant;
+
+#[path = "../support/native_access.rs"]
+mod native_access;
 
 #[tokio::test]
 #[ignore = "requires a writable ProjFS host; run alone for profiling"]
@@ -73,6 +74,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
         .map_err(|failure| failure.error)?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
+    let options = native_access::manual_mount_options(&workspace).await?;
     if std::env::var_os("ACYCLIC_PROJFS_PROFILE_START_GATE").is_some() {
         use std::io::Read as _;
         let mut signal = [0];
@@ -81,12 +83,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
     }
     phase("mount")?;
     let started = Instant::now();
-    let mount = workspace
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&destination, options).await?;
     eprintln!("PROJFS_TIME mount {:?}", started.elapsed());
 
     phase("client-start")?;

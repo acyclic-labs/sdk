@@ -40,17 +40,32 @@ pub fn write_file_all(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
 /// Retains the caller's original data-only flush policy.
 pub fn flush_file_data(file: &File) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_data", || file.sync_data());
+    return testing::durable_operation("file:sync_data", || flush_file_policy(file, true));
     #[cfg(not(feature = "test-support"))]
-    file.sync_data()
+    flush_file_policy(file, true)
 }
 
 /// Retains the caller's original data-and-metadata flush policy.
 pub fn flush_file_all(file: &File) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_all", || file.sync_all());
+    return testing::durable_operation("file:sync_all", || flush_file_policy(file, false));
     #[cfg(not(feature = "test-support"))]
-    file.sync_all()
+    flush_file_policy(file, false)
+}
+
+#[cfg(windows)]
+fn flush_file_policy(file: &File, _data_only: bool) -> io::Result<()> {
+    use std::os::windows::io::AsHandle as _;
+    crate::sync_descriptor_once(file.as_handle())
+}
+
+#[cfg(not(windows))]
+fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+    if data_only {
+        file.sync_data()
+    } else {
+        file.sync_all()
+    }
 }
 
 /// Renames with the original platform semantics and no additional flush.

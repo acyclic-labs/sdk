@@ -1,105 +1,11 @@
 use super::*;
 use crate::kernel::KernelAccounting;
-use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode};
-use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
-use crate::native_mount::{MountFilesystem, MountPath};
-use crate::{MountOptions, MountPublication};
 use std::sync::Arc;
 
-pub(super) type MemorySource =
-    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
-
-pub(super) fn windows_name(name: &str) -> Vec<u8> {
-    name.encode_utf16().flat_map(u16::to_le_bytes).collect()
-}
-
-pub(super) fn windows_path(name: &str) -> MountPath {
-    MountPath::root().child(windows_name(name))
-}
-
-pub(super) async fn windows_checkout_source()
--> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    windows_checkout_source_with_files(0).await
-}
-
-pub(super) async fn windows_checkout_source_with_files(
-    files: usize,
-) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.profile = crate::model::FilesystemProfile::Windows;
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = fs
-        .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let mut checkout = volume
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode {
-                access: AccessMode::ReadWrite,
-                consistency: ConsistencyMode::Pinned,
-                mutations: MutationMode::PrivateOverlay,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    if files != 0 {
-        let mut mutations = Vec::with_capacity(files);
-        for index in 0..files {
-            let portable =
-                crate::path::PortablePath::parse(&format!("/f{index}.txt"), config.limits)?;
-            mutations.push(crate::AuthoredMutation::CreateFile {
-                path: crate::kernel::NamespacePath::from_portable_in_profile(
-                    &portable,
-                    config.profile,
-                    config.limits,
-                )?,
-                bytes: Bytes::from(vec![b'x'; 4096 * (index % 2)]).into(),
-                metadata: FileMetadata::default(),
-            });
-        }
-        checkout
-            .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
-            .await?;
-    }
-    Ok(Arc::new(
-        crate::native_mount::adapter::tests::access::bind_test_access(
-            CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?,
-            vec![],
-            None,
-        )?,
-    ))
-}
-
-pub(super) fn mount_source(
-    source: &Arc<MemorySource>,
-) -> Result<
-    (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        crate::NativeMountSession,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    let root = tempfile::tempdir()?;
-    let destination = root.path().join("projection");
-    std::fs::create_dir(&destination)?;
-    let session = crate::mount_native(
-        crate::NativeMountRequest {
-            mount_id: crate::MountId::new(),
-            volume_id: source.volume_id()?,
-            destination: destination.clone(),
-            writable: true,
-        },
-        Arc::clone(source) as Arc<dyn MountFilesystem>,
-    )?;
-    Ok((root, destination, session))
-}
+// Unit and integration ProjFS adapters use one authorized fixture source.
+#[path = "../../../../tests/projfs_metadata_support.rs"]
+mod shared;
+pub(super) use shared::*;
 
 pub(super) fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<String>> {
     let mut names = std::fs::read_dir(directory)?
@@ -158,7 +64,9 @@ pub(super) async fn writes_only_promised_content(
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     if listed_first {
         assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
     }
@@ -182,14 +90,6 @@ pub(super) async fn writes_only_promised_content(
     assert_eq!(std::fs::read(destination.join("changed.txt"))?, b"after!");
     mount.unmount().await?;
     Ok(())
-}
-
-pub(super) fn setup_work() -> Result<crate::NativeMaterializationWork, Box<dyn std::error::Error>> {
-    crate::initialize_native_mount_services()?;
-    Ok(
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(cause, _)| cause)?,
-    )
 }
 
 pub(super) fn setup_chunk(
@@ -228,22 +128,30 @@ pub(super) async fn windows_demand_source(
     .map_err(|failure| failure.error)
 }
 
-pub(super) async fn local_workspace(
+pub(super) fn callback_runtime(
+    source: Arc<MemorySource>,
     root: &std::path::Path,
-    name: &str,
     work: &crate::NativeMaterializationWork,
-) -> Result<
-    crate::Workspace<crate::facade::LocalAuthorityBackend, crate::facade::LocalObjectBackend>,
-    Box<dyn std::error::Error>,
-> {
-    Ok(Fs::local(LocalOptions::new(root.join("state")))
-        .await?
-        .create_workspace(name, WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map_err(|failure| failure.error)?
-        .value)
-}
-
-pub(super) fn manual_mount_options() -> MountOptions {
-    MountOptions::read_write().publication(MountPublication::Manual)
+) -> Result<Runtime, Box<dyn std::error::Error>> {
+    Ok(Runtime {
+        _policy_lease: Box::new(()),
+        source,
+        work: Mutex::new(work.clone()),
+        active_work: Mutex::new(Default::default()),
+        original_work: Mutex::new(None),
+        callback_guard: None,
+        root: root.to_path_buf(),
+        metadata_root: HostRoot::open(root, &mut &*work)?,
+        staging: Mutex::new(None),
+        creating_name: RwLock::new((MountPath::root(), None)),
+        writable: true,
+        metadata_baselines: Mutex::new(HashMap::new()),
+        projection: Mutex::new(HashMap::new()),
+        projector: Arc::new(Projector::new()),
+        metadata_probes: Mutex::new(HashMap::new()),
+        metadata_edits: FileLocks::default(),
+        post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
+        callbacks: CallbackGate::start()?,
+        _allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+    })
 }

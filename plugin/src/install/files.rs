@@ -64,71 +64,29 @@ pub(crate) fn executable_on_path(name: &str) -> bool {
     find_executable(name).is_some()
 }
 
-/// The command a shell would run for `name`: the first `PATH` directory
-/// holding it, trying each `PATHEXT` extension on Windows. Package managers
-/// install host CLIs there as `.cmd` launchers (npm's `codex.cmd`), which a
-/// bare `Command::new(name)` never finds because it only appends `.exe`.
+/// Uses the shared native search policy, including Windows package-manager
+/// batch launchers. Discovery and execution select the same absolute path.
 pub(crate) fn find_executable(name: &str) -> Option<PathBuf> {
-    let paths = env::var_os("PATH")?;
-    let extensions = env::var_os("PATHEXT");
-    executable_in(
-        env::split_paths(&paths),
-        name,
-        cfg!(windows).then(|| {
-            extensions
-                .as_deref()
-                .unwrap_or(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))
-        }),
-    )
+    let cwd = env::current_dir().ok()?;
+    acyclic_native_runtime::ExecutableSearch::from_environment(&cwd, |key| env::var_os(key))
+        .resolve(name)
+        .ok()
 }
 
-pub(crate) fn executable_in(
-    directories: impl IntoIterator<Item = PathBuf>,
-    name: &str,
-    extensions: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    let extensions: Vec<String> = extensions.map_or_else(Vec::new, |extensions| {
-        extensions
-            .to_string_lossy()
-            .split(';')
-            .filter(|extension| extension.starts_with('.'))
-            // Windows matches names without regard to case; package managers
-            // write their launchers in lower case.
-            .map(str::to_ascii_lowercase)
-            .collect()
-    });
-    directories.into_iter().find_map(|directory| {
-        if extensions.is_empty() {
-            let candidate = directory.join(name);
-            return runnable(&candidate).then_some(candidate);
-        }
-        extensions.iter().find_map(|extension| {
-            let candidate = directory.join(format!("{name}{extension}"));
-            runnable(&candidate).then_some(candidate)
-        })
-    })
-}
-
-/// A file the operating system would execute: on Unix, as `execvp` does, a
-/// file without execute permission does not hide a later `PATH` entry.
-fn runnable(candidate: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::metadata(candidate)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        candidate.is_file()
-    }
-}
-
-/// A command for the host CLI `name` as installed on `PATH`.
+/// A command for the host CLI `name` as installed on PATH.
 pub(crate) fn host_command(name: &str) -> Result<std::process::Command, String> {
-    find_executable(name)
-        .map(std::process::Command::new)
-        .ok_or_else(|| format!("cannot find the `{name}` command on PATH"))
+    let cwd = env::current_dir().map_err(display)?;
+    host_command_in(name, &cwd, |key| env::var_os(key))
+}
+
+pub(crate) fn host_command_in(
+    name: &str,
+    cwd: &Path,
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<std::process::Command, String> {
+    acyclic_native_runtime::ExecutableSearch::from_environment(cwd, environment)
+        .command(name)
+        .map_err(display)
 }
 
 pub(crate) fn home_directory() -> Result<PathBuf, String> {

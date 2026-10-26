@@ -18,13 +18,10 @@ acyclic_test_support::counting_allocator!();
 #[cfg(test)]
 extern crate self as acyclic_fs;
 
-// These API regressions own memory/local fixtures even when consumers select none.
+// These API regressions own memory fixtures even when consumers select none.
 #[cfg(test)]
 #[path = "../tests/measured_native_source.rs"]
 mod measured_native_source;
-#[cfg(test)]
-#[path = "../tests/windows_ntfs_perf.rs"]
-mod windows_ntfs_perf;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;

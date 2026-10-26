@@ -1,5 +1,8 @@
 use crate::*;
 
+#[cfg(windows)]
+mod windows;
+
 /// Destination behavior for one durable rename.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenameMode {
@@ -87,6 +90,9 @@ pub(crate) fn namespace_path(
     if let Some(meter) = meter {
         meter.record_codec(encoded as u64, copied as u64, 0)?;
     }
+    #[cfg(windows)]
+    return windows::extended_path((buffer, allocation), meter);
+    #[cfg(unix)]
     Ok((buffer, allocation))
 }
 

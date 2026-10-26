@@ -168,12 +168,11 @@ fn recovery_ownership_receipts_are_exact_and_durable() -> Result<(), Box<dyn std
     let work = setup_work()?;
     let (parent, _) = crate::native_host::open_root_directory(root.path(), &mut &work)?;
     let mut guard = None;
-    crate::native_mount::MountDestinationGuard::acquire_in_directory(
+    crate::native_mount::MountDestinationGuard::acquire_recovery_in_directory(
         &destination,
         parent.try_clone()?,
         &work,
         &mut guard,
-        true,
     )?;
     let guard = guard.unwrap();
     assert_eq!(guard.owned_root(&work)?, None);
@@ -235,12 +234,11 @@ fn copied_or_malformed_receipts_cannot_substitute_physical_custody()
         std::fs::create_dir(&destination)?;
         std::fs::write(destination.join("authored"), b"never remove")?;
         let mut guard = None;
-        crate::native_mount::MountDestinationGuard::acquire_in_directory(
+        crate::native_mount::MountDestinationGuard::acquire_recovery_in_directory(
             &destination,
             parent.try_clone()?,
             &work,
             &mut guard,
-            true,
         )?;
         guards.push(guard.unwrap());
     }
@@ -290,12 +288,11 @@ fn ownership_publication_requires_encoding_and_both_durable_flushes()
         let destination = root.path().join(&name);
         std::fs::create_dir(&destination)?;
         let mut guard = None;
-        crate::native_mount::MountDestinationGuard::acquire_in_directory(
+        crate::native_mount::MountDestinationGuard::acquire_recovery_in_directory(
             &destination,
             parent.try_clone()?,
             &work,
             &mut guard,
-            true,
         )?;
         let guard = guard.unwrap();
         let (_, identity) =
@@ -368,12 +365,11 @@ fn a_volume_mismatched_receipt_cannot_authorize_an_unchanged_root()
     let work = setup_work()?;
     let (parent, _) = crate::native_host::open_root_directory(root.path(), &mut &work)?;
     let mut guard = None;
-    crate::native_mount::MountDestinationGuard::acquire_in_directory(
+    crate::native_mount::MountDestinationGuard::acquire_recovery_in_directory(
         &destination,
         parent.try_clone()?,
         &work,
         &mut guard,
-        true,
     )?;
     let guard = guard.unwrap();
     let (_, identity) =
@@ -462,12 +458,11 @@ fn custody_control(
     let work = setup_work()?;
     let (parent, _) = crate::native_host::open_root_directory(root.path(), &mut &work)?;
     let mut guard = None;
-    crate::native_mount::MountDestinationGuard::acquire_in_directory(
+    crate::native_mount::MountDestinationGuard::acquire_recovery_in_directory(
         &destination,
         parent.try_clone()?,
         &work,
         &mut guard,
-        true,
     )?;
     let guard = guard.unwrap();
     let (_, identity) =

@@ -1,4 +1,4 @@
-//! Dependency-free task-binding snapshot; also compiled by the native build resolver.
+//! Portable task-binding snapshot; also compiled by the native build resolver.
 use std::path::Path;
 
 /// Native values copied into the durable context manifest by the caller.
@@ -42,17 +42,9 @@ pub fn checkout(
 
 /// The path as a user would type it: Windows verbatim prefixes are dropped.
 pub(super) fn display(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{share}")
-    } else if let Some(local) = text
-        .strip_prefix(r"\\?\")
-        .filter(|local| local.as_bytes().get(1) == Some(&b':'))
-    {
-        local.to_owned()
-    } else {
-        text.into_owned()
-    }
+    acyclic_host_platform::paths::strip_verbatim(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Proleptic Gregorian UTC date, `YYYY-MM-DD`.

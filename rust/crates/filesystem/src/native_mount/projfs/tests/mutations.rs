@@ -189,7 +189,10 @@ async fn a_held_placeholder_is_replaced_before_revalidation_returns()
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = Arc::new(lazy.mount(&destination, manual_mount_options()).await?);
+    let mount = Arc::new(
+        lazy.mount(&destination, manual_mount_options(lazy.workspace()).await?)
+            .await?,
+    );
     let held_path = destination.join("held.txt");
     assert_eq!(std::fs::metadata(&held_path)?.len(), 3);
     let held = std::fs::File::open(&held_path)?;
@@ -245,7 +248,9 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     let projected = destination.join("locked.txt");
     assert_eq!(std::fs::metadata(&projected)?.len(), 3);
     assert!(std::fs::metadata(&projected)?.permissions().readonly());
@@ -289,7 +294,9 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     assert_eq!(
         sorted_names(&destination.join("pkg"))?,
         ["shared.rs", "sub"]
@@ -346,7 +353,7 @@ async fn a_file_renamed_before_it_is_read_stays_as_renamed()
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
     let mount = workspace
-        .mount(&destination, manual_mount_options())
+        .mount(&destination, manual_mount_options(&workspace).await?)
         .await?;
     let external = acyclic_native_runtime::process_output(
         std::process::Command::new("cmd.exe")
@@ -376,7 +383,9 @@ async fn projected_file_rename_and_replacement_survive_remount()
 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;
-    let mount = workspace.mount(&first, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&first, manual_mount_options(&workspace).await?)
+        .await?;
     let original = first.join("original.txt");
     for _ in 0..3 {
         assert_eq!(std::fs::read(&original)?, b"original");
@@ -401,7 +410,9 @@ async fn projected_file_rename_and_replacement_survive_remount()
 
     let second = root.path().join("second-mount");
     std::fs::create_dir(&second)?;
-    let remount = workspace.mount(&second, manual_mount_options()).await?;
+    let remount = workspace
+        .mount(&second, manual_mount_options(&workspace).await?)
+        .await?;
     assert_eq!(
         std::fs::read(second.join("renamed.txt")).expect("renamed path after remount"),
         b"original"

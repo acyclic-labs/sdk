@@ -1,5 +1,10 @@
 //! Immutable bytes and permissions only; provider/host caches are never copied.
 use super::*;
+use acyclic_native_runtime::private_file;
+use std::io::{Read as _, Write as _};
+
+#[cfg(not(acyclic_harness_loom))]
+mod privacy_tests;
 
 #[cfg(all(windows, not(acyclic_harness_loom)))]
 mod tests;
@@ -9,7 +14,33 @@ mod tests;
 struct PermissionWrite;
 
 #[derive(Debug, PartialEq)]
-pub(in crate::local) struct Snapshot(Vec<(PathBuf, Option<Vec<u8>>, std::fs::Permissions)>);
+pub(in crate::local) struct Snapshot(Vec<Entry>);
+
+#[derive(Debug, PartialEq)]
+struct Entry {
+    relative: PathBuf,
+    bytes: Option<Vec<u8>>,
+    permissions: std::fs::Permissions,
+    private: bool,
+}
+
+fn directory_is_private(path: &Path) -> Result<bool> {
+    match private_file::validate_directory(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+        Err(error) => Err(storage(error)),
+    }
+}
+
+fn capture_file(path: &Path) -> Result<(Vec<u8>, bool)> {
+    // Classify custody and capture bytes through the same held descriptor.
+    // std::fs::Permissions alone loses a protected Windows DACL.
+    let mut file = std::fs::File::open(path).map_err(storage)?;
+    let private = private_file::is_private(&file).map_err(storage)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(storage)?;
+    Ok((bytes, private))
+}
 
 impl Snapshot {
     pub fn capture(root: &Path) -> Result<Self> {
@@ -21,7 +52,7 @@ impl Snapshot {
         while let Some((relative, metadata)) = pending.pop() {
             let path = root.join(&relative);
             assert!(!metadata.is_symlink(), "fixture contains a symlink");
-            let bytes = if metadata.is_dir() {
+            let (bytes, private) = if metadata.is_dir() {
                 let mut children = std::fs::read_dir(&path)
                     .map_err(storage)?
                     .map(|entry| {
@@ -34,21 +65,38 @@ impl Snapshot {
                     .map_err(storage)?;
                 children.sort_by(|(left, _), (right, _)| left.cmp(right));
                 pending.extend(children.into_iter().rev());
-                None
+                (None, directory_is_private(&path)?)
             } else {
-                Some(std::fs::read(path).map_err(storage)?)
+                let (bytes, private) = capture_file(&path)?;
+                (Some(bytes), private)
             };
-            entries.push((relative, bytes, metadata.permissions()));
+            entries.push(Entry {
+                relative,
+                bytes,
+                permissions: metadata.permissions(),
+                private,
+            });
         }
         Ok(Self(entries))
     }
 
     pub fn restore(&self, root: &Path) -> Result<()> {
         assert!(!root.exists(), "snapshot destination must be independent");
-        for (relative, bytes, permissions) in &self.0 {
+        for Entry {
+            relative,
+            bytes,
+            permissions,
+            private,
+        } in &self.0
+        {
             let path = root.join(relative);
             match bytes {
+                Some(bytes) if *private => private_file::create(&path)
+                    .map_err(storage)?
+                    .write_all(bytes)
+                    .map_err(storage)?,
                 Some(bytes) => std::fs::write(&path, bytes).map_err(storage)?,
+                None if *private => private_file::create_directory(&path).map_err(storage)?,
                 None => std::fs::create_dir(&path).map_err(storage)?,
             }
             // Windows creates these independent entries writable. Only the

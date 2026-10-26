@@ -5,6 +5,7 @@ import { Processes, Events } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
 const fixture = fileURLToPath(new URL("./tree-fixture.py", import.meta.url));
+const physicalFixture = fileURLToPath(new URL("./windows-custody-fixture.py", import.meta.url));
 function reap(pids) {
   for (const pid of pids) {
     try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
@@ -47,4 +48,18 @@ test("external acceptance owns service descendants on normal exit and cancellati
       } finally { reap(pids); pids = []; await owned.close(); }
     }
   } finally { reap(pids); await raw.close(); }
+});
+
+if (process.platform === "win32") test("native custody retains output until kernel process teardown completes", async () => {
+  const processes = new Processes();
+  try {
+    const interpreter = await processes.run("python.exe", ["-c", "import sys; print(sys.executable)"]);
+    assert.equal(interpreter.code, 0, interpreter.stderr);
+    const result = await processes.run(interpreter.stdout.trim(), ["-X", "utf8", physicalFixture, process.env.E2E_PROCESS_HOST]);
+    assert.equal(result.code, 0, result.stderr);
+    const evidence = JSON.parse(result.stdout.trim());
+    assert.equal(evidence.root_wait_before_continue, 258);
+    assert.equal(evidence.output_lease_held, true);
+    assert.equal(evidence.root_wait_after_continue, 0);
+  } finally { await processes.close(); }
 });

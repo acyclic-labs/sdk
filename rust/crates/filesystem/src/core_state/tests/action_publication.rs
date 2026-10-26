@@ -57,34 +57,59 @@ async fn every_prepared_action_write_recovers_and_retries() -> TestResult {
         writes >= 4,
         "temporary creation, image write, flush and replacement must be covered"
     );
-    for cut in 1..=writes + 1 {
-        let root = directory.path().join(cut.to_string());
-        seed(&root).await?;
-        let output = spawn_write(&root, cut)?.wait_with_output()?;
-        assert_eq!(
-            output.status.code(),
-            Some(if cut <= writes { 86 } else { 0 }),
-            "cut {cut}: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation)
-            .map_err(|(error, _)| error)?;
-        let store = LocalCoreStateStore::new(root.join("state")).materialization(work);
-        let recovered = MaterializationJournalStore::load(&store, OPERATION)
-            .await?
-            .ok_or("lost acknowledged journal")?;
-        assert!(matches!(recovered.revision, 1 | 2));
-        assert!(recovered.is_valid_for(OPERATION));
-        let revision = recovered.revision;
-        let retried = store.prepare_action(recovered).await?.await?;
-        assert_eq!(retried.revision, revision + 1);
-        assert_eq!(
-            MaterializationJournalStore::load(&store, OPERATION).await?,
-            Some(retried)
-        );
-    }
+    let jobs = (1..=writes + 1)
+        .map(|cut| {
+            let root = directory.path().join(cut.to_string());
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime
+                    .block_on(async {
+                        seed(&root).await?;
+                        let output = spawn_write(&root, cut)?.wait_with_output()?;
+                        assert_eq!(
+                            output.status.code(),
+                            Some(if cut <= writes { 86 } else { 0 }),
+                            "cut {cut}: {}\n{}",
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        let cancellation = crate::CancellationToken::new();
+                        let work = crate::NativeMaterializationWork::new(
+                            native::finite_budget(),
+                            &cancellation,
+                        )
+                        .map_err(|(error, _)| error)?;
+                        let store =
+                            LocalCoreStateStore::new(root.join("state")).materialization(work);
+                        let recovered = MaterializationJournalStore::load(&store, OPERATION)
+                            .await?
+                            .ok_or("lost acknowledged journal")?;
+                        assert!(matches!(recovered.revision, 1 | 2));
+                        assert!(recovered.is_valid_for(OPERATION));
+                        let revision = recovered.revision;
+                        let retried = store.prepare_action(recovered).await?.await?;
+                        assert_eq!(retried.revision, revision + 1);
+                        assert_eq!(
+                            MaterializationJournalStore::load(&store, OPERATION).await?,
+                            Some(retried)
+                        );
+                        Ok::<_, Box<dyn std::error::Error>>(())
+                    })
+                    .unwrap();
+                usize::try_from(cut).unwrap()
+            }
+        })
+        .collect();
+    let completed = crate::test_support::finish_physical_cuts(jobs);
+    assert_eq!(
+        completed,
+        (1..=writes + 1)
+            .map(|cut| usize::try_from(cut).unwrap())
+            .collect::<Vec<_>>()
+    );
     Ok(())
 }
 

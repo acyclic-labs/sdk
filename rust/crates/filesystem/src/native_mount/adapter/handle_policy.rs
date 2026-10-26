@@ -2,10 +2,11 @@ use super::*;
 
 pub(super) trait HandlePolicy: Send + Sync {
     fn clock(&self) -> &super::super::clock::Clock;
+    fn cancellation(&self) -> &CancellationToken;
     fn check(
         &self,
         permissions: &crate::access::PinnedPath,
-        work: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
 }
 
@@ -63,17 +64,16 @@ where
         &self.runtime.clock
     }
 
+    fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
     fn check(
         &self,
         permissions: &crate::access::PinnedPath,
-        work: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        match work {
-            Some(work) => self.check_with_meter(permissions, work),
-            None => boundary(&self.cancellation, |work| {
-                self.check_with_meter(permissions, work)
-            }),
-        }
+        self.check_with_meter(permissions, work)
     }
 }
 

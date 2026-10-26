@@ -5,65 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Vendored protoc on Windows cannot open paths with the extended-length
-fn protoc_path(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        use std::ffi::OsString;
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-        let value: Vec<u16> = path.as_os_str().encode_wide().collect();
-        let prefix: Vec<u16> = "\\\\?\\".encode_utf16().collect();
-        if let Some(stripped) = value.strip_prefix(prefix.as_slice()) {
-            if stripped.get(1) == Some(&(':' as u16)) {
-                return PathBuf::from(OsString::from_wide(stripped));
-            }
-            let unc_prefix: Vec<u16> = "UNC\\".encode_utf16().collect();
-            if let Some(server_share_path) = stripped.strip_prefix(unc_prefix.as_slice()) {
-                let mut normal = "\\\\".encode_utf16().collect::<Vec<_>>();
-                normal.extend_from_slice(server_share_path);
-                return PathBuf::from(OsString::from_wide(&normal));
-            }
-        }
-    }
-    path.to_path_buf()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::protoc_path;
-    use std::path::PathBuf;
-
-    #[test]
-    fn leaves_ordinary_paths_unchanged() {
-        let path = PathBuf::from("Q:/sdk/proto/actors.proto");
-        assert_eq!(protoc_path(&path), path);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn removes_verbatim_drive_prefix_without_losing_unicode() {
-        let path = PathBuf::from(r"\\?\C:\sdk\é\actors.proto");
-        assert_eq!(protoc_path(&path), PathBuf::from(r"C:\sdk\é\actors.proto"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn converts_verbatim_unc_to_normal_unc() {
-        let path = PathBuf::from(r"\\?\UNC\server\share\é\actors.proto");
-        assert_eq!(
-            protoc_path(&path),
-            PathBuf::from(r"\\server\share\é\actors.proto")
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn preserves_device_namespace_paths() {
-        let path = PathBuf::from(r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\actors.proto");
-        assert_eq!(protoc_path(&path), path);
-    }
-}
+#[path = "codegen/path.rs"]
+mod path;
+use path::protoc_path;
 
 /// Generate the Actors descriptor and transport from the packaged proto.
 pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {

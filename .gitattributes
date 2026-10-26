@@ -22,3 +22,6 @@ typescript/packages/actors/src/generated/**/*.ts whitespace=-blank-at-eol
 
 # Fuzz corpus entries are byte-exact inputs, including intentional trailing spaces.
 rust/crates/harness-fuzz/corpus/** binary
+
+# Captured external-tool output retains the generator's Windows newlines.
+scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol

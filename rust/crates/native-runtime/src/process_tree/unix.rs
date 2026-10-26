@@ -16,7 +16,21 @@ pub(super) fn observe_exit_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<Option<ExitStatus>> {
-    let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
+    observe_exit_id_with_flags(id, meter, libc::WNOHANG)
+}
+
+pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()> {
+    observe_exit_id_with_flags(child.id(), None, 0)?
+        .map(|_| ())
+        .ok_or_else(|| io::ErrorKind::WouldBlock.into())
+}
+
+fn observe_exit_id_with_flags(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+    flags: libc::c_int,
+) -> io::Result<Option<ExitStatus>> {
+    let flags = libc::WEXITED | libc::WNOWAIT | flags;
     loop {
         // SAFETY: initialized OS output storage and the exclusively owned
         // child's ID. WNOWAIT retains the leader until group termination,

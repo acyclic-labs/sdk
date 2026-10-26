@@ -360,40 +360,12 @@ where
     T: Send + 'static,
 {
     let owner = if let Some(context) = Context::current() {
-        let active = context.accept("blocking");
-        let owned = active.0.clone();
-        BlockingOwner::Controlled(spawn_owned(
-            &context,
-            CURRENT.scope(Some(owned.clone()), async move {
-                let _active = active;
-                owned.pause("blocking:submitted").await;
-                let host = if owned.schedule.0.executor.is_some() {
-                    Some(host::Host::for_workers(crate::workers(
-                        &crate::BLOCKING_WORKERS,
-                        false,
-                    )?))
-                } else {
-                    None
-                };
-                let completion = crate::run_blocking_io(
-                    move || {
-                        let _inline = crate::InlineBlocking::enter();
-                        work()
-                    },
-                    None,
-                );
-                let result = host_work(completion, host).await;
-                owned.pause("blocking:completed").await;
-                result
-            }),
-        ))
+        BlockingOwner::Controlled(controlled_blocking(&context, work))
     } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        BlockingOwner::Shared(tokio::spawn(async move {
-            host_work(crate::run_blocking_io(work, None), None).await
-        }))
+        BlockingOwner::Shared(shared_blocking(work))
     } else {
         // Without a simulation this is the production path: Tokio's blocking
         // pool, which a paused Tokio clock observes as outstanding work, so
@@ -407,6 +379,54 @@ where
             BlockingOwner::Worker(worker) => worker.await.map_err(crate::task::join_error),
         }
     }
+}
+
+// A branch constructs its future only after dispatch, in its own short-lived
+// frame. Otherwise the ordinary path also reserves the controlled future's
+// state while constructing its own task, stacking unrelated executor frames.
+// Neither boundary adds an allocation or changes the worker's ownership.
+#[inline(never)]
+fn controlled_blocking<F, T>(context: &Context, work: F) -> TaskHandle<std::io::Result<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let active = context.accept("blocking");
+    let owned = active.0.clone();
+    spawn_owned(
+        context,
+        CURRENT.scope(Some(owned.clone()), async move {
+            let _active = active;
+            owned.pause("blocking:submitted").await;
+            let host = if owned.schedule.0.executor.is_some() {
+                Some(host::Host::for_workers(crate::workers(
+                    &crate::BLOCKING_WORKERS,
+                    false,
+                )?))
+            } else {
+                None
+            };
+            let completion = crate::run_blocking_io(
+                move || {
+                    let _inline = crate::InlineBlocking::enter();
+                    work()
+                },
+                None,
+            );
+            let result = host_work(completion, host).await;
+            owned.pause("blocking:completed").await;
+            result
+        }),
+    )
+}
+
+#[inline(never)]
+fn shared_blocking<F, T>(work: F) -> tokio::task::JoinHandle<std::io::Result<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(async move { host_work(crate::run_blocking_io(work, None), None).await })
 }
 
 /// The one task that owns a blocking closure's result.

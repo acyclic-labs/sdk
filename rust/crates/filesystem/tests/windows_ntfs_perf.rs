@@ -390,18 +390,20 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "local-only 1k-path NTFS preparation and capture qualification"]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ignored benchmark measures every phase of one working-set lifecycle"
-)]
-async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error>> {
-    const DIRECTORIES: usize = 100;
-    const FILES_PER_DIRECTORY: usize = 10;
-    const CHANGES: usize = 100;
-    const ACTIVATIONS: usize = 101;
+type NtfsCostResult<T> = Result<T, Box<dyn std::error::Error>>;
+type NtfsLazy = LazyWorkspace<
+    acyclic_fs::facade::LocalAuthorityBackend,
+    acyclic_fs::facade::LocalObjectBackend,
+    NativeDemandSource,
+    MemoryLazyWorkspaceStore,
+>;
 
+const DIRECTORIES: usize = 100;
+const FILES_PER_DIRECTORY: usize = 10;
+const CHANGES: usize = 100;
+const ACTIVATIONS: usize = 101;
+
+fn ntfs_source() -> NtfsCostResult<(tempfile::TempDir, tempfile::TempDir, u128)> {
     let source = tempfile::tempdir()?;
     let hot = source.path().join("hot");
     std::fs::create_dir(&hot)?;
@@ -434,12 +436,17 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     }
     let native_copy_us = started.elapsed().as_micros();
 
-    let state = tempfile::tempdir()?;
-    let fs = Fs::local(LocalOptions::new(state.path())).await?;
-    let started = Instant::now();
+    Ok((source, native_view, native_copy_us))
+}
+
+async fn attach_ntfs(
+    fs: &acyclic_fs::facade::LocalFs,
+    source: &std::path::Path,
+    name: &str,
+) -> NtfsCostResult<NtfsLazy> {
     let demand = Arc::new(
         NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
+            std::borrow::Cow::Owned(source.to_path_buf()),
             FilesystemProfile::Windows,
             VolumeLimits::default(),
             None,
@@ -452,12 +459,12 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         .map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach(
-        &fs,
-        "windows-ntfs-costs",
+        fs,
+        name,
         demand,
         MemoryLazyWorkspaceStore::default(),
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+            config: acyclic_fs::VolumeConfig::portable(if fs.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
             } else {
                 acyclic_fs::Lifecycle::Ephemeral
@@ -469,44 +476,77 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     )
     .await
     .map(|(lazy, _)| lazy)?;
+    Ok(lazy)
+}
+
+async fn prepare_ntfs(
+    lazy: &NtfsLazy,
+    view: &std::path::Path,
+) -> NtfsCostResult<
+    acyclic_fs::NativeWorkingSet<
+        acyclic_fs::facade::LocalAuthorityBackend,
+        acyclic_fs::facade::LocalObjectBackend,
+    >,
+> {
+    Ok(lazy
+        .prepare_native_working_set(
+            native_access::manual_mount_options(lazy.workspace())
+                .await?
+                .subdirectory("/hot"),
+            &MaterializeOptions::native(view),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            PublicationPermit::Unrestricted,
+        )
+        .await?)
+}
+
+async fn ntfs_durable_phases(source: &std::path::Path) -> NtfsCostResult<(u128, u128)> {
+    // Profile the two preparation phases independently on a fresh lazy root.
+    let phase_state = tempfile::tempdir()?;
+    let phase_fs = Fs::local(LocalOptions::new(phase_state.path())).await?;
+    let phase_lazy = attach_ntfs(&phase_fs, source, "windows-ntfs-phases").await?;
+    let started = Instant::now();
+    let cancellation = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let phase_exact = phase_lazy
+        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
+        .await?;
+    let exactify_us = started.elapsed().as_micros();
+    let phase_view = tempfile::tempdir()?;
+    let started = Instant::now();
+    phase_exact
+        .materialize(
+            std::iter::once("/hot"),
+            &MaterializeOptions::native(phase_view.path()),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+    // The public materializer requests durable output, including file syncs;
+    // native working-set preparation uses a reconstructible view instead.
+    let durable_materialize_us = started.elapsed().as_micros();
+
+    Ok((exactify_us, durable_materialize_us))
+}
+
+#[tokio::test]
+async fn report_ntfs_working_set_costs() -> NtfsCostResult<()> {
+    let (source, _native_view, native_copy_us) = ntfs_source()?;
+    let state = tempfile::tempdir()?;
+    let fs = Fs::local(LocalOptions::new(state.path())).await?;
+    let started = Instant::now();
+    let lazy = attach_ntfs(&fs, source.path(), "windows-ntfs-costs").await?;
     let attach_us = started.elapsed().as_micros();
 
     let view = tempfile::tempdir()?;
     let started = Instant::now();
-    let working_set = lazy
-        .prepare_native_working_set(
-            native_access::options(
-                lazy.workspace(),
-                acyclic_fs::MountOptions::read_write()
-                    .publication(acyclic_fs::MountPublication::Manual)
-                    .subdirectory("/hot"),
-            )
-            .await?,
-            &MaterializeOptions::native(view.path()),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            PublicationPermit::Unrestricted,
-        )
-        .await?;
+    let working_set = prepare_ntfs(&lazy, view.path()).await?;
     let preparation_us = started.elapsed().as_micros();
 
     let warm_view = tempfile::tempdir()?;
     let started = Instant::now();
-    let warm_working_set = lazy
-        .prepare_native_working_set(
-            native_access::options(
-                lazy.workspace(),
-                acyclic_fs::MountOptions::read_write()
-                    .publication(acyclic_fs::MountPublication::Manual)
-                    .subdirectory("/hot"),
-            )
-            .await?,
-            &MaterializeOptions::native(warm_view.path()),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            PublicationPermit::Unrestricted,
-        )
-        .await?;
+    let warm_working_set = prepare_ntfs(&lazy, warm_view.path()).await?;
     let warm_preparation_us = started.elapsed().as_micros();
     let native_cancellation = CancellationToken::new();
     let native_work =
@@ -559,61 +599,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         .await?;
     let sync_us = started.elapsed().as_micros();
 
-    // Profile the two preparation phases independently on a fresh lazy root.
-    let phase_state = tempfile::tempdir()?;
-    let phase_fs = Fs::local(LocalOptions::new(phase_state.path())).await?;
-    let phase_demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
-            FilesystemProfile::Windows,
-            VolumeLimits::default(),
-            None,
-            None,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?,
-    );
-    let phase_lazy = LazyWorkspace::attach(
-        &phase_fs,
-        "windows-ntfs-phases",
-        phase_demand,
-        MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
-                acyclic_fs::Lifecycle::Durable
-            } else {
-                acyclic_fs::Lifecycle::Ephemeral
-            }),
-            access_policy: None,
-        },
-        acyclic_fs::OperationId::new(),
-        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-    )
-    .await
-    .map(|(lazy, _)| lazy)?;
-    let started = Instant::now();
-    let cancellation = CancellationToken::new();
-    let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
-    let phase_exact = phase_lazy
-        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
-        .await?;
-    let exactify_us = started.elapsed().as_micros();
-    let phase_view = tempfile::tempdir()?;
-    let started = Instant::now();
-    phase_exact
-        .materialize(
-            std::iter::once("/hot"),
-            &MaterializeOptions::native(phase_view.path()),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-    // The public materializer requests durable output, including file syncs;
-    // native working-set preparation uses a reconstructible view instead.
-    let durable_materialize_us = started.elapsed().as_micros();
+    let (exactify_us, durable_materialize_us) = ntfs_durable_phases(source.path()).await?;
 
     println!(
         "{}",

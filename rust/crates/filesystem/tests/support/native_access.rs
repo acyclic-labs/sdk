@@ -1,10 +1,34 @@
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, MountOptions, WorkBudget, Workspace,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, MountOptions, WorkBudget,
+    Workspace,
     access::*,
-    kernel::MetadataField,
     model::{CheckoutMode, GenerationSelector},
 };
 use std::sync::Arc;
+
+/// Compile every native fixture view with one stable caller binding.
+pub fn compile_view(
+    policy: &Policy,
+    resource: Resource<'_>,
+    context: Context,
+    capability: &Capability,
+    head: acyclic_fs::GenerationId,
+    revision: acyclic_fs::kernel::MetadataField<acyclic_fs::ObjectId>,
+) -> Result<PathTrie, InvalidPolicy> {
+    let principal = Principal {
+        kind: PrincipalKind::Service,
+        id: "mount-test".into(),
+        lineage: vec![],
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    Ok(
+        PathTrie::compile(policy, &principal, resource, context, capability)?
+            .with_policy_revision(head, revision),
+    )
+}
 
 /// Explicit authority for privileged raw-SDK fixtures, outside the measured span.
 pub async fn options<
@@ -24,19 +48,22 @@ pub async fn options<
         )
         .await?
         .value;
-    let revision: MetadataField<_> = head
-        .access_policy_revision(WorkBudget::UNBOUNDED, &cancel)
-        .await?
-        .value;
-    let principal = Principal {
-        kind: PrincipalKind::Service,
-        id: "sdk-fixture".into(),
-        lineage: vec![],
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
+    let view = checkout_view(&mut head).await?;
+    Ok(options
+        .access_view(view)
+        .access_refresh(Arc::new(SelectionOwner {
+            workspace: workspace.clone(),
+        })))
+}
+
+/// One explicit fixture authority for both workspace and raw-checkout mounts.
+pub async fn checkout_view<
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+>(
+    checkout: &mut Checkout<A, O>,
+) -> Result<Arc<AccessView>, Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     let resource = ResourcePattern {
         lineage_root: None,
         volume: None,
@@ -55,7 +82,7 @@ pub async fn options<
             conditions: Conditions::default(),
         }]],
     };
-    let (stored, _) = head
+    let (stored, revision) = checkout
         .read_access_policy(WorkBudget::UNBOUNDED, &cancel)
         .await?
         .value;
@@ -70,12 +97,11 @@ pub async fn options<
         }]],
         expires_at: None,
     };
-    let volume = uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string();
-    let view = PathTrie::compile(
+    let volume = uuid::Uuid::from_bytes(checkout.volume_id().into_bytes()).to_string();
+    let view = compile_view(
         &policy,
-        &principal,
         Resource {
-            config: workspace.volume_config(),
+            config: checkout.volume_config(),
             lineage: &[],
             volume: &volume,
             generation: 1,
@@ -87,13 +113,10 @@ pub async fn options<
             approvals: 0,
         },
         &capability,
-    )?
-    .with_policy_revision(head.generation_id(), revision);
-    Ok(options
-        .access_view(Arc::new(AccessView::new(view)))
-        .access_refresh(Arc::new(SelectionOwner {
-            workspace: workspace.clone(),
-        })))
+        checkout.generation_id(),
+        revision,
+    )?;
+    Ok(Arc::new(AccessView::new(view)))
 }
 
 struct SelectionOwner<A, O> {
@@ -128,4 +151,19 @@ where
             Ok(options)
         })
     }
+}
+
+/// Uses the shared fixture authority for a writable manually published mount.
+#[cfg(windows)]
+pub async fn manual_mount_options<
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+>(
+    workspace: &Workspace<A, O>,
+) -> Result<MountOptions, Box<dyn std::error::Error>> {
+    options(
+        workspace,
+        MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
+    )
+    .await
 }

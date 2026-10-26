@@ -302,10 +302,24 @@ pub(super) fn command_for(
     let search_path = configured_path
         .map(|value| std::ffi::OsString::from(value.as_ref()))
         .or_else(|| environment("PATH"));
+    let search_extensions = env
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("PATHEXT"))
+        .map(|(_, value)| expand(value, expand_variables, &environment))
+        .transpose()?
+        .map(|value| std::ffi::OsString::from(value.as_ref()))
+        .or_else(|| environment("PATHEXT"));
     // Resolve once, then spawn this absolute executable; do not search PATH again at spawn.
-    let executable = super::executable::resolve(command.as_ref(), search_path, &cwd)
-        .map_err(Error::process_io)?;
-    let mut child = std::process::Command::new(executable);
+    let search = acyclic_native_runtime::ExecutableSearch::from_environment(&cwd, |name| {
+        if name == "PATH" {
+            search_path.clone()
+        } else {
+            search_extensions.clone()
+        }
+    });
+    let mut child = search.command(command.as_ref()).map_err(|error| {
+        Error::process_io(std::io::Error::new(error.kind(), format!("MCP {error}")))
+    })?;
     if server.dialect == Dialect::Codex {
         child.env_clear();
         for name in [
@@ -360,37 +374,19 @@ fn expand<'a>(
     if !enabled || !value.contains("${") {
         return Ok(std::borrow::Cow::Borrowed(value));
     }
-    let mut result = String::with_capacity(value.len());
-    let mut tail = value;
-    while let Some(start) = tail.find("${") {
-        result.push_str(&tail[..start]);
-        tail = &tail[start + 2..];
-        let end = tail
-            .find('}')
-            .ok_or_else(|| Error::Invalid("invalid MCP environment reference".into()))?;
-        let (name, fallback) = tail[..end]
-            .split_once(":-")
-            .map_or((&tail[..end], None), |(name, fallback)| {
-                (name, Some(fallback))
-            });
-        if name.is_empty() || name.contains(['=', '\0']) {
-            return Err(Error::Invalid(
-                "invalid MCP environment variable name".into(),
-            ));
-        }
-        match environment(name) {
-            Some(value) => result.push_str(
-                &value
-                    .into_string()
-                    .map_err(|_| Error::Invalid("MCP environment reference is not UTF-8".into()))?,
-            ),
-            None => result
-                .push_str(fallback.ok_or_else(|| {
-                    Error::Invalid("MCP environment reference is missing".into())
-                })?),
-        }
-        tail = &tail[end + 1..];
+    let expanded = acyclic_native_runtime::expand_environment(value, |reference| {
+        let reference =
+            reference.ok_or_else(|| Error::Invalid("invalid MCP environment reference".into()))?;
+        environment(reference.name)
+            .or_else(|| reference.fallback.map(std::ffi::OsString::from))
+            .map(Some)
+            .ok_or_else(|| Error::Invalid("MCP environment reference is missing".into()))
+    })?;
+    match expanded {
+        std::borrow::Cow::Borrowed(_) => Ok(std::borrow::Cow::Borrowed(value)),
+        std::borrow::Cow::Owned(value) => value
+            .into_string()
+            .map(std::borrow::Cow::Owned)
+            .map_err(|_| Error::Invalid("MCP environment reference is not UTF-8".into())),
     }
-    result.push_str(tail);
-    Ok(std::borrow::Cow::Owned(result))
 }

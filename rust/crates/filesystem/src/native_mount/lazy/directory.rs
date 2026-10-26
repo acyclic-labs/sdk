@@ -50,12 +50,7 @@ where
                         Some((stamp, cursor)) => (stamp, Some(cursor)),
                         None => (ViewStamp::current(), None),
                     };
-                    if !self
-                        .authored
-                        .unchanged_since_with_meter(path, None, stamp, work)?
-                    {
-                        return Err(MountSourceError::Stale);
-                    }
+                    self.check_directory_cut(path, stamp, None, work)?;
                     let mut accounting =
                         crate::kernel::KernelAccounting::native(work, work.cancellation());
                     let observation = self
@@ -73,27 +68,33 @@ where
                         .observer(&mut accounting, work.cancellation())
                         .map_err(mount_engine_error)?;
                     let (mut page, state, _page_allocation) = self
-                        .lazy
-                        .list_directory_in_checkout(
-                            &mut checkout,
-                            &text,
-                            cursor,
-                            maximum_entries,
-                            Some((&removed, opaque)),
-                            &mut accounting,
-                        )
+                        .runtime
+                        .prepare_future(work, || {
+                            self.lazy.list_directory_in_checkout(
+                                &mut checkout,
+                                &text,
+                                cursor,
+                                maximum_entries,
+                                Some((&removed, opaque)),
+                                &mut accounting,
+                            )
+                        })?
                         .await
                         .map_err(lazy_error)?;
                     let (entries, mut output_allocation) = self
-                        .directory_entries(path, &page, &mut checkout, &state, carrier, access)
+                        .runtime
+                        .prepare_future(work, || {
+                            self.directory_entries(
+                                path,
+                                &page,
+                                &mut checkout,
+                                &state,
+                                carrier,
+                                access,
+                            )
+                        })?
                         .await?;
-                    if !self
-                        .authored
-                        .unchanged_since_with_meter(path, None, stamp, work)?
-                        || self.removal_snapshot(&text)?.2 != epoch
-                    {
-                        return Err(MountSourceError::Stale);
-                    }
+                    self.check_directory_cut(path, stamp, Some((&text, epoch)), work)?;
                     let next_cursor = self.next_directory_cursor(
                         &mut page,
                         generation,
@@ -110,6 +111,27 @@ where
             })
         })();
         self.authored.disclose_result(&view, result, work)
+    }
+
+    fn check_directory_cut(
+        &self,
+        path: &MountPath,
+        stamp: ViewStamp,
+        removal: Option<(&str, u64)>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        if !self
+            .authored
+            .unchanged_since_with_meter(path, None, stamp, work)?
+        {
+            return Err(MountSourceError::Stale);
+        }
+        if let Some((text, epoch)) = removal
+            && self.removal_snapshot(text)?.2 != epoch
+        {
+            return Err(MountSourceError::Stale);
+        }
+        Ok(())
     }
 
     fn next_directory_cursor(

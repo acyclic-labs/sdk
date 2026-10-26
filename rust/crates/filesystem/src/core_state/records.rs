@@ -323,8 +323,9 @@ fn acquire_lock_with_retry(
         .as_ref()
         .map(|allocation| allocation.work().clone());
     let lock = FileLock::new(if let Some(work) = &work {
-        crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-        materialization_open_options(
+        let parent = crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+        materialization_open_at(
+            &parent.directory,
             &paths.lock,
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,

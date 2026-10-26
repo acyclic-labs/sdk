@@ -138,7 +138,10 @@ fn native_publication_owner<E, F, Fut>(
     &crate::NativeMaterializationWork,
 ) -> futures::future::Either<
     std::future::Ready<Result<(), E>>,
-    acyclic_stream::BoxProviderFuture<'static, Result<(), E>>,
+    crate::heap_future::OwnedFuture<
+        dyn Future<Output = Result<(), E>> + Send,
+        crate::NativeAllocation,
+    >,
 > + Clone
 + Send
 + 'static
@@ -160,27 +163,12 @@ where
         };
         match admitted {
             Ok(()) => {
-                let boxed = crate::heap_future::in_heap_admitted(
-                    None,
-                    |allocation, bytes| {
-                        *allocation = Some(
-                            original
-                                .claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
-                                .map_err(crate::FsError::from)
-                                .map_err(E::from)?,
-                        );
-                        Ok::<(), E>(())
-                    },
-                    |allocation| {
-                        let future = factory(work);
-                        async move {
-                            let _allocation = allocation;
-                            future.await
-                        }
-                    },
-                );
+                let boxed = crate::heap_future::native_future(&original, || factory(work))
+                    .map(crate::heap_future::OwnedFuture::erase_send)
+                    .map_err(crate::FsError::from)
+                    .map_err(E::from);
                 match boxed {
-                    Ok((future, _)) => futures::future::Either::Right(future),
+                    Ok(future) => futures::future::Either::Right(future),
                     Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
                 }
             }

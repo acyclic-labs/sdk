@@ -3,41 +3,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
-/// Platform shell data shared by registration, execution and client routing.
-pub struct ShellSpec {
-    /// Model-visible tool and approval-policy name.
-    pub name: &'static str,
-    /// Model guidance for the host's command language.
-    pub description: &'static str,
-    /// Native executables in preference order; resolved once at host startup.
-    pub executables: &'static [&'static str],
-    /// Non-interactive arguments preceding the source text.
-    pub arguments: &'static [&'static str],
-    /// Fixed bootstrap reading UTF-8 source from stdin; otherwise pass source as an argument.
-    pub stdin_bootstrap: Option<&'static str>,
-}
-
-/// Windows commands must use the native filesystem namespace.
-#[cfg(windows)]
-pub const PLATFORM: ShellSpec = ShellSpec {
-    name: "shell",
-    description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view, using PowerShell 7 (pwsh) when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths. Runs with -NoProfile -NonInteractive; writes outside the task view are not captured. No OS sandbox in release 1",
-    executables: &["pwsh.exe", "powershell.exe"],
-    arguments: &["-NoProfile", "-NonInteractive", "-Command"],
-    stdin_bootstrap: Some(
-        "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; & ([ScriptBlock]::Create([Console]::In.ReadToEnd()))",
-    ),
-};
-
-/// Unix hosts retain the bash command language.
-#[cfg(not(windows))]
-pub const PLATFORM: ShellSpec = ShellSpec {
-    name: "shell",
-    description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view. Use bash syntax and Unix paths. No OS sandbox in release 1; writes outside the task view are not captured",
-    executables: &["bash"],
-    arguments: &["--noprofile", "--norc", "-c"],
-    stdin_bootstrap: None,
-};
+pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
 
 /// A command in the calling task's view; workspace selection is host-owned.
 /// Release 1 uses no OS sandbox: commands can reach the host filesystem.

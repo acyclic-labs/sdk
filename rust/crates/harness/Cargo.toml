@@ -151,7 +151,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
-acyclic-test-support = { path = "../test-support" }
+acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
 proc-macro2 = "=1.0.107"
 syn = { version = "=3.0.6", features = ["full", "visit"] }
 proptest.workspace = true

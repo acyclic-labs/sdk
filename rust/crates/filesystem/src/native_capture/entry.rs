@@ -100,6 +100,19 @@ impl HeldRoot {
             .read_or_publish(leaf, candidate, &mut crate::native_host::ordinary_work())
     }
 
+    /// Reads two immutable records previously written by `read_or_publish`.
+    /// Returns `None` if either is absent. Both names cross one shared
+    /// directory barrier before either record is returned.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn read_published_pair<const A: usize, const B: usize>(
+        &self,
+        first: &Path,
+        second: &Path,
+    ) -> Result<Option<crate::native_host::PublishedPair<A, B>>, DemandError> {
+        self.root
+            .read_published_pair(first, second, &mut crate::native_host::ordinary_work())
+    }
+
     /// The path the root was opened at.
     #[must_use]
     pub fn path(&self) -> &Path {

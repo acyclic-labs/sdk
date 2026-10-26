@@ -11,12 +11,14 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
         let mut command = crate::shell_command(
             "echo fixture-output&echo fixture-error 1>&2&exit /b 7",
             Some("cmd"),
-        );
+        )
+        .expect("resolve fixture shell");
         #[cfg(not(windows))]
         let mut command = crate::shell_command(
             "exec 0<&-; printf fixture-output; printf fixture-error >&2; exit 7",
             Some("sh"),
-        );
+        )
+        .expect("resolve fixture shell");
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

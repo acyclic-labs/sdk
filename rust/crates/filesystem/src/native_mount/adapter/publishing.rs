@@ -46,117 +46,134 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         else {
             return Err((E::from(MountSourceError::OriginalSnapshotUnavailable), None));
         };
-        let mut carrier = NativeDemandCarrier::Native(work);
-        let _publication = await_lock(
-            self.publication_fence.write(),
-            &mut carrier,
-            cancellation,
-            lifetime,
-        )
-        .await
-        .map_err(|error| (E::from(error), None))?;
-        let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime)
+        // Publication is a large state machine. Keep it out of every callback
+        // future and charge its frame to the same invocation before building it.
+        native_future(work, || async move {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let _publication = await_lock(
+                self.publication_fence.write(),
+                &mut carrier,
+                cancellation,
+                lifetime,
+            )
             .await
             .map_err(|error| (E::from(error), None))?;
-        let force = state.has_retained_operation();
-        let early = |error: MountSourceError| (E::from(error), None);
-        let submitted = publication_flag(work, force).map_err(early)?;
-        let operation = state.retained_operation_id();
-        let projected = state
-            .publication_candidate(operation, work, cancellation)
-            .map_err(early)?;
-        carrier.check(cancellation, lifetime).map_err(early)?;
-        self.publishing.store(true, Ordering::Release);
-        let mut original = std::mem::replace(&mut *state.state, projected);
-        // Publish the candidate bound to this invocation; readers keep the prior checkout.
-        std::mem::swap(&mut original.checkout, &mut state.state.checkout);
-        let mut publication = Publication {
-            shared: self,
-            original: Some(original),
-            fence: Some(_publication),
-        };
-        drop(state);
-        let mut before_publication = before_publication.clone();
-        let result: Result<(), E> = async {
-            carrier.check(cancellation, lifetime)?;
-            let original = publication
-                .original
-                .as_mut()
-                .ok_or(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?;
-            let (context, mut proof) = original.publication_proof(
-                context,
-                operation,
-                permit,
-                work,
-                cancellation,
-                force,
-            )?;
-            let producer = original.checkout.private_control_custody();
-            proof.producer = Some(&producer);
-            let deadline = original.pending_deadline;
-            let source_lifetime = lifetime.cloned();
-            let guard_submitted = Arc::clone(&submitted);
-            let clock = self.clock.clone();
-            let mut guarded = move |work: &crate::NativeMaterializationWork| {
-                publication_guard(
-                    work,
-                    &mut before_publication,
-                    source_lifetime.as_ref(),
-                    &guard_submitted,
-                    &clock,
-                    deadline,
-                )
+            let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime)
+                .await
+                .map_err(|error| (E::from(error), None))?;
+            let force = state.has_retained_operation();
+            let early = |error: MountSourceError| (E::from(error), None);
+            let submitted = publication_flag(work, force).map_err(early)?;
+            let operation = state.retained_operation_id();
+            let projected = state
+                .publication_candidate(operation, work, cancellation)
+                .map_err(early)?;
+            carrier.check(cancellation, lifetime).map_err(early)?;
+            self.publishing.store(true, Ordering::Release);
+            let mut original = std::mem::replace(&mut *state.state, projected);
+            // Publish the candidate bound to this invocation; readers keep the prior checkout.
+            std::mem::swap(&mut original.checkout, &mut state.state.checkout);
+            let mut publication = Publication {
+                shared: self,
+                original: Some(original),
+                fence: Some(_publication),
             };
-            let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
-                &mut original.checkout,
-                operation,
-                permit,
-                force,
-                crate::kernel::KernelAccounting::native(work, cancellation),
-                &mut guarded,
-                proof,
-            )
-            .await?;
-            if ack.is_some()
-                || original.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay
+            drop(state);
+            let mut before_publication = before_publication.clone();
+            let result: Result<(), E> = async {
+                carrier.check(cancellation, lifetime)?;
+                let original =
+                    publication
+                        .original
+                        .as_mut()
+                        .ok_or(MountSourceError::NativeWork(
+                            crate::NativeTreeMaterializationError::InvalidLayout,
+                        ))?;
+                let (context, mut proof) = original.publication_proof(
+                    context,
+                    operation,
+                    permit,
+                    work,
+                    cancellation,
+                    force,
+                )?;
+                let producer = original.checkout.private_control_custody();
+                proof.producer = Some(&producer);
+                let deadline = original.pending_deadline;
+                let source_lifetime = lifetime.cloned();
+                let guard_submitted = Arc::clone(&submitted);
+                let clock = self.clock.clone();
+                let mut guarded = move |work: &crate::NativeMaterializationWork| {
+                    publication_guard(
+                        work,
+                        &mut before_publication,
+                        source_lifetime.as_ref(),
+                        &guard_submitted,
+                        &clock,
+                        deadline,
+                    )
+                };
+                let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
+                    &mut original.checkout,
+                    operation,
+                    permit,
+                    force,
+                    crate::kernel::KernelAccounting::native(work, cancellation),
+                    &mut guarded,
+                    proof,
+                )
+                .await?;
+                original.acknowledge_publication(operation, ack, context, acknowledged)?;
+                Ok(())
+            }
+            .await;
+            // Retain cancelled or possibly submitted operations for reconciliation.
+            if result.is_err()
+                && !submitted.0.load(Ordering::Acquire)
+                && carrier.check(cancellation, lifetime).is_ok()
+                && let Some(original) = publication.original.as_mut()
             {
                 original.clear_retained_operation(operation);
             }
-            if ack.is_some() || !original.checkout.has_pending_mutations() {
-                original.pending_deadline = None;
-            }
-            let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
-            if let Some(context) = context {
-                *acknowledged = Some(crate::NativePublicationSnapshot {
-                    context,
-                    operation,
-                    generation,
-                });
-            }
-            Ok(())
-        }
-        .await;
-        // Retain cancelled or possibly submitted operations for reconciliation.
-        if result.is_err()
-            && !submitted.0.load(Ordering::Acquire)
-            && carrier.check(cancellation, lifetime).is_ok()
-            && let Some(original) = publication.original.as_mut()
-        {
-            original.clear_retained_operation(operation);
-        }
-        drop(publication);
-        drop(self.lock().await);
-        let secondary = carrier.check(cancellation, lifetime);
-        match result {
-            Ok(()) => secondary.map_err(|error| (E::from(error), None)),
-            Err(primary) => Err((primary, secondary.err())),
-        }
+            drop(publication);
+            drop(self.lock().await);
+            result.map_err(|primary| (primary, carrier.check(cancellation, lifetime).err()))?;
+            carrier
+                .check(cancellation, lifetime)
+                .map_err(|error| (E::from(error), None))
+        })
+        .map_err(|error| (E::from(MountSourceError::NativeWork(error)), None))?
+        .await
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
+    fn acknowledge_publication(
+        &mut self,
+        operation: OperationId,
+        ack: Option<(Option<OperationId>, crate::GenerationId)>,
+        context: Option<crate::lazy_workspace::NativeSnapshotContext>,
+        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
+    ) -> Result<(), MountSourceError> {
+        if ack.is_some()
+            || self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay
+        {
+            self.clear_retained_operation(operation);
+        }
+        if ack.is_some() || !self.checkout.has_pending_mutations() {
+            self.pending_deadline = None;
+        }
+        let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
+        if let Some(context) = context {
+            *acknowledged = Some(crate::NativePublicationSnapshot {
+                context,
+                operation,
+                generation,
+            });
+        }
+        Ok(())
+    }
+
     fn publication_candidate(
         &self,
         operation: OperationId,

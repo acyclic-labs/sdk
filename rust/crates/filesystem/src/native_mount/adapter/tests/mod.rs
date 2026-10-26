@@ -63,7 +63,7 @@ fn configured_sources(
         bind_test_access(CheckoutMountSource::new(second, config)?, vec![], None)?,
     ))
 }
-fn native_test_path(name: &str) -> MountPath {
+pub(crate) fn native_test_path(name: &str) -> MountPath {
     name.split('/').fold(MountPath::root(), |path, component| {
         #[cfg(target_os = "windows")]
         let bytes = component

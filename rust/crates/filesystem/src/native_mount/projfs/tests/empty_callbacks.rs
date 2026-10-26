@@ -9,7 +9,7 @@ async fn constant_callbacks_preserve_status_admission_and_all_source_counters()
     let work =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let runtime = names::callback_runtime(source, root.path(), &work)?;
+    let runtime = callback_runtime(source, root.path(), &work)?;
     let data = PRJ_CALLBACK_DATA {
         InstanceContext: std::ptr::from_ref(&runtime).cast_mut().cast(),
         ..Default::default()

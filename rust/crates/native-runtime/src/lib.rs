@@ -19,11 +19,11 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
 mod process_tree;
@@ -43,8 +43,11 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
+#[cfg(not(target_arch = "wasm32"))]
+pub use process_tree::run_external_process_host;
 pub use process_tree::{
-    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessInput, ProcessOutput, ProcessTree,
+    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessCustodyLease, ProcessInput,
+    ProcessOutput, ProcessTree,
 };
 
 mod file;
@@ -57,9 +60,9 @@ pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) use file::write_all_batch_owned;
 pub use file::{
-    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, OwnedRead, OwnedWrite,
-    flush_file_all, flush_file_data, read_at, read_batch_async, rename_file, set_len, sync_data,
-    sync_file, sync_parent, truncate_file, write_all_at, write_file, write_file_all,
+    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, NativeSyncBatch, OwnedRead,
+    OwnedWrite, flush_file_all, flush_file_data, read_at, read_batch_async, rename_file, set_len,
+    sync_data, sync_file, sync_parent, truncate_file, write_all_at, write_file, write_file_all,
     write_file_with,
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -78,13 +81,19 @@ mod directory;
 pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
+mod command;
+#[cfg(windows)]
+mod executable;
 mod service;
 mod shell;
+pub use command::ExecutableSearch;
+mod expansion;
+pub use expansion::{EnvironmentReference, expand_environment};
 pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
-pub use shell::shell_command;
+pub use shell::{platform_shell, shell_command};
 mod meter;
 pub use meter::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
@@ -124,3 +133,9 @@ use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;
+
+/// Cross-platform process incarnation decisions and native identity queries.
+pub mod process_identity;
+
+/// Portable platform contracts are also available without native effects.
+pub use acyclic_host_platform::{paths, shell as shell_spec};

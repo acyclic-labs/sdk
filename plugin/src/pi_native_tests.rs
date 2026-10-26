@@ -124,7 +124,7 @@ fn source_bound_session_preserves_caller_modes_and_rejects_forged_cuts_headers_o
 
 #[test]
 fn original_host_settings_reject_child_substitution_and_strip_caller_credentials() {
-    let work = work();
+    let ledger = work();
     let root = root_path();
     let provider_extension = root.join("provider.ts");
     let raw = PiNativeHostRuntime {
@@ -144,13 +144,13 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
         ]),
     };
     assert!(matches!(
-        raw.validate(&work),
+        raw.validate(&work()),
         Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             ..
         })
     ));
-    let host = raw.sanitize(&work).unwrap();
+    let host = raw.sanitize(&ledger).unwrap();
     assert!(
         host.environment
             .contains_key("ACYCLIC_PI_PROVIDER_EXTENSION")
@@ -178,7 +178,7 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
             "probe",
             "child instruction",
             limits,
-            &work,
+            &ledger,
         )
         .unwrap();
     let intent = PiNativeLaunchIntent {
@@ -195,7 +195,7 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
         "ACYCLIC_PI_CALLER".into(),
         "actual-created-child-caller".into(),
     )]);
-    let child = host.bind_invocation(&intent, &caller, &work).unwrap();
+    let child = host.bind_invocation(&intent, &caller, &ledger).unwrap();
     assert_eq!(child.0.runtime_digest, intent.invocation.runtime_digest);
     assert_eq!(
         child
@@ -212,18 +212,18 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
             .environment
             .contains_key("ACYCLIC_PI_CALLER")
     );
-    assert!(
+    assert!(matches!(
         host.bind_invocation(
             &intent,
             &BTreeMap::from([("HOME".into(), "forged-host-setting".into())]),
-            &work
-        )
-        .is_err()
-    );
-    assert!(
-        host.bind_invocation(&intent, &BTreeMap::new(), &work)
-            .is_err()
-    );
+            &work()
+        ),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        host.bind_invocation(&intent, &BTreeMap::new(), &work()),
+        Err(Error::Invalid(_))
+    ));
     for mutation in 0..5 {
         let mut changed = intent.clone();
         match mutation {
@@ -238,7 +238,10 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
             3 => changed.invocation.builtin_tools.push("bash".into()),
             _ => changed.child_session_id = changed.source.parent_session_id.clone(),
         }
-        assert!(host.bind_invocation(&changed, &caller, &work).is_err());
+        assert!(matches!(
+            host.bind_invocation(&changed, &caller, &work()),
+            Err(Error::Invalid(_))
+        ));
     }
     for alias in [
         "".into(),
@@ -251,11 +254,11 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
     ] {
         let mut changed = intent.clone();
         changed.agent_alias = alias;
-        assert!(changed.validate(&work).is_err());
+        assert!(matches!(changed.validate(&work()), Err(Error::Invalid(_))));
     }
     let mut maximum_alias = intent.clone();
     maximum_alias.agent_alias = "a".repeat(128);
-    maximum_alias.validate(&work).unwrap();
+    maximum_alias.validate(&work()).unwrap();
     assert_eq!(maximum_alias.child_session_id, intent.child_session_id);
     let mut missing = serde_json::to_value(&intent).unwrap();
     missing.as_object_mut().unwrap().remove("agent_alias");

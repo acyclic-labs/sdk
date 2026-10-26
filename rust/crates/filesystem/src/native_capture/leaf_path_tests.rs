@@ -157,10 +157,14 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
             "LEAF_HEAP host={host} moved={moved:?} copied={copied:?} repeated={repeated:?} old_append={old_append:?}"
         );
         // Fixed warm six-path heap counts, independent of receipts or controls.
-        let expected = match (host, cfg!(windows)) {
-            (true, true) => 37,
-            (true, false) => 40,
-            (false, _) => 193,
+        let expected = match (host, cfg!(windows), cfg!(debug_assertions)) {
+            (true, true, _) => 37,
+            (true, false, _) => 40,
+            // The optimized checkout walk eliminates one allocation on
+            // both hosts. Its debug count would admit a redundant release
+            // allocation; copying and append controls stay independently exact.
+            (false, _, false) => 192,
+            (false, _, true) => 193,
         };
         let no_copy = |allocations| {
             if allocations == expected {

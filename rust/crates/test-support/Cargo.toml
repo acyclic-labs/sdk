@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+source-catalog = []
+
 [dependencies]
 acyclic-differential = { path = "../differential" }
 

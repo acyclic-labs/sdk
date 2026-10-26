@@ -213,6 +213,16 @@ pub(super) unsafe fn notification(
             notification,
             &work,
         ) {
+            Ok(()) if notification == PRJ_NOTIFICATION_PRE_DELETE => {
+                match runtime.callbacks.call_observed(
+                    file_id,
+                    || admit_delete(runtime, file_id, &path, &work),
+                    |_| {},
+                ) {
+                    Ok(()) => HR_OK,
+                    Err(error) => source_hresult(&error),
+                }
+            }
             Ok(()) => HR_OK,
             Err(error) => source_hresult(&error),
         };
@@ -273,21 +283,19 @@ pub(super) unsafe fn notification(
             }
             let baseline =
                 probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
-            record_metadata_open(metadata_baselines, file_id, baseline)
+            let projected = projected_source_id(runtime, &path, Some(baseline), &work)?;
+            record_metadata_open(metadata_baselines, file_id, baseline, projected)
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
         {
-            let close = close_metadata_handle(metadata_baselines, file_id);
-            let final_close = matches!(close, MetadataClose::Final(_));
+            let (final_close, expected) = match close_metadata_handle(metadata_baselines, file_id) {
+                MetadataClose::Pending(binding) => (false, binding),
+                MetadataClose::Final(state) => (true, state.and_then(|state| state.source_binding)),
+            };
             let result = if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED {
-                lock_recover(operation_failures.as_ref())
-                    .pending_captures
-                    .remove(&path);
-                *retry_path.borrow_mut() = Some(path.clone());
-                match source.lookup(&path)? {
-                    Some(_) => source.remove(&path, None, &work),
-                    None => Ok(()),
-                }
+                // Capture custody belongs to flush_callback_gate. A delayed
+                // close cannot cancel a newer capture of this same name.
+                complete_delete(source.as_ref(), &path, expected, &work)
             } else {
                 defer_host_capture(operation_failures.as_ref(), path.clone());
                 Ok(())
@@ -303,8 +311,8 @@ pub(super) unsafe fn notification(
             result
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
             let baseline = match close_metadata_handle(metadata_baselines, file_id) {
-                MetadataClose::Pending => return Ok(()),
-                MetadataClose::Final(baseline) => baseline,
+                MetadataClose::Pending(_) => return Ok(()),
+                MetadataClose::Final(state) => state.and_then(|state| state.baseline),
             };
             if has_pending_capture(operation_failures.as_ref(), &path) {
                 return Ok(());
@@ -489,6 +497,129 @@ pub(super) fn keep_file_notifications(
     }
 }
 
+fn admit_delete(
+    runtime: &Runtime,
+    file_id: u128,
+    path: &MountPath,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    if lock_recover(&runtime.metadata_baselines)
+        .get(&file_id)
+        .is_some_and(|state| state.source_binding.is_some())
+    {
+        return Ok(());
+    }
+    let binding = bind_delete(runtime, path, work)?;
+    let allocation = work.claim(
+        size_of::<(u128, OpenMetadataState)>() as u64,
+        1,
+        crate::WorkCounters::UNCHARGED,
+    )?;
+    let mut handles = lock_recover(&runtime.metadata_baselines);
+    handles
+        .try_reserve(1)
+        .map_err(MountSourceError::Allocation)?;
+    // The callback FileId groups opens of one host file. Delete admission
+    // shares its metadata owner and retires with the last observed close.
+    let state = handles.entry(file_id).or_insert(OpenMetadataState {
+        baseline: None,
+        source_binding: None,
+        open_handles: std::num::NonZeroUsize::MIN,
+        _delete_allocation: None,
+    });
+    state.source_binding = Some(binding);
+    state._delete_allocation = Some(allocation);
+    Ok(())
+}
+
+fn bind_delete(
+    runtime: &Runtime,
+    path: &MountPath,
+    work: &crate::NativeMaterializationWork,
+) -> Result<DeleteBinding, MountSourceError> {
+    // PRE_DELETE is the admission boundary even for Windows deletes which do
+    // not send FILE_OPENED. Keep an older projected/open incarnation instead
+    // of binding a delayed host operation to its replacement in the source.
+    if let Some(id) = projected_source_id(runtime, path, None, work)? {
+        return Ok(DeleteBinding::Present(id));
+    }
+    let _lease = runtime
+        .source
+        .acquire_binding_lease_with_meter(None, work)?;
+    Ok(match runtime.source.lookup_with_meter(path, work)? {
+        Some(entry) => DeleteBinding::Present(entry.node.file_id),
+        None => DeleteBinding::Absent,
+    })
+}
+
+fn projected_source_id(
+    runtime: &Runtime,
+    path: &MountPath,
+    host: Option<HostWindowsMetadata>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Option<FileId>, MountSourceError> {
+    let entry = {
+        let state = lock_recover(&runtime.projector.state);
+        state
+            .written
+            .get(path)
+            .or_else(|| state.pending.get(path))
+            .copied()
+    };
+    let Some(entry) = entry else { return Ok(None) };
+    if let Some(Owned::File(owned)) = entry.owned {
+        let host = match host {
+            Some(host) => host,
+            None => probe_host_windows_metadata(
+                &runtime.metadata_root,
+                path,
+                &runtime.metadata_probes,
+                work,
+            )?,
+        };
+        if owned.identity != host.identity {
+            // An external replacement is no longer the projected object.
+            // Its operation must bind at admission to its own source entry.
+            return Ok(None);
+        }
+    }
+    Ok(entry.facts.map(|facts| facts.lookup.node.file_id))
+}
+
+fn complete_delete(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    expected: Option<DeleteBinding>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    let expected = match expected {
+        Some(DeleteBinding::Absent) => return Ok(()),
+        Some(DeleteBinding::Present(id)) => id,
+        None => {
+            return match source.lookup_with_meter(path, work)? {
+                None => Ok(()),
+                Some(_) => Err(MountSourceError::Stale),
+            };
+        }
+    };
+    // The shared mutation compares the original identity atomically. Absence
+    // or a different incarnation means this old completion has no work left.
+    match source.remove(path, Some(expected), work) {
+        Err(error)
+            if matches!(
+                error.semantic_error(),
+                MountSourceError::NotFound
+                    | MountSourceError::Filesystem(crate::FsError::Mutation(
+                        crate::kernel::GenerationMutationError::FileIdentityConflict
+                    ))
+            ) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
+}
+
 pub(super) fn handle_rename_source(
     runtime: &Runtime,
     source: &MountPath,
@@ -553,11 +684,19 @@ macro_rules! on_callback {
         entry
     }};
     (@run provider, $call:expr) => {
-        provider_stack::run(|| unsafe { $call }).unwrap_or_else(|error| error.code())
+        provider_stack::run(|| {
+            // SAFETY: the SDK callback entry retains admission and validates
+            // the context; switching stacks preserves the callback arguments.
+            unsafe { $call }
+        }).unwrap_or_else(|error| error.code())
     };
     // Only constant-return callbacks use the caller's stack; they neither
     // inspect their arguments nor invoke a source operation.
-    (@run caller, $call:expr) => { unsafe { $call } };
+    (@run caller, $call:expr) => {
+        // SAFETY: the SDK entry retains admission; these callbacks ignore all
+        // uninspected arguments and return their fixed protocol status.
+        unsafe { $call }
+    };
 }
 
 pub(super) fn callbacks() -> PRJ_CALLBACKS {

@@ -1,8 +1,7 @@
 use super::*;
 use crate::access::{
     AccessView, Action, Capability, Conditions, Context, Effect, Generations, Grant,
-    POLICY_SCHEMA_VERSION, PathTrie, Policy, Principal, PrincipalKind, PrincipalPattern, Resource,
-    ResourcePattern, Rule,
+    POLICY_SCHEMA_VERSION, PathTrie, Policy, PrincipalPattern, Resource, ResourcePattern, Rule,
 };
 
 fn pattern(path: &str) -> ResourcePattern {
@@ -117,15 +116,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let caller = Principal {
-        kind: PrincipalKind::Service,
-        id: "mount-test".into(),
-        lineage: vec![],
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
     let cap = capability.unwrap_or_else(|| Capability {
         layers: vec![vec![Grant {
             actions: Action::ALL.into_iter().collect(),
@@ -134,9 +124,8 @@ where
         expires_at: None,
     });
     let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();
-    Ok(PathTrie::compile(
+    crate::native_mount::fixture_access::compile_view(
         policy,
-        &caller,
         Resource {
             config: source.config,
             lineage: &[],
@@ -152,9 +141,10 @@ where
             approvals: 0,
         },
         &cap,
+        head,
+        revision,
     )
-    .map_err(|_| MountSourceError::AccessDenied)?
-    .with_policy_revision(head, revision))
+    .map_err(|_| MountSourceError::AccessDenied)
 }
 
 pub(in crate::native_mount) fn bind_test_access<

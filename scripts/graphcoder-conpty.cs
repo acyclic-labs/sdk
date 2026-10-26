@@ -1,20 +1,34 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
 public static class GraphcoderConPty {
+    static string recovery;
+    static void Refuse(string step, Exception error) {
+        Console.Error.WriteLine("step=conpty-" + step + "; error=" + error + "; recovery=" + recovery);
+    }
     // Compiled ahead of qualification; direct launch avoids one PowerShell per PTY.
     public static int Main(string[] args) {
+        string host = Environment.GetEnvironmentVariable("E2E_PROCESS_HOST");
+        recovery = Quote(String.IsNullOrEmpty(host) ? "acyclic-process-host.exe" : host) + " --inherit-input " +
+            Quote(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        foreach (string argument in args) recovery += " " + Quote(argument);
+        string step = "native-custody";
         try {
+            RequireNativeCustody();
+            step = "arguments";
             int deadline;
             if (args.Length != 7 || !Int32.TryParse(args[5], out deadline) ||
                 (args[6] != "fresh" && args[6] != "resume"))
                 throw new ArgumentException("usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL DEADLINE fresh|resume");
+            step = "terminal";
             return Run(args[0], args[1], args[2], args[3], args[4], deadline, args[6] == "resume");
-        } catch (Exception error) { Console.Error.WriteLine(error); return 125; }
+        } catch (Exception error) { Refuse(step, error); return 125; }
     }
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short X, Y; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
@@ -24,15 +38,6 @@ public static class GraphcoderConPty {
     }
     [StructLayout(LayoutKind.Sequential)] struct StartupInfoEx { public StartupInfo info; public IntPtr attributes; }
     [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr process, thread; public uint processId, threadId; }
-    [StructLayout(LayoutKind.Sequential)] struct BasicLimit {
-        public long processTime, jobTime; public uint flags; public UIntPtr minimum, maximum;
-        public uint activeProcesses; public UIntPtr affinity; public uint priority, scheduling;
-    }
-    [StructLayout(LayoutKind.Sequential)] struct IoCounters { public ulong a, b, c, d, e, f; }
-    [StructLayout(LayoutKind.Sequential)] struct ExtendedLimit {
-        public BasicLimit basic; public IoCounters io;
-        public UIntPtr processMemory, jobMemory, peakProcessMemory, peakJobMemory;
-    }
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, IntPtr security, uint size);
     [DllImport("kernel32.dll")] static extern int CreatePseudoConsole(Coord size, IntPtr input, IntPtr output, uint flags, out IntPtr console);
     [DllImport("kernel32.dll")] static extern void ClosePseudoConsole(IntPtr console);
@@ -40,20 +45,28 @@ public static class GraphcoderConPty {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
     [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfoEx startup, out ProcessInfo process);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObjectW(IntPtr security, string name);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimit info, uint size);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint exit);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exit);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr handle, byte[] bytes, uint size, out uint read, IntPtr overlapped);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(IntPtr handle, byte[] bytes, uint size, out uint written, IntPtr overlapped);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint exit);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr OpenJobObjectW(uint access, bool inherit, string name);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool member);
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GetStdHandle(int kind);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetStdHandle(int kind, IntPtr handle);
     static void Require(bool ok, string operation) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), operation); }
+    static void RequireNativeCustody() {
+        string name = Environment.GetEnvironmentVariable("ACYCLIC_PROCESS_CUSTODY_JOB");
+        if (String.IsNullOrEmpty(name)) throw new InvalidOperationException("launch ConPTY through acyclic-process-host --inherit-input");
+        IntPtr job = OpenJobObjectW(4, false, name);
+        Require(job != IntPtr.Zero, "open native custody for membership query");
+        try {
+            bool member;
+            Require(IsProcessInJob(GetCurrentProcess(), job, out member) && member, "ConPTY requires native process custody");
+        } finally { CloseHandle(job); }
+    }
     static string Quote(string value) {
         var result = new StringBuilder("\""); int slashes = 0;
         foreach (char ch in value) {
@@ -64,18 +77,35 @@ public static class GraphcoderConPty {
         }
         result.Append('\\', slashes * 2); return result.Append('"').ToString();
     }
-    public static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline) {
-        return Run(binary, workspace, catalog, settings, model, deadline, false);
+    static void AdmitSuspendedProcess(uint pid) {
+        string endpoint = Environment.GetEnvironmentVariable("ACYCLIC_PROCESS_CUSTODY_ADMISSION");
+        int separator = endpoint == null ? -1 : endpoint.LastIndexOf(':');
+        int port;
+        if (separator < 0 || endpoint.Substring(0, separator) != "127.0.0.1" ||
+            !Int32.TryParse(endpoint.Substring(separator + 1), out port))
+            throw new InvalidOperationException("missing native custody admission endpoint");
+        // The native core validates Job membership and owns the stable wait.
+        // This adapter retains the original suspended process until its ACK.
+        using (var client = new TcpClient()) {
+            client.NoDelay = true;
+            client.Connect(IPAddress.Loopback, port);
+            using (var stream = client.GetStream()) {
+                byte[] bytes = { (byte)pid, (byte)(pid >> 8), (byte)(pid >> 16), (byte)(pid >> 24) };
+                stream.Write(bytes, 0, bytes.Length);
+                if (stream.ReadByte() != 1) throw new IOException("native custodian rejected ConPTY child");
+            }
+        }
     }
-    public static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline, bool resume) {
+    static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline, bool resume) {
         if (!Path.IsPathRooted(binary) || !Path.IsPathRooted(workspace) || !Path.IsPathRooted(catalog) || !Path.IsPathRooted(settings))
             throw new ArgumentException("ConPTY paths must be absolute");
         if (deadline < 1000 || deadline > 120000)
             throw new ArgumentException("ConPTY deadline must be finite (1000..120000 ms)");
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
-        IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero;
-        ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false;
-        Exception transportError = null; Thread outputThread = null;
+        IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero;
+        ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false, rootExited = false;
+        Thread outputThread = null;
+        string step = "terminal-create";
         try {
             Require(CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0), "CreatePipe input");
             Require(CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0), "CreatePipe output");
@@ -88,9 +118,6 @@ public static class GraphcoderConPty {
             Require(InitializeProcThreadAttributeList(attributes, 1, 0, ref size), "InitializeProcThreadAttributeList");
             attributeInitialized = true;
             Require(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x00020016), console, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero), "PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE");
-            job = CreateJobObjectW(IntPtr.Zero, null); Require(job != IntPtr.Zero, "CreateJobObject");
-            var limit = new ExtendedLimit(); limit.basic.flags = 0x00002000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            Require(SetInformationJobObject(job, 9, ref limit, (uint)Marshal.SizeOf(typeof(ExtendedLimit))), "SetInformationJobObject");
             var startup = new StartupInfoEx(); startup.info.cb = Marshal.SizeOf(typeof(StartupInfoEx)); startup.attributes = attributes;
             // This dedicated host must not pass its redirected standard handles
             // into the console child. Restore them before starting transport threads.
@@ -100,7 +127,7 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
                 Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + (resume ? " --resume" : "")), IntPtr.Zero, IntPtr.Zero, false,
-                    0x00080000 | 0x00000004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
+                    0x00080004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);
                 bool restoredOutput = SetStdHandle(-11, parentOutput);
@@ -109,8 +136,13 @@ public static class GraphcoderConPty {
             }
             // Retain the pseudoconsole's channel endpoints through child creation.
             CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
-            Require(AssignProcessToJobObject(job, process.process), "AssignProcessToJobObject");
-            IntPtr inputHandle = inWrite, outputHandle = outRead, jobHandle = job;
+            // Native ProcessCustody owns this transport before it executes.
+            // ConPTY children inherit that containment atomically at creation;
+            // this thin terminal adapter owns no Job or process-tree reaper.
+            step = "child-admission";
+            AdmitSuspendedProcess(process.processId);
+            Require(ResumeThread(process.thread) != UInt32.MaxValue, "resume admitted ConPTY child");
+            IntPtr inputHandle = inWrite, outputHandle = outRead;
             outputThread = new Thread(delegate() {
                 try {
                     var stdout = Console.OpenStandardOutput(); byte[] bytes = new byte[4096]; uint count; int total = 0;
@@ -125,7 +157,7 @@ public static class GraphcoderConPty {
                         if (total > 1048576) throw new IOException("ConPTY captured output exceeds 1 MiB");
                         stdout.Write(bytes, 0, (int)count); stdout.Flush();
                     }
-                } catch (Exception error) { Interlocked.CompareExchange(ref transportError, error, null); TerminateJobObject(jobHandle, 125); }
+                } catch (Exception error) { Refuse("output", error); Environment.Exit(125); }
             });
             outputThread.IsBackground = true; outputThread.Start();
             var inputThread = new Thread(delegate() {
@@ -137,27 +169,37 @@ public static class GraphcoderConPty {
                         uint written; Require(WriteFile(inputHandle, bytes, (uint)count, out written, IntPtr.Zero), "ConPTY WriteFile");
                         if (written != count) throw new IOException("ConPTY partial input write");
                     }
-                } catch (Exception error) { Interlocked.CompareExchange(ref transportError, error, null); TerminateJobObject(jobHandle, 125); }
+                } catch (Exception error) { Refuse("input", error); Environment.Exit(125); }
             });
             inputThread.IsBackground = true; inputThread.Start();
-            Require(ResumeThread(process.thread) != UInt32.MaxValue, "ResumeThread");
+            step = "child-wait";
             Console.Error.WriteLine("conpty-host primitive=CreatePseudoConsole process-attribute=PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE child-process-id=" + process.processId);
             uint waited = WaitForSingleObject(process.process, (uint)deadline);
-            if (waited == 258) { TerminateJobObject(job, 124); throw new TimeoutException("finite real ConPTY process deadline exceeded"); }
+            if (waited == 258) { Refuse("child-deadline", new TimeoutException("finite real ConPTY process deadline exceeded")); Environment.Exit(124); }
             Require(waited == 0, "WaitForSingleObject");
+            rootExited = true;
             uint exit; Require(GetExitCodeProcess(process.process, out exit), "GetExitCodeProcess");
+            step = "terminal-drain";
             // Drain concurrently while closing; ClosePseudoConsole can wait for its output reader.
             ClosePseudoConsole(console); console = IntPtr.Zero;
             if (!outputThread.Join(5000)) throw new TimeoutException("finite ConPTY output-drain deadline exceeded");
-            if (transportError != null) throw new IOException("real ConPTY transport failed", transportError);
             return unchecked((int)exit);
+        } catch (Exception error) {
+            Refuse(step, error);
+            if (process.process != IntPtr.Zero && !rootExited) Environment.Exit(125);
+            return 125;
         } finally {
-            if (process.process != IntPtr.Zero) TerminateProcess(process.process, 125);
-            if (job != IntPtr.Zero) TerminateJobObject(job, 125);
+            // An incomplete transport must not block in ClosePseudoConsole
+            // while its child still runs. Exiting transfers terminal cleanup
+            // to the native owner, which retains all physical-death barriers.
+            if (process.process != IntPtr.Zero && !rootExited) {
+                Refuse("incomplete-transport", new IOException("native owner must retire the admitted child"));
+                Environment.Exit(125);
+            }
             if (console != IntPtr.Zero) ClosePseudoConsole(console);
             if (attributeInitialized) DeleteProcThreadAttributeList(attributes);
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
-            foreach (IntPtr handle in new [] { inRead, inWrite, outRead, outWrite, process.thread, process.process, job })
+            foreach (IntPtr handle in new [] { inRead, inWrite, outRead, outWrite, process.thread, process.process })
                 if (handle != IntPtr.Zero) CloseHandle(handle);
         }
     }

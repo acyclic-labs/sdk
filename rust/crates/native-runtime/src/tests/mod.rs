@@ -15,7 +15,9 @@ mod native_allocation;
 mod positional;
 mod prepared_order;
 mod range;
+mod source;
 mod spare;
+use source::SourceFixture;
 mod write_validation;
 
 /// Waits for a state another thread publishes. No wall-clock bound: under
@@ -60,7 +62,7 @@ fn submit<T>(task: &mut NativeCompletion<T>) {
 }
 
 /// Drives `future` on this thread, sleeping until its waker unparks it.
-fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+pub(crate) fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     let waker = completion_waker();
     let mut future = std::pin::pin!(future);
     loop {

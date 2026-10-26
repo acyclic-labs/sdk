@@ -65,7 +65,7 @@ async fn native_watcher_observes_both_projected_rename_paths()
     let destination = root.path().join("projection");
     std::fs::create_dir(&destination)?;
     let mount = workspace
-        .mount(&destination, manual_mount_options())
+        .mount(&destination, manual_mount_options(&workspace).await?)
         .await?;
     let original = destination.join("original.txt");
     assert_eq!(std::fs::read(&original)?, b"original");
@@ -154,7 +154,9 @@ async fn nested_new_directory_hardlink_and_rename_publish() -> Result<(), Box<dy
     let workspace = local_workspace(root.path(), "nested-projfs", &work).await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace.mount(&path, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&path, manual_mount_options(&workspace).await?)
+        .await?;
     let nested = path.join("target").join("debug").join("deps");
     std::fs::create_dir_all(&nested)?;
     let source = nested.join("unit.o");

@@ -47,7 +47,9 @@ async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dy
         .map_err(|failure| failure.error)?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace.mount(&path, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&path, manual_mount_options(&workspace).await?)
+        .await?;
     let initial = std::fs::read_dir(&path)?
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<std::io::Result<Vec<_>>>()?;

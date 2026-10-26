@@ -7,6 +7,8 @@ pub(crate) use scope::{with_file_admission, with_file_scope};
 pub(crate) use write_validation::validate_write_batch;
 
 mod capability;
+mod sync_batch;
+pub use sync_batch::NativeSyncBatch;
 mod durable;
 pub use durable::{
     flush_file_all, flush_file_data, rename_file, truncate_file, write_file, write_file_all,

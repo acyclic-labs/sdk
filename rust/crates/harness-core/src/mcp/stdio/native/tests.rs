@@ -99,12 +99,14 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
     let command = acyclic_native_runtime::shell_command(
         &format!("call \"{}\" {arguments} >NUL", executable.display()),
         Some("cmd"),
-    );
+    )
+    .map_err(Error::process_io)?;
     #[cfg(not(windows))]
     let command = acyclic_native_runtime::shell_command(
         &format!("\"{}\" {arguments} >/dev/null", executable.display()),
         Some("sh"),
-    );
+    )
+    .map_err(Error::process_io)?;
     let mut future = Box::pin(StdioMcpTransport::spawn(command, 4096, 5000));
     let (mut stream, _) = tokio::select! {
         accepted = listener.accept() => accepted.map_err(Error::process_io)?,

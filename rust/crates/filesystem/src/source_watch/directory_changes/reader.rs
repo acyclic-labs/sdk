@@ -5,6 +5,7 @@ pub(super) unsafe extern "system" fn reader_thread(parameter: *mut std::ffi::c_v
     let shared = unsafe { Arc::<Shared>::from_raw(parameter.cast()) };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shared.run()));
     if result.is_err() {
+        shared.finish_reader_startup(ReaderStartup::Failed);
         shared.stopping.store(true, Ordering::Release);
         if shared.delivery.original.is_none() {
             let mut reads = shared.lock_reads();
@@ -31,6 +32,9 @@ impl Shared {
                     .unwrap_or_else(PoisonError::into_inner);
             }
         }
+        // Release startup's read lock before acknowledging readiness. Startup
+        // waits on a distinct lock so an immediate callback cannot block it.
+        self.finish_reader_startup(ReaderStartup::Ready);
         while !self.stopping.load(Ordering::Acquire) {
             // SAFETY: retirement signals this owned event before closing it.
             unsafe {

@@ -195,41 +195,17 @@ impl SharedPhysicalRoot {
         Ok(())
     }
 
-    pub(crate) fn observe(&self) -> Result<SharedRootObservation, String> {
-        self.observe_with(|| {
-            let mut watcher = self
-                .watcher
-                .lock()
-                .map_err(|_| "physical root watcher state is poisoned".to_owned())?;
-            watcher.fence(WATCH_FENCE_TIMEOUT).map_err(display)?;
-            Ok(watcher
-                .poll(65_536, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .map_err(display)?
-                .value)
-        })
-    }
-
-    pub(crate) fn observe_with(
-        &self,
-        poll: impl FnOnce() -> Result<WatchBatch, String>,
-    ) -> Result<SharedRootObservation, String> {
-        self.observe_transaction(
-            || "physical root reference state is poisoned".to_owned(),
-            |prior_source, reference| {
-                let batch = poll()?;
-                let source = if observation_consumes_changes(&batch) {
-                    self.source.invalidate()
-                } else {
-                    prior_source
-                };
-                *reference = source;
-                Ok(SharedRootObservation {
-                    batch,
-                    prior_source,
-                    source,
-                })
-            },
+    pub(crate) fn observe(&self) -> Result<(SharedRootObservation, NativeAllocation), String> {
+        // A later hook is a new operation, not a continuation of root startup.
+        // The watch retains its resident startup custody, while this complete
+        // fence/poll/publication uses one bounded operation ledger and returns
+        // custody for the batch alongside it, just like native callers do.
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            native_root_source::budget(),
+            &CancellationToken::new(),
         )
+        .map_err(|(error, _)| display(error))?;
+        self.observe_native_transaction(&work).map_err(display)
     }
 
     /// Publishes the original native watch batch and its actual new backing

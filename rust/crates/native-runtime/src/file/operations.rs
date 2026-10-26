@@ -43,15 +43,12 @@ fn sync_file_impl(
             meter.admit_durability()
         })
         .and_then(|()| meter.check());
-        #[cfg(not(target_vendor = "apple"))]
+        #[cfg(any(windows, target_os = "linux"))]
+        return sync_full(file, Some(meter));
+        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         loop {
             meter.check()?;
             meter.admit_durability()?;
-            #[cfg(target_os = "linux")]
-            let result = linux::sync_once(file);
-            #[cfg(windows)]
-            let result = windows::sync_once(file);
-            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
             let result = sync_file_unsequenced(file, durability);
             match result {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -72,12 +69,47 @@ fn sync_file_impl(
     })
 }
 
+/// One retry/charging policy for the shared Linux/Windows full-flush primitive.
+#[cfg(any(windows, target_os = "linux"))]
+fn sync_full(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<()> {
+    loop {
+        if let Some(meter) = meter {
+            meter.check()?;
+            meter.admit_durability()?;
+        }
+        #[cfg(target_os = "linux")]
+        let descriptor = {
+            use std::os::fd::AsFd as _;
+            file.as_fd()
+        };
+        #[cfg(windows)]
+        let descriptor = {
+            use std::os::windows::io::AsHandle as _;
+            file.as_handle()
+        };
+        match sync_descriptor_once(descriptor) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => {
+                return result.and_then(|()| match meter {
+                    Some(meter) => meter.check(),
+                    None => Ok(()),
+                });
+            }
+        }
+    }
+}
+
 pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
     #[cfg(target_vendor = "apple")]
     return apple::sync_once(file, durability, || Ok(()));
     #[cfg(not(target_vendor = "apple"))]
     match durability {
-        Durability::Full => file.sync_all(),
+        Durability::Full => {
+            #[cfg(any(windows, target_os = "linux"))]
+            return sync_full(file, None);
+            #[cfg(not(any(windows, target_os = "linux")))]
+            file.sync_all()
+        }
         Durability::Barrier => barrier_sync(file),
     }
 }
@@ -103,7 +135,12 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
             return apple::sync_once(file, durability, || Ok(()));
             #[cfg(not(target_vendor = "apple"))]
             match durability {
-                Durability::Full => file.sync_data(),
+                Durability::Full => {
+                    #[cfg(windows)]
+                    return sync_file_unsequenced(file, durability);
+                    #[cfg(not(windows))]
+                    file.sync_data()
+                }
                 Durability::Barrier => barrier_sync(file),
             }
         }))

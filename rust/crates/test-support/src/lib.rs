@@ -45,7 +45,14 @@ mod future_storage_tests {
         bounded::<false>();
     }
 }
+#[cfg(feature = "source-catalog")]
+mod source_catalog;
+#[cfg(feature = "source-catalog")]
+pub use source_catalog::{repository_rust_source, repository_rust_sources};
 pub mod module_cases;
+pub mod physical_cuts;
+#[cfg(all(test, feature = "source-catalog"))]
+mod source_catalog_build;
 /// Compiler observations made on the build host for every module path case.
 /// Target tests compare their actual source traversal with this independent proof.
 pub const MODULE_COMPILER_REACHED: [bool; module_cases::CASES.len()] =

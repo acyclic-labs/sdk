@@ -43,15 +43,22 @@ pub(super) struct ReadOnlyBinding {
     pub(super) basis: ReadBasis,
 }
 
-#[derive(Clone, Copy)]
 pub(super) struct OpenMetadataState {
-    pub(super) baseline: HostWindowsMetadata,
-    pub(super) open_handles: usize,
+    pub(super) baseline: Option<HostWindowsMetadata>,
+    pub(super) source_binding: Option<DeleteBinding>,
+    pub(super) open_handles: std::num::NonZeroUsize,
+    pub(super) _delete_allocation: Option<crate::NativeAllocation>,
 }
 
 pub(super) enum MetadataClose {
-    Pending,
-    Final(Option<HostWindowsMetadata>),
+    Pending(Option<DeleteBinding>),
+    Final(Option<OpenMetadataState>),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum DeleteBinding {
+    Absent,
+    Present(FileId),
 }
 
 pub(super) fn host_windows_metadata(
@@ -68,10 +75,10 @@ pub(super) fn host_windows_metadata(
         probes.map(|probes| MetadataProbeGuard::enter(probes, path))
     };
     let query = |path: &[u16], work: &mut &crate::NativeMaterializationWork| {
-        if let Some(metadata) = query_metadata(root, path, work, &guard)? {
+        if let Some(metadata) = query_metadata(root, path, work, guard)? {
             return Ok(metadata);
         }
-        with_guard(&guard, || {
+        with_guard(guard, || {
             #[cfg(test)]
             let _replay = super::tests::read_bindings::replay_fallback();
             root.stat(path, work)
@@ -247,11 +254,11 @@ pub(super) fn close_metadata_handle(
     let Some(state) = baselines.get_mut(&file_id) else {
         return MetadataClose::Final(None);
     };
-    if state.open_handles > 1 {
-        state.open_handles -= 1;
-        MetadataClose::Pending
+    if let Some(remaining) = std::num::NonZeroUsize::new(state.open_handles.get() - 1) {
+        state.open_handles = remaining;
+        MetadataClose::Pending(state.source_binding)
     } else {
-        MetadataClose::Final(baselines.remove(&file_id).map(|state| state.baseline))
+        MetadataClose::Final(baselines.remove(&file_id))
     }
 }
 
@@ -259,22 +266,28 @@ pub(super) fn record_metadata_open(
     baselines: &Mutex<HashMap<u128, OpenMetadataState>>,
     file_id: u128,
     baseline: HostWindowsMetadata,
+    source_id: Option<FileId>,
 ) -> Result<(), MountSourceError> {
     let mut baselines = lock_recover(baselines);
     if let Some(state) = baselines.get_mut(&file_id) {
-        if state.open_handles == 0 {
-            state.open_handles = 1;
+        if state.baseline.is_none() {
+            state.baseline = Some(baseline);
         } else {
             state.open_handles = state.open_handles.checked_add(1).ok_or_else(|| {
                 MountSourceError::Invalid("ProjFS open-handle count overflow".into())
             })?;
         }
+        if state.source_binding.is_none() {
+            state.source_binding = source_id.map(DeleteBinding::Present);
+        }
     } else {
         baselines.insert(
             file_id,
             OpenMetadataState {
-                baseline,
-                open_handles: 1,
+                baseline: Some(baseline),
+                source_binding: source_id.map(DeleteBinding::Present),
+                open_handles: std::num::NonZeroUsize::MIN,
+                _delete_allocation: None,
             },
         );
     }
@@ -287,13 +300,9 @@ pub(super) fn refresh_metadata_baseline(
     baseline: HostWindowsMetadata,
 ) {
     let mut baselines = lock_recover(baselines);
-    baselines
-        .entry(file_id)
-        .and_modify(|state| state.baseline = baseline)
-        .or_insert(OpenMetadataState {
-            baseline,
-            open_handles: 0,
-        });
+    if let Some(state) = baselines.get_mut(&file_id) {
+        state.baseline = Some(baseline);
+    }
 }
 
 pub(super) fn metadata_changed_since_open(

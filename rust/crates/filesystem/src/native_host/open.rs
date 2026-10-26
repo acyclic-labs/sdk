@@ -16,7 +16,7 @@ pub(crate) enum NativeOpenOptions {
 pub(crate) fn create_directories<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
-) -> Result<(), W::Error> {
+) -> Result<HostRoot, W::Error> {
     let mut base = Path::new(".");
     #[cfg(unix)]
     let directory = {
@@ -74,12 +74,18 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     };
     let relative = relative.strip_prefix(".").unwrap_or(relative);
     #[cfg(unix)]
-    directory_path(&directory, relative, true, work)?;
+    let directory = directory_path(&directory, relative, true, work)?;
     #[cfg(windows)]
-    with_wide_path(relative, work, |path, work| {
+    let directory = with_wide_path(relative, work, |path, work| {
         directory_path(&directory, path, true, work)
     })?;
-    Ok(())
+    // Creation already owns the validated leaf. Return that capability rather
+    // than discarding it and making every caller reopen the ambient path.
+    let identity = directory_identity(&directory, work)?;
+    Ok(HostRoot {
+        directory,
+        identity,
+    })
 }
 
 pub(crate) fn directory_path<W: NativeHostWork>(
@@ -131,6 +137,24 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     require_leaf(name)?;
     #[cfg(windows)]
     return with_wide_path(name, work, |name, work| {
+        let name = windows_leaf_name(name, work)?;
+        open_native_leaf(parent, &name, options, work)
+    });
+    #[cfg(unix)]
+    unix_name(name.as_os_str(), work, |name, work| {
+        open_native_leaf(parent, name, options, work)
+    })
+}
+
+fn open_native_leaf<W: NativeHostWork>(
+    parent: &Dir,
+    #[cfg(windows)] name: &win::UNICODE_STRING,
+    #[cfg(unix)] name: &NativeLeaf,
+    options: &NativeOpenOptions,
+    work: &mut W,
+) -> Result<File, W::Error> {
+    #[cfg(windows)]
+    {
         let disposition = match options {
             NativeOpenOptions::Read => nt::FILE_OPEN,
             #[cfg(any(test, feature = "local", feature = "native-mount"))]
@@ -145,7 +169,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         } else {
             fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
         };
-        open_windows_at_without_reparse(
+        open_windows_named_without_reparse(
             parent,
             name,
             access,
@@ -153,9 +177,9 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
             nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
             work,
         )
-    });
+    }
     #[cfg(unix)]
-    unix_name(name.as_os_str(), work, |name, work| {
+    {
         let mode = match options {
             NativeOpenOptions::Read => libc::O_RDONLY,
             #[cfg(any(test, feature = "local", feature = "native-mount"))]
@@ -177,7 +201,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
             return Err(W::invalid_request());
         }
         Ok(file)
-    })
+    }
 }
 
 /// Records one bounded native file transfer on the original work ledger.
@@ -301,11 +325,19 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
     })
 }
 
+/// A terminated ASCII component whose validation and native encoding are owned
+/// by its constructor. Opening and retirement borrow the same prepared name.
+#[cfg(any(test, feature = "native-mount"))]
+#[derive(Debug)]
+pub(crate) struct PreparedAsciiLeaf<const N: usize> {
+    units: [NativeUnit; N],
+}
+
 #[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
     work: &NativeMaterializationWork,
-) -> Result<[NativeUnit; N], NativeTreeMaterializationError> {
+) -> Result<PreparedAsciiLeaf<N>, NativeTreeMaterializationError> {
     let Some((&0, prefix)) = bytes.split_last() else {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     };
@@ -336,24 +368,44 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
         }
         *unit = NativeUnit::from(byte);
     }
-    Ok(name)
+    Ok(PreparedAsciiLeaf { units: name })
+}
+
+#[cfg(any(test, feature = "native-mount"))]
+pub(crate) fn open_ascii_leaf<W: NativeHostWork, const N: usize>(
+    parent: &Dir,
+    name: &PreparedAsciiLeaf<N>,
+    options: &NativeOpenOptions,
+    work: &mut W,
+) -> Result<File, W::Error> {
+    #[cfg(unix)]
+    let name =
+        std::ffi::CStr::from_bytes_with_nul(&name.units).map_err(|_| W::invalid_request())?;
+    #[cfg(windows)]
+    let name = windows_counted_name::<W>(&name.units[..N - 1])?;
+    #[cfg(windows)]
+    let name = &name;
+    open_native_leaf(parent, name, options, work)
 }
 
 #[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn remove_ascii_leaf<W: NativeHostWork, const N: usize>(
     parent: &Dir,
-    name: &[NativeUnit; N],
+    name: &PreparedAsciiLeaf<N>,
     work: &mut W,
 ) -> Result<(), W::Error> {
     #[cfg(unix)]
     return remove_unix_named_leaf(
         parent,
-        std::ffi::CStr::from_bytes_with_nul(name).map_err(|_| W::invalid_request())?,
+        std::ffi::CStr::from_bytes_with_nul(&name.units).map_err(|_| W::invalid_request())?,
         false,
         work,
     );
     #[cfg(windows)]
-    remove_windows_leaf(parent, &name[..N - 1], false, None, work)
+    {
+        let name = windows_counted_name::<W>(&name.units[..N - 1])?;
+        remove_windows_named_leaf(parent, &name, false, None, work)
+    }
 }
 
 pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
@@ -383,4 +435,90 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     return unix_name(leaf, work, |leaf, work| operation(parent, leaf, work));
     #[cfg(windows)]
     operation(parent, leaf, work)
+}
+
+#[cfg(test)]
+mod prepared_leaf_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_ascii_open_reuses_encoding_with_no_allocation_or_encoding_credit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = test_root(temporary.path())?;
+        let preparation =
+            NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        let name = prepare_ascii_leaf(*b"literal & %.lock\0", &preparation)?;
+        let mut work = DemandWork::new(
+            WorkBudget {
+                items_examined: 0,
+                allocation_operations: 0,
+                peak_allocation_bytes: 0,
+                bytes_encoded: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &crate::CancellationToken::new(),
+        );
+        let file = open_ascii_leaf(
+            &root.directory,
+            &name,
+            &NativeOpenOptions::ReadWriteCreate,
+            &mut work,
+        )?;
+        assert!(file.metadata()?.is_file());
+        assert_eq!(work.work.bytes_encoded, 0);
+        assert_eq!(work.work.allocation_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        drop(file);
+        // A shared original ledger owns an Arc before the operation starts.
+        // Its adapter must likewise add no name allocation or encoding work.
+        let before = preparation.receipt();
+        let live = preparation.live_allocation_bytes();
+        let file = open_ascii_leaf(
+            &root.directory,
+            &name,
+            &NativeOpenOptions::Read,
+            &mut &preparation,
+        )?;
+        let after = preparation.receipt();
+        assert_eq!(after.bytes_encoded, before.bytes_encoded);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(preparation.live_allocation_bytes(), live);
+        drop(file);
+        remove_ascii_leaf(&root.directory, &name, &mut work)?;
+        assert_eq!(work.work.items_examined, 0);
+        assert_eq!(work.work.bytes_encoded, 0);
+        assert_eq!(work.work.allocation_operations, 0);
+        assert!(!temporary.path().join("literal & %.lock").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_ascii_constructor_exhausts_every_byte_and_rejects_non_components()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let work =
+            NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        for byte in u8::MIN..=u8::MAX {
+            let result = prepare_ascii_leaf([b'a', byte, 0], &work);
+            assert_eq!(
+                result.is_ok(),
+                byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':')
+            );
+            if let Ok(name) = result {
+                assert_eq!(
+                    name.units,
+                    [NativeUnit::from(b'a'), NativeUnit::from(byte), 0]
+                );
+            }
+        }
+        assert!(prepare_ascii_leaf([], &work).is_err());
+        assert!(prepare_ascii_leaf([0], &work).is_err());
+        assert!(prepare_ascii_leaf(*b".\0", &work).is_err());
+        assert!(prepare_ascii_leaf(*b"..\0", &work).is_err());
+        assert!(prepare_ascii_leaf(*b"unterminated", &work).is_err());
+        Ok(())
+    }
 }

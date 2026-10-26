@@ -1,34 +1,20 @@
 //! The process-incarnation decision shared by recovery and its state model.
 use super::NativeMountError;
 
-#[derive(Clone, Copy)]
-pub(super) enum ProcessObservation {
-    Absent,
-    Present { started: u64, exited: bool },
-    Unknown,
-}
+pub(super) use acyclic_native_runtime::process_identity::ProcessObservation;
+use acyclic_native_runtime::process_identity::{IncarnationState, ProcessIncarnation};
 
 pub(super) fn require_dead_incarnation(
     pid: u32,
     started: u64,
     observation: ProcessObservation,
 ) -> Result<(), NativeMountError> {
-    if pid == 0 || started == 0 {
-        return Err(NativeMountError::RecoveryOwnerUnknown);
-    }
-    match observation {
-        ProcessObservation::Absent => Ok(()),
-        ProcessObservation::Present {
-            started: observed,
-            exited,
-        } => {
-            if observed != started || exited {
-                Ok(())
-            } else {
-                Err(NativeMountError::DestinationBusy)
-            }
-        }
-        ProcessObservation::Unknown => Err(NativeMountError::RecoveryOwnerUnknown),
+    let owner =
+        ProcessIncarnation::new(pid, started).ok_or(NativeMountError::RecoveryOwnerUnknown)?;
+    match owner.observe(observation) {
+        IncarnationState::Absent | IncarnationState::Replaced | IncarnationState::Exited => Ok(()),
+        IncarnationState::Running => Err(NativeMountError::DestinationBusy),
+        IncarnationState::Unknown => Err(NativeMountError::RecoveryOwnerUnknown),
     }
 }
 

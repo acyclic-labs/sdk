@@ -218,7 +218,17 @@ proptest::proptest! {
 }
 
 fn read_runtime(path: &std::path::Path) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
+    let root = acyclic_test_support::source_path("");
+    path.strip_prefix(root)
+        .ok()
+        .and_then(acyclic_test_support::repository_rust_source)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!(
+                "{}: absent from the compiled source catalog",
+                path.display()
+            )
+        })
 }
 
 fn runtime_files(

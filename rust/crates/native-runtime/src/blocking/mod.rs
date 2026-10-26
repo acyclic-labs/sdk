@@ -15,6 +15,12 @@ pub struct InlineBlocking {
 }
 
 impl InlineBlocking {
+    pub(crate) fn defer() -> Self {
+        Self {
+            previous: INLINE_BLOCKING.replace(false),
+        }
+    }
+
     /// Admits inline host operations on this thread until the guard drops.
     #[must_use]
     pub fn enter() -> Self {

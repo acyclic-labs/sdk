@@ -71,6 +71,8 @@ struct Shared {
     reads: Mutex<Reads>,
     buffer_owned: AtomicBool,
     reading_changed: Condvar,
+    reader_ready: Mutex<ReaderStartup>,
+    startup_changed: Condvar,
     stopping: AtomicBool,
     stop_completed: AtomicBool,
     ownership: SourcePayloadOwnership,
@@ -79,6 +81,12 @@ struct Shared {
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,
     delivery: Arc<Delivery>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReaderStartup {
+    Pending,
+    Ready,
+    Failed,
 }
 struct Reads {
     overlapped: Box<OVERLAPPED>,
@@ -115,6 +123,28 @@ impl Drop for Shared {
     }
 }
 impl Shared {
+    fn await_reader_startup<'a>(
+        &self,
+        mut ready: MutexGuard<'a, ReaderStartup>,
+    ) -> MutexGuard<'a, ReaderStartup> {
+        while *ready == ReaderStartup::Pending {
+            ready = self
+                .startup_changed
+                .wait(ready)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        ready
+    }
+    fn finish_reader_startup(&self, outcome: ReaderStartup) {
+        let mut ready = self
+            .reader_ready
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *ready == ReaderStartup::Pending {
+            *ready = outcome;
+            self.startup_changed.notify_all();
+        }
+    }
     fn lock_reads(&self) -> MutexGuard<'_, Reads> {
         self.reads.lock().unwrap_or_else(PoisonError::into_inner)
     }

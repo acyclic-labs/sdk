@@ -114,17 +114,6 @@ pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
     file.write_all_at(bytes, offset)
 }
 
-#[allow(unsafe_code, reason = "fsync acts only on the held descriptor")]
-pub(super) fn sync_once(file: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    // SAFETY: fsync only acts on the live descriptor.
-    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
 fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Result<OwnedWrite>> {
     writes
         .into_iter()

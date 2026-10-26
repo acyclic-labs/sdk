@@ -87,6 +87,7 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
     let _inline = InlineBlocking::enter();
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("borrowed-range");
+    let source = SourceFixture::new(&path)?;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
         source_file: Some(file!()),
@@ -104,7 +105,7 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
             any::<bool>(),
         ),
         |(body, offset, length, maximum, cancelled, reject)| {
-            std::fs::write(&path, &body).unwrap();
+            source.reset(&body).unwrap();
             let file = Arc::new(bounded_write_file(&path, false).unwrap());
             for api in 0..3 {
                 let make_meter = || {

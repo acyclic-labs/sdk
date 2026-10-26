@@ -240,10 +240,11 @@ where
     let selection_bytes = vec_bytes(&selected_paths);
     let destination = validate_options(options, &mut receipt)?;
     let host_root = receipt.owned_arc(destination, 0)?;
-    let mut known_files = Vec::<(FileId, HeldHostPath)>::new();
+    let mut known_files = GenerationIndex::<FileId, HeldHostPath>::default();
     #[cfg(any(target_os = "macos", windows))]
-    let mut known_payloads = Vec::<((u64, ObjectId, ObjectId), HeldHostPath)>::new();
+    let mut known_payloads = GenerationIndex::<(u64, ObjectId, ObjectId), HeldHostPath>::default();
     let mut pending = Vec::new();
+    let mut flushes = GenerationFlush::default();
     let mut deferred_directory_metadata = Vec::new();
     let limits = reader.volume_config().limits;
     for path in selected_paths {
@@ -338,11 +339,17 @@ where
             #[cfg(any(target_os = "macos", windows))]
             &mut known_payloads,
             &mut pending,
+            &mut flushes,
             &mut receipt,
             mode,
             &mut before_effect,
         )
         .await?;
+        // Finish a selected file before advancing to another selection whose
+        // lookup can fail. Directory traversal groups independent children.
+        flushes
+            .drain((&reader, &host_root), &mut receipt, &mut before_effect)
+            .await?;
     }
     receipt
         .custody
@@ -440,6 +447,7 @@ where
                     #[cfg(any(target_os = "macos", windows))]
                     &mut known_payloads,
                     &mut pending,
+                    &mut flushes,
                     &mut receipt,
                     mode,
                     &mut before_effect,
@@ -478,6 +486,9 @@ where
                 .map_err(MaterializeError::from)?;
         }
     }
+    flushes
+        .drain((&reader, &host_root), &mut receipt, &mut before_effect)
+        .await?;
     for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
         apply_metadata(
             &reader,

@@ -86,48 +86,6 @@ impl CheckoutTools {
     }
 }
 
-// Pin the native executable at startup; later PATH changes cannot retarget calls.
-static EXECUTABLE: std::sync::OnceLock<std::result::Result<std::path::PathBuf, String>> =
-    std::sync::OnceLock::new();
-
 pub(in crate::local) fn executable() -> Result<&'static std::path::Path> {
-    EXECUTABLE
-        .get_or_init(|| resolve(|name| which::which(name).ok()))
-        .as_deref()
-        .map_err(|cause| Error::Invalid(cause.clone()))
-}
-
-fn resolve(
-    mut lookup: impl FnMut(&str) -> Option<std::path::PathBuf>,
-) -> std::result::Result<std::path::PathBuf, String> {
-    crate::tools::shell::PLATFORM
-        .executables
-        .iter()
-        .find_map(|name| lookup(name))
-        .ok_or_else(|| {
-            format!(
-                "native {} executable is unavailable",
-                crate::tools::shell::PLATFORM.name
-            )
-        })
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selection_prefers_pwsh_then_windows_powershell_and_never_bash() {
-        for (available, expected) in [
-            (
-                vec!["pwsh.exe", "powershell.exe", "bash.exe"],
-                Some("pwsh.exe"),
-            ),
-            (vec!["powershell.exe", "bash.exe"], Some("powershell.exe")),
-            (vec!["bash.exe"], None),
-        ] {
-            let selected = resolve(|name| available.contains(&name).then(|| name.into()));
-            assert_eq!(selected.ok(), expected.map(std::path::PathBuf::from));
-        }
-    }
+    acyclic_native_runtime::platform_shell().map_err(Error::process_io)
 }

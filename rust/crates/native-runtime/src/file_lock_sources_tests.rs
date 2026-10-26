@@ -8,17 +8,6 @@
 //! entries in each `clippy.toml`.
 use std::collections::BTreeMap;
 
-/// Source trees scanned from the repository root.
-const ROOTS: [&str; 7] = [
-    "rust/crates",
-    "rust/fuzz",
-    "rust/verification",
-    "plugin",
-    "examples",
-    "compatibility",
-    "fuzz",
-];
-
 /// Raw file-lock spellings.
 const RAW_LOCKS: [&str; 12] = [
     "fs2",
@@ -62,19 +51,19 @@ const ALLOWED: [(&str, &str, usize); 4] = [
 ];
 
 /// Compares raw-lock counts with the exact allowance, in both directions.
-fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<String> {
+fn violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<String> {
     let mut found = BTreeMap::new();
     for (path, text) in files {
         for spelling in RAW_LOCKS {
             let count = text.matches(spelling).count();
             if count > 0 {
-                found.insert((path.clone(), spelling), count);
+                found.insert((path, spelling), count);
             }
         }
     }
     let mut violations = Vec::new();
     for (path, spelling, count) in ALLOWED {
-        match found.remove(&(path.to_owned(), spelling)) {
+        match found.remove(&(path, spelling)) {
             Some(actual) if actual == count => (),
             actual => violations.push(format!(
                 "{path}: {spelling} expected {count}, found {}",
@@ -90,51 +79,38 @@ fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<Str
     violations
 }
 
-fn sources() -> &'static [(String, String)] {
-    static FILES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+fn sources() -> &'static [(&'static str, &'static str)] {
+    static FILES: std::sync::OnceLock<Vec<(&str, &str)>> = std::sync::OnceLock::new();
     FILES.get_or_init(|| {
-        let root = acyclic_test_support::source_path("");
-        let mut files = Vec::new();
-        let mut pending = ROOTS.map(|name| root.join(name)).to_vec();
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(&directory).expect("source directory") {
-                let path = entry.expect("source entry").path();
-                if path.is_dir() {
-                    let name = path.file_name().and_then(|name| name.to_str());
-                    if !matches!(name, Some("target" | "node_modules" | "vendor" | ".git")) {
-                        pending.push(path);
-                    }
-                    continue;
-                }
-                if path.extension().is_none_or(|extension| extension != "rs") {
-                    continue;
-                }
-                let relative = path
-                    .strip_prefix(&root)
-                    .expect("repository source")
-                    .to_str()
-                    .expect("UTF-8 source path")
-                    .replace('\\', "/");
-                // This scan spells every raw lock it forbids.
-                if relative == "rust/crates/native-runtime/src/file_lock_sources_tests.rs" {
-                    continue;
-                }
-                files.push((relative, std::fs::read_to_string(&path).expect("source")));
-            }
-        }
-        files
+        acyclic_test_support::repository_rust_sources()
+            .iter()
+            .copied()
+            // This policy spells its forbidden inputs; every other Rust source
+            // in every original root remains subject to the exact allowance.
+            .filter(|(path, _)| {
+                *path != "rust/crates/native-runtime/src/file_lock_sources_tests.rs"
+            })
+            .collect()
     })
+}
+
+#[test]
+fn compiled_source_policy_borrows_every_input_without_target_file_opens() {
+    let files = sources();
+    assert!(files.len() > 3000, "source catalog lost its roots");
+    for (path, text) in files {
+        let original = acyclic_test_support::repository_rust_source(std::path::Path::new(path))
+            .expect("compiled source exists");
+        assert!(std::ptr::eq(text.as_ptr(), original.as_ptr()));
+        assert_eq!(*text, original);
+    }
 }
 
 #[test]
 fn every_file_lock_goes_through_the_explicitly_releasing_guard() {
     let files = sources();
     assert!(files.len() > 3000, "source scan lost its roots");
-    let found = violations(
-        files
-            .iter()
-            .map(|(path, text)| (path.clone(), text.as_str())),
-    );
+    let found = violations(files.iter().copied());
     assert!(found.is_empty(), "raw file locks: {found:#?}");
 }
 
@@ -143,14 +119,14 @@ fn planted_raw_file_locks_fail_the_scan() {
     let files = sources();
     let scan = |target: &str, plant: &str| {
         assert!(
-            files.iter().any(|(path, _)| path == target),
+            files.iter().any(|(path, _)| *path == target),
             "planted source target is absent: {target}"
         );
-        violations(files.iter().map(|(path, text)| {
+        violations(files.iter().copied().map(|(path, text)| {
             if path == target {
-                (path.clone(), plant)
+                (path, plant)
             } else {
-                (path.clone(), text.as_str())
+                (path, text)
             }
         }))
     };

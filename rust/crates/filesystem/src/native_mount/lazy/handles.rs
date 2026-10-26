@@ -53,16 +53,13 @@ where
             ))
     }
 
+    // Both convenience and explicit-work calls use one original ledger.
+    // Only the public convenience entry creates it; wrappers never reset it.
     fn with_view<T>(
         &self,
-        work: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
-        let Some(work) = work else {
-            return adapter::boundary(&self.cancellation, |work| {
-                self.with_view(Some(work), operation)
-            });
-        };
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let lease =
@@ -84,14 +81,9 @@ where
 
     fn with_mutation<T>(
         &self,
-        work: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
-        let Some(work) = work else {
-            return adapter::boundary(&self.cancellation, |work| {
-                self.with_mutation(Some(work), operation)
-            });
-        };
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let lease =
             with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
@@ -116,12 +108,14 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    adapter::ordinary_file_callbacks!(self, &self.cancellation);
+
     fn clone_source(
         &self,
         checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
     ) -> Result<FileId, MountSourceError> {
-        self.with_view(Some(work), |file| file.clone_source(checkout, work))
+        self.with_view(work, |file| file.clone_source(checkout, work))
     }
 
     fn clone_range_from(
@@ -132,7 +126,7 @@ where
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
+        self.with_mutation(work, |file| {
             file.clone_range_from(source, source_offset, offset, length, work)
         })
     }
@@ -141,7 +135,7 @@ where
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        self.with_view(Some(work), |file| file.lookup_with_meter(work))
+        self.with_view(work, |file| file.lookup_with_meter(work))
     }
     fn read_range_with_meter(
         &self,
@@ -149,7 +143,7 @@ where
         length: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.with_view(Some(work), |file| {
+        self.with_view(work, |file| {
             file.read_range_with_meter(offset, length, work)
         })
     }
@@ -159,7 +153,7 @@ where
         maximum_bytes: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.with_view(Some(work), |file| {
+        self.with_view(work, |file| {
             file.read_up_to_with_meter(offset, maximum_bytes, work)
         })
     }
@@ -169,9 +163,7 @@ where
         target: MountSeekTarget,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<u64>, MountSourceError> {
-        self.with_view(Some(work), |file| {
-            file.seek_with_meter(offset, target, work)
-        })
+        self.with_view(work, |file| file.seek_with_meter(offset, target, work))
     }
     fn write_range_with_meter(
         &self,
@@ -179,7 +171,7 @@ where
         bytes: crate::kernel::OwnedSourceChunk,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
+        self.with_mutation(work, |file| {
             file.write_range_with_meter(offset, bytes, work)
         })
     }
@@ -189,7 +181,7 @@ where
         bytes: crate::kernel::OwnedSourceChunk,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
+        self.with_mutation(work, |file| {
             file.append_range_with_meter(offset, bytes, work)
         })
     }
@@ -199,9 +191,7 @@ where
         logical_bytes: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
-            file.resize_with_meter(logical_bytes, work)
-        })
+        self.with_mutation(work, |file| file.resize_with_meter(logical_bytes, work))
     }
     fn allocate_range_with_meter(
         &self,
@@ -210,7 +200,7 @@ where
         operation: MountRangeAllocation,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
+        self.with_mutation(work, |file| {
             file.allocate_range_with_meter(offset, length, operation, work)
         })
     }
@@ -220,7 +210,7 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
-        self.with_view(Some(work), |file| {
+        self.with_view(work, |file| {
             file.list_attributes_with_meter(cursor, maximum_entries, work)
         })
     }
@@ -236,9 +226,7 @@ where
         ),
         MountSourceError,
     > {
-        self.with_view(Some(work), |file| {
-            file.read_sparse_range(offset, length, work)
-        })
+        self.with_view(work, |file| file.read_sparse_range(offset, length, work))
     }
     fn write_sparse_range(
         &self,
@@ -249,50 +237,11 @@ where
         ),
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
-            file.write_sparse_range(offset, range, work)
-        })
-    }
-
-    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
-        self.with_view(None, MountOpenFile::lookup)
-    }
-
-    fn read_range(&self, offset: u64, length: u32) -> Result<OwnedBytes, MountSourceError> {
-        self.with_view(None, |file| file.read_range(offset, length))
-    }
-
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<OwnedBytes, MountSourceError> {
-        self.with_view(None, |file| file.read_up_to(offset, maximum_bytes))
-    }
-
-    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
-        self.with_view(None, |file| file.seek(offset, target))
-    }
-
-    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.with_mutation(None, |file| file.write_range(offset, bytes))
+        self.with_mutation(work, |file| file.write_sparse_range(offset, range, work))
     }
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| file.settle(work))
-    }
-
-    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.with_mutation(None, |file| file.append_range(offset, bytes))
-    }
-
-    fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.with_mutation(None, |file| file.resize(logical_bytes))
-    }
-
-    fn allocate_range(
-        &self,
-        offset: u64,
-        length: u64,
-        operation: MountRangeAllocation,
-    ) -> Result<(), MountSourceError> {
-        self.with_mutation(None, |file| file.allocate_range(offset, length, operation))
+        self.with_mutation(work, |file| file.settle(work))
     }
 
     fn set_attributes(
@@ -301,7 +250,7 @@ where
         logical_bytes: Option<u64>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
+        self.with_mutation(work, |file| {
             file.set_attributes(metadata, logical_bytes, work)
         })
     }
@@ -311,15 +260,7 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        self.with_view(Some(work), |file| file.read_attribute(name, work))
-    }
-
-    fn list_attributes(
-        &self,
-        cursor: Option<&[u8]>,
-        maximum_entries: u32,
-    ) -> Result<MountAttributePage, MountSourceError> {
-        self.with_view(None, |file| file.list_attributes(cursor, maximum_entries))
+        self.with_view(work, |file| file.read_attribute(name, work))
     }
 
     fn write_attribute(
@@ -329,9 +270,7 @@ where
         mode: MountAttributeWriteMode,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| {
-            file.write_attribute(name, value, mode, work)
-        })
+        self.with_mutation(work, |file| file.write_attribute(name, value, mode, work))
     }
 
     fn remove_attribute(
@@ -339,6 +278,6 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(Some(work), |file| file.remove_attribute(name, work))
+        self.with_mutation(work, |file| file.remove_attribute(name, work))
     }
 }

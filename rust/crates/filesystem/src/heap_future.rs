@@ -13,14 +13,154 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
+
+// The future and everything it captures die before its allocation charge.
+pub(crate) struct OwnedFuture<F: ?Sized, A> {
+    future: Pin<Box<F>>,
+    _allocation: A,
+}
+
+impl<F: Future + ?Sized, A: Unpin> Future for OwnedFuture<F, A> {
+    type Output = F::Output;
+
+    // Boxing construction alone does not isolate polling: a concrete F's
+    // poll can be inlined back into every awaiting caller. Keep one shared
+    // poll boundary as well, so sibling phases cannot combine their frames.
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(context)
+    }
+}
+
+impl<F: ?Sized, A: Unpin> OwnedFuture<F, A> {
+    pub(crate) fn as_mut(&mut self) -> Pin<&mut Self> {
+        Pin::new(self)
+    }
+
+    #[cfg(test)]
+    fn as_ref(&self) -> Pin<&F> {
+        self.future.as_ref()
+    }
+}
+
+impl<F: Future, A> OwnedFuture<F, A> {
+    /// Erases the body at a provider boundary without moving or reallocating
+    /// its storage, so admission still covers the concrete future's bytes.
+    pub(crate) fn erase_send<'a>(self) -> OwnedFuture<dyn Future<Output = F::Output> + Send + 'a, A>
+    where
+        F: Send + 'a,
+    {
+        OwnedFuture {
+            future: self.future,
+            _allocation: self._allocation,
+        }
+    }
+}
+
+impl<F> OwnedFuture<F, ()> {
+    fn with_allocation<A>(self, allocation: A) -> OwnedFuture<F, A> {
+        OwnedFuture {
+            future: self.future,
+            _allocation: allocation,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_future<F: Future>(
+    work: &crate::NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<OwnedFuture<F, crate::NativeAllocation>, crate::NativeTreeMaterializationError> {
+    let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
+    let allocation = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+    Ok(in_heap(create).with_allocation(allocation))
+}
+
+/// Ledger interface for a future borrowing its existing operation owner.
+pub(crate) trait FrameContext {
+    fn claim_frame(
+        &mut self,
+        bytes: u64,
+    ) -> Result<crate::kernel::allocation::KernelOwnedAllocation, crate::FsError>;
+    fn retire_frame(
+        &mut self,
+        allocation: crate::kernel::allocation::KernelOwnedAllocation,
+        bytes: u64,
+    ) -> Result<(), crate::FsError>;
+}
+impl FrameContext for crate::kernel::allocation::KernelAccounting<'_> {
+    fn claim_frame(
+        &mut self,
+        bytes: u64,
+    ) -> Result<crate::kernel::allocation::KernelOwnedAllocation, crate::FsError> {
+        self.claim_owned(bytes, u64::from(bytes != 0))
+    }
+    fn retire_frame(
+        &mut self,
+        allocation: crate::kernel::allocation::KernelOwnedAllocation,
+        bytes: u64,
+    ) -> Result<(), crate::FsError> {
+        crate::kernel::retire_allocation(allocation, bytes, self)
+    }
+}
+/// Owns a funded future's claim, including cancellation before its first poll.
+/// Declare this owner before the box and lend it to the future: cancellation
+/// then destroys the whole box before this owner retires its storage.
+pub(crate) struct AdmittedFrame<'a, C: FrameContext> {
+    accounting: &'a mut C,
+    allocation: Option<crate::kernel::allocation::KernelOwnedAllocation>,
+    bytes: u64,
+}
+impl<'a, C: FrameContext> AdmittedFrame<'a, C> {
+    pub(crate) fn new(accounting: &'a mut C) -> Self {
+        Self {
+            accounting,
+            allocation: None,
+            bytes: 0,
+        }
+    }
+    pub(crate) fn admit(&mut self, bytes: u64) -> Result<(), crate::FsError> {
+        if self.allocation.is_some() {
+            return Err(crate::WorkError::Overflow.into());
+        }
+        self.allocation = Some(self.accounting.claim_frame(bytes)?);
+        self.bytes = bytes;
+        Ok(())
+    }
+    pub(crate) fn accounting(&mut self) -> &mut C {
+        self.accounting
+    }
+    fn retire(&mut self) -> Result<(), crate::FsError> {
+        if let Some(allocation) = self.allocation.take() {
+            self.accounting.retire_frame(allocation, self.bytes)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn finish<T>(
+        mut self,
+        result: Result<T, crate::FsError>,
+    ) -> Result<T, crate::FsError> {
+        self.retire().and(result)
+    }
+}
+impl<C: FrameContext> Drop for AdmittedFrame<'_, C> {
+    fn drop(&mut self) {
+        self.retire()
+            .unwrap_or_else(|_| unreachable!("the frame retires only its own admitted claim"));
+    }
+}
 
 /// Builds `create`'s future directly in a heap allocation.
 ///
 /// The future is built in this function's own frame, which returns before the
 /// future is first polled, so no poll frame ever holds it.
 #[inline(never)]
-pub(crate) fn in_heap<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<F>> {
-    Box::pin(create())
+pub(crate) fn in_heap<F: Future>(create: impl FnOnce() -> F) -> OwnedFuture<F, ()> {
+    OwnedFuture {
+        future: Box::pin(create()),
+        _allocation: (),
+    }
 }
 
 /// Admits a box into an existing ownership ledger before constructing its future.
@@ -30,11 +170,34 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
     mut state: C,
     admit: impl FnOnce(&mut C, u64) -> Result<(), E>,
     create: impl FnOnce(C) -> F,
-) -> Result<(Pin<Box<F>>, u64), E> {
+) -> Result<(OwnedFuture<F, ()>, u64), E> {
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
     admit(&mut state, bytes)?;
     Ok((in_heap(move || create(state)), bytes))
 }
+
+// A borrowed operation cannot move its ledger into the box it funds. Keep
+// the owner outside, and lend the same ledger until the whole box is gone.
+// One expansion owns admission, destruction order and retirement for every
+// borrowed phase; callers only supply their operation and error conversion.
+macro_rules! in_borrowed_frame {
+    ($context:expr, |$accounting:ident| $future:expr) => {{
+        let mut frame = $crate::heap_future::AdmittedFrame::new($context);
+        let (mut future, _) = $crate::heap_future::in_heap_admitted(
+            &mut frame,
+            |frame, bytes| frame.admit(bytes),
+            |frame| {
+                let $accounting = frame.accounting();
+                $future
+            },
+        )?;
+        let result = future.as_mut().await;
+        drop(future);
+        frame.finish(Ok(()))?;
+        result
+    }};
+}
+pub(crate) use in_borrowed_frame;
 
 /// Known logical ownership of the existing boxed future, not proof DATA.
 #[derive(Clone, Copy, Debug)]
@@ -134,10 +297,9 @@ where
         .peak_allocation_bytes
         .checked_sub(bytes)
         .ok_or_else(|| crate::OperationFailure::new(map_work(crate::WorkError::Overflow), work))?;
-    let mut future = in_heap(move || create(remaining));
+    let mut future = in_heap(move || create(remaining)).with_allocation(frame);
     let result = future.as_mut().await;
     drop(future);
-    drop(frame);
     match result {
         Err(mut failure) => {
             // Ordinary failures already own their receipt. Retain that same
@@ -595,3 +757,7 @@ mod tests {
         assert_eq!(owner.take_completed_data_work().peak_allocation_bytes, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "heap_future/frame_tests.rs"]
+mod frame_tests;

@@ -276,6 +276,18 @@ impl NativeDemandSource {
         result.and(released)?;
         Ok(page.entries)
     }
+    fn directory_page_work(&self, maximum: u32) -> Result<WorkCounters, DemandError> {
+        if maximum == 0 || maximum > 4096 {
+            return Err(DemandError::InvalidRequest);
+        }
+        let items_examined = u64::from(maximum)
+            .checked_mul(self.excluded.paths.len() as u64)
+            .ok_or(DemandError::InvalidRequest)?;
+        Ok(WorkCounters {
+            items_examined,
+            ..WorkCounters::UNCHARGED
+        })
+    }
     fn directory_page(
         &self,
         source: SourceReference,
@@ -284,13 +296,7 @@ impl NativeDemandSource {
         maximum: u32,
         work: &mut CallbackWork,
     ) -> Result<SourceDirectoryPage, DemandError> {
-        if maximum == 0 || maximum > 4096 {
-            return Err(DemandError::InvalidRequest);
-        }
-        work.started_io(WorkCounters {
-            items_examined: u64::from(maximum) * self.excluded.paths.len() as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.started_io(self.directory_page_work(maximum)?)?;
         self.check(source, work)?;
         if self.excluded.excludes(directory) {
             return Err(DemandError::Absent);

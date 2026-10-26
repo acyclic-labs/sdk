@@ -11,10 +11,17 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[[bin]]
+name = "acyclic-process-host"
+path = "src/bin/acyclic-process-host.rs"
+test = false
+bench = false
+
 [features]
 test-support = ["tokio/macros", "tokio/time", "tokio/test-util"]
 
 [dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
 blake3.workspace = true
 getrandom = { workspace = true, features = ["std"] }
@@ -41,6 +48,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Security",
   "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
+  "Win32_Storage_Packaging_Appx",
   "Win32_System_Console",
   "Win32_System_IO",
   "Win32_System_JobObjects",
@@ -51,7 +59,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
-acyclic-test-support = { path = "../test-support" }
+acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
 tempfile = "3.27.0"
 loom = "=0.7.2"
 
@@ -63,7 +71,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-acyclic-test-support = { path = "../test-support" }
+acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
 proptest.workspace = true
 tracing-subscriber.workspace = true
 

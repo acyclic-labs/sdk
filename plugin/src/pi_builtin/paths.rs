@@ -44,46 +44,11 @@ pub(crate) fn relative_path<'a>(path: &'a str, root: &Path) -> Result<&'a Path> 
     Ok(relative)
 }
 
-#[cfg(not(windows))]
-pub(super) fn windows_local_verbatim(_: &str) -> bool {
-    false
-}
-
-#[cfg(windows)]
 pub(super) fn windows_local_verbatim(value: &str) -> bool {
-    matches!(Path::new(value).components().next(),
-        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)))
+    acyclic_native_runtime::paths::is_local_verbatim(Path::new(value))
 }
 
-#[cfg(not(windows))]
-pub(super) fn strip_native_prefix<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
-    path.strip_prefix(root).ok()
-}
-
-#[cfg(windows)]
-pub(super) fn strip_native_prefix<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
-    use std::path::Prefix;
-    let mut selected = path.components();
-    for expected in root.components() {
-        let actual = selected.next()?;
-        let equivalent = match (actual, expected) {
-            (Component::Prefix(actual), Component::Prefix(expected)) => {
-                let disk = |prefix| match prefix {
-                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
-                        Some(drive.to_ascii_uppercase())
-                    }
-                    _ => None,
-                };
-                disk(actual.kind()).is_some() && disk(actual.kind()) == disk(expected.kind())
-            }
-            _ => actual == expected,
-        };
-        if !equivalent {
-            return None;
-        }
-    }
-    Some(selected.as_path())
-}
+pub(super) use acyclic_native_runtime::paths::strip_native_prefix;
 
 pub(super) fn scoped_variants<'a>(
     variants: &'a [String],

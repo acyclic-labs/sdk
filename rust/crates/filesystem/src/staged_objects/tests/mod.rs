@@ -132,3 +132,19 @@ mod native_batch;
 mod native_read;
 mod native_write;
 mod ordinary;
+#[cfg(windows)]
+mod sparse_gap;
+
+/// Advance the synthetic spill extent without allocating its unwritten gap.
+/// Windows needs explicit sparse custody before the offset can be published;
+/// Unix files already represent unwritten extents as holes.
+async fn advance_spill_past_bound<S>(store: &StagedObjects<S>) -> std::io::Result<()> {
+    #[cfg(windows)]
+    store
+        .spill
+        .control_async(|file, _| sparse_gap::prepare(file), None)
+        .expect("unmetered fixture control construction cannot fail")
+        .await?;
+    store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
+    Ok(())
+}

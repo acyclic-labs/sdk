@@ -3,7 +3,7 @@
 //! without custody demonstrably survives the same kill.
 #![cfg(any(target_os = "linux", windows))]
 
-use super::{ProcessCustody, ProcessTree};
+use super::{ProcessCustody, ProcessCustodyLease, ProcessTree};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,13 +18,23 @@ const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
 #[cfg(unix)]
 const PUBLISHING_PROGRAM: &str = r#"sleep 3600 & echo $! > "$1.tmp"; mv "$1.tmp" "$1"; wait"#;
 
-/// A long-lived program whose PID the owner publishes. On Unix it is a
-/// background grandchild, so only whole-tree custody reaches it.
+// Exercise the same resolved shell as native host tools, with a real
+// grandchild. A directly spawned ping cannot detect packaged-shell breakaway.
+#[cfg(windows)]
+const PUBLISHING_PROGRAM: &str = r#"
+$child = Start-Process -FilePath $env:ACYCLIC_CUSTODY_TEST_EXECUTABLE -ArgumentList @('--exact', 'process_tree::custody_tests::custody_owner_helper', '--nocapture') -NoNewWindow -PassThru
+$child.WaitForExit()
+exit $child.ExitCode
+"#;
+
+/// A long-lived grandchild whose PID is published independently of the shell,
+/// so only whole-tree custody reaches it on every platform.
 fn program(root: &Path) -> Command {
     #[cfg(unix)]
     {
         let pid = root.join("pid");
-        let mut command = crate::shell_command(PUBLISHING_PROGRAM, Some("sh"));
+        let mut command =
+            crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
         command
             .arg("sh")
             .arg(pid)
@@ -36,9 +46,14 @@ fn program(root: &Path) -> Command {
     #[cfg(windows)]
     {
         let _ = root;
-        let mut command = Command::new("ping");
+        let mut command = crate::shell_command(PUBLISHING_PROGRAM, None)
+            .expect("resolve the native host's fixture shell");
         command
-            .args(["-n", "3600", "127.0.0.1"])
+            .env(MODE, "member")
+            .env(
+                "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
+                std::env::current_exe().expect("test executable"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -54,30 +69,30 @@ fn custody_owner_helper() {
     };
     let root = PathBuf::from(std::env::var_os(ROOT).expect("owner root"));
     #[cfg(windows)]
+    if mode == "member" {
+        fs::write(root.join("pid.tmp"), std::process::id().to_string()).expect("pid");
+        fs::rename(root.join("pid.tmp"), root.join("pid")).expect("publish grandchild pid");
+        loop {
+            thread::park();
+        }
+    }
+    #[cfg(windows)]
     if mode == "churn" {
         return churn(&root);
     }
     let mut command = program(&root);
-    let tree = if mode == "custodied" {
+    let lease = (mode == "leased")
+        .then(|| ProcessCustodyLease::acquire(&root.join("fleet")).expect("native lease"));
+    let tree = if let Some(lease) = &lease {
+        Some(ProcessTree::spawn_in_custody(&mut command, lease.custody()).expect("leased spawn"))
+    } else if mode == "custodied" {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
         Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
     } else {
         let child = command.spawn().expect("uncontained spawn");
-        #[cfg(windows)]
-        fs::write(root.join("pid"), child.id().to_string()).expect("pid");
         drop(child);
         None
     };
-    #[cfg(windows)]
-    if let Some(tree) = &tree {
-        let pid = tree
-            .child
-            .as_ref()
-            .map(std::process::Child::id)
-            .expect("child id");
-        fs::write(root.join("pid.tmp"), pid.to_string()).expect("pid");
-        fs::rename(root.join("pid.tmp"), root.join("pid")).expect("pid");
-    }
     fs::write(root.join("owner-ready"), b"ready").expect("ready");
     let _tree = tree;
     loop {
@@ -254,8 +269,38 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
         .expect("reopen custody")
         .fence_stale()
         .expect("fence");
-    assert!(watch.exited(), "a killed owner's tree outlived the fence");
+    let exited = watch.exited();
+    if !exited {
+        watch.kill();
+    }
+    assert!(exited, "a killed owner's tree outlived the fence");
     assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+}
+
+#[test]
+fn leased_successor_fences_the_killed_native_owner_before_admission() {
+    let root = tempfile::tempdir().expect("root");
+    let mut owner = owner("leased", root.path());
+    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    #[cfg(windows)]
+    let records = root.path().join("fleet/trees");
+    #[cfg(windows)]
+    let custodian = Watch::new(custodian_of(&records)).expect("running custodian");
+    owner.kill().expect("kill native owner");
+    owner.wait().expect("reap native owner");
+    let successor = ProcessCustodyLease::acquire(&root.path().join("fleet"))
+        .expect("serialized recovery admission");
+    let exited = watch.exited();
+    if !exited {
+        watch.kill();
+    }
+    assert!(exited, "successor admitted before physical retirement");
+    #[cfg(windows)]
+    assert!(
+        custodian.exited(),
+        "successor admitted before pipe custody retired"
+    );
+    assert_eq!(successor.custody().fence_stale().expect("empty fence"), 0);
 }
 
 /// The PID of the custodian the only record in `processes` names.
@@ -375,16 +420,15 @@ fn a_killed_custodians_tree_dies_with_its_owner() {
         custodian.exits_within(Duration::from_secs(30)),
         "killed custodian"
     );
-    assert!(
-        !watch.exited(),
-        "the custodian's death killed a live owner's tree"
-    );
+    let survived = !watch.exited();
     owner.kill().expect("kill owner");
     owner.wait().expect("reap owner");
-    assert!(
-        watch.exits_within(Duration::from_secs(30)),
-        "the tree outlived its owner and its custodian"
-    );
+    let exited = watch.exits_within(Duration::from_secs(30));
+    if !exited {
+        watch.kill();
+    }
+    assert!(survived, "the custodian's death killed a live owner's tree");
+    assert!(exited, "the tree outlived its owner and its custodian");
     ProcessCustody::open(&processes)
         .expect("reopen custody")
         .fence_stale()
@@ -441,7 +485,8 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
         let mut command = crate::shell_command(
             &format!(r#"sleep 3600 & echo $! > "$1"; {script}"#),
             Some("sh"),
-        );
+        )
+        .expect("resolve fixture shell");
         command
             .arg("sh")
             .arg(&pid)
@@ -497,7 +542,7 @@ fn a_second_owner_in_one_process_shares_the_live_custody() {
     let processes = root.path().join("processes");
     let first = ProcessCustody::acquire(&processes).expect("first owner");
     #[cfg(unix)]
-    let mut command = crate::shell_command("sleep 30", Some("sh"));
+    let mut command = crate::shell_command("sleep 30", Some("sh")).expect("resolve fixture shell");
     #[cfg(windows)]
     let mut command = {
         let mut command = Command::new("ping");
@@ -528,7 +573,8 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
     let pid = root.path().join("pid");
-    let mut command = crate::shell_command(PUBLISHING_PROGRAM, Some("sh"));
+    let mut command =
+        crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
     command.arg("sh").arg(&pid);
     command
         .stdin(Stdio::null())
@@ -569,7 +615,8 @@ fn escaping_program(pid: &Path) -> Command {
     let mut command = crate::shell_command(
         r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 3600' sh "$1" & wait"#,
         Some("sh"),
-    );
+    )
+    .expect("resolve fixture shell");
     command.arg("sh").arg(pid);
     command
         .stdin(Stdio::null())

@@ -15,8 +15,7 @@ impl CheckpointFamily {
         work: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Self, LocalCoreStateStoreError> {
         let native = if let Some(work) = work {
-            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-            Some(crate::native_host::HostRoot::open(
+            Some(crate::native_host::create_directories(
                 paths.directory(),
                 &mut &*work,
             )?)

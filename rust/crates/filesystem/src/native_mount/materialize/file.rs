@@ -28,6 +28,7 @@ where
     Ok(length)
 }
 
+#[cfg(all(test, windows))]
 pub(super) async fn sync_generation_file<E, F, Fut>(
     file: &acyclic_native_runtime::NativeFile,
     receipt: &mut GenerationReceipt,
@@ -38,13 +39,131 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    sync_generation_files(std::slice::from_ref(file), receipt, before_effect).await
+}
+
+async fn sync_generation_files<E, F, Fut>(
+    files: &[acyclic_native_runtime::NativeFile],
+    receipt: &mut GenerationReceipt,
+    before_effect: &mut Option<&mut F>,
+) -> Result<(), E>
+where
+    E: From<MaterializeError>,
+    F: FnMut(NativeMaterializationActionPhase) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+{
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
     let meter = receipt.custody.work().runtime_meter();
-    let sync = file
-        .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
-        .map_err(|error| receipt.runtime_error(error))?;
+    let sync = acyclic_native_runtime::NativeSyncBatch::new(
+        files,
+        acyclic_native_runtime::Durability::Full,
+        &meter,
+    )
+    .map_err(|error| receipt.runtime_error(error))?;
     sync.await.map_err(|error| receipt.runtime_error(error))?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
+}
+
+/// Independent file barriers share one accepted staging action. No action is
+/// acknowledged until all its physical barriers have retired. Directory
+/// metadata and publication remain after the final drain.
+#[derive(Default)]
+pub(super) struct GenerationFlush {
+    files: Vec<acyclic_native_runtime::NativeFile>,
+    metadata: Vec<PendingFlushMetadata>,
+    // Retained handles own their own original-meter claims; this covers the
+    // bounded vector and retires after it even if the traversal is cancelled.
+    allocation: Option<crate::NativeAllocation>,
+    width: usize,
+}
+
+type PendingFlushMetadata = (HeldNamespacePath, HeldHostPath, Option<FileMetadata>);
+type FlushSource<'a, A, O> = (
+    &'a PinnedReader<A, O>,
+    &'a Arc<(HostRoot, crate::NativeAllocation)>,
+);
+type FlushEntry<'a> = (
+    acyclic_native_runtime::NativeFile,
+    &'a NamespacePath,
+    &'a HeldHostPath,
+    Option<FileMetadata>,
+);
+
+impl GenerationFlush {
+    pub(super) async fn push<A, O, E, F, Fut>(
+        &mut self,
+        entry: FlushEntry<'_>,
+        source: FlushSource<'_, A, O>,
+        receipt: &mut GenerationReceipt,
+        before_effect: &mut Option<&mut F>,
+    ) -> Result<(), E>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        E: From<MaterializeError>,
+        F: FnMut(NativeMaterializationActionPhase) -> Fut,
+        Fut: Future<Output = Result<(), E>>,
+    {
+        if self.allocation.is_none() {
+            self.width = acyclic_native_runtime::NativeSyncBatch::capacity()
+                .map_err(|error| receipt.runtime_error(error))?;
+            receipt.reserve(&mut self.files, self.width)?;
+            receipt.reserve(&mut self.metadata, self.width)?;
+            let bytes = vec_bytes(&self.files)
+                .checked_add(vec_bytes(&self.metadata))
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            self.allocation = Some(
+                receipt
+                    .custody
+                    .split_off(bytes as u64)
+                    .map_err(MaterializeError::from)?,
+            );
+        }
+        let namespace = clone_namespace(entry.1, None, source.0.volume_config().limits, receipt)?;
+        let bytes = usize::try_from(namespace.retained_bytes())
+            .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
+        let namespace = receipt.owned_arc(namespace, bytes)?;
+        self.metadata.push((namespace, entry.2.clone(), entry.3));
+        self.files.push(entry.0);
+        if self.files.len() == self.width {
+            self.drain(source, receipt, before_effect).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn drain<A, O, E, F, Fut>(
+        &mut self,
+        source: FlushSource<'_, A, O>,
+        receipt: &mut GenerationReceipt,
+        before_effect: &mut Option<&mut F>,
+    ) -> Result<(), E>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        E: From<MaterializeError>,
+        F: FnMut(NativeMaterializationActionPhase) -> Fut,
+        Fut: Future<Output = Result<(), E>>,
+    {
+        if !self.files.is_empty() {
+            sync_generation_files(&self.files, receipt, before_effect).await?;
+            // Windows can update timestamps when the last writer closes.
+            // Preserve flush -> close -> metadata on every platform.
+            self.files.clear();
+            for (path, host_path, metadata) in self.metadata.drain(..) {
+                apply_metadata(
+                    source.0,
+                    source.1,
+                    &path.0,
+                    &host_path,
+                    metadata,
+                    receipt,
+                    before_effect,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]

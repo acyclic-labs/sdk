@@ -432,7 +432,7 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
 
 pub(crate) fn sync_file_held<W: NativeHostWork>(
     #[cfg(unix)] file: &impl std::os::fd::AsFd,
-    #[cfg(windows)] file: &impl std::os::windows::io::AsRawHandle,
+    #[cfg(windows)] file: &impl std::os::windows::io::AsHandle,
     work: &mut W,
 ) -> Result<(), W::Error> {
     retry_io(

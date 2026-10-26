@@ -25,15 +25,31 @@ const cargoCacheTag = `${cargoCacheTagSignature}\n# This file is a cache directo
 const require = createRequire(import.meta.url);
 const sourceRoots = family.sourceRoots;
 
+// Development evidence never qualifies a production bundle, including when
+// copied between services. Every provenance layer carries its own distinction.
+function qualificationPolicy(qualificationDev = false) {
+  const suffix = qualificationDev ? ".development-only" : "";
+  return {
+    release: !qualificationDev,
+    profile: qualificationDev ? "dev" : "release",
+    nativeTargetsSchema: nativeTargetsSchema + suffix,
+    generationSchema: generationSchema + suffix,
+    buildInputsSchema: buildInputsSchema + suffix,
+    receiptSchema: buildInputsReceiptSchema + suffix,
+    receiptName: qualificationDev ? `${family.key}-native-development-only.receipt.json` : buildInputsReceiptName,
+  };
+}
+
 function usage() {
   return `usage:
-  node ${family.buildScript} build --target <rust-triple> --output <native-bundle> [--target-dir <cargo-target-dir>]
+  node ${family.buildScript} build --target <rust-triple> --output <native-bundle> [--target-dir <cargo-target-dir>] [--qualification-dev]
   node ${family.buildScript} stage --bundle <native-bundle> [--output <package-native-dir>]
-  node ${family.buildScript} check [--output <package-native-dir>]
+  node ${family.buildScript} check [--output <package-native-dir>] [--qualification-dev]
 
 build requires an explicit Rust target, output bundle, and clean source closure. Release and
 manual matrix jobs build into a bundle, then stage copies that attested bundle
-into the package. check is cheap and never invokes Cargo or NAPI-RS.`;
+into the package. --qualification-dev produces development-only evidence that
+stage rejects. check is cheap and never invokes Cargo or NAPI-RS.`;
 }
 
 function parseArgs(argv) {
@@ -46,6 +62,7 @@ function parseArgs(argv) {
     else if (arg === "--output") options.output = rest[++index];
     else if (arg === "--bundle") options.bundle = rest[++index];
     else if (arg === "--target-dir") options.targetDir = rest[++index];
+    else if (arg === "--qualification-dev") options.qualificationDev = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`unknown option ${arg}\n\n${usage()}`);
   }
@@ -53,6 +70,7 @@ function parseArgs(argv) {
   if (options.output === undefined && rest.includes("--output")) throw new Error("--output requires a directory");
   if (options.bundle === undefined && rest.includes("--bundle")) throw new Error("--bundle requires a directory");
   if (options.targetDir === undefined && rest.includes("--target-dir")) throw new Error("--target-dir requires a directory");
+  if (options.qualificationDev && !["build", "check"].includes(command)) throw new Error(`native step=qualification-mode refused: development-only evidence cannot be staged; recovery=node ${family.buildScript} check --qualification-dev --output <development-bundle>`);
   return options;
 }
 
@@ -654,17 +672,18 @@ function normalizeBuildInputs(value, { targetDir, outputDir, sourceRoot = root, 
   return normalized;
 }
 
-function buildInputsReceipt(raw, published) {
-  assertBuildInputs(raw);
-  assertBuildInputs(published);
+function buildInputsReceipt(raw, published, { qualificationDev = false } = {}) {
+  assertBuildInputs(raw, { qualificationDev });
+  assertBuildInputs(published, { qualificationDev });
   return {
-    schema: buildInputsReceiptSchema,
+    schema: qualificationPolicy(qualificationDev).receiptSchema,
     published_build_inputs_sha256: digest(Buffer.from(JSON.stringify(published))),
     raw_build_inputs: raw,
   };
 }
 
-async function buildInputs(target, targetDir, outputDir, packageName) {
+async function buildInputs(target, targetDir, outputDir, packageName, { qualificationDev = false } = {}) {
+  const policy = qualificationPolicy(qualificationDev);
   if (typeof target !== "string" || target.length === 0) throw new Error("native build inputs require a target");
   const wrapper = envValue("RUSTC_WRAPPER");
   const maintainedBun = await maintainedBunVersion();
@@ -673,7 +692,7 @@ async function buildInputs(target, targetDir, outputDir, packageName) {
     : null;
   const configBytes = await readFile(resolve(root, ".cargo/config.toml"));
   return {
-    schema: buildInputsSchema,
+    schema: policy.buildInputsSchema,
     target,
     target_dir: resolve(targetDir),
     runtime: {
@@ -695,7 +714,7 @@ async function buildInputs(target, targetDir, outputDir, packageName) {
     generator: {
       ...await napiGeneratorIdentity(),
       options: {
-        release: true,
+        release: policy.release,
         platform: true,
         target,
         output_dir: resolve(outputDir),
@@ -709,7 +728,7 @@ async function buildInputs(target, targetDir, outputDir, packageName) {
     },
     linker: linkerInputs(target),
     profile: {
-      name: "release",
+      name: policy.profile,
       cargo_incremental: envValue("CARGO_INCREMENTAL"),
       release_incremental: envValue("CARGO_PROFILE_RELEASE_INCREMENTAL"),
       manifest_sha256: digest(await readFile(resolve(root, "Cargo.toml"))),
@@ -762,9 +781,10 @@ function assertDigest(value, label) {
   if (canonicalSha256(value) === undefined) throw new Error(`native build input ${label} is invalid`);
 }
 
-function assertBuildInputs(value) {
+function assertBuildInputs(value, { qualificationDev = false } = {}) {
+  const policy = qualificationPolicy(qualificationDev);
   assertObject(value, "build inputs");
-  if (value.schema !== buildInputsSchema) throw new Error("native build inputs have unsupported schema");
+  if (value.schema !== policy.buildInputsSchema) throw new Error(`native step=build-input-admission refused: native build inputs have unsupported schema for ${policy.profile}; recovery=node ${family.buildScript} check${qualificationDev ? " --qualification-dev" : ""} --output <matching-bundle>`);
   assertStringFields(value, ["target", "target_dir"], "build inputs");
   const runtime = assertStringFields(value.runtime, ["node", "node_path", "platform", "arch"], "runtime");
   const bun = assertStringFields(runtime.bun, ["maintained"], "runtime.bun");
@@ -787,11 +807,11 @@ function assertBuildInputs(value) {
   assertStringArray(generatorOptions.cargo_options, "generator.options.cargo_options");
   if (JSON.stringify(generatorOptions.cargo_options) !== JSON.stringify(["--locked"])) throw new Error("native build generator cargo options are invalid");
   if (JSON.stringify(generatorOptions.features ?? []) !== JSON.stringify(family.features)) throw new Error("native binding feature selection differs from Rust metadata");
-  if (generatorOptions.release !== true || generatorOptions.platform !== true) throw new Error("native build generator options are invalid");
+  if (generatorOptions.release !== policy.release || generatorOptions.platform !== true) throw new Error("native build generator options are invalid");
   if (generatorOptions.target !== value.target) throw new Error("native build generator target differs");
   if (generatorOptions.target_dir !== value.target_dir) throw new Error("native build generator target directory differs");
   const profile = assertStringFields(value.profile, ["name", "manifest_sha256", "config_sha256"], "profile");
-  if (value.profile.name !== "release") throw new Error("native build profile is not release");
+  if (value.profile.name !== policy.profile) throw new Error(`native build profile is not ${policy.profile}`);
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
   assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
   if (profile.cargo_incremental !== "0" || profile.release_incremental !== "false") throw new Error("native build incremental policy is not pinned to zero");
@@ -827,9 +847,9 @@ function assertBuildInputs(value) {
   return value;
 }
 
-function assertMatchingBuildInputs(left, right) {
-  assertBuildInputs(left);
-  assertBuildInputs(right);
+function assertMatchingBuildInputs(left, right, options = {}) {
+  assertBuildInputs(left, options);
+  assertBuildInputs(right, options);
   if (JSON.stringify(left) !== JSON.stringify(right)) throw new Error("native bundle build input attestation differs");
 }
 
@@ -933,9 +953,10 @@ function pathFromArtifact(output, artifactPath) {
 
 /**
  * @param {string} output
- * @param {{ expectedTarget?: string, verifySource?: boolean }} options
+ * @param {{ expectedTarget?: string, verifySource?: boolean, qualificationDev?: boolean }} options
  */
-async function assertBundle(output, { expectedTarget, verifySource = true } = {}) {
+async function assertBundle(output, { expectedTarget, verifySource = true, qualificationDev = false } = {}) {
+  const policy = qualificationPolicy(qualificationDev);
   const metadataPath = resolve(output, "native-targets.json");
   const generationPath = resolve(output, generationManifestName);
   const metadataBytes = await readFile(metadataPath);
@@ -945,8 +966,8 @@ async function assertBundle(output, { expectedTarget, verifySource = true } = {}
   const packageManifest = await packageJson();
   const { rustPackage, targets } = rustMetadata();
   assertVersion(rustPackage, packageManifest);
-  if (metadata.schema !== nativeTargetsSchema || generation.schema !== generationSchema) throw new Error(`native bundle ${output} has unsupported provenance schema`);
-  assertMatchingBuildInputs(metadata.build_inputs, generation.build_inputs);
+  if (metadata.schema !== policy.nativeTargetsSchema || generation.schema !== policy.generationSchema) throw new Error(`native step=bundle-admission refused: native bundle ${output} has unsupported provenance schema for ${policy.profile}; recovery=node ${family.buildScript} check${qualificationDev ? " --qualification-dev" : ""} --output <matching-bundle>`);
+  assertMatchingBuildInputs(metadata.build_inputs, generation.build_inputs, { qualificationDev });
   if (metadata.package !== rustPackage.name || generation.package !== rustPackage.name) throw new Error(`native bundle ${output} names the wrong Rust package`);
   if (metadata.version !== packageManifest.version || generation.version !== packageManifest.version) throw new Error(`native bundle ${output} version does not match ${packageRelative}`);
   if (metadata.source_path !== manifestRelative || generation.source_path !== manifestRelative) throw new Error(`native bundle ${output} has the wrong Rust source path`);
@@ -981,14 +1002,14 @@ async function assertBundle(output, { expectedTarget, verifySource = true } = {}
   return { metadata, generation, artifacts };
 }
 
-async function assertExistingBundle(output) {
+async function assertExistingBundle(output, options = {}) {
   if (!(await assertOwnedDirectory(output, { allowMissing: true }))) return false;
-  await assertBundle(output, { verifySource: false });
+  await assertBundle(output, { ...options, verifySource: false });
   return true;
 }
 
-async function prepareBuildOutput(output) {
-  await assertExistingBundle(output);
+async function prepareBuildOutput(output, options = {}) {
+  await assertExistingBundle(output, options);
   await mkdir(dirname(output), { recursive: true });
   return mkdtemp(resolve(dirname(output), ".acyclic-stream-native-build-"));
 }
@@ -1025,13 +1046,22 @@ async function publishBundle(candidate, output, { validateExisting = assertExist
 }
 
 async function build(options) {
+  const qualificationDev = options.qualificationDev === true;
+  const policy = qualificationPolicy(qualificationDev);
   if (options.target === undefined) throw new Error(`build requires --target <rust-triple>\n\n${usage()}`);
   if (options.output === undefined) throw new Error(`build requires --output <native-bundle>; stage copies the completed bundle into the package\n\n${usage()}`);
   if (process.env.RUSTC_WORKSPACE_WRAPPER) throw new Error("native build provenance does not support RUSTC_WORKSPACE_WRAPPER: workspace delegates can change compiler arguments after capture; unset RUSTC_WORKSPACE_WRAPPER");
+  // Every family enters through the same admission boundary. In particular,
+  // rejected arguments cannot launch a generator (and therefore Cargo).
+  try {
+    execFileSync(process.execPath, [resolve(root, "scripts/generate.mjs"), family.key], { stdio: "inherit" });
+  } catch (cause) {
+    throw new Error(`step=native-generation; recovery=node scripts/generate.mjs ${family.key}`, { cause });
+  }
   assertCleanSource();
   assertCurrentNativeFamily();
   const output = resolve(options.output);
-  const buildOutput = await prepareBuildOutput(output);
+  const buildOutput = await prepareBuildOutput(output, { qualificationDev });
   let published = false;
   try {
   const packageManifest = await packageJson();
@@ -1043,7 +1073,7 @@ async function build(options) {
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
   await ensureCargoTargetDirectory(targetDir);
   const attestedInputs = await withDeterministicRustflags(root, targetDir, options.target, async () => {
-    const attestedInputs = await buildInputs(options.target, targetDir, buildOutput, packageManifest.name);
+    const attestedInputs = await buildInputs(options.target, targetDir, buildOutput, packageManifest.name, { qualificationDev });
     const rootManifest = await rootPackageJson();
     const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
     if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
@@ -1067,7 +1097,7 @@ async function build(options) {
         dts: "binding.d.ts",
         cargoOptions: ["--locked"],
         ...(family.features.length === 0 ? {} : { features: [...family.features] }),
-        release: true,
+        release: policy.release,
       });
       await buildResult.task;
       // NAPI's transaction helper can leave dot-prefixed recovery entries on
@@ -1076,7 +1106,12 @@ async function build(options) {
         if (entry.name.startsWith(".")) await rm(resolve(buildOutput, entry.name), { recursive: true, force: true });
       }
     };
-    let rustcCapture = await createRustcInvocationCapture();
+    // Dependency cache entries remain warm. The root binding must link once
+    // under this capture to supply actual compiler provenance, even when its
+    // old artifact was already cached. Admit that work before the sole build;
+    // discovering missing provenance afterwards must never trigger a retry.
+    execFileSync("cargo", ["clean", "--package", family.rustPackageName, "--profile", policy.profile, "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
+    const rustcCapture = await createRustcInvocationCapture();
     try {
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
@@ -1086,16 +1121,7 @@ async function build(options) {
       // clean publication assembly directory, which has no workspace dev
       // dependencies. Load NAPI-RS only for the build command.
       await runNapiBuild();
-      try {
-        attestedInputs.linker.actual = await rustcCapture.read(options.target);
-      } catch (error) {
-        if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message))) throw error;
-        await rustcCapture.close();
-        execFileSync("cargo", ["clean", "--package", family.rustPackageName, "--release", "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
-        rustcCapture = await createRustcInvocationCapture();
-        await runNapiBuild();
-        attestedInputs.linker.actual = await rustcCapture.read(options.target);
-      }
+      attestedInputs.linker.actual = await rustcCapture.read(options.target);
     } finally {
       await rustcCapture.close();
       await rm(temporary, { recursive: true, force: true });
@@ -1108,14 +1134,14 @@ async function build(options) {
   const signing = await signDarwinAddon(buildOutput, options.target, attestedInputs.linker.apple?.codesign?.output);
   if (signing !== null) attestedInputs.signing = signing;
   const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: buildOutput });
-  const receipt = buildInputsReceipt(attestedInputs, publishedInputs);
+  const receipt = buildInputsReceipt(attestedInputs, publishedInputs, { qualificationDev });
   // Keep host-specific compiler paths and argv in the Cargo target directory;
   // publication manifests must remain stable when the checkout is relocated.
   await mkdir(targetDir, { recursive: true });
-  await writeFile(resolve(targetDir, buildInputsReceiptName), `${JSON.stringify(receipt, null, 2)}\n`);
+  await writeFile(resolve(targetDir, policy.receiptName), `${JSON.stringify(receipt, null, 2)}\n`);
   const bundle = await bundleArtifacts(buildOutput);
   const generation = {
-    schema: generationSchema,
+    schema: policy.generationSchema,
     package: rustPackage.name,
     version: packageManifest.version,
     source_path: manifestRelative,
@@ -1130,7 +1156,7 @@ async function build(options) {
   const generationBytes = Buffer.from(`${JSON.stringify(generation, null, 2)}\n`);
   await writeFile(resolve(buildOutput, generationManifestName), generationBytes);
   const metadata = {
-    schema: nativeTargetsSchema,
+    schema: policy.nativeTargetsSchema,
     package: rustPackage.name,
     version: packageManifest.version,
     source_path: manifestRelative,
@@ -1146,8 +1172,8 @@ async function build(options) {
     artifact: bundle.node,
   };
   await writeFile(resolve(buildOutput, "native-targets.json"), `${JSON.stringify(metadata, null, 2)}\n`);
-  await assertBundle(buildOutput, { expectedTarget: options.target });
-  await publishBundle(buildOutput, output);
+  await assertBundle(buildOutput, { expectedTarget: options.target, qualificationDev });
+  await publishBundle(buildOutput, output, { validateExisting: existing => assertExistingBundle(existing, { qualificationDev }) });
   published = true;
   } finally {
     if (!published) await rm(buildOutput, { recursive: true, force: true });
@@ -1181,8 +1207,9 @@ async function stage(options) {
 
 async function check(options) {
   const output = resolve(options.output ?? defaultOutput);
-  await assertBundle(output);
-  console.log(JSON.stringify({ schema: `acyclic.${family.key}.native-check.v1`, status: "passed", output }));
+  const qualificationDev = options.qualificationDev === true;
+  await assertBundle(output, { qualificationDev });
+  console.log(JSON.stringify({ schema: `acyclic.${family.key}.native-check.v1${qualificationDev ? ".development-only" : ""}`, status: "passed", output }));
 }
 
 

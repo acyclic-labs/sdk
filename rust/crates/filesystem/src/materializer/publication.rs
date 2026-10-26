@@ -11,13 +11,9 @@ where
     F: Future<Output = Result<T, E>>,
     NativeWorkspacePublicationError: From<E>,
 {
-    let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
-    let allocation = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
-    let mut future = crate::heap_future::in_heap(create);
-    let result = future.as_mut().await;
-    drop(future);
-    drop(allocation);
-    result.map_err(NativeWorkspacePublicationError::from)
+    crate::heap_future::native_future(work, create)?
+        .await
+        .map_err(NativeWorkspacePublicationError::from)
 }
 
 /// Authenticated generation publication through the existing journal.

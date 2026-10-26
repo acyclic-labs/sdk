@@ -1,4 +1,93 @@
 use super::*;
+
+#[tokio::test]
+async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let reference = source.reference();
+    let node = source.versioned_node(reference).unwrap();
+    let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let mut transaction = root
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap()
+        .value;
+    for phase in 0..3 {
+        let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+        let mut work = WorkCounters::UNCHARGED;
+        let mut namespace = Some(
+            root.namespace_path(
+                "/file.txt",
+                &mut KernelAccounting::borrowed_standalone(
+                    &mut ledger,
+                    &mut work,
+                    WorkBudget::UNBOUNDED,
+                    &cancel,
+                ),
+            )
+            .unwrap(),
+        );
+        let live = ledger.live_bytes();
+        assert!(live > 0);
+        let prefix = work;
+        let budget = WorkBudget {
+            allocation_operations: work.allocation_operations,
+            ..WorkBudget::UNBOUNDED
+        };
+        let mut ctx =
+            KernelAccounting::borrowed_standalone(&mut ledger, &mut work, budget, &cancel);
+        let result = match phase {
+            0 => {
+                root.populate_source_directory(
+                    &mut transaction,
+                    "/file.txt",
+                    reference,
+                    node,
+                    &mut namespace,
+                    &mut ctx,
+                )
+                .await
+            }
+            1 => root
+                .restore_source_regular_file(&mut transaction, node, 6, &mut namespace, &mut ctx)
+                .await
+                .map(|_| ()),
+            _ => root
+                .prepare_source_mutation(
+                    &mut transaction,
+                    "/file.txt",
+                    (reference, node),
+                    6,
+                    &mut namespace,
+                    &mut ctx,
+                )
+                .await
+                .map(|_| ()),
+        };
+        assert!(
+            matches!(
+                result,
+                Err(LazyWorkspaceError::Filesystem(crate::FsError::Work(
+                    crate::WorkError::BudgetExceeded {
+                        counter: "allocation_operations",
+                        ..
+                    }
+                )))
+            ),
+            "phase {phase} must deny the actual frame: {result:?}"
+        );
+        assert!(
+            namespace.is_some(),
+            "phase {phase} consumed input before admission"
+        );
+        namespace.take().unwrap().retire(&mut ctx).unwrap();
+        assert_eq!(ctx.standalone_parts().unwrap().0.live_bytes(), 0);
+        assert_eq!(*ctx.standalone_parts().unwrap().1, prefix);
+    }
+}
 #[cfg(feature = "native-mount")]
 fn allow_publication(_: WorkBudget) -> std::future::Ready<crate::FsResult<()>> {
     std::future::ready(Ok(OperationReceipt {

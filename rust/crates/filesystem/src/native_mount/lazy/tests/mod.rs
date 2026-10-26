@@ -12,3 +12,5 @@ mod source_changes;
 use fixtures::*;
 
 mod access;
+
+mod handle_entry;

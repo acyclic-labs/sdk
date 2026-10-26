@@ -51,7 +51,13 @@ async fn direct_shell_command_uses_native_powershell() -> Result<()> {
 
 #[test]
 fn scripted_e2e_runs_with_windows_powershell_51_when_pwsh_is_absent() -> Result<()> {
-    let executable = which::which("powershell.exe").map_err(super::super::storage)?;
+    let cwd = std::env::current_dir().map_err(super::super::storage)?;
+    let executable = acyclic_native_runtime::ExecutableSearch::from_environment(
+        &cwd,
+        crate::native_environment::variable,
+    )
+    .resolve_native("powershell.exe")
+    .map_err(super::super::storage)?;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let output = std::process::Command::new(
         std::env::current_exe().map_err(super::super::storage)?,

@@ -1,78 +1,9 @@
 //! Bounded physical WAL-cut supervisors leave native host I/O available.
 use super::*;
-use std::{panic::AssertUnwindSafe, sync::Arc};
+use std::sync::Arc;
 
-// A process supervisor can wait indefinitely for a child or crash marker.
-// Keep those waits off the shared native host-I/O service: provider opens and
-// terminal cleanup must make progress while every crash supervisor is busy.
-fn cut_workers() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .saturating_mul(2)
-        .clamp(2, 16)
-}
-
-// Preserve the original service's aggregate process bound across independent
-// crash matrices, while reserving the native host service for actual host I/O.
-static ACTIVE_CUTS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
-static CUT_FINISHED: std::sync::Condvar = std::sync::Condvar::new();
-
-fn catch_cut(job: impl FnOnce() -> usize) -> std::thread::Result<usize> {
-    let mut active = ACTIVE_CUTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while *active >= cut_workers() {
-        active = CUT_FINISHED
-            .wait(active)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-    }
-    *active += 1;
-    drop(active);
-    let outcome = std::panic::catch_unwind(AssertUnwindSafe(job));
-    let mut active = ACTIVE_CUTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *active -= 1;
-    drop(active);
-    CUT_FINISHED.notify_one();
-    outcome
-}
-
-fn finish_cuts<F: FnOnce() -> usize + Send + 'static>(jobs: Vec<F>) -> Vec<usize> {
-    let workers = cut_workers().min(jobs.len());
-    let jobs = std::sync::Mutex::new(jobs.into_iter());
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    let _inline = acyclic_native_runtime::InlineBlocking::enter();
-                    let mut outcomes = Vec::new();
-                    loop {
-                        let job = jobs.lock().unwrap().next();
-                        let Some(job) = job else { break };
-                        outcomes.push(catch_cut(job));
-                    }
-                    outcomes
-                })
-            })
-            .collect();
-        // Join every supervisor before inspecting any panic. The temporary
-        // directory therefore outlives all child kills and recovery reads.
-        let outcomes: Vec<_> = workers
-            .into_iter()
-            .flat_map(|worker| worker.join().unwrap())
-            .collect();
-        let mut finished: Vec<_> = outcomes
-            .into_iter()
-            .map(|outcome| match outcome {
-                Ok(point) => point,
-                Err(panic) => std::panic::resume_unwind(panic),
-            })
-            .collect();
-        finished.sort_unstable();
-        finished
-    })
-}
+use crate::test_support::finish_physical_cuts as finish_cuts;
+use acyclic_test_support::physical_cuts::workers as cut_workers;
 
 pub(in crate::core_state) fn assert_core_commits_are_crash_atomic(owned: bool) {
     let directory = tempfile::tempdir().unwrap();

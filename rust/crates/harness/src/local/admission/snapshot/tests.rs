@@ -62,7 +62,7 @@ fn legacy_capture(root: &Path) -> Result<Snapshot> {
         let path = root.join(&relative);
         let metadata = std::fs::symlink_metadata(&path).map_err(storage)?;
         assert!(!metadata.is_symlink());
-        let bytes = if metadata.is_dir() {
+        let (bytes, private) = if metadata.is_dir() {
             let mut children = std::fs::read_dir(&path)
                 .map_err(storage)?
                 .map(|entry| entry.map(|entry| relative.join(entry.file_name())))
@@ -70,11 +70,17 @@ fn legacy_capture(root: &Path) -> Result<Snapshot> {
                 .map_err(storage)?;
             children.sort();
             pending.extend(children.into_iter().rev());
-            None
+            (None, directory_is_private(&path)?)
         } else {
-            Some(std::fs::read(path).map_err(storage)?)
+            let (bytes, private) = capture_file(&path)?;
+            (Some(bytes), private)
         };
-        entries.push((relative, bytes, metadata.permissions()));
+        entries.push(Entry {
+            relative,
+            bytes,
+            permissions: metadata.permissions(),
+            private,
+        });
     }
     Ok(Snapshot(entries))
 }

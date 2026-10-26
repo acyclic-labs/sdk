@@ -21,6 +21,16 @@ path = "tests/main.rs"
 name = "shared_storage_contract"
 path = "tests/shared_storage_contract.rs"
 
+[[test]]
+name = "windows_ntfs_perf"
+path = "tests/windows_ntfs_perf.rs"
+required-features = ["local", "native-mount"]
+
+[[test]]
+name = "materialization_bootstrap"
+path = "tests/materialization_bootstrap.rs"
+required-features = ["memory", "native-mount"]
+
 [[bench]]
 name = "lease_paths"
 harness = false

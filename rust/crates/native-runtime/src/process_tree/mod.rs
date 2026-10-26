@@ -9,10 +9,16 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+#[cfg(not(target_arch = "wasm32"))]
+mod external_host;
+#[cfg(not(target_arch = "wasm32"))]
+pub use external_host::run_external_process_host;
 #[cfg(windows)]
 mod custodian;
+#[cfg(windows)]
+mod custodian_admission;
 mod custody;
-pub use custody::ProcessCustody;
+pub use custody::{ProcessCustody, ProcessCustodyLease};
 #[cfg(unix)]
 mod warden;
 
@@ -663,9 +669,7 @@ impl ProcessTree {
                 })?;
             }
             self.guard.close(meter)?;
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             Ok(())
         }
     }
@@ -709,9 +713,7 @@ impl ProcessTree {
             }
             // The exited leader still holds its PID, so no new tree's record
             // can take this name before it is removed.
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             let (reaped, recorded) =
                 platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
             if reaped.is_some() {
@@ -729,9 +731,14 @@ impl ProcessTree {
         Ok(())
     }
 
-    /// Whether containment cleanup succeeded and the direct child was reaped.
+    /// Whether containment cleanup, child reaping and recovery retirement succeeded.
     #[must_use]
     pub const fn is_reaped(&self) -> bool {
+        // Recovery authority is part of retirement on every platform. An
+        // unlink/accounting failure must remain retryable on the same owner.
+        if self.custody.is_some() {
+            return false;
+        }
         #[cfg(unix)]
         return self.child.is_none()
             && self.native_child.is_none()

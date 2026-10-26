@@ -56,11 +56,12 @@ export class Processes {
     return process.closed;
   }
   startOwned(program, args, options = {}) {
-    const { scopeMountRoot, ...spawnOptions } = options;
+    const { scopeMountRoot, scopeInheritInput = false, ...spawnOptions } = options;
     if (process.platform === "win32") {
       const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
-      return this.start(host, [program, ...args], { ...spawnOptions, scopeTreeControl: true });
+      return this.start(host, [...(scopeInheritInput ? ["--inherit-input"] : []), program, ...args],
+        { ...spawnOptions, scopeTreeControl: !scopeInheritInput });
     }
     const mountLease = process.platform === "linux" && scopeMountRoot
       ? ["--mount-root", scopeMountRoot, "--"] : [];

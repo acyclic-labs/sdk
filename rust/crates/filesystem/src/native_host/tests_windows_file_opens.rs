@@ -176,3 +176,22 @@ fn file_opens_reject_final_links_without_changing_the_target()
     assert_eq!(std::fs::read(&target)?, b"unchanged");
     Ok(())
 }
+
+#[test]
+fn held_full_flush_preserves_file_directory_attempts_and_native_access_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let root = test_root(temporary.path())?;
+    let path = temporary.path().join("flush-é&%.bin");
+    let file = std::fs::File::create(&path)?;
+    let mut work = ordinary_work();
+    sync_file_held(&file, &mut work)?;
+    assert_eq!(work.receipt().durability_operations, 1);
+    sync_directory_held(&root.directory, &mut work)?;
+    assert_eq!(work.receipt().durability_operations, 2);
+    let readonly = std::fs::File::open(&path)?;
+    let result = sync_file_held(&readonly, &mut work);
+    assert!(matches!(result, Err(DemandError::Io(error)) if error.raw_os_error() == Some(5)));
+    assert_eq!(work.receipt().durability_operations, 3);
+    Ok(())
+}

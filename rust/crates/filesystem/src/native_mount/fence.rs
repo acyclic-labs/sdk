@@ -18,7 +18,8 @@ pub(super) struct MountDestinationGuard {
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     pub(super) registry_file: Option<MountLockFile>,
-    pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+    pub(super) cleanup_name:
+        Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
     // Allocated and funded before shutdown; retained on a failed exact cleanup.
     destination_cleanup: Option<(
@@ -127,14 +128,25 @@ impl MountDestinationGuard {
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
         }
-        let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
-        Self::acquire_in_directory(destination, directory, native, guard, recovery)
+        let (directory, parent) =
+            Self::destination_directory(destination, allow_nonempty, recovery, native)?;
+        Self::acquire_held(destination, directory, parent, native, guard, recovery)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    pub(super) fn acquire_in_directory(
+    pub(super) fn acquire_recovery_in_directory(
         destination: &Path,
         directory: cap_std::fs::Dir,
+        native: &NativeMaterializationWork,
+        guard: &mut Option<Self>,
+    ) -> Result<(), NativeMountError> {
+        Self::acquire_held(destination, directory, None, native, guard, true)
+    }
+
+    fn acquire_held(
+        destination: &Path,
+        directory: cap_std::fs::Dir,
+        held_parent: Option<cap_std::fs::Dir>,
         native: &NativeMaterializationWork,
         guard: &mut Option<Self>,
         recovery: bool,
@@ -225,19 +237,12 @@ impl MountDestinationGuard {
         // Prepare all retirement names and accepted controls before either
         // registry or fence creation can mutate the destination namespace.
         let (cleanup_name, birth_cleanup) = Self::prepare_cleanup(&name, native)?;
-        let parent = destination
-            .parent()
-            .ok_or(NativeMountError::InvalidDestination)?;
-        let parent = if parent.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            parent
-        };
-        let parent_directory = match recovery_directory? {
-            Some(directory) => directory,
-            None => crate::native_host::open_root_directory(parent, work)
-                .map(|(directory, _)| directory)?,
-        };
+        // The namespace parent is the capability used to open this child.
+        // Never resolve the lexical parent again after opening the root: an
+        // alias replacement could otherwise place its fence in another tree.
+        let parent_directory = held_parent
+            .or(recovery_directory?)
+            .ok_or(NativeMountError::ControlPending)?;
         Self::acquire_files(
             cleanup_name,
             birth_cleanup,
@@ -254,7 +259,7 @@ impl MountDestinationGuard {
         allow_nonempty: bool,
         recovery: bool,
         native: &NativeMaterializationWork,
-    ) -> Result<cap_std::fs::Dir, NativeMountError> {
+    ) -> Result<(cap_std::fs::Dir, Option<cap_std::fs::Dir>), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
         let recovery_parent = if recovery {
@@ -268,9 +273,27 @@ impl MountDestinationGuard {
         } else {
             None
         };
-        let directory =
-            crate::native_host::open_root_directory(recovery_parent.unwrap_or(destination), work)
-                .map(|(directory, _)| directory)?;
+        let (directory, parent) = if let Some(parent) = recovery_parent {
+            (
+                crate::native_host::HostRoot::open(parent, work)?.directory,
+                None,
+            )
+        } else {
+            let parent = destination
+                .parent()
+                .ok_or(NativeMountError::InvalidDestination)?;
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            let leaf = destination
+                .file_name()
+                .ok_or(NativeMountError::InvalidDestination)?;
+            let parent = crate::native_host::HostRoot::open(parent, work)?;
+            let child = parent.open_directory(Path::new(leaf), work)?;
+            (child.directory, Some(parent.directory))
+        };
         if !allow_nonempty {
             let (mut reader, allocation) = crate::native_host::read_dir_held(&directory, work)?;
             #[cfg(unix)]
@@ -288,7 +311,7 @@ impl MountDestinationGuard {
                 }
             }
         }
-        Ok(directory)
+        Ok((directory, parent))
     }
 
     fn fence_name(
@@ -341,7 +364,7 @@ impl MountDestinationGuard {
         native: &NativeMaterializationWork,
     ) -> Result<
         (
-            Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+            Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
             Option<crate::NativeWorkReservation>,
         ),
         NativeMountError,
@@ -366,14 +389,14 @@ impl MountDestinationGuard {
             backend_write_operations: 3,
             #[cfg(windows)]
             backend_read_operations: 1,
-            #[cfg(windows)]
-            items_examined: NATIVE_FENCE_NAME_BYTES as u64,
             ..crate::WorkCounters::UNCHARGED
         }
     }
 
     fn acquire_files(
-        cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+        cleanup_name: Option<
+            crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>,
+        >,
         birth_cleanup: Option<crate::NativeWorkReservation>,
         parent_directory: cap_std::fs::Dir,
         name: [u8; NATIVE_FENCE_NAME_BYTES],
@@ -385,11 +408,11 @@ impl MountDestinationGuard {
         let work = &mut &*native;
         let registry = registry::open(work)?;
         lock_mount_file_with_work(&registry, true, work)?;
-        let file = crate::native_host::open_leaf(
+        let file = crate::native_host::open_ascii_leaf(
             &parent_directory,
-            Path::new(
-                std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
-            ),
+            cleanup_name
+                .as_ref()
+                .ok_or(NativeMountError::ControlPending)?,
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
         )?;
@@ -724,3 +747,105 @@ pub(super) fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
 #[cfg(test)]
 #[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 mod models;
+
+#[cfg(test)]
+mod cleanup_credit_tests {
+    use super::*;
+
+    #[test]
+    fn fence_stays_with_its_opened_parent_after_path_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        crate::native_mount::registry::initialize()?;
+        let temporary = tempfile::tempdir()?;
+        let original = temporary.path().join("original");
+        let replacement = temporary.path().join("replacement");
+        let alias = temporary.path().join("alias");
+        std::fs::create_dir_all(original.join("parent/mount"))?;
+        std::fs::create_dir_all(replacement.join("parent/mount"))?;
+        directory_alias(&alias, &original)?;
+        let destination = alias.join("parent/mount");
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)?;
+        let (directory, held_parent) =
+            MountDestinationGuard::destination_directory(&destination, false, false, &work)?;
+        let expected = crate::native_host::directory_identity(
+            held_parent.as_ref().ok_or("missing held parent")?,
+            &mut &work,
+        )?;
+        // Windows forbids renaming an ancestor with an open descendant. An
+        // intermediate junction can still be replaced. Exercise that actual
+        // alias race on both hosts without renaming the held directory.
+        remove_directory_alias(&alias)?;
+        directory_alias(&alias, &replacement)?;
+        let mut guard = None;
+        MountDestinationGuard::acquire_held(
+            &destination,
+            directory,
+            held_parent,
+            &work,
+            &mut guard,
+            false,
+        )?;
+        let mut guard = guard.ok_or("missing fence owner")?;
+        let actual = crate::native_host::directory_identity(
+            guard
+                .parent_directory
+                .as_ref()
+                .ok_or("missing fence parent")?,
+            &mut &work,
+        )?;
+        let name = std::str::from_utf8(guard.fence_name.as_ref().ok_or("missing fence name")?)?;
+        let stays_with_root = original.join("parent").join(name).is_file()
+            && !replacement.join("parent").join(name).exists();
+        // Drain the owned fence before any control assertion, including the
+        // old lexical-reopen negative, so a failed proof leaves no live lock.
+        guard.release_cleanup(Some(&crate::CancellationToken::new()))?;
+        assert_eq!(actual, expected);
+        assert!(stays_with_root);
+        Ok(())
+    }
+
+    fn directory_alias(alias: &Path, target: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            crate::windows_test_filesystems::junction(alias, target)
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, alias)
+        }
+    }
+
+    fn remove_directory_alias(alias: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            std::fs::remove_dir(alias)
+        }
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(alias)
+        }
+    }
+
+    #[test]
+    fn prepared_fence_cleanup_needs_no_second_name_scan() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget {
+                items_examined: 0,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        // PreparedAsciiLeaf already owns validation. Reserve the actual
+        // retirement transaction with no remaining name-validation credit.
+        let _credit = work.reserve_work(MountDestinationGuard::cleanup_work())?;
+        assert_eq!(work.receipt().items_examined, 0);
+        Ok(())
+    }
+}

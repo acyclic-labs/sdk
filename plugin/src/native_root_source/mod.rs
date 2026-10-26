@@ -103,6 +103,47 @@ mod tests {
         assert_eq!(registry.live_roots().await, 0);
     }
 
+    #[tokio::test]
+    async fn ordinary_observations_own_operation_work_instead_of_spending_root_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = SharedRootRegistry::default();
+        let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
+        let physical = registry
+            .acquire_with_native_work(
+                directory.path(),
+                SharedRootAdmission::Fresh,
+                &birth,
+                || async {
+                    birth
+                        .root_identity(directory.path())
+                        .map_err(native_work_error)
+                },
+            )
+            .await
+            .unwrap();
+        // Exhaust the exact original allowance. Root lifetime ownership remains
+        // live, but no later independent hook may spend this operation's work.
+        birth
+            .charge(WorkCounters {
+                items_examined: birth.remaining().unwrap().items_examined,
+                ..WorkCounters::UNCHARGED
+            })
+            .unwrap();
+        let startup_items = birth.receipt().items_examined;
+        for _ in 0..3 {
+            let (observation, custody) = physical.observe().unwrap();
+            assert_eq!(observation.source, physical.source.reference());
+            assert_eq!(birth.receipt().items_examined, startup_items);
+            drop(observation);
+            drop(custody);
+        }
+        // Explicit native callers still keep their own bound; the common
+        // transaction must never manufacture replacement work for them.
+        assert!(physical.observe_native_transaction(&birth).is_err());
+        let cleanup = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
+        assert!(close_native_watch(&physical, &cleanup).await.unwrap());
+    }
+
     async fn close_native_watch(
         physical: &SharedPhysicalRoot,
         work: &NativeMaterializationWork,

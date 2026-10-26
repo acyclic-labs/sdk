@@ -16,83 +16,8 @@ impl CoreLog {
                 .adopt_native(work)?;
         }
         let paths = root.record(CORE_LOG_FAMILY, &[0; 16])?;
-        let mut file = if let Some(work) = work {
-            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-            match materialization_open_options(
-                &paths.current,
-                &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
-                work,
-            ) {
-                Ok(file) => {
-                    paths.sync()?;
-                    file
-                }
-                Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-                    if error.kind() == std::io::ErrorKind::AlreadyExists =>
-                {
-                    materialization_open_options(
-                        &paths.current,
-                        &crate::native_host::NativeOpenOptions::ReadWrite,
-                        work,
-                    )?
-                }
-                Err(error) => return Err(error.into()),
-            }
-        } else {
-            std::fs::create_dir_all(paths.directory())?;
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&paths.current)
-            {
-                Ok(file) => {
-                    sync_directory(paths.directory())?;
-                    file
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(&paths.current)?
-                }
-                Err(error) => return Err(error.into()),
-            }
-        };
-        let mut bytes_allocation = work
-            .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
-            .transpose()?;
-        let mut bytes = Vec::new();
-        if let Some(work) = work {
-            let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
-            let size = usize::try_from(length).map_err(|_| {
-                crate::materializer::NativeTreeMaterializationError::Work(
-                    crate::WorkError::Overflow,
-                )
-            })?;
-            reserve(
-                &mut bytes,
-                size,
-                work,
-                bytes_allocation
-                    .as_mut()
-                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
-            )?;
-            work.charge(crate::WorkCounters {
-                bytes_copied: length,
-                ..Default::default()
-            })?;
-            bytes.resize(size, 0);
-            MaterializationReader {
-                file: &file,
-                work,
-                remaining_file_bytes: length,
-                original_length: length,
-            }
-            .read_exact(&mut bytes)?;
-        } else {
-            file.read_to_end(&mut bytes)?;
-        }
+        let mut file = open_log_file(&paths, work)?;
+        let image = read_log_image(&mut file, work)?;
         {
             let mut previous = residents.write().unwrap_or_else(PoisonError::into_inner);
             if let Some(work) = work {
@@ -129,7 +54,7 @@ impl CoreLog {
         } else {
             residents
         };
-        let length = bytes.len() as u64;
+        let length = image.bytes.len() as u64;
         let mut log = Self {
             file,
             length,
@@ -142,51 +67,183 @@ impl CoreLog {
             slots: None,
             residents_control: None,
         };
+        log.replay_frames(&image.bytes, paths, work)?;
+        if length != 0 {
+            log.checkpoint(root)?;
+        }
+        if let Some(published) = published {
+            {
+                let mut destination = published.write().unwrap_or_else(PoisonError::into_inner);
+                let mut replayed = log.residents();
+                *destination = std::mem::take(&mut *replayed);
+            }
+            log.residents = published;
+        }
+        Ok(log)
+    }
+}
+
+// Fields retire in ownership order: the image backing before its charge.
+struct LogImage {
+    bytes: Vec<u8>,
+    _allocation: Option<crate::NativeAllocation>,
+}
+
+fn open_log_file(
+    paths: &RecordPaths<'_>,
+    work: Option<&crate::NativeMaterializationWork>,
+) -> Result<File, LocalCoreStateStoreError> {
+    let file = if let Some(work) = work {
+        let parent = crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+        match materialization_open_at(
+            &parent.directory,
+            &paths.current,
+            &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
+            work,
+        ) {
+            Ok(file) => {
+                crate::native_host::sync_directory_held(&parent.directory, &mut &*work)?;
+                file
+            }
+            Err(crate::materializer::NativeTreeMaterializationError::Io(error))
+                if error.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                materialization_open_at(
+                    &parent.directory,
+                    &paths.current,
+                    &crate::native_host::NativeOpenOptions::ReadWrite,
+                    work,
+                )?
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        std::fs::create_dir_all(paths.directory())?;
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&paths.current)
+        {
+            Ok(file) => {
+                sync_directory(paths.directory())?;
+                file
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&paths.current)?,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    Ok(file)
+}
+
+fn read_log_image(
+    file: &mut File,
+    work: Option<&crate::NativeMaterializationWork>,
+) -> Result<LogImage, LocalCoreStateStoreError> {
+    let mut bytes_allocation = work
+        .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
+        .transpose()?;
+    let mut bytes = Vec::new();
+    if let Some(work) = work {
+        let length = crate::native_host::stat_file(file, &mut &*work)?.len();
+        let size = usize::try_from(length).map_err(|_| {
+            crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)
+        })?;
+        reserve(
+            &mut bytes,
+            size,
+            work,
+            bytes_allocation
+                .as_mut()
+                .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
+        )?;
+        work.charge(crate::WorkCounters {
+            bytes_copied: length,
+            ..Default::default()
+        })?;
+        bytes.resize(size, 0);
+        MaterializationReader {
+            file,
+            work,
+            remaining_file_bytes: length,
+            original_length: length,
+        }
+        .read_exact(&mut bytes)?;
+    } else {
+        file.read_to_end(&mut bytes)?;
+    }
+    Ok(LogImage {
+        bytes,
+        _allocation: bytes_allocation,
+    })
+}
+
+fn checked_log_frame<'a>(
+    bytes: &'a [u8],
+    line_start: &mut usize,
+    work: Option<&crate::NativeMaterializationWork>,
+) -> Result<Option<&'a [u8]>, LocalCoreStateStoreError> {
+    let mut line_end = *line_start;
+    while let Some(&byte) = bytes.get(line_end) {
+        if let Some(work) = work {
+            work.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+        }
+        line_end += 1;
+        if byte == b'\n' {
+            break;
+        }
+    }
+    let line = bytes
+        .get(*line_start..line_end)
+        .ok_or(LocalCoreStateStoreError::Integrity)?;
+    *line_start = line_end;
+    if let Some(work) = work {
+        work.charge(crate::WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+    }
+    let Some(line) = line.strip_suffix(b"\n") else {
+        return Ok(None);
+    };
+    let Some((checksum, frame)) = line.split_first_chunk::<64>() else {
+        return Ok(None);
+    };
+    let Some(frame) = frame.strip_prefix(b" ") else {
+        return Ok(None);
+    };
+    if let Some(work) = work {
+        work.charge(crate::WorkCounters {
+            bytes_hashed: frame.len() as u64,
+            ..Default::default()
+        })?;
+    }
+    if blake3::hash(frame).to_hex().as_bytes() != checksum {
+        return Ok(None);
+    }
+    Ok(Some(frame))
+}
+
+impl CoreLog {
+    fn replay_frames(
+        &mut self,
+        bytes: &[u8],
+        paths: RecordPaths<'_>,
+        work: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(), LocalCoreStateStoreError> {
         let mut epoch = None;
         let mut sequence = 0;
         let mut line_start = 0;
         while line_start < bytes.len() {
-            let mut line_end = line_start;
-            while let Some(&byte) = bytes.get(line_end) {
-                if let Some(work) = work {
-                    work.charge(crate::WorkCounters {
-                        items_examined: 1,
-                        ..Default::default()
-                    })?;
-                }
-                line_end += 1;
-                if byte == b'\n' {
-                    break;
-                }
-            }
-            let line = bytes
-                .get(line_start..line_end)
-                .ok_or(LocalCoreStateStoreError::Integrity)?;
-            line_start = line_end;
-            if let Some(work) = work {
-                work.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-            }
-            let Some(line) = line.strip_suffix(b"\n") else {
+            let Some(frame) = checked_log_frame(bytes, &mut line_start, work)? else {
                 break;
             };
-            let Some((checksum, frame)) = line.split_first_chunk::<64>() else {
-                break;
-            };
-            let Some(frame) = frame.strip_prefix(b" ") else {
-                break;
-            };
-            if let Some(work) = work {
-                work.charge(crate::WorkCounters {
-                    bytes_hashed: frame.len() as u64,
-                    ..Default::default()
-                })?;
-            }
-            if blake3::hash(frame).to_hex().as_bytes() != checksum {
-                break;
-            }
             let (frame, allocation): (LogFrame<Change>, _) = match work {
                 Some(work) => match measured_decode_reader(
                     std::io::Cursor::new(frame),
@@ -219,10 +276,10 @@ impl CoreLog {
                         .map(|value| native_records::native_record_owned_bytes(value, work))
                         .transpose()?
                         .unwrap_or(0);
-                    let (index, dirty) = log.admit_lazy_slots(record.key, work)?;
+                    let (index, dirty) = self.admit_lazy_slots(record.key, work)?;
                     let key = record.key;
                     record.allocation = Some(frame_allocation.split_off(owned_bytes)?);
-                    let mut residents = log.residents();
+                    let mut residents = self.residents();
                     if let Some(index) = index {
                         *residents
                             .0
@@ -233,26 +290,15 @@ impl CoreLog {
                     }
                     drop(residents);
                     if dirty {
-                        log.dirty.push(key);
+                        self.dirty.push(key);
                     }
                 }
             } else {
-                log.apply(frame.change, None)?;
+                self.apply(frame.change, None)?;
             }
             sequence += 1;
         }
-        if length != 0 {
-            log.checkpoint(root)?;
-        }
-        if let Some(published) = published {
-            {
-                let mut destination = published.write().unwrap_or_else(PoisonError::into_inner);
-                let mut replayed = log.residents();
-                *destination = std::mem::take(&mut *replayed);
-            }
-            log.residents = published;
-        }
-        Ok(log)
+        Ok(())
     }
 }
 

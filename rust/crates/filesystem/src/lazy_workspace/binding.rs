@@ -304,15 +304,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
-        let path = self.namespace_path(path, ctx)?;
-        let result = accounted!(ctx, |work, cancel| self.source.lookup(
-            source,
-            &path.value,
-            work,
-            cancel
-        ));
-        path.retire(ctx)?;
-        result
+        crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
+            let path = self.namespace_path(path, ctx)?;
+            let result = accounted!(ctx, |work, cancel| self.source.lookup(
+                source,
+                &path.value,
+                work,
+                cancel
+            ));
+            path.retire(ctx)?;
+            result
+        })
     }
 
     pub(super) async fn head(

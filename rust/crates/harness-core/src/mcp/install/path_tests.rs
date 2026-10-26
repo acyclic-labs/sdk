@@ -4,6 +4,57 @@ use crate::mcp::config::Dialect;
 use proptest::prelude::*;
 use serde_json::json;
 
+#[cfg(windows)]
+#[test]
+fn both_mcp_dialects_pin_batch_launchers_from_the_configured_search_environment() -> Result<()> {
+    let root = tempfile::tempdir().map_err(Error::process_io)?;
+    let bin = root.path().join("mcp & % launchers");
+    std::fs::create_dir(&bin).map_err(Error::process_io)?;
+    for extension in ["cmd", "bat"] {
+        let name = format!("mcp-fixture-{extension}");
+        let path = bin.join(format!("{name}.{extension}"));
+        std::fs::write(&path, "@echo off\r\n@echo mcp-launcher-ran\r\n")
+            .map_err(Error::process_io)?;
+        for dialect in [Dialect::Codex, Dialect::Claude] {
+            let config = server(
+                json!({"command":name,"env":{
+                    "PATH": bin, "PATHEXT":".EXE;.BAT;.CMD"
+                }}),
+                dialect,
+            )?;
+            let mut command = native::command_for(&config, root.path(), |key| {
+                (key == "SYSTEMROOT")
+                    .then(|| std::env::var_os(key))
+                    .flatten()
+            })?;
+            assert_eq!(Path::new(command.get_program()), path);
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)
+                .map_err(Error::process_io)?;
+            let output = tree
+                .wait_with_output(
+                    std::time::Duration::from_secs(1),
+                    1_024,
+                    None,
+                    || Ok(()),
+                    |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+                    None,
+                    None,
+                )
+                .map_err(|error| Error::process_io(error.error))?;
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "mcp-launcher-ran"
+            );
+        }
+    }
+    Ok(())
+}
+
 // Property: changing only ambient variables preserves revisions; resolving the same
 // configured name to a different absolute executable changes them. Resolution is idempotent.
 proptest! {
@@ -34,7 +85,7 @@ proptest! {
         prop_assert!(Path::new(original.get_program()).is_absolute());
         prop_assert_eq!(Path::new(original.get_program()), a.join(name));
         prop_assert_eq!(Path::new(replaced.get_program()), b.join(name));
-        prop_assert_eq!(super::executable::resolve(original.get_program().to_str().unwrap(), None, root.path()).unwrap(), Path::new(original.get_program()));
+        prop_assert_eq!(acyclic_native_runtime::ExecutableSearch::from_environment(root.path(), |_| None).resolve(original.get_program()).unwrap(), Path::new(original.get_program()));
         let revision = |command| {
             let binding = native::command_binding(command, &config);
             let (tools, _) = register("fixture".into(), &config, Connected {

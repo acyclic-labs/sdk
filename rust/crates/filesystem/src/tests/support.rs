@@ -128,3 +128,8 @@ fn ordinary(context: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> 
         .check()
         .map_err(|_| ObjectStoreError::Cancelled)
 }
+
+/// All physical-cut adapters share the same dedicated supervisors and bound.
+pub(crate) fn finish_physical_cuts<F: FnOnce() -> usize + Send>(jobs: Vec<F>) -> Vec<usize> {
+    acyclic_test_support::physical_cuts::run(jobs, acyclic_native_runtime::InlineBlocking::enter)
+}

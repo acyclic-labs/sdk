@@ -13,6 +13,27 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    // Admit the whole promotion phase before construction. Callers retain
+    // only its pointer and the original ledger owns its backing through exit.
+    adapter::native_future(work, || {
+        promotion_phase(lazy, authored, path, expected_source, work)
+    })?
+    .await
+}
+
+async fn promotion_phase<A, O, D, S>(
+    lazy: &LazyWorkspace<A, O, D, S>,
+    authored: &CheckoutMountSource<A, O>,
+    path: &str,
+    expected_source: FileId,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError>
+where
+    A: AsyncAuthorityStore + Send + Sync,
+    O: AsyncObjectStore + Send + Sync,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
     let cancellation = work.cancellation();
     let carrier = &mut adapter::NativeDemandCarrier::Native(work);
     let operation = crate::OperationId::new();

@@ -459,6 +459,10 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
     let after = work.receipt();
     assert!(after.backend_write_operations > before.backend_write_operations);
     assert_eq!(
+        after.items_examined, before.items_examined,
+        "retirement borrows the validated name without scanning it again"
+    );
+    assert_eq!(
         after.allocation_operations, before.allocation_operations,
         "accepted cleanup does not allocate a path or control"
     );

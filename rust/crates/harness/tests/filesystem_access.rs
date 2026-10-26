@@ -104,7 +104,7 @@ fn signed_delegation_only_narrows() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn production_labels_use_the_filesystem_vocabulary() -> Result<(), Box<dyn std::error::Error>> {
+fn production_labels_use_the_filesystem_vocabulary() {
     use acyclic_fs::access::{
         DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation,
     };
@@ -115,26 +115,20 @@ fn production_labels_use_the_filesystem_vocabulary() -> Result<(), Box<dyn std::
         DIRECTORY_READ_PREFIX,
         SCOPE_PREFIX,
     ];
-    let mut directories =
-        vec![acyclic_test_support::source_path("rust/crates/harness").join("src")];
-    while let Some(directory) = directories.pop() {
-        for entry in std::fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                directories.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                let source = std::fs::read_to_string(&path)?;
-                for prefix in prefixes {
-                    assert!(
-                        !source.contains(&format!("\"{prefix}")),
-                        "duplicated vocabulary in {}",
-                        path.display()
-                    );
-                }
-            }
+    let mut scanned = 0;
+    for (path, source) in acyclic_test_support::repository_rust_sources() {
+        if !path.starts_with("rust/crates/harness/src/") {
+            continue;
+        }
+        scanned += 1;
+        for prefix in prefixes {
+            assert!(
+                !source.contains(&format!("\"{prefix}")),
+                "duplicated vocabulary in {path}"
+            );
         }
     }
-    Ok(())
+    assert!(scanned > 100, "filesystem vocabulary scan lost its roots");
 }
 
 #[test]

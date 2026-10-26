@@ -4,6 +4,58 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
 
 #[tokio::test]
+async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    let lazy = native_lazy_source(physical.path(), "completed-retirement", &cancellation).await?;
+    let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
+    let options = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
+    let (authored, _, (root, custody)) = admitted_source(&lazy, &options, &work).await?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = custody else {
+        panic!("native admission must retain the original ledger");
+    };
+    let mut source_allocation = work.claim(
+        std::mem::size_of::<
+            LazyMountSource<
+                crate::facade::MemoryAuthorityBackend,
+                crate::facade::MemoryObjectBackend,
+                NativeDemandSource,
+                MemoryLazyWorkspaceStore,
+            >,
+        >() as u64,
+        1,
+        crate::WorkCounters::UNCHARGED,
+    )?;
+    let view = LazyMountSource::new(
+        lazy.share(&mut KernelAccounting::native(&work, &cancellation))?,
+        authored,
+        root,
+        super::super::adapter::NativeDemandCarrier::Native(&work),
+        Some((custody, &mut source_allocation)),
+    )?;
+    let cancelled = crate::CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        view.cancel_with_cleanup_wait(&cancelled),
+        Err(MountSourceError::Cancelled)
+    ));
+    assert!(!view.physically_retired()?);
+    view.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+    assert!(view.physically_retired()?);
+    view.cancel_with_cleanup_wait(&cancelled)?;
+    assert!(!view.shutdown_with_cleanup_wait(&cancelled)?);
+    assert!(!view.shutdown_accepted_cleanup()?);
+    assert!(view.physically_retired()?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn lifecycle_operations_reuse_the_mount_source_context()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
@@ -909,9 +961,12 @@ async fn published_lazy_unmount_reuses_the_same_windows_destination()
         let mount = lazy
             .mount(
                 destination.path(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .native_context(&work, None, None),
+                fixture_options(
+                    lazy.workspace(),
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await?
+                .native_context(&work, None, None),
             )
             .await
             .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
@@ -950,9 +1005,12 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
         let mount = lazy
             .mount(
                 destination.path(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .native_context(&work, None, None),
+                fixture_options(
+                    lazy.workspace(),
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await?
+                .native_context(&work, None, None),
             )
             .await
             .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
@@ -995,13 +1053,7 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
     Ok(())
 }
 
-mod fixture_access {
-    use crate as acyclic_fs;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/native_access.rs"
-    ));
-}
+use crate::native_mount::fixture_access;
 pub(super) use fixture_access::options as fixture_options;
 
 async fn admitted_source(

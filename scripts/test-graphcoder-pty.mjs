@@ -2,8 +2,7 @@
 // Real PTY over the production registry/client/TUI path. Fail if any binding is missing.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 import { fixture } from "./graphcoder-fixture.mjs";
 import { Terminal, screenText, hasBoldAnswer, thinkingPhase } from "./graphcoder-pty/screen.mjs";
 const [binary, scenario = "success"] = process.argv.slice(2);
@@ -18,8 +17,10 @@ if (scenario === "thinking") host.holdCount("say hello");
 const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
 let launcher, args;
 if (process.platform === "win32") {
-  launcher = join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
-  args = ["-NoProfile", "-NonInteractive", "-File", fileURLToPath(new URL("graphcoder-conpty.ps1", import.meta.url)), "-Binary", binary, "-Workspace", host.root, "-SettingsRoot", host.settings, "-Catalog", host.args.at(-1), "-Model", "scripted/test", "-DeadlineMilliseconds", "8000"];
+  launcher = process.env.E2E_PROCESS_HOST;
+  assert.ok(launcher && isAbsolute(launcher), "cross-built E2E_PROCESS_HOST required");
+  assert.ok(process.env.E2E_CONPTY_HOST && isAbsolute(process.env.E2E_CONPTY_HOST), "cross-built E2E_CONPTY_HOST required");
+  args = ["--inherit-input", process.env.E2E_CONPTY_HOST, binary, host.root, host.args.at(-1), host.settings, "scripted/test", "8000", "fresh"];
 } else {
   launcher = "/usr/bin/script";
   const executable = [binary, ...host.args].map(quote).join(" ");
@@ -90,7 +91,7 @@ child.stdout.on("data", bytes => {
 });
 child.stderr.on("data", bytes => { output += bytes.toString("utf8"); });
 try {
-  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`PTY ${scenario} terminated by ${signal} (submitted=${submitted}, retried=${retried}, calls=${host.calls()}): ${screenText(screen)}`)) : resolve(code)); });
+  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code, signal) => signal ? reject(new Error(`PTY ${scenario} terminated by ${signal} (submitted=${submitted}, retried=${retried}, calls=${host.calls()}): ${screenText(screen)}`)) : resolve(code)); });
   assert.equal(code, 0, output);
   assert.ok(submitted, "composed prompt never appeared");
   if (["uncertain", "command-recovery", "typeahead"].includes(scenario)) assert.ok(retried, "command outcome never became visible feedback");

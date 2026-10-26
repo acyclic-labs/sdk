@@ -1,10 +1,17 @@
 #[path = "src/module_cases.rs"]
 mod module_cases;
+#[path = "src/source_catalog_build.rs"]
+mod source_catalog_build;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/module_cases.rs");
+    println!("cargo:rerun-if-changed=src/source_catalog_build.rs");
     println!("cargo:rerun-if-changed=build.rs");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
+    if std::env::var_os("CARGO_FEATURE_SOURCE_CATALOG").is_some() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        source_catalog_build::generate(&root, &output).expect("repository Rust source catalog");
+    }
     let compiler = std::env::var_os("RUSTC").expect("Cargo compiler");
     let mut reached = Vec::new();
     for (index, (declaration, child, leaf)) in module_cases::CASES.into_iter().enumerate() {

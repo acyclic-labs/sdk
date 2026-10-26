@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(windows)]
+mod windows;
+
 #[test]
 fn a_service_that_exits_without_signalling_closes_its_readiness_channel() -> io::Result<()> {
     // This test binary rejects the service arguments and exits, writing
@@ -51,24 +54,25 @@ fn durable_rename_moves_and_replaces_entries() -> io::Result<()> {
 
 /// Set only in the child process that renames inside its own working
 /// directory.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const RELATIVE_RENAME_CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_RELATIVE_RENAME_CHILD";
 
 /// Bare sibling names resolve against the working directory, which belongs to
 /// the whole process. Changing it here would move every concurrent test's
 /// relative paths and children with it, so the rename runs in a child process
 /// started in the fixture directory instead.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn durable_rename_accepts_relative_sibling_paths() -> io::Result<()> {
     if std::env::var_os(RELATIVE_RENAME_CHILD).is_some() {
         std::fs::write("from", b"relative")?;
-        return durable_rename(
+        durable_rename(
             Path::new("from"),
             Path::new("to"),
             RenameMode::NoReplace,
             None,
-        );
+        )?;
+        return publish_new(Path::new("to"), Path::new("linked"), None);
     }
     let temporary = tempfile::tempdir()?;
     let test = concat!(
@@ -87,6 +91,7 @@ fn durable_rename_accepts_relative_sibling_paths() -> io::Result<()> {
     assert!(report.contains("1 passed"), "{report}");
     assert!(!temporary.path().join("from").exists());
     assert_eq!(std::fs::read(temporary.path().join("to"))?, b"relative");
+    assert_eq!(std::fs::read(temporary.path().join("linked"))?, b"relative");
     Ok(())
 }
 

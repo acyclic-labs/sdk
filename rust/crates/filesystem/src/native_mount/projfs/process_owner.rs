@@ -1,17 +1,10 @@
-//! Process incarnation evidence; a PID alone never proves ownership or death.
+//! Metered process recovery delegates identity and OS queries to native-runtime.
 use super::super::custody::{ProcessObservation, require_dead_incarnation};
 use super::*;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use windows::Win32::Foundation::{
-    ERROR_INVALID_PARAMETER, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
-};
-use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, WaitForSingleObject,
-};
+use acyclic_native_runtime::process_identity::{ProcessProbe, current_process_started};
 
 struct ProcessHandle {
-    handle: OwnedHandle,
+    process: ProcessProbe,
     close: crate::NativeWorkReservation,
 }
 
@@ -21,24 +14,10 @@ impl Drop for ProcessHandle {
     }
 }
 
-fn creation_time(handle: HANDLE) -> std::io::Result<u64> {
-    let mut creation = FILETIME::default();
-    let mut exit = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    // SAFETY: the handle is held by the caller; all four output pointers are live.
-    unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) }
-        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
-    Ok(u64::from(creation.dwLowDateTime) | (u64::from(creation.dwHighDateTime) << 32))
-}
-
 pub(in crate::native_mount) fn current_process_owner(
     work: &crate::NativeMaterializationWork,
 ) -> Result<(u32, u64), NativeMountError> {
-    // SAFETY: GetCurrentProcess returns the current process's borrowed pseudo-handle.
-    let time = (&mut &*work).attempt_io(ReadOperations.delta(1), || {
-        creation_time(unsafe { GetCurrentProcess() })
-    })?;
+    let time = (&mut &*work).attempt_io(ReadOperations.delta(1), current_process_started)?;
     Ok((std::process::id(), time))
 }
 
@@ -47,61 +26,32 @@ pub(in crate::native_mount) fn require_dead_process_owner(
     started: u64,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    if pid == 0 || started == 0 {
+    if acyclic_native_runtime::process_identity::ProcessIncarnation::new(pid, started).is_none() {
         return require_dead_incarnation(pid, started, ProcessObservation::Unknown);
     }
     let close = work.reserve_work(WriteOperations.delta(1))?;
     let opened = (&mut &*work).attempt_io(ReadOperations.delta(1), || {
-        // SAFETY: no borrowed pointers; success transfers one process handle.
-        unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                false,
-                pid,
-            )
-        }
-        .map(|handle| ProcessHandle {
-            // SAFETY: a successful OpenProcess transfers one valid handle.
-            handle: unsafe { OwnedHandle::from_raw_handle(handle.0) },
-            close,
-        })
-        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+        ProcessProbe::open(pid)
+            .map(|process| process.map(|process| ProcessHandle { process, close }))
     });
     let handle = match opened {
-        Ok(handle) => handle,
-        Err(crate::NativeTreeMaterializationError::Io(error))
-            if error.raw_os_error() == i32::try_from(ERROR_INVALID_PARAMETER.0).ok() =>
-        {
-            return require_dead_incarnation(pid, started, ProcessObservation::Absent);
-        }
+        Ok(Some(handle)) => handle,
+        Ok(None) => return require_dead_incarnation(pid, started, ProcessObservation::Absent),
         Err(crate::NativeTreeMaterializationError::Io(_)) => {
             return require_dead_incarnation(pid, started, ProcessObservation::Unknown);
         }
         Err(error) => return Err(error.into()),
     };
-    let observed = (&mut &*work).attempt_io(ReadOperations.delta(1), || {
-        creation_time(HANDLE(handle.handle.as_raw_handle()))
-    })?;
-    // A reused PID names a different process. The recorded incarnation is dead.
-    work.charge(ReadOperations.delta(1))?;
-    // SAFETY: the process handle is owned through this nonblocking observation.
-    match unsafe { WaitForSingleObject(HANDLE(handle.handle.as_raw_handle()), 0) } {
-        WAIT_OBJECT_0 => require_dead_incarnation(
-            pid,
-            started,
-            ProcessObservation::Present {
-                started: observed,
-                exited: true,
-            },
-        ),
-        WAIT_TIMEOUT => require_dead_incarnation(
-            pid,
-            started,
-            ProcessObservation::Present {
-                started: observed,
-                exited: false,
-            },
-        ),
-        _ => require_dead_incarnation(pid, started, ProcessObservation::Unknown),
-    }
+    let observed =
+        (&mut &*work).attempt_io(ReadOperations.delta(1), || handle.process.started())?;
+    let exited = (&mut &*work).attempt_io(ReadOperations.delta(1), || handle.process.exited());
+    let observation = match exited {
+        Ok(exited) => ProcessObservation::Present {
+            started: observed,
+            exited,
+        },
+        Err(crate::NativeTreeMaterializationError::Io(_)) => ProcessObservation::Unknown,
+        Err(error) => return Err(error.into()),
+    };
+    require_dead_incarnation(pid, started, observation)
 }

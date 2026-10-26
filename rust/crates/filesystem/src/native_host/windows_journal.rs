@@ -79,6 +79,14 @@ pub(super) fn windows_leaf_name<W: NativeHostWork>(
             return Err(W::invalid_request());
         }
     }
+    windows_counted_name::<W>(name)
+}
+
+/// Describes already validated native units without rescanning or encoding.
+/// Callers retain the units for the complete native call.
+pub(super) fn windows_counted_name<W: NativeHostWork>(
+    name: &[u16],
+) -> Result<win::UNICODE_STRING, W::Error> {
     let length = u16::try_from(
         name.len()
             .checked_mul(2)
@@ -149,9 +157,20 @@ pub(crate) fn open_windows_at_without_reparse<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<File, W::Error> {
     let name = windows_open_name(path, work)?;
+    open_windows_named_without_reparse(parent, &name, access, disposition, options, work)
+}
+
+pub(super) fn open_windows_named_without_reparse<W: NativeHostWork>(
+    parent: &Dir,
+    name: &win::UNICODE_STRING,
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    work: &mut W,
+) -> Result<File, W::Error> {
     open_windows_named_with_options(
         parent,
-        &name,
+        name,
         access,
         disposition,
         options,
@@ -436,7 +455,18 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     expected: Option<NativeRootIdentity>,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    let file = open_windows_at(
+    let name = windows_open_name(name, work)?;
+    remove_windows_named_leaf(parent, &name, directory, expected, work)
+}
+
+pub(super) fn remove_windows_named_leaf<W: NativeHostWork>(
+    parent: &Dir,
+    name: &win::UNICODE_STRING,
+    directory: bool,
+    expected: Option<NativeRootIdentity>,
+    work: &mut W,
+) -> Result<(), W::Error> {
+    let file = open_windows_named(
         parent,
         name,
         fs::DELETE | fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,

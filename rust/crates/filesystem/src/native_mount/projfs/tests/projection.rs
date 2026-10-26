@@ -150,7 +150,12 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
             .read(true)
             .share_mode(FILE_SHARE_READ.0)
             .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-            .open(&projected)?;
+            .open(&projected)
+            .map_err(|error| format!("open held link, replacement={replacement}: {error}"))?;
+        let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+        let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+        let context = driver.context.ok_or("missing ProjFS context")?;
+        let tree = lock_recover(&runtime.projector.tree);
         source.remove(&name, None, &work)?;
         if replacement {
             source.create_directory(&name, FileMetadata::default(), &work)?;
@@ -158,15 +163,56 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
             source.create_file(&inner, FileMetadata::default(), None, &work)?;
             source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
         }
+        runtime.projector.materialize_locked(
+            Projection {
+                runtime: &runtime,
+                work: &work,
+                context,
+                starting: false,
+            },
+            vec![MountPath::root()],
+        )?;
+        let target = {
+            let state = lock_recover(&runtime.projector.state);
+            assert!(
+                state.pending.contains_key(&name),
+                "the held link must block retirement"
+            );
+            state.notified
+        };
+        let projector = Arc::clone(&runtime.projector);
+        let pending = name.clone();
         let closer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            let mut state = lock_recover(&projector.state);
+            while state.processed < target && state.failure.is_none() && !state.stopping {
+                state = projector
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            assert!(
+                state.pending.contains_key(&pending),
+                "the worker must retain the held incarnation"
+            );
+            drop(state);
             drop(held);
         });
-        session.revalidate(&work)?;
+        drop(tree);
+        session
+            .revalidate(&work)
+            .map_err(|error| format!("revalidate held link, replacement={replacement}: {error}"))?;
         closer.join().map_err(|_| "closer panicked")?;
         if replacement {
-            assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-            assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+            assert!(
+                std::fs::symlink_metadata(&projected)
+                    .map_err(|error| format!("replacement directory metadata: {error}"))?
+                    .is_dir()
+            );
+            assert_eq!(
+                std::fs::read(projected.join("inner.txt"))
+                    .map_err(|error| format!("replacement child read: {error}"))?,
+                b"inner"
+            );
         } else {
             assert!(sorted_names(&destination)?.is_empty());
         }
@@ -232,7 +278,9 @@ async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std:
     let workspace = local_workspace(root.path(), "advance-projfs", &work).await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace.mount(&path, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&path, manual_mount_options(&workspace).await?)
+        .await?;
     let added = path.join("added.txt");
     assert_eq!(
         std::fs::metadata(&added).err().map(|error| error.kind()),
@@ -284,7 +332,9 @@ async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn s
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
     mount.unmount().await?;
     Ok(())
@@ -335,7 +385,9 @@ async fn rustc_links_object_files_created_inside_projection()
         .await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace.mount(&path, manual_mount_options()).await?;
+    let mount = workspace
+        .mount(&path, manual_mount_options(&workspace).await?)
+        .await?;
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(

@@ -16,14 +16,15 @@
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
-use std::os::windows::io::AsRawHandle as _;
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
-    WAIT_FAILED,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_HANDLE,
+    ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
 };
+use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
 };
@@ -33,9 +34,9 @@ use windows_sys::Win32::System::JobObjects::{
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, GetProcessTimes, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
+    CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, INFINITE, OpenProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, RegisterWaitForSingleObject,
+    UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
 };
 
 /// The environment variable that makes a process a custodian.
@@ -49,6 +50,11 @@ const OWNER_EXITED: usize = usize::MAX;
 /// The completion key a member's wait posts once it has exited; the
 /// message carries its PID.
 const MEMBER_EXITED: usize = usize::MAX - 1;
+
+pub(super) struct Custodian {
+    pub child: Child,
+    pub endpoint: String,
+}
 
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
@@ -66,7 +72,7 @@ extern "C" fn entry() {
 
 /// Starts the custodian of `job` and names it in the tree's `record`, then
 /// returns once it watches the still-empty Job.
-pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Result<Child> {
+pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Result<Custodian> {
     // Keeps the initializer, and so the entry, in every linked executable
     // that can start a custodian.
     std::hint::black_box(&ENTRY);
@@ -77,36 +83,68 @@ pub(super) fn launch(job: HANDLE, record: &mut super::custody::Record) -> io::Re
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()?;
-    let handed = hand_over(&mut custodian, job)
-        .and_then(|()| record.name_custodian(&identity(custodian.as_raw_handle().cast())?));
+    let handed = hand_over(&mut custodian, job).and_then(|endpoint| {
+        record.name_custodian(&identity(custodian.as_raw_handle().cast())?)?;
+        Ok(endpoint)
+    });
     if handed.is_err() {
         let _ = custodian.kill();
         let _ = custodian.wait();
     }
-    handed.map(|()| custodian)
+    handed.map(|endpoint| Custodian {
+        child: custodian,
+        endpoint,
+    })
 }
 
-fn hand_over(custodian: &mut Child, job: HANDLE) -> io::Result<()> {
+fn hand_over(custodian: &mut Child, job: HANDLE) -> io::Result<String> {
     let target: HANDLE = custodian.as_raw_handle().cast();
     // SAFETY: duplicating this process's owned Job handle into the custodian.
     let job = unsafe { duplicate(job, target, 0, DUPLICATE_SAME_ACCESS) }?;
     // SAFETY: a synchronize-only handle to this process, for the custodian.
     let owner = unsafe { duplicate(GetCurrentProcess(), target, PROCESS_SYNCHRONIZE, 0) }?;
+    let output = duplicate_output(target, STD_OUTPUT_HANDLE)?;
+    let error = duplicate_output(target, STD_ERROR_HANDLE)?;
     let mut input = custodian.stdin.take().ok_or(io::ErrorKind::BrokenPipe)?;
     write!(
         input,
-        "{}\n{}\n",
+        "{}\n{}\n{}\n{}\n",
         job.expose_provenance(),
-        owner.expose_provenance()
+        owner.expose_provenance(),
+        output.expose_provenance(),
+        error.expose_provenance()
     )?;
     drop(input);
     let mut ready = String::new();
     BufReader::new(custodian.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?)
         .read_line(&mut ready)?;
-    if ready.trim_end() == READY {
-        Ok(())
+    if let Some(endpoint) = ready.trim_end().strip_prefix(&format!("{READY} ")) {
+        let address = endpoint
+            .parse::<std::net::SocketAddrV4>()
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        if !address.ip().is_loopback() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(endpoint.to_owned())
     } else {
         Err(io::Error::other("the process custodian did not start"))
+    }
+}
+
+/// Retain an outer transport's pipe through physical tree retirement. The
+/// custodian does not write it: EOF must imply that no custodied member lives.
+fn duplicate_output(target: HANDLE, kind: u32) -> io::Result<HANDLE> {
+    // SAFETY: the current process's standard handle is borrowed for duplication.
+    let source = unsafe { GetStdHandle(kind) };
+    if source.is_null() || source == INVALID_HANDLE_VALUE {
+        return Ok(std::ptr::null_mut());
+    }
+    // SAFETY: a borrowed standard handle and the owned custodian process.
+    match unsafe { duplicate(source, target, 0, DUPLICATE_SAME_ACCESS) } {
+        Err(error) if error.raw_os_error() == Some(ERROR_INVALID_HANDLE.cast_signed()) => {
+            Ok(std::ptr::null_mut())
+        }
+        result => result,
     }
 }
 
@@ -117,20 +155,12 @@ fn identity(process: HANDLE) -> io::Result<String> {
     if pid == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(format!("{pid}-{}", creation_time(process)?))
-}
-
-fn creation_time(process: HANDLE) -> io::Result<u64> {
-    let mut times = [FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    }; 4];
-    let [creation, exit, kernel, user] = &mut times;
-    // SAFETY: a live process handle and four writable times.
-    if unsafe { GetProcessTimes(process, creation, exit, kernel, user) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
+    // SAFETY: this caller holds the live process handle for the query.
+    let borrowed = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(process.cast()) };
+    Ok(format!(
+        "{pid}-{}",
+        crate::process_identity::process_started(&borrowed)?
+    ))
 }
 
 /// Waits for the custodian of `identity`, as a record names it, if it still
@@ -142,29 +172,21 @@ pub(super) fn await_custodian(identity: &str) -> io::Result<()> {
     else {
         return Err(io::ErrorKind::InvalidData.into());
     };
-    // SAFETY: opening a handle to the recorded PID; owned below.
-    let process = unsafe {
-        OpenProcess(
-            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
+    use crate::process_identity::{
+        IncarnationState, ProcessIncarnation, ProcessObservation, ProcessProbe,
     };
-    if process.is_null() {
+    let owner = ProcessIncarnation::new(pid, created).ok_or(io::ErrorKind::InvalidData)?;
+    let Some(process) = ProcessProbe::open(owner.pid())? else {
         return Ok(());
+    };
+    match owner.observe(ProcessObservation::Present {
+        started: process.started()?,
+        exited: false,
+    }) {
+        IncarnationState::Running => process.await_exit(),
+        IncarnationState::Replaced | IncarnationState::Exited | IncarnationState::Absent => Ok(()),
+        IncarnationState::Unknown => Err(io::ErrorKind::InvalidData.into()),
     }
-    let waited = creation_time(process).and_then(|time| {
-        // Another process with a reused PID is no custodian of this tree.
-        // SAFETY: the owned process handle.
-        if time == created && unsafe { WaitForSingleObject(process, INFINITE) } == WAIT_FAILED {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    });
-    // SAFETY: the handle opened above.
-    unsafe { CloseHandle(process) };
-    waited
 }
 
 /// Duplicates `source` into `target`, returning its value there.
@@ -213,6 +235,12 @@ fn serve() -> io::Result<()> {
     };
     let job = handle()?;
     let owner = handle()?;
+    let output = handle()?;
+    let error = handle()?;
+    // These original pipe handles stay live until every member has physically
+    // exited. In particular, killing the owner cannot publish an early EOF.
+    let _output = transport_lease(output);
+    let _error = transport_lease(error);
     // SAFETY: a new completion port, not yet tied to any file.
     let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
     if port.is_null() {
@@ -235,26 +263,23 @@ fn serve() -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
+    PORT.store(port.expose_provenance(), Ordering::Relaxed);
+    let admission = super::custodian_admission::Server::bind()?;
+    let endpoint = admission.endpoint.clone();
+    let requests = admission.start(port)?;
     let mut output = io::stdout();
-    writeln!(output, "{READY}")?;
+    writeln!(output, "{READY} {endpoint}")?;
     output.flush()?;
-    let (owner_watch, job_watch, port_watch) = (
-        owner.expose_provenance(),
-        job.expose_provenance(),
-        port.expose_provenance(),
-    );
+    let (owner_watch, port_watch) = (owner.expose_provenance(), port.expose_provenance());
     std::thread::spawn(move || {
         let owner: HANDLE = std::ptr::with_exposed_provenance_mut(owner_watch);
-        let job: HANDLE = std::ptr::with_exposed_provenance_mut(job_watch);
         let port: HANDLE = std::ptr::with_exposed_provenance_mut(port_watch);
         // SAFETY: handles this custodian owns for its whole life.
         unsafe {
             WaitForSingleObject(owner, INFINITE);
-            TerminateJobObject(job, 1);
             PostQueuedCompletionStatus(port, 0, OWNER_EXITED, std::ptr::null());
         }
     });
-    PORT.store(port.expose_provenance(), Ordering::Relaxed);
     let mut members = Members::default();
     loop {
         let mut message = 0;
@@ -277,6 +302,14 @@ fn serve() -> io::Result<()> {
             // The message carries the new member's PID.
             members.admit(job, u32::try_from(overlapped.addr()).unwrap_or(0))?;
         }
+        if key == super::custodian_admission::ADMIT {
+            let request = requests.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
+            let admitted = members.admit(job, request.pid);
+            let _ = request
+                .reply
+                .send(admitted.as_ref().is_ok_and(|admitted| *admitted));
+            admitted?;
+        }
         if key == MEMBER_EXITED {
             members.release(message);
         }
@@ -285,6 +318,12 @@ fn serve() -> io::Result<()> {
         if key == OWNER_EXITED {
             for pid in super::custody::members(job)? {
                 members.admit(job, pid)?;
+            }
+            // Capture live process handles before termination can remove
+            // their PIDs from the Job's active-member list.
+            // SAFETY: the handed-over Job with terminate access.
+            if unsafe { TerminateJobObject(job, 1) } == 0 {
+                return Err(io::Error::last_os_error());
             }
         }
         // A member stops counting as active before its process has fully
@@ -297,6 +336,15 @@ fn serve() -> io::Result<()> {
     // SAFETY: the Job handle; closing it lets the name go only now.
     unsafe { CloseHandle(job) };
     Ok(())
+}
+
+fn transport_lease(handle: HANDLE) -> Option<OwnedHandle> {
+    if handle.is_null() {
+        None
+    } else {
+        // SAFETY: hand_over transferred this distinct handle into this process.
+        Some(unsafe { OwnedHandle::from_raw_handle(handle.cast()) })
+    }
 }
 
 /// The completion port that member exit waits post to; one per custodian.
@@ -320,9 +368,9 @@ impl Members {
     /// Watches process `pid` if it is a member of `job`. A PID whose
     /// process already exited is either gone or reused outside `job`; a
     /// held handle keeps a watched member's PID from being reused.
-    fn admit(&mut self, job: HANDLE, pid: u32) -> io::Result<()> {
+    fn admit(&mut self, job: HANDLE, pid: u32) -> io::Result<bool> {
         if self.0.contains_key(&pid) {
-            return Ok(());
+            return Ok(true);
         }
         // SAFETY: opening a handle to a PID; owned below.
         let process = unsafe {
@@ -333,16 +381,23 @@ impl Members {
             )
         };
         if process.is_null() {
-            return Ok(());
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) {
+                Ok(false)
+            } else {
+                Err(error)
+            };
         }
         let mut member = 0;
         let mut wait: HANDLE = std::ptr::null_mut();
         // SAFETY: owned process and Job handles and a writable result; the
         // wait reports once, with the PID as its context.
-        let watched = unsafe {
-            IsProcessInJob(process, job, &raw mut member) != 0
-                && member != 0
-                && RegisterWaitForSingleObject(
+        let queried = unsafe { IsProcessInJob(process, job, &raw mut member) };
+        // SAFETY: the owned process handle and a one-shot callback context.
+        let watched = queried != 0
+            && member != 0
+            && unsafe {
+                RegisterWaitForSingleObject(
                     &raw mut wait,
                     process,
                     Some(member_exited),
@@ -350,16 +405,20 @@ impl Members {
                     INFINITE,
                     WT_EXECUTEONLYONCE,
                 ) != 0
-        };
+            };
         if watched {
             self.0.insert(pid, (process, wait));
-            return Ok(());
+            return Ok(true);
         }
         let error = io::Error::last_os_error();
         // SAFETY: the handle opened above.
         unsafe { CloseHandle(process) };
         // Only a failed registration of a member is an error.
-        if member != 0 { Err(error) } else { Ok(()) }
+        if queried == 0 || member != 0 {
+            Err(error)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Releases the member `pid`, whose exit its wait reported.

@@ -66,7 +66,7 @@ impl AuthorizedFile {
     fn require(
         &self,
         action: Action,
-        work: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         access::require(
             &self.permissions,
@@ -76,10 +76,7 @@ impl AuthorizedFile {
         self.policy.check(&self.permissions, work)
     }
 
-    fn writable(
-        &self,
-        work: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<bool, MountSourceError> {
+    fn writable(&self, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         let now = access::access_time(self.policy.clock())?;
         if self.created {
             access::require(&self.permissions, Action::Create, now)?;
@@ -96,7 +93,7 @@ impl AuthorizedFile {
 
     fn require_write(
         &self,
-        work: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         if self.writable(work)? {
             Ok(())
@@ -133,14 +130,16 @@ macro_rules! written {
 }
 
 impl MountOpenFile for AuthorizedFile {
+    ordinary_file_callbacks!(self, self.policy.cancellation());
+
     fn clone_source(
         &self,
         checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
     ) -> Result<FileId, MountSourceError> {
-        self.require(Action::Read, Some(work))?;
+        self.require(Action::Read, work)?;
         let result = self.file.clone_source(checkout, work);
-        self.require(Action::Read, Some(work))?;
+        self.require(Action::Read, work)?;
         result
     }
 
@@ -152,36 +151,23 @@ impl MountOpenFile for AuthorizedFile {
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.require_write(Some(work))?;
+        self.require_write(work)?;
         self.file
             .clone_range_from(source, source_offset, offset, length, work)
     }
 
-    checked! { List, None;
-        lookup() -> Result<MountLookup, MountSourceError>;
-        list_attributes(cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError>;
-    }
-    checked! { List, Some(work);
+    checked! { List, work;
         lookup_with_meter(work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
         list_attributes_with_meter(cursor: Option<&[u8]>, maximum_entries: u32, work: &crate::NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     }
-    checked! { Read, None;
-        read_range(offset: u64, length: u32) -> Result<OwnedBytes, MountSourceError>;
-        read_up_to(offset: u64, maximum_bytes: u32) -> Result<OwnedBytes, MountSourceError>;
-        seek(offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
-    }
-    checked! { Read, Some(work);
+    checked! { Read, work;
         read_attribute(name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
         read_range_with_meter(offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
         read_up_to_with_meter(offset: u64, maximum_bytes: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
         seek_with_meter(offset: u64, target: MountSeekTarget, work: &crate::NativeMaterializationWork) -> Result<Option<u64>, MountSourceError>;
         read_sparse_range(offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
     }
-    written! { None;
-        resize(logical_bytes: u64) -> Result<(), MountSourceError>;
-        allocate_range(offset: u64, length: u64, operation: MountRangeAllocation) -> Result<(), MountSourceError>;
-    }
-    written! { Some(work);
+    written! { work;
         resize_with_meter(logical_bytes: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         allocate_range_with_meter(offset: u64, length: u64, operation: MountRangeAllocation, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         set_attributes(metadata: FileMetadata, logical_bytes: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
@@ -190,34 +176,18 @@ impl MountOpenFile for AuthorizedFile {
         write_sparse_range(offset: u64, range: (MountSparseRange, crate::NativeAllocation), work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
     }
 
-    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        if self.writable(None)? {
-            self.file.write_range(offset, bytes)
-        } else {
-            self.require(Action::Append, None)?;
-            self.file.append_range(offset, bytes)
-        }
-    }
-
     fn write_range_with_meter(
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        if self.writable(Some(work))? {
+        if self.writable(work)? {
             self.file.write_range_with_meter(offset, bytes, work)
         } else {
-            self.require(Action::Append, Some(work))?;
+            self.require(Action::Append, work)?;
             self.file.append_range_with_meter(offset, bytes, work)
         }
-    }
-
-    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        if !self.writable(None)? {
-            self.require(Action::Append, None)?;
-        }
-        self.file.append_range(offset, bytes)
     }
 
     fn append_range_with_meter(
@@ -226,8 +196,8 @@ impl MountOpenFile for AuthorizedFile {
         bytes: crate::kernel::OwnedSourceChunk,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        if !self.writable(Some(work))? {
-            self.require(Action::Append, Some(work))?;
+        if !self.writable(work)? {
+            self.require(Action::Append, work)?;
         }
         self.file.append_range_with_meter(offset, bytes, work)
     }

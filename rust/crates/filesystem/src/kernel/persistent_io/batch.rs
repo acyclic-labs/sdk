@@ -237,7 +237,7 @@ fn batch_container<T>(
 pub(super) fn batch_in_heap<'a, 'accounting, F: Future>(
     accounting: &'a mut KernelAccounting<'accounting>,
     create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
-) -> Result<ReadOwned<std::pin::Pin<Box<F>>>, FsError> {
+) -> Result<ReadOwned<crate::heap_future::OwnedFuture<F, ()>>, FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     let custody = if accounting.native_work().is_some() {
         let bytes = usize_to_u64(size_of::<F>());

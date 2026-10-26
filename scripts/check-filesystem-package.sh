@@ -45,60 +45,44 @@ grep -q 'ENOENT' "$work/missing-wasm.log"
 cd "$root"
 # Stage the exact dependency closure. The higher crates cannot be registry-verified
 # until the native runtime is published, so verify the extracted archives together.
-metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+closure_output="$(bun scripts/harness-package-closure.mjs acyclic-fs)"
+mapfile -t closure <<< "$closure_output"
+package_arguments=()
+archives=()
+fs_version=""
+for entry in "${closure[@]}"; do
+  IFS=$'\t' read -r name version <<< "$entry"
+  package_arguments+=(-p "$name")
+  archives+=("$name-$version.crate")
+  if [[ "$name" == acyclic-fs ]]; then fs_version="$version"; fi
+done
+[[ -n "$fs_version" ]]
 package_target="$work/package-target"
-cargo package --locked --all-features --no-verify --allow-dirty --target-dir "$package_target" \
-  -p acyclic-proto-build -p acyclic-native-runtime -p acyclic-grpc-observability -p acyclic-objects -p acyclic-stream -p acyclic-fs-base -p acyclic-fs
-archives="$(printf '%s' "$metadata" | bun -e '
-const metadata = await Bun.stdin.json();
-for (const name of ["acyclic-proto-build", "acyclic-native-runtime", "acyclic-grpc-observability", "acyclic-objects", "acyclic-stream", "acyclic-fs-base", "acyclic-fs"]) {
-  const packages = metadata.packages.filter(item => item.name === name);
-  if (packages.length !== 1) throw new Error(`ambiguous package ${name}`);
-  console.log(`${name}-${packages[0].version}.crate`);
-}')"
-runtime_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-native-runtime").version)')"
-observability_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-grpc-observability").version)')"
-objects_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-objects").version)')"
-stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
-fs_base_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-fs-base").version)')"
-fs_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-fs").version)')"
+cargo package --locked --all-features --no-verify --allow-dirty --target-dir "$package_target" "${package_arguments[@]}"
 mkdir "$work/crates"
-while IFS= read -r archive; do
+for archive in "${archives[@]}"; do
   tar -xf "$package_target/package/$archive" -C "$work/crates"
-done <<< "$archives"
+done
 mkdir -p "$work/crates/.cargo"
-proto_build_path="$work/crates/acyclic-proto-build-$fs_version"
-runtime_path="$work/crates/acyclic-native-runtime-$runtime_version"
-observability_path="$work/crates/acyclic-grpc-observability-$observability_version"
-objects_path="$work/crates/acyclic-objects-$objects_version"
-stream_path="$work/crates/acyclic-stream-$stream_version"
-fs_base_path="$work/crates/acyclic-fs-base-$fs_base_version"
-if [[ "$(bun -e 'process.stdout.write(process.platform)')" == "win32" ]]; then
-  proto_build_path="$(bash "$root/scripts/native-tool-path.sh" "$proto_build_path")"
-  runtime_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_path")"
-  observability_path="$(bash "$root/scripts/native-tool-path.sh" "$observability_path")"
-  objects_path="$(bash "$root/scripts/native-tool-path.sh" "$objects_path")"
-  stream_path="$(bash "$root/scripts/native-tool-path.sh" "$stream_path")"
-  fs_base_path="$(bash "$root/scripts/native-tool-path.sh" "$fs_base_path")"
-fi
-cat >"$work/crates/.cargo/config.toml" <<EOF
-[patch.crates-io]
-acyclic-proto-build = { path = "$proto_build_path" }
-acyclic-native-runtime = { path = "$runtime_path" }
-acyclic-grpc-observability = { path = "$observability_path" }
-acyclic-objects = { path = "$objects_path" }
-acyclic-stream = { path = "$stream_path" }
-acyclic-fs-base = { path = "$fs_base_path" }
-EOF
+printf '[patch.crates-io]\n' >"$work/crates/.cargo/config.toml"
+for entry in "${closure[@]}"; do
+  IFS=$'\t' read -r name version <<< "$entry"
+  if [[ "$name" == acyclic-fs ]]; then continue; fi
+  patch_path="$work/crates/$name-$version"
+  if [[ "$(bun -e 'process.stdout.write(process.platform)')" == win32 ]]; then
+    patch_path="$(bash "$root/scripts/native-tool-path.sh" "$patch_path")"
+  fi
+  printf '%s = { path = "%s" }\n' "$name" "$patch_path" >>"$work/crates/.cargo/config.toml"
+done
 (
   cd "$work/crates/acyclic-fs-$fs_version"
   cargo test --all-features --offline --target-dir "$work/verify-target" --no-run
 )
 mkdir -p "$output"
 install -m 0644 "$work/acyclic-fs.tgz" "$output/acyclic-fs.tgz"
-while IFS= read -r archive; do
+for archive in "${archives[@]}"; do
   install -m 0644 "$package_target/package/$archive" "$output/"
-done <<< "$archives"
+done
 cd "$output"
 sha256sum acyclic-fs.tgz acyclic-*.crate > SHA256SUMS
 git -C "$root" rev-parse --verify HEAD > SOURCE_COMMIT

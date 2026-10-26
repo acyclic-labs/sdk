@@ -243,10 +243,11 @@ impl LocalCoreStateStore {
         };
         let admission = match (&self.ownership, work) {
             (Ownership::Shared, Some(work)) => {
-                crate::native_host::create_directories(&root, &mut &*work)?;
+                let parent = crate::native_host::create_directories(&root, &mut &*work)?;
                 let mut paths_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
                 let path = measured_record_path(&root, OWNER_LOCK, work, &mut paths_allocation)?;
-                let lock = materialization_open_options(
+                let lock = materialization_open_at(
+                    &parent.directory,
                     &path,
                     &crate::native_host::NativeOpenOptions::ReadWriteCreate,
                     work,

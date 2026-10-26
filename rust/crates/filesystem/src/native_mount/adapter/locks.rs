@@ -10,9 +10,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             .runtime
             .prepare_native_wait(work)
             .map_err(MountSourceError::NativeWork)?;
-        let mut lease = self
-            .runtime
-            .wait_prepared(prepared, || {
+        let mut lease = {
+            let future = std::pin::pin!(tokio::task::unconstrained(async {
                 tokio::time::timeout(
                     CALLBACK_TIMEOUT,
                     self.checkout.view_gate.read_for_callback_with_carrier(
@@ -23,8 +22,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                         Some(&self.cancellation),
                     ),
                 )
-            })
-            .map_err(|_| MountSourceError::Stale)??;
+                .await
+                .map_err(|_| MountSourceError::Stale)?
+            }));
+            self.runtime.poll_prepared(prepared, future)?
+        };
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         carrier
             .with_work(|leaf| {

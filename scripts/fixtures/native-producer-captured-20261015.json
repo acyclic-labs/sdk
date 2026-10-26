@@ -1,0 +1,213 @@
+{
+  "schema": "acyclic.stream.native-build-inputs-receipt.v1",
+  "published_build_inputs_sha256": "sha256:12f66c7b21db44b221991ec00522696fcf32f007724740dab3558b6b589f2638",
+  "raw_build_inputs": {
+    "schema": "acyclic.stream.native-build-inputs.v3",
+    "target": "x86_64-pc-windows-msvc",
+    "target_dir": "Q:\\lanes\\target-qual-stream-native",
+    "runtime": {
+      "node": "24.4.1",
+      "node_path": "C:\\Program Files\\nodejs\\node.exe",
+      "platform": "win32",
+      "arch": "x64",
+      "bun": {
+        "maintained": "1.4.2",
+        "actual": null
+      }
+    },
+    "invocation": {
+      "script": "scripts/build-stream-native.mjs",
+      "runtime": "node",
+      "args": [
+        "build",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "--output",
+        "Q:\\lanes\\qual\\ci-win\\art\\stream-native-bundle\\bundle",
+        "--target-dir",
+        "Q:/lanes/target-qual-stream-native"
+      ]
+    },
+    "compiler": {
+      "rustc": {
+        "command": "Q:\\rustup\\toolchains\\1.98.1-x86_64-pc-windows-msvc\\bin\\rustc.exe",
+        "args": [
+          "--version",
+          "--verbose"
+        ],
+        "output": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.1\nLLVM version: 22.1.8",
+        "executable_sha256": "sha256:ca9988af88b1463f6857fdfe909299fee50a63260b3e5f7dbcb5b4d3318b27bc"
+      },
+      "cargo": {
+        "command": "cargo",
+        "args": [
+          "--version",
+          "--verbose"
+        ],
+        "output": "cargo 1.98.1 (797e8a9bc 2026-08-05)\nrelease: 1.98.1\ncommit-hash: 797e8a9bca276c1c9f9f738d2a20f484fa4eea9d\ncommit-date: 2026-08-05\nhost: x86_64-pc-windows-msvc\nlibgit2: 1.9.4 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:Schannel)\nos: Windows 10.0.26200 (Windows 11 Professional) [64-bit]"
+      }
+    },
+    "generator": {
+      "package": "@napi-rs/cli",
+      "version": "3.10.8",
+      "package_sha256": "sha256:9e8290941a34a2f0ba3a0f4bc76ff48d567b8e70fc76884194aab2cf82c04621",
+      "entry_sha256": "sha256:54d4d1bc60ab7d3efe41cd2f5c2ba0f1998f23210d5094c45490e8ca43495dee",
+      "lock_sha256": "sha256:46f9260b438c8b06c46cb1067ac8e353faa528e2a75f5d6baeada09d54e541af",
+      "options": {
+        "release": true,
+        "platform": true,
+        "target": "x86_64-pc-windows-msvc",
+        "output_dir": "Q:\\lanes\\qual\\ci-win\\art\\stream-native-bundle\\.acyclic-stream-native-build-vhdeJf",
+        "target_dir": "Q:\\lanes\\target-qual-stream-native",
+        "js_package_name": "@acyclic-labs/stream",
+        "js_binding": "binding.cjs",
+        "dts": "binding.d.ts",
+        "cargo_options": [
+          "--locked"
+        ]
+      }
+    },
+    "linker": {
+      "configured": {
+        "target": null
+      },
+      "apple": null,
+      "environment": {
+        "LINK": null,
+        "CC": null,
+        "AR": null,
+        "RUSTC_LINKER": null,
+        "DYLD_LIBRARY_PATH": null,
+        "SDKROOT": "C:\\Users\\varun\\AppData\\Local\\Programs\\Swift\\Platforms\\6.4.0\\Windows.platform\\Developer\\SDKs\\Windows.sdk\\",
+        "VCINSTALLDIR": null,
+        "VCToolsInstallDir": null,
+        "WindowsSdkDir": null,
+        "VisualStudioVersion": null
+      },
+      "actual": {
+        "source": "rustc-invocation",
+        "rustc": "Q:\\rustup\\toolchains\\1.98.1-x86_64-pc-windows-msvc\\bin\\rustc.exe",
+        "target": "x86_64-pc-windows-msvc",
+        "linker": null,
+        "args": [
+          "--crate-name",
+          "acyclic_stream_napi",
+          "--edition=2024",
+          "rust\\crates\\stream-napi\\src\\lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "cdylib",
+          "--crate-type",
+          "rlib",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--deny=clippy::unwrap_used",
+          "--warn=clippy::unwrap_in_result",
+          "--warn=unsafe_op_in_unsafe_fn",
+          "--deny=unsafe_code",
+          "--warn=clippy::uninlined_format_args",
+          "--warn=clippy::unimplemented",
+          "--deny=clippy::undocumented_unsafe_blocks",
+          "--warn=clippy::too_many_lines",
+          "--warn=clippy::todo",
+          "--warn=clippy::string_slice",
+          "--warn=clippy::str_to_string",
+          "--warn=clippy::single_match_else",
+          "--warn=clippy::semicolon_if_nothing_returned",
+          "--warn=clippy::redundant_clone",
+          "--deny=clippy::panic",
+          "--warn=clippy::needless_pass_by_value",
+          "--warn=clippy::missing_panics_doc",
+          "--warn=missing_docs",
+          "--warn=clippy::match_same_arms",
+          "--warn=clippy::map_unwrap_or",
+          "--warn=clippy::manual_let_else",
+          "--warn=clippy::inefficient_to_string",
+          "--warn=clippy::indexing_slicing",
+          "--warn=clippy::if_not_else",
+          "--warn=clippy::fallible_impl_from",
+          "--deny=clippy::expect_used",
+          "--warn=clippy::doc_markdown",
+          "--warn=clippy::dbg_macro",
+          "--warn=clippy::cognitive_complexity",
+          "--warn=clippy::cast_sign_loss",
+          "--warn=clippy::cast_precision_loss",
+          "--warn=clippy::cast_possible_wrap",
+          "--warn=clippy::cast_possible_truncation",
+          "--warn=clippy::cast_lossless",
+          "--deny=clippy::allow_attributes_without_reason",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=bdff39203ac978c8",
+          "--out-dir",
+          "Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps",
+          "-L",
+          "dependency=Q:\\lanes\\target-qual-stream-native\\release\\deps",
+          "--extern",
+          "acyclic_stream=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libacyclic_stream.rlib",
+          "--extern",
+          "futures=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libfutures-64df02e5a17a782b.rlib",
+          "--extern",
+          "napi=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libnapi-2d6ecbb9ba4eedaa.rlib",
+          "--extern",
+          "napi_derive=Q:\\lanes\\target-qual-stream-native\\release\\deps\\napi_derive-1adec6062f170429.dll",
+          "--extern",
+          "prost=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libprost-b0506efea31be0a1.rlib",
+          "--extern",
+          "serde=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libserde-56b136ab019ee982.rlib",
+          "--extern",
+          "serde_json=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libserde_json-4181510ea9d50222.rlib",
+          "--extern",
+          "tokio=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libtokio-d41e7be064a7aa78.rlib",
+          "--extern",
+          "tokio_util=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\deps\\libtokio_util-2a5b8187004641ee.rlib",
+          "--remap-path-prefix=Q:/wt/hf-q=/__acyclic_stream_source",
+          "--remap-path-prefix=Q:/lanes/target-qual-stream-native=/__acyclic_stream_target",
+          "-C",
+          "target-feature=+crt-static",
+          "-C",
+          "link-arg=/Brepro",
+          "-L",
+          "native=Q:\\lanes\\target-qual-stream-native\\x86_64-pc-windows-msvc\\release\\build\\ring-48047a9848573c9c\\out",
+          "--check-cfg",
+          "cfg(napi_wasi_threads)",
+          "--check-cfg",
+          "cfg(napi_wasi_no_heap_sync)"
+        ]
+      }
+    },
+    "profile": {
+      "name": "release",
+      "cargo_incremental": "0",
+      "release_incremental": "false",
+      "manifest_sha256": "sha256:e07dec4e74a776a5516a126f88eb3071f0a3cc61b7a5413e278936e2bdfcbaf9",
+      "config_sha256": "sha256:b0bafcc74b1675391e1c26780708f70bfe0f64555a6949bc8d444a6c182aae41"
+    },
+    "environment": {
+      "RUSTFLAGS": null,
+      "CARGO_ENCODED_RUSTFLAGS": "--remap-path-prefix=Q:/wt/hf-q=/__acyclic_stream_source\u001f--remap-path-prefix=Q:/lanes/target-qual-stream-native=/__acyclic_stream_target\u001f-C\u001ftarget-feature=+crt-static\u001f-C\u001flink-arg=/Brepro",
+      "RUSTC_WRAPPER": null,
+      "RUSTC_WORKSPACE_WRAPPER": null,
+      "CARGO_TARGET_DIR": "Q:/lanes/target-qual"
+    },
+    "cache": {
+      "wrapper": null,
+      "wrapper_version": null,
+      "directory": null,
+      "size": null
+    }
+  }
+}
