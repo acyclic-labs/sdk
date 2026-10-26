@@ -21,6 +21,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let original = claims(now);
     let valid = token(7, "one", &original)?;
     admit(backend, &verifier, &source, &valid, now, true, 60).await?;
+    external(backend, &verifier, &valid, SUBJECT, now).await?;
     admit(
         backend,
         &verifier,
@@ -313,9 +314,12 @@ async fn refresh_bounds(now: u64) -> Result {
     let mut duplicate = Source::keys(&[(7, "one"), (8, "one")]);
     let mut confused: Value = serde_json::from_slice(&source.bytes)?;
     confused["keys"][0]["alg"] = json!("HS256");
+    let mut malformed: Value = serde_json::from_slice(&source.bytes)?;
+    malformed["keys"][0]["x"] = json!("AQ");
     for (index, body) in [
         std::mem::take(&mut duplicate.bytes),
         serde_json::to_vec(&confused)?,
+        serde_json::to_vec(&malformed)?,
         Source::keys(&[(7, "one"); 17]).bytes,
         vec![b' '; 65_537],
     ]
