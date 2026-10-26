@@ -8,7 +8,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{AgentPath, AgentState, Error, Out, SpawnVolumes, VolumeBinding},
-    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{ContentAccess, ContentPublisher, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+    core::AuthorityRoot,
 };
 use acyclic_actors::guest::{Composition, GuestError, GuestFuture};
 use acyclic_fs::{
@@ -23,13 +24,21 @@ type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
 pub struct FilesystemSpawnVolumes<P: 'static, O: 'static> {
     host: Arc<Host<P, O>>,
+    issuer: AuthorityRoot,
+    maximum_bytes: u64,
 }
 
 impl<P, O> FilesystemSpawnVolumes<P, O> {
-    /// Volumes on `host`, whose authority must be the agents' stream provider.
+    /// Volumes on `host`, whose authority must be the agents' stream
+    /// provider; `issuer` is the agents' signing custody, which stages each
+    /// child's brief of at most `maximum_bytes` under the child's own authority.
     #[must_use]
-    pub const fn new(host: Arc<Host<P, O>>) -> Self {
-        Self { host }
+    pub const fn new(host: Arc<Host<P, O>>, issuer: AuthorityRoot, maximum_bytes: u64) -> Self {
+        Self {
+            host,
+            issuer,
+            maximum_bytes,
+        }
     }
 }
 
@@ -53,6 +62,15 @@ fn key(child: &AgentPath, name: &str) -> [u8; 16] {
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     bytes
+}
+
+/// Operation staging `child`'s brief as its own file.
+fn brief_operation(child: &AgentPath) -> crate::OperationId {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.brief.v1");
+    hasher.update(child.as_str().as_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    crate::OperationId::from_bytes(bytes)
 }
 
 fn invalid(error: crate::Error) -> Error {
@@ -152,10 +170,35 @@ where
             else {
                 return Ok(None);
             };
+            // The creating generation may be retired; the brief is staged as
+            // the child's own file, retained like every other staged file,
+            // under the child's one brief operation, so a replayed adoption
+            // names the identical file.
+            let authority = super::agent_turns::agent_authority(&self.issuer, child, volumes, &[])
+                .map_err(invalid)?;
+            let writer = super::FilesystemContentPublisher::new(
+                Arc::clone(&self.host),
+                &private.volume,
+                &authority.verifier,
+                &authority.scope,
+                self.maximum_bytes,
+                None,
+            )
+            .map_err(invalid)?;
+            let operation = brief_operation(child);
+            if let Some(file) = writer
+                .observe_staged_once(operation, self.maximum_bytes, ContentAccess::default())
+                .map_err(invalid)?
+                .await
+                .map_err(invalid)?
+                .0
+            {
+                return Ok(Some(file));
+            }
             let fs = &self.host.filesystem;
             let cancellation = CancellationToken::new();
-            // The creating generation, which the spawn commit published and
-            // which never changes: the brief's version on every replay.
+            // The creating generation, which the spawn commit published
+            // holding the brief.
             let generation = fs
                 .workspace_for_creation_operation(
                     private.volume.storage_name(&mut None).map_err(invalid)?,
@@ -168,9 +211,13 @@ where
                 .map_err(|failure| invalid(super::map_error(failure.error)))?
                 .value
                 .ok_or(Error::Record("spawned private volume was not created"))?;
-            // The spawn wrote the brief under the spawning tool's bound.
             let bytes = match generation
-                .read(&format!("/{BRIEF}"), u64::MAX, WorkBudget::UNBOUNDED, &cancellation)
+                .read(
+                    &format!("/{BRIEF}"),
+                    self.maximum_bytes,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
             {
                 Ok(receipt) => receipt.value,
@@ -182,18 +229,21 @@ where
                     return Err(invalid(error));
                 }
             };
-            let descriptor =
-                FileDescriptor::from_bytes(&bytes, "text/markdown", &mut None).map_err(invalid)?;
-            FileRef::new(
-                private.volume.clone(),
-                BRIEF.to_owned(),
-                hex::encode(generation.id().digest().into_bytes()),
-                descriptor,
-                BRIEF.to_owned(),
-                &mut None,
-            )
-            .map(Some)
-            .map_err(invalid)
+            drop(generation);
+            let file = writer
+                .stage_once(
+                    operation,
+                    BRIEF,
+                    &bytes,
+                    "text/markdown",
+                    BRIEF,
+                    ContentAccess::default(),
+                )
+                .map_err(invalid)?
+                .await
+                .map_err(invalid)?
+                .0;
+            Ok(Some(file))
         })
     }
 }

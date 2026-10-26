@@ -19,12 +19,13 @@ pub trait SpawnVolumes: acyclic_stream::ProviderPlatform + 'static {
         outs: &mut [Out],
     ) -> Result<Option<Box<dyn Composition>>, Error>;
 
-    /// The brief file `child`'s private volume was created holding, if any.
+    /// The brief `child`'s private volume was created holding, if any, staged
+    /// as the child's own retained file.
     ///
-    /// A file's version is the generation that holds it, and the creating
-    /// generation exists only once the spawn commit seals, after the adoption
-    /// record is written; the child names its brief at adoption instead. The
-    /// creating generation never changes, so every replay names the same file.
+    /// The creating generation exists only once the spawn commit seals, after
+    /// the adoption record is written, and retention may later retire it; the
+    /// child stages its brief at adoption instead, under one operation per
+    /// child, so every replay names the same file.
     fn brief<'a>(
         &'a self,
         child: &'a AgentPath,

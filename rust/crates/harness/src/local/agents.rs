@@ -200,7 +200,7 @@ impl LocalHarness {
             FilesystemTurnHost::new(
                 stream.clone(),
                 self.files.clone(),
-                authority,
+                authority.clone(),
                 Arc::new(Executors(Arc::downgrade(self))),
                 limits,
             )
@@ -215,7 +215,11 @@ impl LocalHarness {
                 within,
                 ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 Arc::new(SystemClock),
-                Arc::new(FilesystemSpawnVolumes::new(self.files.clone())),
+                Arc::new(FilesystemSpawnVolumes::new(
+                    self.files.clone(),
+                    authority,
+                    self.limits.file_bytes,
+                )),
             )
             .map_err(storage)?,
         );
