@@ -64,3 +64,30 @@ test('the shared client ships an attested snapshot and refuses a tree changed af
   }finally{fs.rmSync(mutant,{recursive:true,force:true});}
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('a native snapshot identifies under the job declaration file, before admission',async()=>{
+ const root=checkout();
+ const prior=process.env.BUILD_SLOT_INPUTS_FILE;
+ try{
+  // An ignored proof log reaches the job only through its declaration file.
+  fs.writeFileSync(path.join(root,'.gitignore'),'*.log\n');fs.writeFileSync(path.join(root,'proof.log'),'declared proof\n');
+  const decl=path.join(root,'.git','inputs.json');
+  fs.writeFileSync(decl,JSON.stringify({version:1,complete:true,base_sha:'none',inputs:[{id:'proof',where:'source',path:'proof.log',producer:['true']}]},null,2));
+  const file=path.join(root,'.git','snapshot.json');
+  const declared=(...args)=>spawnSync(process.execPath,[client,...args],{cwd:root,encoding:'utf8',env:{...process.env,BUILD_SLOT_INPUTS_FILE:decl,BUILD_SLOT_VM_HAVE_DIR:root,BUILD_SLOT_CLIENT_CACHE:path.join(root,'.git','client-cache')}});
+  // Negative control: a snapshot identified without the declaration (the former client, which read only the
+  // admitted JSON) omits the input and is refused, never shipped without it.
+  delete process.env.BUILD_SLOT_INPUTS_FILE;
+  let made=verb(root,'snapshot','--out',file,'--attest');assert.equal(made.status,0,made.stderr);
+  assert.doesNotMatch(JSON.parse(fs.readFileSync(file,'utf8')).id.patch?Buffer.from(JSON.parse(fs.readFileSync(file,'utf8')).id.patch,'base64').toString():'',/proof\.log/);
+  process.env.BUILD_SLOT_INPUTS_FILE=decl;
+  await assert.rejects(consumeClientSnapshot(root,file,1000),/kind=TREE_IDENTITY .*different input declaration/);
+  fs.rmSync(file);fs.rmSync(file+'.attest');
+  made=declared('snapshot','--out',file,'--attest');assert.equal(made.status,0,made.stderr);
+  const snapshot=await consumeClientSnapshot(root,file,1000);
+  assert.match(snapshot.id.patch.toString(),/proof\.log/,'the declared ignored input travels in the snapshot');
+ }finally{
+  if(prior===undefined)delete process.env.BUILD_SLOT_INPUTS_FILE;else process.env.BUILD_SLOT_INPUTS_FILE=prior;
+  fs.rmSync(root,{recursive:true,force:true});
+ }
+});

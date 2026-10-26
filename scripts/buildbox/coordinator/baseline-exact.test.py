@@ -75,6 +75,14 @@ class ExactBaselineTests(unittest.TestCase):
                 self.assertEqual(baseline.select(root,CAPTURED_HEAD,root,
                     'MAIN_WIDE RED '+CAPTURED_HEAD+': actual captured run', 'clippy', True),log)
             self.assertFalse(baseline.check_complete(complete.replace('GATE_CLIPPY_COMPLETE ', 'lost '), 'clippy'))
+        # A real Clippy error on main still completes its exact-base phase when
+        # its receipt is valid; the former rc=0 requirement refused it and
+        # deferred every PR on that base.
+        self.assertEqual(complete.count('GATE_CLIPPY rc=0\n'), 1)
+        self.assertEqual(complete.count('GATE_CLIPPY_COMPLETE rc=0 '), 1)
+        red = complete.replace('GATE_CLIPPY rc=0\n', 'GATE_CLIPPY rc=101\n').replace('GATE_CLIPPY_COMPLETE rc=0 ', 'GATE_CLIPPY_COMPLETE rc=101 ')
+        self.assertTrue(baseline.check_complete(red, 'clippy'))
+        self.assertFalse(baseline.check_complete(red.replace('GATE_CLIPPY_COMPLETE rc=101 ', 'GATE_CLIPPY_COMPLETE rc=0 '), 'clippy'))
 
     def test_historical_green_fallback_requires_its_executor_receipt(self):
         self.assertTrue(baseline.eligible(GREEN_PHASES))

@@ -495,9 +495,15 @@ function treeIdentity(co) {
 // it for the same checkout within 15 min, so every phase runs exactly that snapshot (edits made meanwhile wait for the
 // next loop, as they would mid-sync). The VM still verifies the content digest.
 const idMemo = new Map();
-const inputKey = () => crypto.createHash('sha256').update(process.env.BUILD_SLOT_INPUTS_JSON || '').digest('hex');
+// The declaration this process identifies under: the admitted JSON, else the job's declaration file (a Windows
+// snapshot runs before admission and must cover the same declared source inputs), canonicalized so both forms agree.
+function declaredInputs() {
+  const raw = process.env.BUILD_SLOT_INPUTS_JSON || (process.env.BUILD_SLOT_INPUTS_FILE ? fs.readFileSync(process.env.BUILD_SLOT_INPUTS_FILE, 'utf8') : '');
+  return raw ? JSON.stringify(JSON.parse(raw)) : '';
+}
+const inputKey = () => crypto.createHash('sha256').update(declaredInputs()).digest('hex');
 function sourceInputPaths(co) {
-  const closure = JSON.parse(process.env.BUILD_SLOT_INPUTS_JSON || '{"inputs":[]}');
+  const closure = JSON.parse(declaredInputs() || '{"inputs":[]}');
   return closure.inputs.filter(item => item.where === 'source').map(item => {
     const file = path.relative(co.top, path.resolve(process.cwd(), item.path)).split(path.sep).join('/');
     if (file.startsWith('../') || path.isAbsolute(file) || IDENT_SKIP_RE.test('\t'+file)) {

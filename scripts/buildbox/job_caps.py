@@ -1,33 +1,25 @@
 #!/usr/bin/python3 -B
 """Per-job kernel caps: the one sizing and reporting rule for admitted bb2 jobs.
 
-Every admitted job (SDK and Cloud) runs in a root-owned cgroup whose task and
-memory ceilings follow its admitted CPU share: 256 tasks per CPU and an equal
-part of 85% of RAM across the 128-CPU lease pool. A job cannot raise its own
-ceiling; the payload only owns delegated children below it. A job that hits a
-ceiling fails alone with a typed refusal; it is never retried or re-sized.
+Every admitted job (SDK and Cloud) runs in a root-owned cgroup with the
+approved interim ceilings (2026-10-26): 16384 tasks and 160 GiB of memory per
+job, whatever its CPU share. A job cannot raise its own ceiling; the payload
+only owns delegated children below it. A job that hits a ceiling fails alone
+with a typed refusal; it is never retried or re-sized.
 """
 import os
 import shlex
 from pathlib import Path
 
-POOL_CPUS = 128
-TASKS_PER_CPU = 256
-MEMORY_FRACTION = 0.85
+TASKS_MAX = 16384
+MEMORY_MAX = 160 << 30
 RECOVERY = ('fix the unbounded process/thread or memory growth in this command; '
-            'the per-CPU caps in scripts/buildbox/job_caps.py are never raised to admit it')
+            'the per-job caps in scripts/buildbox/job_caps.py are never raised to admit it')
 
 
-def physical_memory():
-    return os.sysconf('SC_PAGE_SIZE')*os.sysconf('SC_PHYS_PAGES')
-
-
-def limits(cpus, memory=None):
+def limits(cpus):
     if type(cpus) is not int or cpus < 1: raise ValueError('admitted CPU count required: '+repr(cpus))
-    # memory.max is kept in whole pages; page-align so the read-back is exact.
-    page = os.sysconf('SC_PAGE_SIZE')
-    share = int((physical_memory() if memory is None else memory)*MEMORY_FRACTION)//POOL_CPUS//page*page
-    return {'pids.max': TASKS_PER_CPU*cpus, 'memory.max': share*cpus}
+    return {'pids.max': TASKS_MAX, 'memory.max': MEMORY_MAX}
 
 
 def write(directory, values):

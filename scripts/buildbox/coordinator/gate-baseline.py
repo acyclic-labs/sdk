@@ -71,7 +71,9 @@ def check_complete(text, phase):
         spec = importlib.util.spec_from_file_location('gate_clippy_completion', Path(__file__).with_name('gate-clippy.py'))
         clippy = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(clippy)
-        return clippy.complete(text) and re.findall(r'^GATE_CLIPPY rc=(-?\d+)$', text, re.M) == ['0']
+        # A completed red run with a valid receipt is exact-base evidence too:
+        # its findings are main's, so the PR comparison ratchets against them.
+        return clippy.complete(text)
     # The native matrix owns the first wall marker; later Windows matrix
     # results must never complete an interrupted or failed native phase.
     native = re.split(r'^GATE_WINDOWS_FEATURES_START(?: |$)', text, maxsplit=1, flags=re.M)[0]

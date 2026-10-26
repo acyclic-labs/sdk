@@ -24,7 +24,7 @@ import job_caps
 from admission_policy import CPU_LEASE_SHAPE
 
 CPUS = CPU_LEASE_SHAPE[1]
-BOUND = job_caps.TASKS_PER_CPU*CPUS+256
+BOUND = job_caps.TASKS_MAX+256
 
 
 def lease_root():
@@ -70,8 +70,9 @@ def worker(mode, signals):
 
 
 class JobCaps(unittest.TestCase):
-    def test_limits_follow_admitted_share(self):
-        self.assertEqual(job_caps.limits(16, memory=128 << 30), {'pids.max': 4096, 'memory.max': int((128 << 30)*0.85)//128//os.sysconf('SC_PAGE_SIZE')*os.sysconf('SC_PAGE_SIZE')*16})
+    def test_limits_are_the_approved_interim_ceilings(self):
+        for cpus in (1, 16):
+            self.assertEqual(job_caps.limits(cpus), {'pids.max': 16384, 'memory.max': 160 << 30})
         with self.assertRaises(ValueError): job_caps.limits(0)
 
     def loop(self, source):
