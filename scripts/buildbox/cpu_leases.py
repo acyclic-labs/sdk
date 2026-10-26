@@ -23,6 +23,7 @@ import shlex
 from admission_policy import (CPU_LEASE_SHAPE, cpu_layout, atomic_json, require_tenant,
                               process_identity, restore_limits, LIMIT_ENV, CACHE_RECOVERY)
 from admission_policy import parse_limits
+import job_caps
 
 CGROUP_ROOT = Path('/sys/fs/cgroup/bbjobs.slice/buildbox-cpu')
 CONTROL_ROOT = Path('/run/buildbox-cpu')
@@ -241,6 +242,8 @@ def execute(index, token, tenant, argv):
                 old.rmdir()
         run = slot/('run-'+token); record_path(token); run.mkdir()
         values = cpu_layout()[index]; bound(run, values); enable(run)
+        # Root-owned ceilings; the delegated work subtree cannot raise them.
+        caps = job_caps.limits(len(values)); job_caps.write(run, caps); before = job_caps.events(run)
         work = run/'work'; work.mkdir(); enable(work)
         leaf = work/'job'; leaf.mkdir()
         user = pwd.getpwnam('var')
@@ -250,7 +253,7 @@ def execute(index, token, tenant, argv):
             # Delegation never includes the root-owned slot/run ceiling.
             if file.name not in ('cgroup.kill',): os.chown(file, user.pw_uid, user.pw_gid)
         record = {'id': token, 'index': index, 'generation': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-                  'cpus': list(values), 'cgroup': str(run), 'tenant': tenant,
+                  'cpus': list(values), 'cgroup': str(run), 'tenant': tenant, 'caps': caps,
                   'tier': int(os.environ.get('BB_ADMIT_TIER','2')), 'cls': os.environ.get('BB_ADMIT_CLASS','compile'),
                   'receipt_meta': os.environ.get('BUILD_SLOT_RECEIPT_META'),
                   'admission_start': os.environ.get('BUILD_SLOT_ADMISSION_START'),
@@ -289,6 +292,12 @@ def execute(index, token, tenant, argv):
             result = 128-result if result<0 else result
             category = 'interrupted' if result in (129,130,137,143) else 'command'
             wait_empty(run)
+            refusals = job_caps.exceeded(run, before)
+            if refusals:
+                # A capped job fails alone; a zero status after a refused fork
+                # or OOM kill is not a pass.
+                print('\n'.join(refusals), file=sys.stderr, flush=True)
+                category = 'cap-exceeded'; result = result or 1
             return result
         except SystemExit as error:
             result = error.code; category = 'interrupted'

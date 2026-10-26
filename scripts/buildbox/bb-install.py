@@ -24,9 +24,9 @@ BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # Dependencies precede consumers. Every replacement remains a complete file;
 # in-flight interpreters retain their old inode and loaded module generation.
-TOOLS = ['admission_policy.py', 'input_closure.py', 'cpu_leases.py', 'bbcgroup-systemd-run', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
+TOOLS = ['admission_policy.py', 'input_closure.py', 'job_caps.py', 'cpu_leases.py', 'bbcgroup-systemd-run', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
-CACHE_TOOLS = frozenset({'admission_policy.py','input_closure.py','cpu_leases.py','bbcgroup-systemd-run','bb-cache.py','sccache-rustc','bb-job.py','bb-admit.py','build-slot'})
+CACHE_TOOLS = frozenset({'admission_policy.py','input_closure.py','job_caps.py','cpu_leases.py','bbcgroup-systemd-run','bb-cache.py','sccache-rustc','bb-job.py','bb-admit.py','build-slot'})
 
 
 def migration_scope(stage, selected):
