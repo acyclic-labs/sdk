@@ -67,12 +67,12 @@ use reducer::schema_registry;
 mod tool;
 use tool::*;
 #[cfg(target_arch = "wasm32")]
-mod wire_session;
-#[cfg(target_arch = "wasm32")]
 mod agent_client;
 #[cfg(target_arch = "wasm32")]
 mod page_window;
 mod wire;
+#[cfg(target_arch = "wasm32")]
+mod wire_session;
 
 #[cfg(feature = "browser")]
 mod agents;

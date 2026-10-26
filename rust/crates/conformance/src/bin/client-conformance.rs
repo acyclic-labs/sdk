@@ -6,10 +6,14 @@ use std::io::Read as _;
 
 fn input_file(path: &str, maximum: usize) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?.take(maximum as u64 + 1).read_to_end(&mut bytes)?;
+    std::fs::File::open(path)?
+        .take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-            format!("CLIENT_INPUT file exceeds {maximum} bytes: {path}")));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("CLIENT_INPUT file exceeds {maximum} bytes: {path}"),
+        ));
     }
     Ok(bytes)
 }
@@ -18,18 +22,33 @@ fn input_file(path: &str, maximum: usize) -> std::io::Result<Vec<u8>> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = std::env::var("ACYCLIC_CONFORMANCE_ENDPOINT")?;
     let token = std::env::var("ACYCLIC_CONFORMANCE_TOKEN")?;
-    let namespace = AgentPath::root(&AgentId::try_from(std::env::var("ACYCLIC_CONFORMANCE_NAMESPACE")?)?);
+    let namespace = AgentPath::root(&AgentId::try_from(std::env::var(
+        "ACYCLIC_CONFORMANCE_NAMESPACE",
+    )?)?);
     let path = std::env::var("ACYCLIC_CONFORMANCE_AGENT_FIXTURE")?;
     let fixture: Fixture = serde_json::from_slice(&input_file(&path, 65_536)?)?;
-    if fixture.agent != namespace && !fixture.agent.as_str().starts_with(&format!("{}/children/", namespace.as_str())) {
+    if fixture.agent != namespace
+        && !fixture
+            .agent
+            .as_str()
+            .starts_with(&format!("{}/children/", namespace.as_str()))
+    {
         return Err("CLIENT_INPUT fixture is outside the authorized namespace".into());
     }
     let credential = std::env::var("ACYCLIC_CONFORMANCE_SESSION_CREDENTIAL")?;
-    if credential.len() > 131_072 { return Err("CLIENT_INPUT credential exceeds byte bound".into()); }
+    if credential.len() > 131_072 {
+        return Err("CLIENT_INPUT credential exceeds byte bound".into());
+    }
     let credential = hex::decode(credential)?;
     let provider = match std::env::var("ACYCLIC_CONFORMANCE_CA") {
-        Ok(path) => Client::connect_eager_with_ca_certificate(&endpoint, &token,
-            input_file(&path, acyclic_stream::MAX_CA_CERTIFICATE_BYTES)?).await?,
+        Ok(path) => {
+            Client::connect_eager_with_ca_certificate(
+                &endpoint,
+                &token,
+                input_file(&path, acyclic_stream::MAX_CA_CERTIFICATE_BYTES)?,
+            )
+            .await?
+        }
         Err(std::env::VarError::NotPresent) => Client::connect_eager(&endpoint, &token).await?,
         Err(error) => return Err(error.into()),
     };

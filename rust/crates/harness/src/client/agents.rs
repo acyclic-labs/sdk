@@ -87,10 +87,20 @@ impl AgentClient {
         let conversation = agent.conversation()?;
         let mut selected = Self {
             session: WireSession::new(client, DemandPolicy::default()),
-            agent: agent.clone(), conversation,
-            streams: Vec::new(), next_stream: 0, credential,
+            agent: agent.clone(),
+            conversation,
+            streams: Vec::new(),
+            next_stream: 0,
+            credential,
         };
-        selected.set_view(AgentSelection { agent, conversation_from, status_from }, std::iter::empty())?;
+        selected.set_view(
+            AgentSelection {
+                agent,
+                conversation_from,
+                status_from,
+            },
+            std::iter::empty(),
+        )?;
         Ok(selected)
     }
 
@@ -113,7 +123,10 @@ impl AgentClient {
             if index == Self::selected_capacity() {
                 return Err(WireSessionError::Demand(DemandError::SelectedCapacity).into());
             }
-            if selections.iter().any(|previous: &AgentSelection| previous.agent == selection.agent) {
+            if selections
+                .iter()
+                .any(|previous: &AgentSelection| previous.agent == selection.agent)
+            {
                 continue;
             }
             selections.push(selection);
@@ -123,7 +136,11 @@ impl AgentClient {
         let mut subscriptions = Vec::with_capacity(selections.len() * 2);
         for selection in selections {
             for (is_status, path, from) in [
-                (false, selection.agent.conversation()?, selection.conversation_from),
+                (
+                    false,
+                    selection.agent.conversation()?,
+                    selection.conversation_from,
+                ),
                 (true, selection.agent.status()?, selection.status_from),
             ] {
                 subscriptions.push((path.clone(), subscription(&path, from, self.credential)));
@@ -146,7 +163,9 @@ impl AgentClient {
 
     /// Borrow one selected conversation without copying its retained records.
     pub fn agent_conversation(&self, agent: &AgentPath) -> Option<&StreamView> {
-        self.streams.iter().find(|(selected, status, _)| selected == agent && !*status)
+        self.streams
+            .iter()
+            .find(|(selected, status, _)| selected == agent && !*status)
             .and_then(|(_, _, path)| self.session.view(path))
     }
 
@@ -157,7 +176,9 @@ impl AgentClient {
 
     /// Borrow the exact shared display window, including its eviction edge.
     pub fn conversation(&self) -> &StreamView {
-        self.session.view(&self.conversation).expect("selected conversation owns a view")
+        self.session
+            .view(&self.conversation)
+            .expect("selected conversation owns a view")
     }
 
     /// Decode only the displayed turn requested by the renderer. Reading a
@@ -168,13 +189,25 @@ impl AgentClient {
 
     /// Decode one visible record for a selected agent, without copying its
     /// complete window or accepting records for an unrequested authority.
-    pub fn agent_entry(&self, agent: &AgentPath, index: usize) -> Result<Option<AgentEvent>, AgentClientError> {
-        let view = self.agent_conversation(agent).ok_or(WireSessionError::NotRequested)?;
-        view.record(index).map(|record| {
-            ConversationEntry::decode(&record.value)
-                .map(|entry| AgentEvent::Conversation { agent: agent.clone(), sequence: record.sequence, entry })
-                .map_err(AgentClientError::Record)
-        }).transpose()
+    pub fn agent_entry(
+        &self,
+        agent: &AgentPath,
+        index: usize,
+    ) -> Result<Option<AgentEvent>, AgentClientError> {
+        let view = self
+            .agent_conversation(agent)
+            .ok_or(WireSessionError::NotRequested)?;
+        view.record(index)
+            .map(|record| {
+                ConversationEntry::decode(&record.value)
+                    .map(|entry| AgentEvent::Conversation {
+                        agent: agent.clone(),
+                        sequence: record.sequence,
+                        entry,
+                    })
+                    .map_err(AgentClientError::Record)
+            })
+            .transpose()
     }
 
     /// Latest actually observed lifecycle state. Before its first delivery the
@@ -184,13 +217,28 @@ impl AgentClient {
     }
 
     /// Latest actually delivered status for a selected agent; no separate cache.
-    pub fn agent_status(&self, agent: &AgentPath) -> Result<Option<StatusRecord>, AgentClientError> {
-        let Some((_, _, path)) = self.streams.iter().find(|(selected, status, _)| selected == agent && *status) else {
+    pub fn agent_status(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<Option<StatusRecord>, AgentClientError> {
+        let Some((_, _, path)) = self
+            .streams
+            .iter()
+            .find(|(selected, status, _)| selected == agent && *status)
+        else {
             return Err(WireSessionError::NotRequested.into());
         };
-        let view = self.session.view(path).expect("selected status owns a view");
-        let record = view.records().len().checked_sub(1).and_then(|index| view.record(index));
-        record.map(|record| StatusRecord::decode(&record.value).map_err(AgentClientError::Record))
+        let view = self
+            .session
+            .view(path)
+            .expect("selected status owns a view");
+        let record = view
+            .records()
+            .len()
+            .checked_sub(1)
+            .and_then(|index| view.record(index));
+        record
+            .map(|record| StatusRecord::decode(&record.value).map_err(AgentClientError::Record))
             .transpose()
     }
 
@@ -201,7 +249,10 @@ impl AgentClient {
 
     /// Fairly poll only the bounded selected streams. There is no population scan
     /// and no per-agent queue, task or unbounded status cache.
-    pub fn poll_next(&mut self, context: &mut Context<'_>) -> Poll<Result<AgentEvent, AgentClientError>> {
+    pub fn poll_next(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<AgentEvent, AgentClientError>> {
         let mut waiting = false;
         for offset in 0..self.streams.len() {
             let index = (self.next_stream + offset) % self.streams.len();
@@ -222,7 +273,9 @@ impl AgentClient {
                     continue;
                 }
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
-                Poll::Ready(Ok(None)) => return Poll::Ready(Err(AgentClientError::Closed(path.clone()))),
+                Poll::Ready(Ok(None)) => {
+                    return Poll::Ready(Err(AgentClientError::Closed(path.clone())));
+                }
                 Poll::Ready(Ok(Some(frame))) => frame,
             };
             let event = match frame.body {
@@ -231,12 +284,17 @@ impl AgentClient {
                         return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
                     };
                     if *status {
-                        StatusRecord::decode(&record.value).map(|status| AgentEvent::Status { agent: agent.clone(), status })
-                    } else {
-                        ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
+                        StatusRecord::decode(&record.value).map(|status| AgentEvent::Status {
                             agent: agent.clone(),
-                            sequence: record.sequence,
-                            entry,
+                            status,
+                        })
+                    } else {
+                        ConversationEntry::decode(&record.value).map(|entry| {
+                            AgentEvent::Conversation {
+                                agent: agent.clone(),
+                                sequence: record.sequence,
+                                entry,
+                            }
                         })
                     }
                 }
@@ -267,11 +325,16 @@ fn subscription(path: &StreamPath, from: u64, credential: u32) -> wire::SessionS
         credential,
         channel: None,
         filter: None,
-        resume: Some(wire::SessionCursor { next: from, opaque: bytes::Bytes::new() }),
-        kind: Some(wire::session_subscription::Kind::Follow(wire::SessionFollow {
-            resource: wire_codec::session::stream_resource(path.as_str()),
-            delivery: wire::SessionDelivery::All as i32,
-            ..Default::default()
-        })),
+        resume: Some(wire::SessionCursor {
+            next: from,
+            opaque: bytes::Bytes::new(),
+        }),
+        kind: Some(wire::session_subscription::Kind::Follow(
+            wire::SessionFollow {
+                resource: wire_codec::session::stream_resource(path.as_str()),
+                delivery: wire::SessionDelivery::All as i32,
+                ..Default::default()
+            },
+        )),
     }
 }

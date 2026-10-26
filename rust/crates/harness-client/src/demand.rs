@@ -141,7 +141,10 @@ impl ViewDemand {
     }
 
     /// Nodes needing lazy child discovery, without following every child.
-    pub fn newly_expanded<'a>(&'a self, previous: &'a Self) -> impl Iterator<Item = &'a StreamPath> {
+    pub fn newly_expanded<'a>(
+        &'a self,
+        previous: &'a Self,
+    ) -> impl Iterator<Item = &'a StreamPath> {
         self.expanded.difference(&previous.expanded)
     }
 }

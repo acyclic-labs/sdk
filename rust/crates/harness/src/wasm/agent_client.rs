@@ -96,9 +96,12 @@ fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
     if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
         return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
     }
-    AgentPath::try_from(agent.as_string()
-        .ok_or_else(|| error("invalid_agent_path", "agent path is not a string"))?)
-        .map_err(actor_error)
+    AgentPath::try_from(
+        agent
+            .as_string()
+            .ok_or_else(|| error("invalid_agent_path", "agent path is not a string"))?,
+    )
+    .map_err(actor_error)
 }
 
 struct Reading<'a> {
@@ -136,7 +139,8 @@ impl WasmAgentClient {
         credential: u32,
     ) -> Result<Self, JsValue> {
         let agent = agent_path(agent)?;
-        let pool = stream.session_client()
+        let pool = stream
+            .session_client()
             .ok_or_else(|| error("client_no_session", "provider has no authenticated session"))?;
         Self::from_session(pool, agent, conversation_from, status_from, credential)
     }
@@ -153,14 +157,21 @@ impl WasmAgentClient {
         status_from: js_sys::BigUint64Array,
     ) -> Result<(), JsValue> {
         let length = agents.length();
-        if length == 0 || length as usize > AgentClient::selected_capacity()
-            || conversation_from.length() != length || status_from.length() != length
+        if length == 0
+            || length as usize > AgentClient::selected_capacity()
+            || conversation_from.length() != length
+            || status_from.length() != length
         {
-            return Err(error("selected_capacity", "view requires 1..=8 agents and matching cursor arrays"));
+            return Err(error(
+                "selected_capacity",
+                "view requires 1..=8 agents and matching cursor arrays",
+            ));
         }
         let mut selections = Vec::with_capacity(length as usize);
         for index in 0..length {
-            let agent = agents.get(index).dyn_into::<JsString>()
+            let agent = agents
+                .get(index)
+                .dyn_into::<JsString>()
                 .map_err(|_| error("invalid_agent_path", "agent path is not a string"))?;
             selections.push(AgentSelection {
                 agent: agent_path(agent)?,
@@ -169,14 +180,21 @@ impl WasmAgentClient {
             });
         }
         let mut selections = selections.into_iter();
-        let focused = selections.next().ok_or_else(|| error("selected_capacity", "view is empty"))?;
+        let focused = selections
+            .next()
+            .ok_or_else(|| error("selected_capacity", "view is empty"))?;
         {
             let mut client = self.client.borrow_mut();
-            client.as_mut().ok_or_else(|| error("client_closed", "agent client is closed"))?
-                .set_view(focused, selections).map_err(client_error)?;
+            client
+                .as_mut()
+                .ok_or_else(|| error("client_closed", "agent client is closed"))?
+                .set_view(focused, selections)
+                .map_err(client_error)?;
         }
         let waker = self.waker.borrow_mut().take();
-        if let Some(waker) = waker { waker.wake(); }
+        if let Some(waker) = waker {
+            waker.wake();
+        }
         Ok(())
     }
 
@@ -190,7 +208,9 @@ impl WasmAgentClient {
     #[wasm_bindgen(js_name = agentRecord, unchecked_return_type = "AgentEvent | null")]
     pub fn agent_record(&self, agent: JsString, index: usize) -> Result<JsValue, JsValue> {
         let agent = agent_path(agent)?;
-        let record = self.with_client(|client| client.agent_entry(&agent, index))?.map_err(client_error)?;
+        let record = self
+            .with_client(|client| client.agent_entry(&agent, index))?
+            .map_err(client_error)?;
         to_js(&record)
     }
 
@@ -198,7 +218,9 @@ impl WasmAgentClient {
     #[wasm_bindgen(js_name = agentStatus, unchecked_return_type = "StatusRecord | null")]
     pub fn agent_status(&self, agent: JsString) -> Result<JsValue, JsValue> {
         let agent = agent_path(agent)?;
-        let status = self.with_client(|client| client.agent_status(&agent))?.map_err(client_error)?;
+        let status = self
+            .with_client(|client| client.agent_status(&agent))?
+            .map_err(client_error)?;
         to_js(&status)
     }
 
@@ -208,7 +230,8 @@ impl WasmAgentClient {
     pub fn agent_window(&self, agent: JsString) -> Result<JsValue, JsValue> {
         let agent = agent_path(agent)?;
         let window = self.with_client(|client| {
-            let view = client.agent_conversation(&agent)
+            let view = client
+                .agent_conversation(&agent)
                 .ok_or_else(|| error("not_requested", "agent was not selected"))?;
             to_js(&AgentWindow {
                 first_sequence: view.first_sequence(),
@@ -226,17 +249,26 @@ impl WasmAgentClient {
     #[wasm_bindgen(unchecked_return_type = "AgentEvent")]
     pub async fn next(&self) -> Result<JsValue, JsValue> {
         if self.reading.replace(true) {
-            return Err(error("client_read_busy", "an agent read is already pending"));
+            return Err(error(
+                "client_read_busy",
+                "an agent read is already pending",
+            ));
         }
-        let _reading = Reading { busy: &self.reading, waker: &self.waker };
+        let _reading = Reading {
+            busy: &self.reading,
+            waker: &self.waker,
+        };
         let event = futures::future::poll_fn(|context| {
             let mut client = self.client.borrow_mut();
             let Some(client) = client.as_mut() else {
                 return Poll::Ready(Err(error("client_closed", "agent client is closed")));
             };
             *self.waker.borrow_mut() = Some(context.waker().clone());
-            client.poll_next(context).map(|result| result.map_err(client_error))
-        }).await?;
+            client
+                .poll_next(context)
+                .map(|result| result.map_err(client_error))
+        })
+        .await?;
         // Exact 64-bit sequences cross as BigInt through the shared codec.
         to_js(&event)
     }
@@ -274,7 +306,8 @@ impl WasmAgentClient {
     /// An index beyond the retained window returns null.
     #[wasm_bindgen(unchecked_return_type = "AgentEvent | null")]
     pub fn record(&self, index: usize) -> Result<JsValue, JsValue> {
-        let entry = self.with_client(|client| client.conversation_entry(index))?
+        let entry = self
+            .with_client(|client| client.conversation_entry(index))?
             .map_err(client_error)?;
         to_js(&entry)
     }
@@ -283,7 +316,9 @@ impl WasmAgentClient {
     /// delivered. The browser does not maintain a second status map.
     #[wasm_bindgen(js_name = currentStatus, unchecked_return_type = "StatusRecord | null")]
     pub fn current_status(&self) -> Result<JsValue, JsValue> {
-        let status = self.with_client(AgentClient::current_status)?.map_err(client_error)?;
+        let status = self
+            .with_client(AgentClient::current_status)?
+            .map_err(client_error)?;
         to_js(&status)
     }
 }
@@ -310,7 +345,8 @@ impl WasmAgentClient {
 
     fn with_client<T>(&self, read: impl FnOnce(&AgentClient) -> T) -> Result<T, JsValue> {
         let client = self.client.borrow();
-        let client = client.as_ref()
+        let client = client
+            .as_ref()
             .ok_or_else(|| error("client_closed", "agent client is closed"))?;
         Ok(read(client))
     }

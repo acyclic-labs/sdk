@@ -1,6 +1,7 @@
 use crate::{DemandError, DemandPolicy, StreamView, StreamViewPolicy, ViewDemand};
 use acyclic_stream::{
-    BoxProviderFuture, BoxProviderStream, StreamError, StreamPath, session::Client, wire, wire_codec,
+    BoxProviderFuture, BoxProviderStream, StreamError, StreamPath, session::Client, wire,
+    wire_codec,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -93,7 +94,11 @@ impl WireSession {
 
     /// Use caller-selected finite display bounds on the same canonical pool.
     #[must_use]
-    pub fn with_view_policy(client: Client, policy: DemandPolicy, view_policy: StreamViewPolicy) -> Self {
+    pub fn with_view_policy(
+        client: Client,
+        policy: DemandPolicy,
+        view_policy: StreamViewPolicy,
+    ) -> Self {
         Self {
             client,
             policy,
@@ -135,7 +140,9 @@ impl WireSession {
         if demand == self.demand {
             return Ok(());
         }
-        let revision = self.revision.checked_add(1)
+        let revision = self
+            .revision
+            .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
         self.follows.retain(|agent, _| demand.contains_full(agent));
         self.views.retain(|agent, _| demand.contains_full(agent));
@@ -182,20 +189,31 @@ impl WireSession {
             requested.keys().cloned(),
             std::iter::empty(),
             self.demand.expanded().cloned(),
-        ).map_err(WireSessionError::Demand)?;
-        let opening = requested.keys().filter(|path| !self.follows.contains_key(*path)).count();
+        )
+        .map_err(WireSessionError::Demand)?;
+        let opening = requested
+            .keys()
+            .filter(|path| !self.follows.contains_key(*path))
+            .count();
         // A replacement can change composition (for example focus) while its
         // stream membership is unchanged. Fence renderer caches in that case too.
-        let last_revision = self.revision.checked_add(1 + opening as u64)
+        let last_revision = self
+            .revision
+            .checked_add(1 + opening as u64)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
         // These futures are lazy: staging them cannot admit a pool request.
         let mut staged = Vec::with_capacity(opening);
         let mut revision = self.revision + 1;
         for (path, subscription) in requested {
-            if self.follows.contains_key(&path) { continue; }
+            if self.follows.contains_key(&path) {
+                continue;
+            }
             revision += 1;
-            let from = subscription.resume.as_ref()
-                .ok_or(WireSessionError::InvalidSubscription)?.next;
+            let from = subscription
+                .resume
+                .as_ref()
+                .ok_or(WireSessionError::InvalidSubscription)?
+                .next;
             let (view, subscription) = self.stage_stream(subscription, from, revision);
             staged.push((path, view, subscription));
         }
@@ -259,7 +277,9 @@ impl WireSession {
             return Err(WireSessionError::AlreadyOpen);
         }
         let from = validate_subscription(&agent, &subscription)?;
-        let revision = self.revision.checked_add(1)
+        let revision = self
+            .revision
+            .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
         let (view, subscription) = self.stage_stream(subscription, from, revision);
         self.views.insert(agent.clone(), view);
@@ -279,7 +299,10 @@ impl WireSession {
         let opening = Box::pin(async move { client.subscribe(subscription).await });
         (
             StreamView::new(self.view_policy, from, revision),
-            Subscription { request, state: SubscriptionState::Opening(opening) },
+            Subscription {
+                request,
+                state: SubscriptionState::Opening(opening),
+            },
         )
     }
 
@@ -320,18 +343,28 @@ impl WireSession {
             Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
             Poll::Ready(Ok(())) => {}
         }
-        let Some(Subscription { state: SubscriptionState::Open(stream), .. }) = self.follows.get_mut(agent) else {
+        let Some(Subscription {
+            state: SubscriptionState::Open(stream),
+            ..
+        }) = self.follows.get_mut(agent)
+        else {
             return Poll::Ready(Err(WireSessionError::NotOpen));
         };
         match stream.poll_next_unpin(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(frame))) => {
-                let revision = self.revision.checked_add(1)
+                let revision = self
+                    .revision
+                    .checked_add(1)
                     .ok_or(WireSessionError::Stream(StreamError::Capacity));
                 let folded = revision.and_then(|revision| {
-                    self.views.get_mut(agent)
+                    self.views
+                        .get_mut(agent)
                         .ok_or(WireSessionError::NotOpen)
-                        .and_then(|view| view.apply(&frame, revision).map_err(WireSessionError::Stream))?;
+                        .and_then(|view| {
+                            view.apply(&frame, revision)
+                                .map_err(WireSessionError::Stream)
+                        })?;
                     self.revision = revision;
                     Ok(())
                 });
@@ -341,7 +374,10 @@ impl WireSession {
                     self.follows.remove(agent);
                     return Poll::Ready(Err(error));
                 }
-                if matches!(frame.body.as_ref(), Some(wire::session_frame::Body::Closed(_))) {
+                if matches!(
+                    frame.body.as_ref(),
+                    Some(wire::session_frame::Body::Closed(_))
+                ) {
                     self.follows.remove(agent);
                 }
                 Poll::Ready(Ok(Some(frame)))
@@ -379,13 +415,19 @@ fn validate_subscription(
         return Err(WireSessionError::InvalidSubscription);
     };
     if follow.delivery != wire::SessionDelivery::All as i32
-        || subscription.filter.is_some() || subscription.channel.is_some()
+        || subscription.filter.is_some()
+        || subscription.channel.is_some()
     {
         return Err(WireSessionError::InvalidSubscription);
     }
-    let resume = subscription.resume.as_ref().ok_or(WireSessionError::InvalidSubscription)?;
+    let resume = subscription
+        .resume
+        .as_ref()
+        .ok_or(WireSessionError::InvalidSubscription)?;
     wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
-    if wire_codec::session::stream_path(&follow.resource).map_err(WireSessionError::Stream)? != *path {
+    if wire_codec::session::stream_path(&follow.resource).map_err(WireSessionError::Stream)?
+        != *path
+    {
         return Err(WireSessionError::NotRequested);
     }
     Ok(resume.next)

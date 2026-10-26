@@ -218,7 +218,6 @@ mod local_headless;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};
 
-
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local_identity;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

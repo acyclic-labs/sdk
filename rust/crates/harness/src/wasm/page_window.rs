@@ -37,20 +37,35 @@ impl WindowPage for WasmPageData {
     type Cursor = String;
     type Generation = String;
 
-    fn items(&self) -> &[WasmPageEntry] { &self.items }
-    fn key(item: &WasmPageEntry) -> &str { &item.key }
-    fn before(&self) -> &Arc<String> { &self.before }
-    fn after(&self) -> &Arc<String> { &self.after }
-    fn generation(&self) -> &String { &self.generation }
-    fn has_more_before(&self) -> bool { self.has_more_before }
-    fn has_more_after(&self) -> bool { self.has_more_after }
+    fn items(&self) -> &[WasmPageEntry] {
+        &self.items
+    }
+    fn key(item: &WasmPageEntry) -> &str {
+        &item.key
+    }
+    fn before(&self) -> &Arc<String> {
+        &self.before
+    }
+    fn after(&self) -> &Arc<String> {
+        &self.after
+    }
+    fn generation(&self) -> &String {
+        &self.generation
+    }
+    fn has_more_before(&self) -> bool {
+        self.has_more_before
+    }
+    fn has_more_after(&self) -> bool {
+        self.has_more_after
+    }
     fn retained_bytes(&self) -> u64 {
         let arc_header = 2 * std::mem::size_of::<usize>();
         let metadata = std::mem::size_of::<Self>()
             + self.items.capacity() * std::mem::size_of::<WasmPageEntry>()
             + self.generation.capacity()
             + 2 * (std::mem::size_of::<String>() + arc_header)
-            + self.before.capacity() + self.after.capacity();
+            + self.before.capacity()
+            + self.after.capacity();
         self.items.iter().fold(metadata as u64, |bytes, item| {
             bytes + item.key.capacity() as u64 + item.value.get().len() as u64
         })
@@ -111,7 +126,9 @@ pub struct WasmPageRequest {
 impl WasmPageRequest {
     /// Exact opaque exclusive provider anchor, absent for initial discovery.
     pub fn cursor(&self) -> Result<Option<String>, JsValue> {
-        self.request.as_ref().map(|request| request.cursor().cloned())
+        self.request
+            .as_ref()
+            .map(|request| request.cursor().cloned())
             .ok_or_else(|| refusal(PageWindowError::SettledRequest))
     }
 }
@@ -148,22 +165,38 @@ impl WasmPageWindow {
 
     /// The caller owns I/O; this grants the sole response capability.
     pub fn begin(&mut self, edge: &str) -> Result<Option<WasmPageRequest>, JsValue> {
-        Ok(self.window.begin(direction(edge)?).map_err(refusal)?
-            .map(|request| WasmPageRequest { request: Some(request) }))
+        Ok(self
+            .window
+            .begin(direction(edge)?)
+            .map_err(refusal)?
+            .map(|request| WasmPageRequest {
+                request: Some(request),
+            }))
     }
 
     /// Consume a settled fetch. Null means provider failure/drained cancellation.
     /// Invalid bytes settle custody too, without changing the admitted window.
-    pub fn finish(&mut self, request: &mut WasmPageRequest, encoded: Option<Uint8Array>) -> Result<(), JsValue> {
-        let page = match encoded.as_ref()
-            .map(|bytes| decode(bytes, self.maximum_encoded_bytes)).transpose() {
+    pub fn finish(
+        &mut self,
+        request: &mut WasmPageRequest,
+        encoded: Option<Uint8Array>,
+    ) -> Result<(), JsValue> {
+        let page = match encoded
+            .as_ref()
+            .map(|bytes| decode(bytes, self.maximum_encoded_bytes))
+            .transpose()
+        {
             Ok(page) => page,
             Err(cause) => {
-                self.window.finish(&mut request.request, None).map_err(refusal)?;
+                self.window
+                    .finish(&mut request.request, None)
+                    .map_err(refusal)?;
                 return Err(cause);
             }
         };
-        self.window.finish(&mut request.request, page).map_err(refusal)?;
+        self.window
+            .finish(&mut request.request, page)
+            .map_err(refusal)?;
         self.cache.get_mut().take();
         Ok(())
     }
@@ -174,7 +207,9 @@ impl WasmPageWindow {
         let revision = self.window.revision();
         let mut cache = self.cache.borrow_mut();
         if let Some((cached, values)) = cache.as_ref() {
-            if *cached == revision { return Ok(values.clone()); }
+            if *cached == revision {
+                return Ok(values.clone());
+            }
         }
         let values = Array::new();
         for item in self.window.items() {
@@ -193,8 +228,14 @@ impl WasmPageWindow {
 
     #[wasm_bindgen(js_name = retainedBytes)]
     /// Charged Rust pages only; the one cached JS projection is separate.
-    pub fn retained_bytes(&self) -> u64 { self.window.retained_page_bytes() }
+    pub fn retained_bytes(&self) -> u64 {
+        self.window.retained_page_bytes()
+    }
     #[wasm_bindgen(js_name = pageCount)]
-    pub fn page_count(&self) -> usize { self.window.page_count() }
-    pub fn revision(&self) -> u64 { self.window.revision() }
+    pub fn page_count(&self) -> usize {
+        self.window.page_count()
+    }
+    pub fn revision(&self) -> u64 {
+        self.window.revision()
+    }
 }

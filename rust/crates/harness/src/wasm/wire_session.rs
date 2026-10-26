@@ -119,7 +119,10 @@ impl WasmWireSession {
             paths(&expanded, self.policy.expanded_capacity())?,
         )
         .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
-        self.session.borrow_mut().set_view(demand).map_err(session_error)?;
+        self.session
+            .borrow_mut()
+            .set_view(demand)
+            .map_err(session_error)?;
         {
             let session = self.session.borrow();
             for (path, state) in self.readers.borrow_mut().iter_mut() {
@@ -224,7 +227,10 @@ impl WasmWireSession {
     #[wasm_bindgen(js_name = viewRevision)]
     pub fn view_revision(&self, resource: JsString) -> Result<u64, JsValue> {
         let path = path(resource)?;
-        self.session.borrow().view(&path).map(|view| view.revision())
+        self.session
+            .borrow()
+            .view(&path)
+            .map(|view| view.revision())
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
     }
 
@@ -232,7 +238,10 @@ impl WasmWireSession {
     #[wasm_bindgen(js_name = firstSequence)]
     pub fn first_sequence(&self, resource: JsString) -> Result<u64, JsValue> {
         let path = path(resource)?;
-        self.session.borrow().view(&path).map(|view| view.first_sequence())
+        self.session
+            .borrow()
+            .view(&path)
+            .map(|view| view.first_sequence())
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
     }
 
@@ -240,7 +249,10 @@ impl WasmWireSession {
     #[wasm_bindgen(js_name = recordCount)]
     pub fn record_count(&self, resource: JsString) -> Result<usize, JsValue> {
         let path = path(resource)?;
-        self.session.borrow().view(&path).map(|view| view.records().len())
+        self.session
+            .borrow()
+            .view(&path)
+            .map(|view| view.records().len())
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
     }
 
@@ -248,8 +260,12 @@ impl WasmWireSession {
     pub fn record(&self, resource: JsString, index: usize) -> Result<Option<Uint8Array>, JsValue> {
         let path = path(resource)?;
         let session = self.session.borrow();
-        let view = session.view(&path).ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))?;
-        Ok(view.record(index).map(|record| Uint8Array::from(record.encode_to_vec().as_slice())))
+        let view = session
+            .view(&path)
+            .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))?;
+        Ok(view
+            .record(index)
+            .map(|record| Uint8Array::from(record.encode_to_vec().as_slice())))
     }
 }
 
