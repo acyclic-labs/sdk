@@ -19,6 +19,10 @@ pub struct HttpRequest {
     pub body: Bytes,
 }
 
+pub(crate) mod bounded;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod refusal_tests;
+
 /// Response whose body remains lazy until polled.
 pub struct HttpResponse {
     /// HTTP status.

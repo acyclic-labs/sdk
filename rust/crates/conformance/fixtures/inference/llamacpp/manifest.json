@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-10-26T19:26:07.599671+00:00",
+  "captured_at": "2026-10-26T20:04:02.628761+00:00",
   "source": "bb2 llama.cpp",
   "model": "conformance-tiny",
   "adapter": "chat",
@@ -7,17 +7,20 @@
     "text": {
       "status": 200,
       "file": "text.body",
-      "sha256": "90a94a568d5153009259a0301aae11e3c73c72d84818c40f295798249038af8c"
+      "sha256": "e1c69e86aaf8986de7597ed994e00ac85699c358daaf61f60656667fd723ac83",
+      "request_url": "http://127.0.0.1:33930/v1/chat/completions"
     },
     "tool": {
       "status": 200,
       "file": "tool.body",
-      "sha256": "12d120c77ef85d3e941e058792992bc9aefbb5f447a292f813a5703157f6f2be"
+      "sha256": "1f0f74a2a998ce4e4b50a3684baaeb72d1b60db1c1377040ccd69f98f08ae98e",
+      "request_url": "http://127.0.0.1:33930/v1/chat/completions"
     },
     "result": {
       "status": 200,
       "file": "result.body",
-      "sha256": "8fd2c0664cbe1c06e2d7fed5336e3ca3b18cf3fa29c2c5dca47ac9b842c20f1e",
+      "sha256": "f22eda5bca8b8c2f729b7ba16916ad2c7c708b8035ca187d1b527ad5b962316a",
+      "request_url": "http://127.0.0.1:33930/v1/chat/completions",
       "assertions": {
         "/messages": [
           {
@@ -29,7 +32,7 @@
             "content": null,
             "tool_calls": [
               {
-                "id": "ztebHTK7qgcGtDleDmeY6Vvl1bqhFnrN",
+                "id": "pXKF2KDclMp5BRkHRh8APmdtCp1GS9cU",
                 "type": "function",
                 "function": {
                   "name": "echo",
@@ -40,7 +43,7 @@
           },
           {
             "role": "tool",
-            "tool_call_id": "ztebHTK7qgcGtDleDmeY6Vvl1bqhFnrN",
+            "tool_call_id": "pXKF2KDclMp5BRkHRh8APmdtCp1GS9cU",
             "content": "{\"value\":1}"
           }
         ]
@@ -49,17 +52,38 @@
     "context": {
       "status": 400,
       "file": "context.body",
-      "sha256": "6515306c8730bef8473d3afe900e9ac87c7def5a13d86e6ebee325b3b02339ed"
+      "sha256": "6515306c8730bef8473d3afe900e9ac87c7def5a13d86e6ebee325b3b02339ed",
+      "request_url": "http://127.0.0.1:33930/v1/chat/completions"
     },
     "auth": {
       "status": 401,
       "file": "auth.body",
-      "sha256": "9956a1bd32a70211ff9f3c2e1af8a868de778deffa0689020fe5bea61027c713"
+      "sha256": "9956a1bd32a70211ff9f3c2e1af8a868de778deffa0689020fe5bea61027c713",
+      "request_url": "http://127.0.0.1:33930/v1/chat/completions"
     },
     "rate": {
       "status": 429,
       "file": "rate.body",
       "sha256": "5079ebc0814dfc64418ab0021da099266c0398395f42756b1756c2b5c6d7f996"
+    }
+  },
+  "provider_id": "llamacpp",
+  "endpoint": {
+    "adapter": "chat",
+    "authentication": "optional",
+    "base_url": "http://127.0.0.1:33930/v1",
+    "max_event_bytes": 1048576,
+    "models": {
+      "conformance-tiny": {
+        "capacity": {
+          "context_tokens": 2048,
+          "output_tokens": 128
+        },
+        "features": {
+          "tools": true,
+          "images": false
+        }
+      }
     }
   },
   "options": {

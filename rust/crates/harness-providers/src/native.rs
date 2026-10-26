@@ -245,7 +245,7 @@ pub(crate) fn generate<'a>(
                                 let retry_after = response.retry_after;
                                 // The bounded prefix, its lossy decoding and the excerpt.
                                 let mut hold = work.claim(4 * crate::EXCERPT_BYTES as u64 + 64, 4, WorkCounters::UNCHARGED)?;
-                                (diagnostic::<()>(Err(crate::http_failure(response).await), &mut hold).err(), retry_after)
+                                (diagnostic::<()>(Err(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), &mut hold).err(), retry_after)
                             }
                             Ok(response) => {
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();

@@ -2,7 +2,6 @@
 pub(crate) mod wire;
 use crate::{HttpRequest, HttpTransport as _, ResolvedModel, dispatch, projection};
 use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
-use futures::StreamExt as _;
 
 struct Body {
     bytes: Vec<u8>,
@@ -196,7 +195,7 @@ pub(crate) async fn send_count(
 
 async fn read_count(
     provider: &ResolvedModel,
-    mut response: crate::HttpResponse,
+    response: crate::HttpResponse,
     work: NativeWork<'_>,
 ) -> Result<u64> {
     let spec = provider
@@ -204,56 +203,13 @@ async fn read_count(
         .token_counter
         .as_ref()
         .ok_or_else(|| crate::invalid("missing token counter"))?;
-    let maximum = provider.config.max_event_bytes;
+    let body =
+        crate::http::bounded::read(response.body, provider.config.max_event_bytes, work).await?;
     #[cfg(not(target_arch = "wasm32"))]
-    let mut response_custody = work
-        .map(|work| work.claim(64, 1, acyclic_fs::WorkCounters::UNCHARGED))
-        .transpose()?;
-    let mut bytes = Vec::new();
-    let mut chunks = 0usize;
-    while let Some(chunk) = response.body.next().await {
-        let chunk = chunk?;
-        chunks = chunks
-            .checked_add(1)
-            .filter(|count| *count <= maximum)
-            .ok_or_else(|| boundary(work, "token count response exceeds item limit"))?;
-        let next = bytes
-            .len()
-            .checked_add(chunk.len())
-            .filter(|n| *n <= maximum)
-            .ok_or_else(|| boundary(work, "token count response exceeds byte limit"))?;
-        if next > bytes.capacity() {
-            let capacity = next
-                .checked_next_power_of_two()
-                .unwrap_or(maximum)
-                .min(maximum);
-            #[cfg(not(target_arch = "wasm32"))]
-            if let (Some(work), Some(hold)) = (work, response_custody.as_mut()) {
-                let mut growth = work.claim(
-                    (capacity - bytes.capacity()) as u64,
-                    1,
-                    acyclic_fs::WorkCounters {
-                        bytes_copied: bytes.len() as u64,
-                        ..Default::default()
-                    },
-                )?;
-                hold.absorb(&mut growth)?;
-            }
-            bytes.reserve_exact(capacity - bytes.len());
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
-                bytes_copied: chunk.len() as u64,
-                items_examined: 1,
-                ..Default::default()
-            })?;
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let verified = wire::response(&bytes, spec);
+    let mut body = body;
+    let verified = wire::response(&body.bytes, spec);
     #[cfg(not(target_arch = "wasm32"))]
-    let verified = match response_custody.as_mut() {
+    let verified = match body.custody.as_mut() {
         Some(hold) => crate::native::diagnostic(verified, hold),
         None => verified,
     };
@@ -322,16 +278,23 @@ async fn exchange_count(
                         4,
                         acyclic_fs::WorkCounters::UNCHARGED,
                     )?;
-                    let failure = crate::http_failure(response).await;
+                    let failure =
+                        crate::http_failure(response, provider.config.max_event_bytes, work).await;
                     match crate::native::diagnostic::<()>(Err(failure), &mut hold) {
                         Err(failure) => (failure, retry_after),
                         Ok(()) => return Err(boundary(Some(work), "token count refusal lost")),
                     }
                 } else {
-                    (crate::http_failure(response).await, retry_after)
+                    (
+                        crate::http_failure(response, provider.config.max_event_bytes, work).await,
+                        retry_after,
+                    )
                 }
                 #[cfg(target_arch = "wasm32")]
-                (crate::http_failure(response).await, retry_after)
+                (
+                    crate::http_failure(response, provider.config.max_event_bytes, work).await,
+                    retry_after,
+                )
             }
             Err(failure) => (failure, None),
         };

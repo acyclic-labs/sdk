@@ -5,5 +5,5 @@ cargo fmt --all -- --check
 cargo test -p acyclic-conformance -p acyclic-harness-providers \
     --features acyclic-conformance/inference --no-run
 cargo test -p acyclic-conformance -p acyclic-harness-providers \
-    --features acyclic-conformance/inference
+    --features acyclic-conformance/inference --no-fail-fast
 BE_EDGE_RUN_SUITE=1 bash scripts/be-edge-local.sh
