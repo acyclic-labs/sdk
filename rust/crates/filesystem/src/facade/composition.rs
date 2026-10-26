@@ -41,24 +41,24 @@ where
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Vec<crate::WorkspaceId>>, WorkspaceError> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        // All-or-none: a failed part removes every entry, contribution and
-        // hold this call added, so the caller's commit never carries a
-        // partial creation it could still submit.
-        let mark = commit.mark();
+        // All-or-none, even when this future is dropped mid-way: the guard
+        // removes every entry, contribution and hold this call added unless
+        // the whole batch succeeded.
+        let mut guard = commit.guard();
         let result = async {
             let accounting = &mut accounting;
             let mut created = Vec::with_capacity(forks.len());
             for fork in forks {
                 created.push(
-                    self.contribute_fork(fork, commit, accounting, cancellation)
+                    self.contribute_fork(fork, guard.commit(), accounting, cancellation)
                         .await?,
                 );
             }
             Ok(created)
         }
         .await;
-        if result.is_err() {
-            commit.rollback(mark);
+        if result.is_ok() {
+            guard.disarm();
         }
         measured(result, &accounting)
     }
@@ -131,24 +131,24 @@ where
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Vec<crate::WorkspaceId>>, WorkspaceError> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        // All-or-none: a failed part removes every entry, contribution and
-        // hold this call added, so the caller's commit never carries a
-        // partial creation it could still submit.
-        let mark = commit.mark();
+        // All-or-none, even when this future is dropped mid-way: the guard
+        // removes every entry, contribution and hold this call added unless
+        // the whole batch succeeded.
+        let mut guard = commit.guard();
         let result = async {
             let accounting = &mut accounting;
             let mut created = Vec::with_capacity(creations.len());
             for creation in creations {
                 created.push(
-                    self.contribute_creation(creation, commit, accounting, cancellation)
+                    self.contribute_creation(creation, guard.commit(), accounting, cancellation)
                         .await?,
                 );
             }
             Ok(created)
         }
         .await;
-        if result.is_err() {
-            commit.rollback(mark);
+        if result.is_ok() {
+            guard.disarm();
         }
         measured(result, &accounting)
     }
@@ -251,17 +251,24 @@ where
         cancellation: &CancellationToken,
     ) -> FsResult<FilesystemCommitOutcome> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = async {
-            let mut authority = authority_work(&accounting, cancellation)?;
-            let result = self
-                .inner
-                .authority
-                .settle(commit, outcome, &mut authority)
-                .await;
-            record_authority_work(&mut accounting, &authority)?;
-            result.map_err(FsError::from)
-        }
-        .await;
-        measured(result, &accounting)
+        let settled = match outcome {
+            // The outcome is decided before any check this call makes: a
+            // committed request keeps its receipt even when cancellation or
+            // the budget stops the best-effort cache refresh.
+            acyclic_stream::CommitOutcome::Committed(envelope) => {
+                if let Ok(mut authority) = authority_work(&accounting, cancellation) {
+                    self.inner
+                        .authority
+                        .refresh_committed(commit, envelope.commit_id, &mut authority)
+                        .await;
+                    drop(record_authority_work(&mut accounting, &authority));
+                }
+                FilesystemCommitOutcome::Committed(envelope)
+            }
+            acyclic_stream::CommitOutcome::Conflict(conflicts) => {
+                FilesystemCommitOutcome::Rejected(conflicts)
+            }
+        };
+        measured(Ok(settled), &accounting)
     }
 }

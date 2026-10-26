@@ -419,42 +419,86 @@ async fn distinct_placements_keep_separate_change_streams() -> Result<(), Box<dy
 }
 
 /// Negative control for settlement: the caller's provider committed the
-/// request, then the cached-head refresh failed (here, cancelled while
-/// taking the actor lease). That error once replaced the receipt; the receipt
-/// now survives and the next open re-reads the durable head.
+/// request, then the cached-head refresh could not run (here, cancelled
+/// before or while taking the actor lease). That error once replaced the
+/// receipt, through the store and through `Fs::settle_commit`; the receipt
+/// now survives both and the next open re-reads the durable head.
 #[tokio::test]
 async fn a_failed_cache_refresh_keeps_the_committed_receipt() -> Result<(), Box<dyn Error>> {
+    for public in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = placed(&stream)?;
+        let source = parent(&fs, &stream).await?;
+        let commit = compose(&fs, &source, true).await?;
+        let acyclic_stream::CommitOutcome::Committed(envelope) =
+            stream.commit(commit.request().clone()).await?
+        else {
+            return Err("the caller's submission did not commit".into());
+        };
+        let committed = envelope.commit_id;
+        let outcome = acyclic_stream::CommitOutcome::Committed(envelope);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let settled = if public {
+            value!(
+                fs.settle_commit(commit, outcome, WorkBudget::UNBOUNDED, &cancelled)
+                    .await
+            )?
+        } else {
+            StreamAuthorityStore::with_placement(
+                Arc::clone(&stream),
+                AuthorityPlacement::new(VOLUMES)?,
+            )
+            .settle(
+                commit,
+                outcome,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled),
+            )
+            .await?
+        };
+        let FilesystemCommitOutcome::Committed(settled) = settled else {
+            return Err("a committed outcome settled as something else".into());
+        };
+        assert_eq!(settled.commit_id, committed);
+        let project = unbounded!(fs, open_workspace("child-project"))?;
+        assert_eq!(
+            unbounded!(project, read("/plan.md", 16))?.as_ref(),
+            b"ship it"
+        );
+    }
+    Ok(())
+}
+
+/// Negative control for dropped preparation: a preparing future dropped
+/// mid-batch (a caller timeout) never resumes, so a rollback written after
+/// its awaits was skipped and the caller kept a partial, submittable batch.
+/// Batch preparation now holds a guard that rolls back on drop unless the
+/// whole batch succeeded.
+#[tokio::test]
+async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Error>> {
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
-    let commit = compose(&fs, &source, true).await?;
-    let acyclic_stream::CommitOutcome::Committed(envelope) =
-        stream.commit(commit.request().clone()).await?
-    else {
-        return Err("the caller's submission did not commit".into());
+    let mut commit = FilesystemCommit::new(spawn_request(1, true)?);
+    let first = forks(&source)?;
+    {
+        let mut guard = commit.guard();
+        unbounded!(fs, prepare_fork_many(&first[..1], guard.commit()))?;
+        assert_eq!(guard.commit().authorities().len(), 2);
+        // Dropped armed, as the outer batch future is when it times out
+        // after its first part.
+    }
+    assert_eq!(commit.request().conditions.len(), 1);
+    assert_eq!(commit.request().mutations.len(), 2);
+    assert!(commit.authorities().is_empty());
+    {
+        let mut guard = commit.guard();
+        unbounded!(fs, prepare_fork_many(&first, guard.commit()))?;
+        guard.disarm();
+    }
+    assert_eq!(commit.authorities().len(), 4);
+    let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
+        return Err("the disarmed batch did not commit".into());
     };
-    let committed = envelope.commit_id;
-    let store = StreamAuthorityStore::with_placement(
-        Arc::clone(&stream),
-        AuthorityPlacement::new(VOLUMES)?,
-    );
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let FilesystemCommitOutcome::Committed(settled) = store
-        .settle(
-            commit,
-            acyclic_stream::CommitOutcome::Committed(envelope),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled),
-        )
-        .await?
-    else {
-        return Err("a committed outcome settled as something else".into());
-    };
-    assert_eq!(settled.commit_id, committed);
-    let project = unbounded!(fs, open_workspace("child-project"))?;
-    assert_eq!(
-        unbounded!(project, read("/plan.md", 16))?.as_ref(),
-        b"ship it"
-    );
     Ok(())
 }

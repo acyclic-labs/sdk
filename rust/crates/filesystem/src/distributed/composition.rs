@@ -93,9 +93,17 @@ impl FilesystemCommit {
         Ok(())
     }
 
-    /// Marks the commit's current contents, so a multi-part preparation can
-    /// undo every part it added when a later part fails.
-    pub(crate) fn mark(&self) -> CommitMark {
+    /// Guards a multi-part preparation: unless disarmed after every part
+    /// succeeded, dropping the guard (on an error, or when the preparing
+    /// future itself is dropped) removes everything added since.
+    pub(crate) fn guard(&mut self) -> CommitGuard<'_> {
+        CommitGuard {
+            mark: Some(self.mark()),
+            commit: self,
+        }
+    }
+
+    fn mark(&self) -> CommitMark {
         CommitMark {
             conditions: self.request.conditions.len(),
             mutations: self.request.mutations.len(),
@@ -107,7 +115,7 @@ impl FilesystemCommit {
 
     /// Drops everything added after `mark`. Dropped contributions never
     /// complete, so their actors keep their heads.
-    pub(crate) fn rollback(&mut self, mark: CommitMark) {
+    fn rollback(&mut self, mark: CommitMark) {
         self.request.conditions.truncate(mark.conditions);
         self.request.mutations.truncate(mark.mutations);
         self.authorities.truncate(mark.authorities);
@@ -118,12 +126,37 @@ impl FilesystemCommit {
 
 /// A position in a [`FilesystemCommit`] that a failed preparation rolls back to.
 #[derive(Clone, Copy)]
-pub(crate) struct CommitMark {
+struct CommitMark {
     conditions: usize,
     mutations: usize,
     authorities: usize,
     contributions: usize,
     holds: usize,
+}
+
+/// Rolls a [`FilesystemCommit`] back to its mark on drop unless disarmed.
+pub(crate) struct CommitGuard<'c> {
+    commit: &'c mut FilesystemCommit,
+    mark: Option<CommitMark>,
+}
+
+impl CommitGuard<'_> {
+    pub(crate) fn commit(&mut self) -> &mut FilesystemCommit {
+        self.commit
+    }
+
+    /// Keeps everything added since the mark.
+    pub(crate) fn disarm(mut self) {
+        self.mark = None;
+    }
+}
+
+impl Drop for CommitGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(mark) = self.mark.take() {
+            self.commit.rollback(mark);
+        }
+    }
 }
 
 /// Upper bound on the conditions, and separately the mutations, that one
@@ -274,37 +307,46 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         outcome: CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        match outcome {
+        Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
-                let FilesystemCommit {
-                    contributions,
-                    holds,
-                    ..
-                } = commit;
-                for Contribution {
-                    actor,
-                    revision,
-                    projection,
-                } in contributions
-                {
-                    // Every mutation is already durable: the receipt is the
-                    // result. Refreshing the cached head is best-effort. A
-                    // failure leaves the journal Vacant from `begin`, so the
-                    // next lease re-reads the durable head instead of trusting
-                    // a stale one.
-                    let completed = actor
-                        .complete(revision, projection.seal(envelope.commit_id), work)
-                        .await;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Err(error) = &completed {
-                        tracing::warn!(?error, "composed commit cache refresh failed");
-                    }
-                    drop(completed);
-                }
-                drop(holds);
-                Ok(FilesystemCommitOutcome::Committed(envelope))
+                self.refresh_committed(commit, envelope.commit_id, work)
+                    .await;
+                FilesystemCommitOutcome::Committed(envelope)
             }
-            CommitOutcome::Conflict(conflicts) => Ok(FilesystemCommitOutcome::Rejected(conflicts)),
+            CommitOutcome::Conflict(conflicts) => FilesystemCommitOutcome::Rejected(conflicts),
+        })
+    }
+
+    /// Refreshes cached heads after `commit` committed as `commit_id`. Every
+    /// mutation is already durable, so this never decides the result: a
+    /// failure leaves the journal Vacant from `begin`, and the next lease
+    /// re-reads the durable head instead of trusting a stale one.
+    pub(crate) async fn refresh_committed(
+        &self,
+        commit: FilesystemCommit,
+        commit_id: acyclic_stream::CommitId,
+        work: &mut AuthorityWork<'_>,
+    ) {
+        let FilesystemCommit {
+            contributions,
+            holds,
+            ..
+        } = commit;
+        for Contribution {
+            actor,
+            revision,
+            projection,
+        } in contributions
+        {
+            let completed = actor
+                .complete(revision, projection.seal(commit_id), work)
+                .await;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Err(error) = &completed {
+                tracing::warn!(?error, "composed commit cache refresh failed");
+            }
+            drop(completed);
         }
+        drop(holds);
     }
 }
