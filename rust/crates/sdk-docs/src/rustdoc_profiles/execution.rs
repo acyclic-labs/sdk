@@ -398,19 +398,10 @@ pub fn execute_profile(
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    let library_target = package.targets.iter().find(|target| {
-        target.kind.iter().any(|kind| {
-            matches!(
-                kind,
-                TargetKind::ProcMacro
-                    | TargetKind::Lib
-                    | TargetKind::RLib
-                    | TargetKind::DyLib
-                    | TargetKind::CDyLib
-                    | TargetKind::StaticLib
-            )
-        })
-    });
+    let library_target = package
+        .targets
+        .iter()
+        .find(|target| crate::cargo_targets::is_library_target(target));
     let library_name = library_target
         .map(|target| target.name.as_str())
         .unwrap_or(profile.package.as_str());

@@ -13,6 +13,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+mod cargo_targets;
 mod child;
 mod concrete_versions;
 /// Native projections and immutable identities for historical releases.
