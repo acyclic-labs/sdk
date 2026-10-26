@@ -29,7 +29,7 @@ use acyclic_stream::{StreamError, StreamProvider};
 #[cfg(test)]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 mod approvals;
 #[cfg(test)]

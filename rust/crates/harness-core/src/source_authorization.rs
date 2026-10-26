@@ -306,6 +306,11 @@ impl ProjectSourceReadHandle {
     }
 }
 
+crate::core::ownership::owned_struct!(LeaseFence {
+    reservation_id,
+    placement
+});
+
 crate::core::ownership::owned_struct!(ProjectSourceAuthorization {
     owner,
     caller_task,

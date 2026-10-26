@@ -104,10 +104,10 @@ pub fn tool_approval_request(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    paid: (String, Option<NativeCustody>),
+    paid: (String, NativeCustody),
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
-) -> Result<((OperationId, Interaction), Option<NativeCustody>)> {
+) -> Result<((OperationId, Interaction), NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         if !paid.1.as_ref().is_some_and(|custody| {
@@ -167,7 +167,7 @@ fn copy_approval_subject(
     invocation: &ToolInvocation,
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
-) -> Result<(ApprovalSubject, Option<NativeCustody>)> {
+) -> Result<(ApprovalSubject, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         use crate::store::history::HistoryIo as _;

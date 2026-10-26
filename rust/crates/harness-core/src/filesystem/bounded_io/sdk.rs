@@ -202,5 +202,3 @@ pub(in crate::filesystem) fn content_workspace(
     };
     WorkspaceRef::new(provider, name.into_bytes(), None)
 }
-
-use crate::executor::stock_boundary;

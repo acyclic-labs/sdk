@@ -30,6 +30,19 @@ pub fn decode<T: DecodeRecord>(
     ))
 }
 
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::UploadRecord for Value {
+    fn diagnostic_label_bytes() -> u64 {
+        0
+    }
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::Root
+    }
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        crate::executor::json::json_value_logical_owned_bytes(self)
+    }
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for String {
     fn logical_owned_bytes(&self) -> Result<u64> {

@@ -474,8 +474,6 @@ impl StockExecution<'_> {
             journal,
             (operation_id, step),
             &record,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            context,
             started,
         ))
         .await?;
@@ -708,9 +706,6 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
         record: &crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] context: &Option<
-            crate::runtime::ToolContext,
-        >,
         started: bool,
     ) -> Result<bool> {
         let (operation_id, step) = identity;
@@ -754,22 +749,7 @@ impl StockExecution<'_> {
                 .append_if_tail(operation_id, tail, &key, &event, self.io)?
                 .await
             {
-                Ok(true) => {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if let Some(work) = self.native_work() {
-                        context
-                            .as_ref()
-                            .ok_or_else(|| {
-                                stock_boundary(
-                                    self.io,
-                                    crate::wire::ErrorCode::Unauthorized,
-                                    "native tool acceptance has no issued context",
-                                )
-                            })?
-                            .validate_native_mcp_context(work)?;
-                    }
-                    true
-                }
+                Ok(true) => true,
                 Err(error) if !error.leaves_effect_uncertain() => return Err(error),
                 Ok(false) | Err(_) => {
                     return Err(Error::Indeterminate(operation_id));

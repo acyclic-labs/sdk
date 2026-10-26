@@ -7,32 +7,23 @@
     )
 )]
 #![doc = include_str!("../../docs/filesystem.md")]
-use crate::contract::capability;
 use crate::{
-    AgentId, Error, IdempotencyKey, Result,
+    Error, IdempotencyKey, Result,
     conversation::{
         Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef,
         MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
-        PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner,
-        VolumeRef,
+        PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeRef,
     },
-    core::{Authority, AuthorityVerifier, Reducer, Scope},
-    fork::{
-        ForkPublicationGuard, ForkSeed, ForkSeedVerifier, InheritedConversationPrefix,
-        ReferenceGrant, ResourceRevision,
-    },
-    merge::{ProjectMergeReceipt, ProjectMergeVerifier, ProviderJoinProof},
+    core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage, Fs,
-    Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
-    JoinOutcome, JoinPlan, MergeConflict, MergePlan, PublicationReservation, TransactionCommit,
-    Workspace, WorkspaceError, WorkspaceStat,
+    AsyncAuthorityStore, AsyncObjectStore, Digest, DirectoryPage, Fs, Generation, GenerationId,
+    IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
+    WorkspaceStat,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
@@ -123,8 +114,6 @@ pub use access::INITIAL_POLICY as INITIAL_ACCESS_POLICY;
 pub use access::check_access_record;
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
-#[cfg(not(target_arch = "wasm32"))]
-use content_verifier::require_file_read;
 /// Pins a generation that a published file version names, under the one
 /// label every unmeasured publication uses, so the version stays readable.
 #[doc(hidden)]

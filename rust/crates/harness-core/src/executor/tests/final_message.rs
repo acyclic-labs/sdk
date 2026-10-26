@@ -93,7 +93,6 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
                 server: "sample".into(),
                 revision: "1".into(),
                 sampling: true,
-                elicitation: false,
                 maximum_requests: 1,
             },
             message: json!({"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage",

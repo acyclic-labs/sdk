@@ -104,7 +104,6 @@ impl StockExecution<'_> {
                     input,
                     (step, purpose, purpose_key),
                     &request,
-                    dispatch,
                     phase,
                 ))
                 .await?
@@ -316,7 +315,6 @@ impl StockExecution<'_> {
         input: &TurnInput,
         turn: (u32, ModelPurpose, &str),
         request: &crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
         phase: &mut DispatchPhase,
     ) -> Result<phase::ProviderAttempt> {
         let (step, purpose, purpose_key) = turn;

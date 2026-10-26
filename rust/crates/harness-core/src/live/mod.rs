@@ -19,7 +19,8 @@ pub use handle::TaskHandle;
 mod completion;
 pub use completion::*;
 mod timer;
-pub(crate) use timer::{sleep_millis, timeout_until};
+#[cfg(all(test, target_arch = "wasm32"))]
+use timer::{sleep_millis, timeout_until};
 #[cfg(test)]
 #[cfg(target_arch = "wasm32")]
 mod browser_tests;

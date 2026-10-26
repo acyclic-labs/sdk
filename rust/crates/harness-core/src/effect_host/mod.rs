@@ -2,22 +2,21 @@
 #[cfg(feature = "filesystem")]
 use crate::store::HistoryWork;
 use crate::{
-    EffectId, Error, IdempotencyKey, NativeCustody, NativeWork, OperationId, Result,
+    EffectId, Error, NativeCustody, NativeWork, OperationId, Result,
     conversation::ContentResidencyVerifier,
     core::{
-        Action, Authority, AuthorityRoot, Command, EffectAttestation, EffectState, EffectStatus,
-        SchemaRegistry, Scope,
+        Authority, AuthorityRoot, EffectAttestation, EffectState, EffectStatus, SchemaRegistry,
+        Scope,
     },
     effects::EffectRegistry,
     store::{
         DEFAULT_TERMINAL_EFFECTS, StreamAggregate, default_projection_read_limits,
         guarded_boundary as boundary, history::HistoryIo,
     },
-    wire_codec::CodecQuota,
 };
 use crate::{
     contract::capability,
-    wire::ErrorCode::{Conflict, Invalid, NotFound, Unauthorized},
+    wire::ErrorCode::{Invalid, NotFound, Unauthorized},
 };
 use acyclic_stream::StreamProvider;
 use std::sync::Arc;

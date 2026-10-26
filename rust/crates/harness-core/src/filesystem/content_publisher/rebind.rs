@@ -15,7 +15,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         candidate: FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        self.verify_creation(io).await?;
         self.grant
             .require(&self.volume, VolumeOperation::Write, io)?;
         crate::executor::with_history_io(io, |work| {

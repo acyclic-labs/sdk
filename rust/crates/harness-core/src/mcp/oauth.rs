@@ -1,9 +1,5 @@
-//! Host-only OAuth over the existing approval and private credential owners.
-use crate::{
-    Error, OperationId, Result,
-    interaction::{Interaction, InteractionOutcome},
-    runtime::TaskContext,
-};
+//! Host-only OAuth over the host's private browser interaction and credential owners.
+use crate::{Error, OperationId, Result};
 use acyclic_stream::BoxProviderFuture;
 pub use rmcp::transport::auth::{
     AuthError, AuthorizationRequest, CredentialRefreshGuard, CredentialStore, OAuthClientConfig,
@@ -52,9 +48,11 @@ pub fn default_oauth_http_client() -> std::result::Result<impl OAuthHttpClient, 
     rmcp::transport::auth::default_oauth_http_client()
 }
 
-/// Private browser/callback capability.
+/// Private browser/callback capability. It is the consent point: the host
+/// presents the URL for `endpoint` and returns a redirect only once the user
+/// authorizes it.
 pub trait McpOAuthInteraction: Send + Sync {
-    /// Presents the approved URL and returns its private redirect URL.
+    /// Presents the URL and returns its private redirect URL.
     fn authorize<'a>(
         &'a self,
         operation: OperationId,
@@ -63,7 +61,7 @@ pub trait McpOAuthInteraction: Send + Sync {
 }
 /// Authorizes the selected endpoint with host credentials and private interaction.
 pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
-    owner: (&TaskContext, OperationId),
+    operation: OperationId,
     endpoint: &str,
     http: Arc<dyn OAuthHttpClient>,
     credentials: S,
@@ -71,7 +69,6 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
     request: AuthorizationRequest,
     interaction: &dyn McpOAuthInteraction,
 ) -> Result<McpAuthorization> {
-    let (context, operation) = owner;
     let mut manager = AuthorizationManager::new_with_oauth_http_client(endpoint, http)
         .await
         .map_err(|error| auth_error(&error))?;
@@ -93,7 +90,6 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
         .await
         .map_err(|(_, error)| auth_error(&error))?;
     let url = session.get_authorization_url();
-    approve((context, operation), endpoint, url).await?;
     let callback = interaction.authorize(operation, url).await?;
     session
         .handle_callback_url(&callback)
@@ -111,17 +107,14 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
 }
 /// Recovers the approved PKCE callback without starting another authorization.
 pub async fn recover<S: CredentialStore + 'static, T: StateStore + 'static>(
-    owner: (&TaskContext, OperationId),
+    operation: OperationId,
     endpoint: &str,
     http: Arc<dyn OAuthHttpClient>,
     credentials: S,
     states: T,
     client: OAuthClientConfig,
-    callback: (&str, &str),
+    callback: &str,
 ) -> Result<McpAuthorization> {
-    let (context, operation) = owner;
-    let (callback, authorization_url) = callback;
-    approve((context, operation), endpoint, authorization_url).await?;
     let mut manager = AuthorizationManager::new_with_oauth_http_client(endpoint, http)
         .await
         .map_err(|error| auth_error(&error))?;
@@ -153,20 +146,6 @@ pub async fn recover<S: CredentialStore + 'static, T: StateStore + 'static>(
         .await
         .map_err(|error| token_error(operation, &error))?;
     Ok(McpAuthorization(manager))
-}
-async fn approve(owner: (&TaskContext, OperationId), endpoint: &str, url: &str) -> Result<()> {
-    let (context, operation) = owner;
-    match context.interact(operation, Interaction::Approval {
-        prompt: "Authorize access to the explicitly selected MCP server using the host's private browser interaction".into(),
-        operation_id: operation,
-        action_digest: crate::executor::json::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url), u64::MAX, &mut None)?,
-        // The authorization URL carries private state; only its digest is public.
-        subject: crate::interaction::ApprovalSubject::Opaque {},
-    }).await? {
-        InteractionOutcome::Approved {} => Ok(()),
-        InteractionOutcome::Indeterminate { .. } => Err(Error::Indeterminate(operation)),
-        _ => Err(Error::Unauthorized("MCP authorization was not approved".into())),
-    }
 }
 fn auth_error(error: &AuthError) -> Error {
     // Provider errors may contain private URLs, codes or tokens.

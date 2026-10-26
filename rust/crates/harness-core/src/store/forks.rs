@@ -194,23 +194,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut publication_work = None;
         let mut custody = crate::wire_codec::CodecQuota::new(&mut publication_work, 0)?;
         parent
-            .publish_fork_seed(
-                seed.clone(),
-                parent_scope,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut custody,
-            )
+            .publish_fork_seed(seed.clone(), parent_scope, &mut custody)
             .await?;
-        self.bind_published_child(
-            parent,
-            &seed,
-            child_scope,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+        self.bind_published_child(parent, &seed, child_scope, &mut None)
+            .await?;
         Ok(seed)
     }
 

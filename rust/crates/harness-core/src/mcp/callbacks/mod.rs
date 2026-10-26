@@ -1,10 +1,9 @@
-//! Opt-in server requests using the ordinary execution and interaction owners.
+//! Opt-in MCP sampling requests using the ordinary execution owner.
 #![allow(deprecated, reason = "Pinned MCP 2025-11-25 supports sampling.")]
 use crate::{
     Error, OperationId, Result,
     context::{Context, ContextPlacement, SourceStage},
     executor::{ExecutionJournal, StockExecutor, TurnInput},
-    interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
         FileProjectionPolicy, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRole,
         NativeMediaIntent, NativeMediaPolicy,
@@ -27,8 +26,6 @@ pub struct McpCallbackPolicy {
     pub revision: String,
     /// Enable model requests under the task's ordinary model grant.
     pub sampling: bool,
-    /// Enable forms under the task's ordinary interaction grant.
-    pub elicitation: bool,
     /// Finite callback count per exchange, including replayed requests.
     pub maximum_requests: u32,
 }
@@ -42,7 +39,7 @@ impl McpCallbackPolicy {
                 "MCP callback server namespace cannot contain a dot".into(),
             ));
         }
-        if self.maximum_requests == 0 || (!self.sampling && !self.elicitation) {
+        if self.maximum_requests == 0 || !self.sampling {
             return Err(Error::Invalid("invalid MCP callback policy".into()));
         }
         Ok(())
@@ -53,9 +50,6 @@ impl McpCallbackPolicy {
         let mut capabilities = serde_json::Map::new();
         if self.sampling {
             capabilities.insert("sampling".into(), json!({}));
-        }
-        if self.elicitation {
-            capabilities.insert("elicitation".into(), json!({"form":{}}));
         }
         Ok(Value::Object(capabilities))
     }
@@ -90,18 +84,12 @@ impl McpCallbackRequest {
             .get("id")
             .filter(|id| id.is_string() || id.is_i64())
             .ok_or_else(|| Error::Invalid("invalid MCP callback ID".into()))?;
-        let params = self
-            .message
+        self.message
             .get("params")
             .ok_or_else(|| Error::Invalid("MCP callback parameters absent".into()))?;
         let method = self.message.get("method").and_then(Value::as_str);
         match method {
             Some("sampling/createMessage") if self.policy.sampling => {}
-            Some("elicitation/create") if self.policy.elicitation => {
-                if let Some(schema) = params.get("requestedSchema") {
-                    crate::executor::compile_json_schema(schema, "MCP elicitation", &mut None)?;
-                }
-            }
             _ => {
                 return Err(Error::Unsupported(
                     "MCP callback is not enabled by pinned policy".into(),
@@ -112,14 +100,8 @@ impl McpCallbackRequest {
             rmcp::model::JsonRpcRequest::deserialize(&self.message)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         if !matches!(
-            (method, &decoded.request),
-            (
-                Some("sampling/createMessage"),
-                rmcp::model::ServerRequest::CreateMessageRequest(_)
-            ) | (
-                Some("elicitation/create"),
-                rmcp::model::ServerRequest::ElicitRequest(_)
-            )
+            decoded.request,
+            rmcp::model::ServerRequest::CreateMessageRequest(_)
         ) {
             return Err(Error::Invalid("invalid MCP callback parameters".into()));
         }

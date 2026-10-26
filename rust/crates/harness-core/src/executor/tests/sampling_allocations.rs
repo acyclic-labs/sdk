@@ -28,7 +28,6 @@ fn request(parent: OperationId, id: &str) -> McpCallbackRequest {
             server: "sample".into(),
             revision: "1".into(),
             sampling: true,
-            elicitation: false,
             maximum_requests: 4,
         },
         message: json!({"jsonrpc":"2.0","id":id,"method":"sampling/createMessage",

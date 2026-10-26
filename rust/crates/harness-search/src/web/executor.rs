@@ -123,9 +123,6 @@ impl WebExecutor {
         work: NativeWork<'_>,
     ) -> Result<(ToolResult, NativeCustody)> {
         self.authorize(None, Some(context), invocation, work)?;
-        if let Some(work) = work {
-            context.validate_native_mcp_context(work)?;
-        }
         let maximum = context.effective_scope().limits().file_bytes;
         match self.dispatch(invocation, maximum, work).await {
             Ok(result) => Ok(result),
@@ -201,7 +198,7 @@ impl ToolExecutor for WebExecutor {
         _: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: NativeWork<'_>,
+        _: NativeWork<'_>,
     ) -> Result<()> {
         let denied = || Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
@@ -218,9 +215,6 @@ impl ToolExecutor for WebExecutor {
             || !context.effective_scope().grants().contains(grant)
         {
             return Err(denied());
-        }
-        if let Some(work) = work {
-            context.validate_native_mcp_reconciliation_context(work)?;
         }
         Ok(())
     }

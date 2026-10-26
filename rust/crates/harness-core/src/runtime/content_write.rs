@@ -199,10 +199,6 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(ContentIo::original_native_work) {
-            self.require_original_native_dispatch(work)?;
-        }
         if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
             return Err(content_error(
                 io,

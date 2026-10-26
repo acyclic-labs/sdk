@@ -9,19 +9,19 @@ use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result,
     conversation::{
-        Attachment, BoundedContentFuture, ContentHold, ContentPublisher, ContentResidencyVerifier,
-        FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        BoundedContentFuture, ContentHold, ContentPublisher, ContentResidencyVerifier, FileRef,
+        Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
-    executor::{ExecutionJournal, TurnOutput},
+    executor::ExecutionJournal,
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
-    runtime::{ContentBindings, RuntimeScope},
+    runtime::RuntimeScope,
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
 #[cfg(test)]
 use crate::{
-    conversation::{ConversationMessage, MessageKind},
+    conversation::{Attachment, ConversationMessage, MessageKind},
     executor::TurnInput,
     store::StreamAggregate,
 };

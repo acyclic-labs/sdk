@@ -71,7 +71,7 @@ pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
-pub(crate) use tool_failure::{CauseText, ToolFailureText};
+pub(crate) use tool_failure::ToolFailureText;
 pub use tool_failure::{TOOL_FAILURE_MESSAGE_BYTES, ToolErrorClass, ToolFailureCause};
 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_hooks;
