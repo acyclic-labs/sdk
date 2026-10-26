@@ -172,24 +172,8 @@ impl NativeStreamNextResult {
 }
 
 fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
-    let code = match &error {
-        StreamError::InvalidPath => "invalid_path",
-        StreamError::InvalidArgument => "invalid_argument",
-        StreamError::LimitExceeded => "limit_exceeded",
-        StreamError::NotFound => "not_found",
-        StreamError::AlreadyExists => "already_exists",
-        StreamError::PrefixNotRetained => "prefix_not_retained",
-        StreamError::OutOfRange => "out_of_range",
-        StreamError::HierarchyChanged => "hierarchy_changed",
-        StreamError::IdempotencyMismatch => "idempotency_mismatch",
-        StreamError::Capacity => "capacity",
-        StreamError::AccessDenied => "access_denied",
-        StreamError::Unavailable => "unavailable",
-        StreamError::DeadlineElapsed => "deadline_elapsed",
-        StreamError::Unsupported => "unsupported",
-    };
     NativeStreamErrorMetadata {
-        code: code.to_owned(),
+        code: error.code().to_owned(),
         message: error.to_string(),
     }
 }

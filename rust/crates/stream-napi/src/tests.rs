@@ -155,23 +155,23 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
 }
 
 #[tokio::test]
-async fn terminal_unavailable_is_reported_before_end() {
-    let records = futures::stream::once(async { Err(StreamError::Unavailable) }).boxed();
-    let follow = NativeStreamFollow {
-        state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
-            token: CancellationToken::new(),
-            closed: Arc::new(AtomicBool::new(false)),
-        },
-    };
-    let result = follow.next_result().await.expect("follow read rejected");
-    assert!(result.value.is_none());
-    assert_eq!(
-        result.error.expect("terminal error swallowed").code,
-        "unavailable"
-    );
-    let end = follow.next_result().await.expect("follow end rejected");
-    assert!(end.value.is_none() && end.error.is_none());
+async fn terminal_peer_and_transport_errors_keep_their_codes_before_end() {
+    for error in [StreamError::InvalidResponse, StreamError::Unavailable] {
+        let code = error.code();
+        let records = futures::stream::once(async move { Err(error) }).boxed();
+        let follow = NativeStreamFollow {
+            state: FollowState {
+                records: Arc::new(Mutex::new(Some(record_frames(records)))),
+                token: CancellationToken::new(),
+                closed: Arc::new(AtomicBool::new(false)),
+            },
+        };
+        let result = follow.next_result().await.expect("follow read rejected");
+        assert!(result.value.is_none());
+        assert_eq!(result.error.expect("terminal error swallowed").code, code);
+        let end = follow.next_result().await.expect("follow end rejected");
+        assert!(end.value.is_none() && end.error.is_none());
+    }
 }
 
 #[tokio::test]
