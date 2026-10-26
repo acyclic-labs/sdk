@@ -16,13 +16,7 @@ use crate::lock_order::{
     Condvar as RankedCondvar, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION, VIEW,
 };
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use fuser::{
-    BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
-    FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,
-    Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyWrite, ReplyXattr,
-    Request, TimeOrNow, WriteFlags,
-};
+use fuser::{FileAttr, FileType, FopenFlags, INodeNo, InitFlags, TimeOrNow};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
@@ -134,41 +128,23 @@ impl From<i32> for NativeMountError {
     }
 }
 
-fn errno_on(span: &tracing::Span, error: i32) -> Errno {
+fn errno_on(span: &tracing::Span, error: i32) -> i32 {
     span.record("errno", error);
-    Errno::from_i32(error)
+    error
 }
 
-macro_rules! respond {
-    ($core:expr, $reply:ident, $span:ident, $work:ident, $result:expr, |$value:pat_param| $ok:expr) => {{
-        let mut pending_reply = Some($reply);
-        let result = $core.request(|$work| {
-            let $value = $result?;
-            let $reply = pending_reply.take().expect("one successful FUSE reply");
-            let _ = $ok;
-            Ok(())
-        });
-        if let Err(error) = $core.finish(result) {
-            if let Some(reply) = pending_reply.take() {
-                reply.error($crate::native_mount::fuse::errno_on(&$span, error));
-            }
-        }
-    }};
-}
-
-mod callbacks;
+mod notification;
+mod packet;
+mod packet_buffers;
+mod packet_dispatch;
+mod packet_publication;
+mod packet_router;
+mod packet_session;
+use notification::CacheNotifier;
+mod host_io;
+mod host_session;
 mod shared;
 mod shared_instance;
-
-fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
-    if size == 0 {
-        reply.size(u32::try_from(value.len()).unwrap_or(u32::MAX));
-    } else if value.len() <= size as usize {
-        reply.data(value);
-    } else {
-        reply.error(errno_on(span, libc::ERANGE));
-    }
-}
 
 #[cfg(test)]
 pub(in crate::native_mount) mod tests;

@@ -62,6 +62,7 @@ mod folded_property;
 mod inbox;
 mod mount;
 mod native;
+pub(super) mod packets;
 pub(in crate::native_mount) mod retirement;
 mod shared;
 

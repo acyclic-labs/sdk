@@ -100,10 +100,14 @@ impl Drop for StateGuard<'_> {
         if let Some(wake) = wake {
             wake.wake();
         }
-        if let Some(notifier) = self.core.notifier.get() {
+        // Closing the projection retires these unpublished reservations. It
+        // must not start another device write while joining a failed transport.
+        if !self.core.stopping.load(Ordering::Acquire)
+            && let Some(notifier) = self.core.notifier.get()
+        {
             for (inode, credit) in superseded.iter_mut() {
                 // Drop only attributes, so this never waits for kernel pages or requests.
-                let _ = notifier.inval_inode(INodeNo(*inode), -1, 0);
+                let _ = notifier.inval_attributes(*inode);
                 credit.record_deferred(WorkCounters {
                     backend_write_operations: 1,
                     items_examined: 1,
@@ -122,7 +126,7 @@ pub(super) struct ProjectionCore {
     pub(super) state: RankedMutex<ProjectionState, VIEW>,
     pub(super) names: RwLock<()>,
     pub(super) invalidation: RankedCondvar,
-    pub(super) notifier: OnceLock<Notifier>,
+    pub(super) notifier: OnceLock<CacheNotifier>,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
     pub(super) startup_meter: Mutex<NativeMountMeterActivation>,
