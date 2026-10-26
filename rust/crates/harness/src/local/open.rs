@@ -352,9 +352,27 @@ impl Opening {
                 )?),
                 LocalProject::Workspace(_) => None,
             };
+        // A checkout binds its shell and filesystem tools to the workspace.
+        #[cfg(any(test, feature = "native-execution"))]
+        let workspace_tools = match &workspace {
+            Some(workspace) => Some(
+                workspace
+                    .executor(
+                        &owner.project,
+                        self.config.clock.clone(),
+                        &signed,
+                        &verifier,
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let workspace_tools = None;
         let harness = crate::runtime::Bindings {
             scope,
             content: Some(crate::runtime::ContentBindings { reader, writer }),
+            workspace_tools,
             ..crate::runtime::Bindings::local()
         }
         .build()?;
