@@ -303,7 +303,9 @@ impl ObjectsProvider for MemoryObjects {
                         bucket: Some(wire::BucketRef {
                             name: query.name.clone(),
                         }),
-                        created_at: Some(timestamp()?),
+                        created_at: Some(
+                            state.publication_time.clone().map_or_else(timestamp, Ok)?,
+                        ),
                     };
                     state.buckets.insert(
                         query.name.clone().into(),

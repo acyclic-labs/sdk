@@ -37,6 +37,7 @@ http = ["grpc", "dep:reqwest"]
 local = ["tokio/rt"]
 # The in-process session protocol, without a network transport.
 session = ["tokio/rt", "tokio/macros"]
+postgres = ["dep:tokio-postgres", "tokio/rt", "tokio/macros"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
@@ -74,6 +75,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio-postgres = { version = "0.7.18", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 tonic = { workspace = true, optional = true }
@@ -124,3 +126,7 @@ workspace = true
 [[example]]
 name = "provider-conformance"
 required-features = ["http"]
+
+[[example]]
+name = "postgres-conformance"
+required-features = ["postgres"]

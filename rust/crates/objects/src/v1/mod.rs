@@ -1,5 +1,7 @@
 //! Logical bucket/key Objects contract replacing public version history and snapshots.
 pub mod conformance;
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub mod s3;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 #[cfg(feature = "json")]

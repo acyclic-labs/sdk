@@ -306,7 +306,9 @@ impl MemoryObjects {
                             etag: next_id_measured(state, meter, &mut stored_allocation)?,
                             size,
                             metadata,
-                            last_modified: Some(timestamp()?),
+                            last_modified: Some(
+                                state.publication_time.clone().map_or_else(timestamp, Ok)?,
+                            ),
                         };
                         let info = SharedInfo::new_measured(info, stored_allocation, meter)?;
                         let mut returned_allocation = ReadAllocation::empty(meter);

@@ -6,6 +6,8 @@ pub(in crate::v1) struct State {
     pub(super) uploads: OrdMap<SharedInfo<String>, Upload>,
     pub(super) receipts: OrdMap<SharedInfo<String>, Receipt>,
     pub(super) sequence: u64,
+    /// A durable command's sampled time; ordinary providers sample the clock.
+    pub(super) publication_time: Option<prost_types::Timestamp>,
     /// Body bytes of current objects and staged parts, maintained by [`stored_bytes`].
     pub(super) body_bytes: usize,
 }
