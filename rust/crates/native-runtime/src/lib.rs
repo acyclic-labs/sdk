@@ -56,6 +56,8 @@ pub use process_tree::{
 mod file;
 pub mod owner_record;
 pub mod private_file;
+#[cfg(target_os = "linux")]
+mod kernel_keyring;
 /// OS-owned custody for persisted authority signing seeds.
 pub mod signing_key;
 #[cfg(windows)]

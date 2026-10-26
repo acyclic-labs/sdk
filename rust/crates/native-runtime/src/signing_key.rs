@@ -119,10 +119,50 @@ impl SigningKeyReference {
         Ok(consume(seed))
     }
 
+    /// This key's entry in its one store: the first store holding it, else
+    /// the first reachable store, where it is created. An entry is never
+    /// copied between stores, and an unreachable store is never written.
     fn entry(&self) -> io::Result<keyring::Entry> {
         let name = blake3::Hash::from_bytes(self.0).to_hex();
-        keyring::Entry::new(SERVICE, name.as_str()).map_err(|_| unavailable())
+        let mut stores = stores(name.as_str())?;
+        if stores.len() == 1 {
+            return stores.pop().ok_or_else(unavailable);
+        }
+        let mut reachable = None;
+        for entry in stores {
+            match entry.get_secret().map(SecretBytes) {
+                Ok(_held) => return Ok(entry),
+                Err(keyring::Error::NoEntry) => {
+                    reachable.get_or_insert(entry);
+                }
+                Err(_) => {}
+            }
+        }
+        reachable.ok_or_else(unavailable)
     }
+}
+
+/// The OS credential stores for `name`, in preference order: the one native
+/// store on Windows and Apple platforms. On Linux this is the Secret Service,
+/// only when a D-Bus session exists, then the kernel keyring
+/// ([`crate::kernel_keyring`]), which needs no daemon,
+/// so headless hosts keep custody without any plaintext fallback.
+fn stores(name: &str) -> io::Result<Vec<keyring::Entry>> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut stores = Vec::with_capacity(2);
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+            && let Ok(service) =
+                keyring::secret_service::SsCredential::new_with_target(None, SERVICE, name)
+        {
+            stores.push(keyring::Entry::new_with_credential(Box::new(service)));
+        }
+        let kernel = crate::kernel_keyring::KernelKey::new(SERVICE, name);
+        stores.push(keyring::Entry::new_with_credential(Box::new(kernel)));
+        Ok(stores)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(vec![keyring::Entry::new(SERVICE, name).map_err(|_| unavailable())?])
 }
 
 #[cfg(test)]
