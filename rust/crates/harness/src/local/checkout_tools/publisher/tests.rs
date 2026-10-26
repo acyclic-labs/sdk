@@ -726,7 +726,11 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         .to_scope_label()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let restricted = Capabilities::new(all.iter().chain([label.as_str()]));
-    async fn execute(tools: Arc<CheckoutTools>, grants: Capabilities) -> Result<()> {
+    async fn execute(
+        tools: Arc<CheckoutTools>,
+        grants: Capabilities,
+        path_only: bool,
+    ) -> Result<()> {
         let mut bindings = crate::runtime::Bindings::local();
         bindings.scope = RuntimeScope::new(grants, crate::conversation::Limits::default())?;
         bindings.tasks.register(crate::runtime::TaskDefinition::live("raw-policy", "1", move |task, name: String| {
@@ -737,6 +741,10 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
                     name: name.clone(), arguments: serde_json::json!({"command": if name == "fs" { "grep secret" } else { "echo compromised > secrets/key" }}) };
                 match tools.execute(invocation, Some(context)).await {
                     Err(Error::FilesystemAccessConfiguration(_)) => Ok::<_, Error>(()),
+                    // Without whole-volume labels, selection requires an
+                    // authenticated child allocation. This ordinary task has
+                    // none, so it must be refused before checkout dispatch.
+                    Err(Error::Unauthorized(reason)) if path_only && reason == "child workspace has no original owner" => Ok(()),
                     result => Err(Error::Invalid(format!("{name} must reject filesystem access configuration: {result:?}"))),
                 }
             }
@@ -814,7 +822,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             "local checkout publication"
         ))
     ));
-    execute(tools.clone(), restricted).await?;
+    execute(tools.clone(), restricted, false).await?;
     // Legacy directory/file labels carry no whole-volume authority. Preserve
     // the task/tool grants but remove every whole-volume read/write label.
     let directory_grant = fixture
@@ -827,7 +835,18 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             })
             .chain([directory_grant.as_str()]),
     );
-    execute(tools.clone(), legacy_path_only).await?;
+    assert!(matches!(
+        super::super::access::require_mount_access(
+            tools.workspace.view().workspace(),
+            &tools.workspace.mounts,
+            &tools.signed,
+            &legacy_path_only,
+            "local bash",
+        )
+        .await,
+        Err(Error::FilesystemAccessConfiguration("local bash"))
+    ));
+    execute(tools.clone(), legacy_path_only, true).await?;
     let mut policy: Policy =
         serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY).map_err(storage)?;
     policy.version += 1;
@@ -917,7 +936,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             .value
             .id()
     );
-    execute(tools, all).await?;
+    execute(tools, all, false).await?;
     assert_eq!(
         std::fs::read(directory.path().join("secrets/key")).map_err(storage)?,
         b"must not be disclosed"
