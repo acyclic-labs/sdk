@@ -236,33 +236,9 @@ pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
     maximum_bytes: u32,
     work: &mut W,
 ) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
-    if !work.is_native_original() {
-        return host_name_bytes_with_accounting(
-            name,
-            profile,
-            maximum_bytes,
-            &mut NameWork::Source(work),
-        )
-        .map(|name| (name, None));
-    }
-    let source = work
-        .native_source_work()
-        .ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = {
-        crate::native_host::NativeHostWork::check(&source)?;
-        source.clone()
-    };
-    let mut accounting: NameWork<'_> = NameWork::Original {
-        work: &original,
-        allocation: None,
-        source: Some(source.clone()),
-    };
-    let name = host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)?;
-    crate::native_host::NativeHostWork::check(&source)?;
-    let NameWork::Original { allocation, .. } = accounting else {
-        unreachable!()
-    };
-    Ok((name, Some(allocation.ok_or(DemandError::InvalidRequest)?)))
+    with_source_name_work(work, |accounting| {
+        host_name_bytes_with_accounting(name, profile, maximum_bytes, accounting)
+    })
 }
 
 #[cfg(windows)]
@@ -272,14 +248,18 @@ pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
     maximum_bytes: u32,
     work: &mut W,
 ) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
+    with_source_name_work(work, |accounting| {
+        host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, accounting)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn with_source_name_work<W: SourceDemandReadWork>(
+    work: &mut W,
+    encode: impl FnOnce(&mut NameWork<'_, W>) -> Result<(NameEncoding, Vec<u8>), DemandError>,
+) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
     if !work.is_native_original() {
-        return host_wide_name_bytes_with_accounting(
-            name,
-            profile,
-            maximum_bytes,
-            &mut NameWork::Source(work),
-        )
-        .map(|name| (name, None));
+        return encode(&mut NameWork::Source(work)).map(|name| (name, None));
     }
     let source = work
         .native_source_work()
@@ -288,19 +268,18 @@ pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
         crate::native_host::NativeHostWork::check(&source)?;
         source.clone()
     };
-    let mut accounting: NameWork<'_> = NameWork::Original {
+    let mut accounting = NameWork::Original {
         work: &original,
         allocation: None,
         source: Some(source.clone()),
     };
-    let name = host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)?;
+    let name = encode(&mut accounting)?;
     crate::native_host::NativeHostWork::check(&source)?;
     let NameWork::Original { allocation, .. } = accounting else {
         unreachable!()
     };
     Ok((name, Some(allocation.ok_or(DemandError::InvalidRequest)?)))
 }
-
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(any(test, feature = "native-mount"))]
 fn name_native_error(error: DemandError) -> crate::NativeTreeMaterializationError {

@@ -5,82 +5,20 @@
 #[path = "support/native_access.rs"]
 mod native_access;
 
-use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
-use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::kernel::KernelAccounting;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::{
-    CancellationToken, Fs, LazyWorkspace, Lifecycle, LocalAuthorityBackend, LocalFs,
-    LocalObjectBackend, LocalOptions, MaterializeOptions, MemoryLazyWorkspaceStore, MountPath,
-    NativeMaterializationWork, OperationId, PublicationPermit, VolumeConfig, WorkBudget,
+    CancellationToken, Fs, LocalOptions, MaterializeOptions, MountPath, PublicationPermit,
+    WorkBudget,
 };
 use acyclic_objects::LocalDurability;
 use serde_json::json;
 
-fn work(
-    cancel: &CancellationToken,
-) -> Result<NativeMaterializationWork, acyclic_fs::NativeTreeMaterializationError> {
-    NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancel).map_err(|(error, _)| error)
-}
-
-async fn open_source(path: &Path) -> Result<Arc<NativeDemandSource>, Box<dyn std::error::Error>> {
-    Ok(Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Borrowed(path),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(|failure| failure.error)?
-        .value,
-    ))
-}
-
-async fn attach(
-    fs: &LocalFs,
-    name: &str,
-    source: Arc<NativeDemandSource>,
-) -> Result<
-    LazyWorkspace<
-        LocalAuthorityBackend,
-        LocalObjectBackend,
-        NativeDemandSource,
-        MemoryLazyWorkspaceStore,
-    >,
-    Box<dyn std::error::Error>,
-> {
-    let cancel = CancellationToken::new();
-    let work = work(&cancel)?;
-    Ok(LazyWorkspace::attach(
-        fs,
-        name,
-        source,
-        MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeInitialization {
-            config: VolumeConfig::portable(if fs.capabilities().durable {
-                Lifecycle::Durable
-            } else {
-                Lifecycle::Ephemeral
-            }),
-            access_policy: None,
-        },
-        OperationId::new(),
-        &mut KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancel,
-        },
-    )
-    .await?
-    .0)
-}
-
+#[path = "support/portable_source.rs"]
+mod portable_source;
+use portable_source::{attach, open_source, work};
 fn component(value: &str) -> Vec<u8> {
     value.as_bytes().to_vec()
 }
