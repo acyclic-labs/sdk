@@ -62,7 +62,7 @@ terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "acyclic-harness-c
 wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/wasm"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/filesystem", "acyclic-harness-search/filesystem"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile", "acyclic-harness-core/filesystem-local"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acyclic-stream/local", "acyclic-stream/session", "acyclic-harness-client/session", "dep:dirs", "dep:getrandom", "dep:tempfile", "acyclic-harness-core/filesystem-local"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "dep:notify", "acyclic-harness-core/native-execution"]
 # Native lifecycle commands can also be embedded without filesystem mounts.

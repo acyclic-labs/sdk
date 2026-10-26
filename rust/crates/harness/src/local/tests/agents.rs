@@ -178,6 +178,7 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         String::from_utf8_lossy(&output)
     );
     assert_eq!(names(&harness, private, "tools").await?, [turn.to_string()]);
+    let turn_id = turn.to_string();
     let turn = format!("tools/{turn}");
     let calls = names(&harness, private, &turn).await?;
     let [call] = calls.as_slice() else {
@@ -193,5 +194,100 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         names(&harness, private, &format!("{turn}/{call}/stdout")).await?,
         ["0000000000000000"]
     );
-    Ok(())
+    follow_tool_output(&harness, &state.path, &turn_id).await
+}
+
+/// The agent's own scope yields a live follow of its turn's tool output, and
+/// nothing over a volume it cannot read.
+async fn follow_tool_output(harness: &Arc<LocalHarness>, root: &AgentPath, turn: &str) -> Result<()> {
+    use acyclic_stream::wire;
+    let (agents, _) = harness.agents().await?;
+    let state = agents.state(root).await.map_err(agent)?;
+    let issuer = harness.root_authority.as_ref().ok_or_else(|| Error::NotFound("issuer".into()))?;
+    let authority = crate::filesystem::agent_authority(
+        issuer,
+        &crate::filesystem::TurnAdmission::LocalRoot,
+        &state.path,
+        &state.volumes,
+        &[],
+    )?;
+    // Negative control: the same agent, attenuated to no grants, gets none.
+    let mut denied = crate::filesystem::agent_authority(
+        issuer,
+        &crate::filesystem::TurnAdmission::LocalRoot,
+        &state.path,
+        &state.volumes,
+        &[],
+    )?;
+    denied.scope = denied.scope.attenuate_workload(
+        "denied",
+        &crate::Capabilities::new(Vec::<String>::new()),
+        &issuer.public_workload_trust()?,
+        &crate::core::Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: state.path.id().as_str().to_owned(),
+        },
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
+            / 1000,
+    )?;
+    assert!(
+        harness
+            .files
+            .tool_output_follow(&denied, &authority.private.volume)
+            .await
+            .is_err(),
+        "a scope without read on tools/ yields no credential"
+    );
+    let output = harness.tool_output(root).await?;
+    let mut session =
+        acyclic_harness_client::WireSession::new(output.client.clone(), Default::default());
+    session
+        .register_credential(0, output.credential.clone().into())
+        .map_err(agent)?;
+    let resource = format!("{}/{turn}", output.resource);
+    session
+        .begin_resource(wire::SessionSubscription {
+            credential: 0,
+            // Only this turn's calls: `[tools/{turn}/, tools/{turn}0)`.
+            filter: Some(wire::SessionFilter {
+                keys: vec![wire::KeyRange {
+                    start: format!("tools/{turn}/").into_bytes().into(),
+                    end: format!("tools/{turn}0").into_bytes().into(),
+                }],
+                ..Default::default()
+            }),
+            channel: None,
+            resume: Some(wire::SessionCursor {
+                next: 0,
+                opaque: Default::default(),
+            }),
+            kind: Some(wire::session_subscription::Kind::Follow(wire::SessionFollow {
+                resource: resource.clone(),
+                delivery: wire::SessionDelivery::All as i32,
+                ..Default::default()
+            })),
+        })
+        .map_err(agent)?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            futures::future::poll_fn(|context| session.poll_resource(&resource, context))
+                .await
+                .map_err(agent)?
+                .ok_or_else(|| Error::Conflict("tool output follow ended".into()))?;
+            let stdout = session.resource_view(&resource).and_then(|view| {
+                view.records()
+                    .flat_map(|record| &record.keys)
+                    .filter_map(|key| std::str::from_utf8(key).ok())
+                    .find(|key| key.contains("/stdout/"))
+                    .map(str::to_owned)
+            });
+            if let Some(path) = stdout {
+                let bytes = output.read(&path, 1 << 16).await?;
+                assert!(String::from_utf8_lossy(&bytes).contains("staged"));
+                return Ok(());
+            }
+        }
+    })
+    .await
+    .map_err(|_| Error::Conflict("no tool output change arrived".into()))?
 }

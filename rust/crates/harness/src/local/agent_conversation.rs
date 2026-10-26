@@ -107,6 +107,14 @@ impl Conversation {
         }
     }
 
+    /// The live output of the agent's newest tool call.
+    ///
+    /// # Errors
+    /// See [`LocalHarness::tool_output`].
+    pub async fn tool_output(&self) -> Result<super::OutputTail> {
+        self.local.tool_output(&self.agent).await?.tail()
+    }
+
     /// Stop the running turn; the conversation stays open.
     ///
     /// # Errors
