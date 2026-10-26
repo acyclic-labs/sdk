@@ -5,7 +5,11 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Owner {
-    pub key: [u8; 32],
+    /// Accepted only by the authenticated private-file migration reader.
+    #[serde(default, skip_serializing)]
+    pub key: Option<[u8; 32]>,
+    #[serde(default)]
+    pub key_ref: Option<acyclic_native_runtime::signing_key::SigningKeyReference>,
     pub agent: AgentId,
     pub task: TaskId,
     pub project: VolumeRef,
@@ -26,7 +30,9 @@ pub(super) enum RootWitness {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        acyclic_native_runtime::owner_record::clear_secret(&mut self.key);
+        if let Some(key) = &mut self.key {
+            acyclic_native_runtime::owner_record::clear_secret(key);
+        }
     }
 }
 
@@ -55,7 +61,7 @@ mod tests {
             workspace in proptest::option::of(".{0,128}"),
         ) {
             let owner = Owner {
-                key, agent: AgentId::from_bytes(agent), task: TaskId::from_bytes(task),
+                key: None, key_ref: Some(serde_json::from_value(serde_json::json!(key)).unwrap()), agent: AgentId::from_bytes(agent), task: TaskId::from_bytes(task),
                 project: VolumeRef::new(
                     ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
                     "volume".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None,

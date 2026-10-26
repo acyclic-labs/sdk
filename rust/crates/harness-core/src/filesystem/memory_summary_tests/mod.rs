@@ -98,7 +98,7 @@ async fn sealed_summary_preparation(
         kind: AggregateKind::Task,
         id: format!("summary-preparation-{owner_id}"),
     };
-    let issuer = AuthorityIssuer::new("summary-preparation", [173; 32], authority.clone());
+    let issuer = AuthorityRoot::new("summary-preparation", [173; 32], authority.clone());
     let agent = storage
         .scope
         .agent()
@@ -140,7 +140,7 @@ async fn sealed_summary_preparation(
     }
     let grants = Capabilities::new(grants);
     let signed = issuer
-        .issue("summary-preparation", &grants, Some(agent), None, &mut None)
+        .bootstrap_scope("summary-preparation", &grants, Some(agent), &mut None)
         .expect("scope proof");
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?.with_run_limits(
         crate::runtime::TaskRunLimits {
@@ -468,7 +468,7 @@ async fn assert_cold_summary_reads(
     storage: &MemoryHarnessStorage,
     parent: &StreamAggregate<MemoryStream>,
     seed: &crate::fork::ForkSeed,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     scope: &Scope,
     reader: Arc<dyn ContentResidencyVerifier>,
     limits: Limits,

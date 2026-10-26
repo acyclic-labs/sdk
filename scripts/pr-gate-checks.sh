@@ -133,7 +133,7 @@ run_tests(){
     status=("${PIPESTATUS[@]}")
   fi
   if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
-    cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a "$gate_output/.gate-tests.out"
+    bash scripts/with-owner-keychain.sh cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a "$gate_output/.gate-tests.out"
     status=("${PIPESTATUS[@]}")
   fi
   if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo test output'; status[0]=2; fi

@@ -13,7 +13,7 @@ use acyclic_harness::conversation::{
 };
 use acyclic_harness::conversation::{FileRef, Limits};
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry,
+    Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry,
 };
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::{
@@ -87,7 +87,7 @@ async fn model_fork_prefix<A, O>(
     host: Arc<FilesystemHost<A, O>>,
     stream: &std::sync::Arc<LocalStream>,
     aggregate: &StreamAggregate<LocalStream>,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     local_scope: &acyclic_harness::core::Scope,
     private: &VolumeRef,
     project: &VolumeRef,
@@ -134,11 +134,10 @@ where
         capabilities.push(file.read_capability(&mut None)?);
     }
     let read_scope = issuer
-        .issue(
+        .bootstrap_scope(
             "prefix-owner-approved-reader",
             &Capabilities::new(capabilities),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -370,7 +369,7 @@ fn volume(
 }
 
 fn scope(
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     agent: AgentId,
     private: &VolumeRef,
     project: &VolumeRef,
@@ -398,7 +397,7 @@ fn scope(
     )?;
     let source_reads = [selected.capability(VolumeOperation::Read, &mut None)?];
     Ok(issuer
-        .issue(
+        .bootstrap_scope(
             &format!("agent-{agent:?}"),
             &Capabilities::new(
                 [
@@ -415,7 +414,6 @@ fn scope(
                 .chain(source_reads),
             ),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof"))
@@ -440,7 +438,7 @@ fn command(
 async fn open_aggregate<A, O>(
     stream: &std::sync::Arc<LocalStream>,
     authority: Authority,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     host: Arc<FilesystemHost<A, O>>,
     scope: acyclic_harness::core::Scope,
     stream_provider: ProviderRef,

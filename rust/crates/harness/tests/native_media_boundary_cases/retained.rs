@@ -44,7 +44,7 @@ where
     let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "native-replay-task",
         [23; 32],
         Authority {
@@ -53,7 +53,7 @@ where
         },
     );
     let signed = issuer
-        .issue(
+        .bootstrap_scope(
             "native-replay-task-owner",
             signed.capabilities(),
             Some(
@@ -61,7 +61,6 @@ where
                     .agent()
                     .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?,
             ),
-            None,
             &mut None,
         )
         .expect("scope proof");

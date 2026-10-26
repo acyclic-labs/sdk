@@ -331,7 +331,7 @@ pub fn native_root_output_binding_operation(
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>(
     stream: &std::sync::Arc<P>,
-    authority: (crate::core::Authority, crate::core::AuthorityIssuer, Scope),
+    authority: (crate::core::Authority, crate::core::AuthorityRoot, Scope),
     authority_custody: acyclic_fs::NativeAllocation,
     owner: &TaskJournalOwner<P>,
     private_volume: &VolumeRef,

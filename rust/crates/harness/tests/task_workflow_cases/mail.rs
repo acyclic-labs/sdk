@@ -22,7 +22,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "stock-mail",
             [81; 32],
             Authority {
@@ -31,7 +31,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             },
         );
         let signed = issuer
-            .issue(
+            .bootstrap_scope(
                 "owner",
                 &Capabilities::new([
                     "operation:declare".to_owned(),
@@ -45,7 +45,6 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                     volume.capability(VolumeOperation::Write, &mut None)?,
                 ]),
                 Some(agent),
-                None,
                 &mut None,
             )
             .expect("scope proof");

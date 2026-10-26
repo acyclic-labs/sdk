@@ -109,6 +109,8 @@ impl ControlPlane {
         let author = self.author_for_argv(&argv, agent_id)?;
         let command = acyclic_harness::tools::git::run(
             acyclic_harness::tools::git::Workspace {
+                access: &acyclic_harness::filesystem::local_owner_workspace_access(agent_id)
+                    .map_err(display)?,
                 filesystem: &self.fs,
                 store: &self.store,
                 view: (&lazy_workspace).into(),
@@ -241,6 +243,10 @@ impl ControlPlane {
         let author = self.author_for_argv(&argv, &self.state.root_agent_id)?;
         let output = acyclic_harness::tools::git::run(
             acyclic_harness::tools::git::Workspace {
+                access: &acyclic_harness::filesystem::local_owner_workspace_access(
+                    &self.state.root_agent_id,
+                )
+                .map_err(display)?,
                 filesystem: &self.fs,
                 store: &self.store,
                 view: lazy_workspace.into(),

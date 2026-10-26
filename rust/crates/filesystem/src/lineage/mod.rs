@@ -366,10 +366,34 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: WorkspaceId,
         maximum: u32,
     ) -> Result<Vec<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+        self.ancestry_until(workspace, None, maximum).await
+    }
+
+    /// Authenticate a workspace below an already authenticated repository root.
+    /// The root itself need not have a lineage record: it is the caller's anchor.
+    pub async fn authorize_descendant(
+        &self,
+        workspace: WorkspaceId,
+        ancestor: WorkspaceId,
+    ) -> Result<(), WorkspaceLineageError<S::Error>> {
+        self.ancestry_until(workspace, Some(ancestor), u32::MAX)
+            .await
+            .map(|_| ())
+    }
+
+    async fn ancestry_until(
+        &self,
+        workspace: WorkspaceId,
+        ancestor: Option<WorkspaceId>,
+        maximum: u32,
+    ) -> Result<Vec<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
         let mut next = Some(workspace);
         let mut seen = BTreeSet::new();
         let mut records = Vec::new();
         while let Some(id) = next {
+            if ancestor == Some(id) {
+                return Ok(records);
+            }
             if !seen.insert(id) || records.len() >= maximum as usize {
                 return Err(WorkspaceLineageError::TraversalLimit);
             }
@@ -379,7 +403,11 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 records.push(record);
             }
         }
-        Ok(records)
+        if ancestor.is_some() {
+            Err(WorkspaceLineageError::UnauthorizedJoin)
+        } else {
+            Ok(records)
+        }
     }
 
     async fn required(

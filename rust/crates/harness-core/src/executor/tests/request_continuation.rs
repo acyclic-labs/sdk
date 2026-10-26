@@ -104,7 +104,7 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
             selected_context: None,
             max_steps: turns + 1,
         };
-        let issuer = crate::core::AuthorityIssuer::new(
+        let issuer = crate::core::AuthorityRoot::new(
             "continuation",
             [89; 32],
             crate::core::Authority {

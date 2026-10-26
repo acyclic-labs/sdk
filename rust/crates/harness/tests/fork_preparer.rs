@@ -12,7 +12,7 @@ use acyclic_harness::{
         Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, Limits,
         MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, Reducer, SchemaRegistry},
     fork::{
         Capture, CapturedResource, CompositeForkVerifier, ForkCaptureProvider, ForkHistoryPolicy,
         ForkPreparation, ForkRequest, ForkSeedVerifier, ForkSelection, ResourceRevision,
@@ -125,9 +125,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         &mut None,
     )?;
     host.create_volume(&parent_private).await?;
-    let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
+    let issuer = AuthorityRoot::new("fork-e2e", [7; 32], parent.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "parent",
             &Capabilities::new([
                 "conversation:bind".to_owned(),
@@ -138,7 +138,6 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                 parent_private.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(parent_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -594,13 +593,12 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(readable.contains(&attachment.read_capability(&mut None)?));
     assert!(readable.contains(&manifest.read_capability(&mut None)?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write, &mut None)?));
-    let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
+    let child_issuer = AuthorityRoot::new("fork-e2e", [7; 32], uncertain.child.clone());
     let reader_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "attached-reader",
             &readable,
             Some(attached_reader),
-            None,
             &mut None,
         )
         .expect("scope proof");

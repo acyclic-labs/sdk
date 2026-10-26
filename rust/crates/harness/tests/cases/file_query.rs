@@ -6,7 +6,7 @@ use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
     client::FileQueryView,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{
         FilesystemContentVerifier, FilesystemFileQuery, FilesystemHost, WorkspaceMutation,
     },
@@ -208,7 +208,7 @@ struct Fixture<O = MemoryObjectBackend> {
     filesystem: Fs<MemoryAuthorityBackend, O>,
     reads: Arc<std::sync::atomic::AtomicUsize>,
     volume: VolumeRef,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     agent: AgentId,
     workspace: acyclic_harness::resources::WorkspaceRef,
 }
@@ -260,7 +260,7 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
             },
             &mut None,
         )?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "query",
             [9; 32],
             Authority {
@@ -268,14 +268,13 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
                 id: "query".into(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )?;
         let reader = FilesystemContentVerifier::new(
@@ -640,13 +639,12 @@ async fn ordinary_file_query_resumes_every_revision_and_resets_incompatible_curs
 #[tokio::test]
 async fn ordinary_file_queries_keep_authority_work_and_selection_bounds() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let denied = fixture.issuer.issue(
+    let denied = fixture.issuer.bootstrap_scope(
         "denied",
         &Capabilities::new([fixture
             .volume
             .directory_read_capability("other", &mut None)?]),
         Some(fixture.agent),
-        None,
         &mut None,
     )?;
     let reader = FilesystemContentVerifier::new(
@@ -700,13 +698,12 @@ async fn ordinary_file_queries_keep_authority_work_and_selection_bounds() -> Res
     let reader = FilesystemContentVerifier::new(
         fixture.host.clone(),
         &fixture.issuer.verifier(&mut None)?,
-        &fixture.issuer.issue(
+        &fixture.issuer.bootstrap_scope(
             "tiny",
             &Capabilities::new([fixture
                 .volume
                 .capability(VolumeOperation::Read, &mut None)?]),
             Some(fixture.agent),
-            None,
             &mut None,
         )?,
         65_536,
@@ -738,7 +735,7 @@ proptest::proptest! {
             let capabilities = if authorized {
                 Capabilities::new([fixture.volume.capability(VolumeOperation::Read, &mut None)?])
             } else { Capabilities::default() };
-            let scope = fixture.issuer.issue("reader", &capabilities, Some(fixture.agent), None, &mut None)?;
+            let scope = fixture.issuer.bootstrap_scope("reader", &capabilities, Some(fixture.agent), &mut None)?;
             let reader = FilesystemContentVerifier::new(fixture.host.clone(),
                 &fixture.issuer.verifier(&mut None)?, &scope, 65_536, None)?;
             let result = reader.file_query(&fixture.volume, BOUNDARY_BUDGET).await?

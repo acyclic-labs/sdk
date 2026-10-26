@@ -14,9 +14,20 @@ async fn fixture() -> TestResult<(
         LocalFs::local(acyclic_fs::LocalOptions::new(directory.path().join("fs"))).await?;
     let store = LocalCoreStateStore::new(directory.path().join("core"));
     let workspace = filesystem
-        .create_workspace("project", WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            "project",
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
+            OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            None,
+        )
         .await?
-        .value;
+        .value
+        .workspace();
     WorkspaceGraph::new(store.clone())
         .register_root(&workspace)
         .await?;
@@ -32,6 +43,7 @@ async fn execute(
 ) -> crate::Result<Output> {
     run(
         Workspace {
+            access: &crate::filesystem::local_owner_workspace_access("test")?,
             filesystem,
             store,
             view,
@@ -110,6 +122,7 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
     .await?;
     let merge = super::super::run_with_guard(
         Workspace {
+            access: &crate::filesystem::local_owner_workspace_access("test")?,
             filesystem: &filesystem,
             store: &store,
             view: (&main).into(),
@@ -656,6 +669,7 @@ async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> Te
     let checks = AtomicUsize::new(0);
     let result = super::super::run_with_guard(
         Workspace {
+            access: &crate::filesystem::local_owner_workspace_access("test")?,
             filesystem: &filesystem,
             store: &store,
             view: (&main).into(),

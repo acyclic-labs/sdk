@@ -109,7 +109,7 @@ impl Case {
             publish_summary_seed(&storage, aggregate, &seed, parent_scope, &stream_provider)
                 .await?;
         let parent_volume = storage.volume.clone();
-        let issuer = AuthorityIssuer::new("summary-child", [42; 32], seed.child.clone());
+        let issuer = AuthorityRoot::new("summary-child", [42; 32], seed.child.clone());
         let grants = Capabilities::new(
             seed.reference_capabilities(seed.child_agent)?
                 .iter()
@@ -120,7 +120,7 @@ impl Case {
                         .capability(VolumeOperation::Read, &mut None)?,
                 ]),
         );
-        let scope = issuer.issue("child", &grants, Some(seed.child_agent), None, &mut None)?;
+        let scope = issuer.bootstrap_scope("child", &grants, Some(seed.child_agent), &mut None)?;
         let verifier = issuer.verifier(&mut None)?;
         let reader =
             FilesystemContentVerifier::new(storage.host.clone(), &verifier, &scope, 262_144, None)?;

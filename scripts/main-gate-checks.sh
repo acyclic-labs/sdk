@@ -74,7 +74,7 @@ run_tests(){
     status=("${PIPESTATUS[@]}")
   fi
   if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
-    CARGO_TARGET_DIR="$target" cargo test --locked --workspace --all-features --no-fail-fast \
+    CARGO_TARGET_DIR="$target" bash scripts/with-owner-keychain.sh cargo test --locked --workspace --all-features --no-fail-fast \
       "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee -a "$gate_output/.gate-$phase.out"
     status=("${PIPESTATUS[@]}")
   fi

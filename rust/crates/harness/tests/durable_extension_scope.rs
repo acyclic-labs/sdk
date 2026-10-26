@@ -2,7 +2,7 @@
 use acyclic_harness::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::Limits,
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, Reducer, SchemaRegistry},
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider},
 };
 use serde_json::Value;
@@ -35,7 +35,7 @@ fn selected_scope(id: &str) -> Result<RuntimeScope> {
         kind: AggregateKind::Agent,
         id: id.into(),
     };
-    let issuer = AuthorityIssuer::new("extension-resume", [93; 32], authority.clone());
+    let issuer = AuthorityRoot::new("extension-resume", [93; 32], authority.clone());
     let mut agent = Reducer::new(
         authority,
         issuer.verifier(&mut None).expect("verifier copy"),
@@ -46,10 +46,9 @@ fn selected_scope(id: &str) -> Result<RuntimeScope> {
         idempotency_key: IdempotencyKey::new(format!("selection:{id}"))?,
         expected_revision: 0,
         scope: issuer
-            .issue(
+            .bootstrap_scope(
                 "owner",
                 &Capabilities::new(["extension:activate"]),
-                None,
                 None,
                 &mut None,
             )

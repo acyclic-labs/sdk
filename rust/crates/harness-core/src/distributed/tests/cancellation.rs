@@ -42,9 +42,9 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
         kind: AggregateKind::Task,
         id: "foreign".into(),
     };
-    let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
+    let foreign_issuer = AuthorityRoot::new("test-runtime", [9; 32], foreign.clone());
     let foreign_scope =
-        foreign_issuer.issue("cancel", scope.capabilities(), None, None, &mut None)?;
+        foreign_issuer.bootstrap_scope("cancel", scope.capabilities(), None, &mut None)?;
     let foreign_verifier = foreign_issuer.verifier(&mut None)?;
     let mut stale = fence.clone();
     stale.placement.push_str("-stale");
@@ -208,10 +208,9 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
             .outcome,
         Some(crate::Outcome::Cancelled)
     );
-    let observe_only = issuer.issue(
+    let observe_only = issuer.bootstrap_scope(
         "observe-only",
         &Capabilities::new(["operation:observe"]),
-        None,
         None,
         &mut None,
     )?;

@@ -4,7 +4,7 @@ use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier};
 use crate::{
     Capabilities,
     conversation::{FileRef, VolumeClass},
-    core::AuthorityIssuer,
+    core::AuthorityRoot,
     resource_preparation::{
         CreatedContentBinding, CreatedResourceReceipt, ResourceCreationProofRef,
         ResourceCreationProvider, ResourcePreparationRequest,
@@ -24,7 +24,7 @@ pub(in crate::filesystem) use provenance::CreatedProvenance;
 /// Trusted creation verifier with host-managed signing authority.
 pub struct FilesystemResourceCreationProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -33,7 +33,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     /// Copies the signing identity on the optional original native ledger.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         #[cfg(not(target_arch = "wasm32"))] work: Option<&acyclic_fs::NativeMaterializationWork>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]

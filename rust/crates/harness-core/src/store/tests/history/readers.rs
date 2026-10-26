@@ -211,7 +211,7 @@ async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Resu
 #[tokio::test]
 async fn verifier_must_match_the_exact_aggregate_audience() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let foreign = AuthorityIssuer::new(
+    let foreign = AuthorityRoot::new(
         "test",
         [7; 32],
         Authority {

@@ -66,9 +66,9 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         kind: AggregateKind::Conversation,
         id: "custom-merge-parent".into(),
     };
-    let issuer = AuthorityIssuer::new("custom-merge", [142; 32], authority.clone());
+    let issuer = AuthorityRoot::new("custom-merge", [142; 32], authority.clone());
     let signed = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 "conversation:bind".into(),
@@ -82,7 +82,6 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 private.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -331,11 +330,10 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             .prepare_project_import_at(&source, &source_head, &target_head, operation)
             .await?;
         let denied = issuer
-            .issue(
+            .bootstrap_scope(
                 "no-write",
                 &Capabilities::new([source.capability(VolumeOperation::Read, &mut None)?]),
                 Some(agent),
-                None,
                 &mut None,
             )
             .expect("scope proof");

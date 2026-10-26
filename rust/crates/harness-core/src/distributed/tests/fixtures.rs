@@ -38,18 +38,18 @@ pub(super) fn state_ref() -> Result<FileRef> {
     )
 }
 
-pub(super) fn owner_issuer() -> (Authority, AuthorityIssuer) {
+pub(super) fn owner_issuer() -> (Authority, AuthorityRoot) {
     let owner = Authority {
         kind: AggregateKind::Task,
         id: "owner".into(),
     };
-    let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let issuer = AuthorityRoot::new("test-runtime", [9; 32], owner.clone());
     (owner, issuer)
 }
 
 pub(super) fn declaration_scope(owner: &Authority) -> Scope {
     grant(
-        &AuthorityIssuer::new("test-runtime", [9; 32], owner.clone()),
+        &AuthorityRoot::new("test-runtime", [9; 32], owner.clone()),
         "original-declare",
         &["operation:declare"],
     )
@@ -93,7 +93,7 @@ pub(super) fn declare<'a, P: StreamProvider>(
 ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + 'a>> {
     Box::pin(async move {
         let owner = spec.owner.authority().clone();
-        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        let issuer = AuthorityRoot::new("test-runtime", [9; 32], owner.clone());
         let scope = grant(&issuer, "declare", &["operation:declare"])?;
         coordinator
             .declare_operation(
@@ -181,11 +181,10 @@ pub(super) fn publish<'a, P: StreamProvider>(
     })
 }
 
-pub(super) fn grant(issuer: &AuthorityIssuer, id: &str, capabilities: &[&str]) -> Result<Scope> {
-    issuer.issue(
+pub(super) fn grant(issuer: &AuthorityRoot, id: &str, capabilities: &[&str]) -> Result<Scope> {
+    issuer.bootstrap_scope(
         id,
         &Capabilities::new(capabilities.iter().copied()),
-        None,
         None,
         &mut None,
     )

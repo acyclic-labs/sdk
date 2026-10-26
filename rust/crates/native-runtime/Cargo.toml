@@ -24,8 +24,10 @@ test-support = ["tokio/macros", "tokio/time", "tokio/test-util"]
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
 blake3.workspace = true
+subtle.workspace = true
 getrandom = { workspace = true, features = ["std"] }
 zeroize.workspace = true
+serde.workspace = true
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
 
@@ -59,11 +61,13 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+serde_json.workspace = true
 acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
 tempfile = "3.27.0"
 loom = "=0.7.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 futures-core = "0.3.31"
 pin-project-lite = "0.2.17"
 tracing.workspace = true

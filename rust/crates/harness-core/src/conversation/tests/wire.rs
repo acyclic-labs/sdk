@@ -211,7 +211,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
             })
         }
     }
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "mount-owner",
         [18; 32],
         crate::core::Authority {
@@ -220,11 +220,10 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "exact-member",
             &crate::Capabilities::new([member.read_capability(&mut None)?]),
             Some(AgentId::from_bytes([1; 16])),
-            None,
             &mut None,
         )
         .expect("scope proof");

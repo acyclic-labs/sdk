@@ -14,7 +14,7 @@ use acyclic_harness::{
     AgentId, Capabilities, EffectAttemptId, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{
-        Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, EffectStatus,
+        Action, AggregateKind, Authority, AuthorityRoot, Command, EffectGuarantee, EffectStatus,
         LifecycleState, SchemaRegistry,
     },
     effects::{EffectDispatch, EffectObservation, EffectProvider, EffectRegistry},
@@ -83,9 +83,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         kind: AggregateKind::Conversation,
         id: "effect-task".into(),
     };
-    let issuer = AuthorityIssuer::new("effect-e2e", [62; 32], authority.clone());
+    let issuer = AuthorityRoot::new("effect-e2e", [62; 32], authority.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "effect-owner",
             &Capabilities::new([
                 "effect:run",
@@ -102,7 +102,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 &volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(AgentId::from_bytes([61; 16])),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -556,7 +555,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let wrong = HistoryReader::new(
         &stream,
         &authority,
-        &(AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone())
+        &(AuthorityRoot::new("effect-e2e", [99; 32], authority.clone())
             .verifier(&mut None)
             .expect("verifier copy")),
         &mut None,
@@ -579,7 +578,7 @@ async fn running_owner<P: acyclic_stream::StreamProvider + 'static>(
         FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     >,
     volume: &VolumeRef,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     signed: &acyclic_harness::core::Scope,
     task: acyclic_harness::TaskId,
 ) -> Result<acyclic_harness::durable_host::TaskJournalOwner<P>> {

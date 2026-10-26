@@ -7,7 +7,7 @@ use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{
     AgentId, Capabilities, Error, Result, TaskId,
     conversation::{Limits, VolumeOperation, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry},
+    core::{AggregateKind, Authority, AuthorityRoot, SchemaRegistry},
     effect_host::ConversationEffectHost,
     effects::{EffectProvider, EffectRegistry},
     runtime::{RuntimeScope, TaskRunLimits},
@@ -127,7 +127,7 @@ pub(crate) struct PiOwnerConfig {
 impl PartialEq for PiOwnerConfig {
     fn eq(&self, other: &Self) -> bool {
         self.version == other.version
-            && self.key == other.key
+            && acyclic_auth::crypto::authentication_eq(&self.key, &other.key)
             && self.policy == other.policy
             && self.native_runtime == other.native_runtime
     }
@@ -261,11 +261,10 @@ impl PiOwnerConfig {
         let mut io =
             acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let verifier = issuer.0.verifier(&mut Some(&mut io))?;
-        let signed = issuer.0.issue(
+        let signed = issuer.0.bootstrap_scope(
             &verifier.audience().id,
             &storage.0,
             Some(self.policy.agent),
-            None,
             &mut Some(&mut io),
         )?;
         drop(storage);
@@ -304,7 +303,7 @@ impl PiOwnerConfig {
         kind: AggregateKind,
         task: TaskId,
         work: &NativeMaterializationWork,
-    ) -> Result<(AuthorityIssuer, NativeAllocation)> {
+    ) -> Result<(AuthorityRoot, NativeAllocation)> {
         let audience = work.display(&task)?;
         let id = work.display(ISSUER)?;
         work.charge(acyclic_fs::WorkCounters {
@@ -312,7 +311,7 @@ impl PiOwnerConfig {
             ..acyclic_fs::WorkCounters::UNCHARGED
         })?;
         combine_native_metadata((
-            AuthorityIssuer::new(
+            AuthorityRoot::new(
                 id.0,
                 self.key,
                 Authority {
@@ -350,7 +349,7 @@ impl PiOwnerConfig {
         grants: &Capabilities,
         work: &NativeMaterializationWork,
     ) -> Result<(
-        (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
+        (Authority, AuthorityRoot, acyclic_harness::core::Scope),
         NativeAllocation,
     )> {
         self.conversation_authority_parts_with_native_work(
@@ -367,7 +366,7 @@ impl PiOwnerConfig {
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(
-        (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
+        (Authority, AuthorityRoot, acyclic_harness::core::Scope),
         NativeAllocation,
     )> {
         self.conversation_authority_parts_with_native_work(
@@ -387,7 +386,7 @@ impl PiOwnerConfig {
         scope_id: std::fmt::Arguments<'_>,
         work: &NativeMaterializationWork,
     ) -> Result<(
-        (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
+        (Authority, AuthorityRoot, acyclic_harness::core::Scope),
         NativeAllocation,
     )> {
         let audience_id = work.display(&task)?;
@@ -402,9 +401,10 @@ impl PiOwnerConfig {
         let scope_id = work.display(&scope_id)?;
         let mut io =
             acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let scope = issuer
-            .0
-            .issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
+        let scope =
+            issuer
+                .0
+                .bootstrap_scope(&scope_id.0, grants, Some(agent), &mut Some(&mut io))?;
         drop(scope_id.0);
         drop(scope_id.1);
         combine_native_metadata((
@@ -620,7 +620,7 @@ pub(crate) mod tests;
 /// Consumes genuine original effect metadata before its protected owner moves into the Root provider.
 pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
     stream: std::sync::Arc<P>,
-    authority: (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
+    authority: (Authority, AuthorityRoot, acyclic_harness::core::Scope),
     custody: NativeAllocation,
     content: Arc<dyn ContentResidencyVerifier>,
     provider: Arc<dyn EffectProvider>,

@@ -22,7 +22,7 @@ use acyclic_harness::{
         VolumeOwner, VolumeRef,
     },
     core::{
-        Action, AggregateKind, Authority, AuthorityIssuer, Command, ExtensionDependency,
+        Action, AggregateKind, Authority, AuthorityRoot, Command, ExtensionDependency,
         ExtensionForkPolicy, Reducer, SchemaRegistry, Scope,
     },
     distributed::{WorkPull, Worker},

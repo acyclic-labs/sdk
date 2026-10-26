@@ -39,6 +39,7 @@ fn now_millis() -> u64 {
     // The shared wall-clock seam; a seeded simulation supplies its time.
     acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
 }
+mod access;
 mod helpers;
 mod join;
 use acyclic_fs::facade::FsWork as _;
@@ -49,6 +50,7 @@ use path::workspace_path_argument;
 use crate::Error;
 /// Executes the full git facade against a managed lazy workspace.
 pub(crate) struct WorkspaceGitExecutor<'a, F> {
+    pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Revalidates task ownership before every effect.
     pub before_effect: &'a F,
     /// Shared local filesystem.

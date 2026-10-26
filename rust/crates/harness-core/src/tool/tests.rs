@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     Capabilities,
     conversation::Limits,
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
 };
 use futures::FutureExt as _;
 use serde_json::json;
@@ -198,7 +198,7 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
     };
     let digest = definition.digest()?;
     let operation_id = OperationId::from_bytes([8; 16]);
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "issuer",
         [7; 32],
         Authority {
@@ -207,10 +207,9 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "install",
             &Capabilities::new(["tool:install:example.echo"]),
-            None,
             None,
             &mut None,
         )

@@ -9,7 +9,7 @@ use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::{
     Admission, AgentId, OperationId, TaskId,
     conversation::{FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, AuthorityIssuer, AuthorityVerifier, Scope},
+    core::{AggregateKind, AuthorityRoot, AuthorityVerifier, Scope},
     filesystem::{FilesystemHost, FilesystemResourceCreationProvider, FilesystemTaskRuntime},
     runtime::{RuntimeScope, TaskDefinition, TaskRegistry, TaskSpawner},
     scheduler::SessionLimits,
@@ -24,7 +24,7 @@ mod workflow;
 /// Trusted service configuration, supplied independently of route bytes.
 pub(crate) struct PiRuntimeAuthority {
     /// Original coordinator issuer, supplied only by protected root bootstrap.
-    pub(crate) issuer: AuthorityIssuer,
+    pub(crate) issuer: AuthorityRoot,
     pub(crate) verifier: AuthorityVerifier,
     pub(crate) signed: Scope,
     pub(crate) scope: RuntimeScope,

@@ -3,6 +3,7 @@
 //! always protects payloads before publication; Unix relies on descriptor-checked
 //! owner permissions. Neither path accepts a legacy plaintext fallback.
 use std::{io, sync::Arc};
+use subtle::ConstantTimeEq as _;
 use zeroize::Zeroize as _;
 mod protection;
 
@@ -88,7 +89,7 @@ pub fn decode_with<T, E: From<io::Error>>(
     let (expected, protected) = rest
         .split_first_chunk::<32>()
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
-    if magic != MAGIC || expected != digest(protected, meter)?.as_bytes() {
+    if magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes())) {
         return Err(
             io::Error::new(io::ErrorKind::InvalidData, "owner record integrity differs").into(),
         );

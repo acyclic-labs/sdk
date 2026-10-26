@@ -2,8 +2,8 @@ use super::*;
 use crate::conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
 use crate::resources::ProviderRef;
 
-fn fixture() -> Result<(AuthorityIssuer, AuthorityVerifier, Scope, VolumeRef)> {
-    let issuer = AuthorityIssuer::new(
+fn fixture() -> Result<(AuthorityRoot, AuthorityVerifier, Scope, VolumeRef)> {
+    let issuer = AuthorityRoot::new(
         "verified-scope",
         [106; 32],
         Authority {
@@ -24,7 +24,7 @@ fn fixture() -> Result<(AuthorityIssuer, AuthorityVerifier, Scope, VolumeRef)> {
         &mut None,
     )?;
     let capabilities = Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]);
-    let root = issuer.issue("root", &capabilities, None, None, &mut None)?;
+    let root = issuer.bootstrap_scope("root", &capabilities, None, &mut None)?;
     let scope = issuer.attenuate(&root, "child", &capabilities)?;
     let verifier = issuer.verifier(&mut None)?;
     Ok((issuer, verifier, scope, volume))
@@ -142,13 +142,8 @@ fn authenticated_scope_keeps_the_half_open_live_validity_interval() -> Result<()
 #[test]
 fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Result<()> {
     let (issuer, verifier, scope, volume) = fixture()?;
-    let denied = issuer.issue(
-        "denied",
-        &Capabilities::new(["other"]),
-        None,
-        None,
-        &mut None,
-    )?;
+    let denied =
+        issuer.bootstrap_scope("denied", &Capabilities::new(["other"]), None, &mut None)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = crate::executor::PreparationIo::from_budget(
         acyclic_fs::performance::work_budget(1_000_000, 1_000_000),

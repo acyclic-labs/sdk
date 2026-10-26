@@ -7,7 +7,7 @@ use crate::{
     bundle::{HarnessBuilder, HarnessBundle},
     context::{Context, ContextPipeline, ContextPlacement, ModelTokenCount, SourceStage},
     conversation::{VolumeClass, VolumeOwner},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
     model::Model,
     resources::ProviderRef,
@@ -35,7 +35,7 @@ fn counted_model(turns: usize) -> ScriptedModelProvider {
 }
 
 struct Binding {
-    _runtime: AuthorityIssuer,
+    _runtime: AuthorityRoot,
     journal: Arc<LocalJournal>,
     bundle: HarnessBundle,
 }
@@ -77,10 +77,10 @@ async fn open(
         kind: AggregateKind::Conversation,
         id: "durable-10k".into(),
     };
-    let issuer = AuthorityIssuer::new("durable-continuation", [58; 32], authority.clone());
+    let issuer = AuthorityRoot::new("durable-continuation", [58; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             capability::CONVERSATION_BIND.to_owned(),
@@ -91,7 +91,6 @@ async fn open(
             write.clone(),
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let stream = Arc::new(

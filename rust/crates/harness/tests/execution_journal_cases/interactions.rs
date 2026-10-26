@@ -7,18 +7,17 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         filesystem("interaction-e2e", "interaction-owner", agent, 8).await?;
     let scope = scope(&issuer, &private, agent, &["interaction:open".into()])?;
     let id = InteractionId::from_bytes([11; 16]);
-    let responder = issuer.issue(
+    let responder = issuer.bootstrap_scope(
         "human",
         &Capabilities::new([
             "interaction:resolve".to_owned(),
             format!("interaction:respond:{id}"),
         ]),
         None,
-        None,
         &mut None,
     )?;
     let unauthorized =
-        issuer.issue("bystander", &Capabilities::default(), None, None, &mut None)?;
+        issuer.bootstrap_scope("bystander", &Capabilities::default(), None, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,

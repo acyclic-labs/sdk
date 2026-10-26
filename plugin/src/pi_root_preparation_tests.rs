@@ -249,11 +249,10 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
         let authority = owner.authority(native).unwrap();
         let signed = authority
             .issuer
-            .issue(
+            .bootstrap_scope(
                 &owner.policy.root_task.to_string(),
                 &owner.policy.grants,
                 Some(owner.policy.agent),
-                None,
                 &mut None,
             )
             .unwrap();

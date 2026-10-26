@@ -943,7 +943,7 @@ mod workload_tests {
         )?;
         let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
         host.create_volume(&volume).await?;
-        let issuer = crate::core::AuthorityIssuer::new(
+        let issuer = crate::core::AuthorityRoot::new(
             "owner",
             [73; 32],
             Authority {
@@ -951,11 +951,10 @@ mod workload_tests {
                 id: agent.to_string(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "write",
             &crate::Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]),
             Some(agent),
-            None,
             &mut None,
         )?;
         let grant = ContentGrant::verify(

@@ -90,7 +90,7 @@ pub(super) async fn open<P, A, O>(
     stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: VolumeRef,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     scope: &Scope,
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> Result<Runtime<P, A, O>>

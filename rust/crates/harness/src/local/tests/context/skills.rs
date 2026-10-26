@@ -117,7 +117,7 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     let stream = harness.task_stream();
     let storage = harness.workspace.as_ref().unwrap().filesystem.clone();
     let volume = harness.journal.clone();
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "bound-skills",
         [38; 32],
         harness.verifier.audience().clone(),

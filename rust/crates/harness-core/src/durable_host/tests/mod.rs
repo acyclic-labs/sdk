@@ -1,7 +1,7 @@
 //! Durable host behavior tests.
 use super::*;
 use crate::conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
-use crate::core::{AggregateKind, AuthorityIssuer};
+use crate::core::{AggregateKind, AuthorityRoot};
 use crate::resources::ProviderRef;
 use crate::runtime::TaskSpawner;
 #[cfg(test)]

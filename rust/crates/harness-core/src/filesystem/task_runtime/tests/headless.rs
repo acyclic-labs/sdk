@@ -10,7 +10,7 @@ async fn fork_source_authority_is_derived_by_the_runtime_and_rejects_foreign_roo
     fixture.signed =
         fixture
             .issuer
-            .issue("owner", &grants, fixture.signed.agent(), None, &mut None)?;
+            .bootstrap_scope("owner", &grants, fixture.signed.agent(), &mut None)?;
     fixture.scope = RuntimeScope::new(grants.clone(), Limits::default())?.with_run_limits(
         TaskRunLimits {
             deadline_epoch_ms: Some(20),
@@ -18,7 +18,7 @@ async fn fork_source_authority_is_derived_by_the_runtime_and_rejects_foreign_roo
         },
         &mut None,
     )?;
-    let foreign = AuthorityIssuer::new("foreign", [33; 32], fixture.issuer.audience().clone());
+    let foreign = AuthorityRoot::new("foreign", [33; 32], fixture.issuer.audience().clone());
     assert!(matches!(
         runtime(&fixture).await?.with_authority_custodian(&foreign),
         Err(Error::Unauthorized(_))
@@ -163,7 +163,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
         .signed
         .agent()
         .ok_or_else(|| Error::Invalid("fixture agent".into()))?;
-    fixture.signed = fixture.issuer.issue(
+    fixture.signed = fixture.issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(
             fixture.signed.capabilities().iter().chain(
@@ -176,7 +176,6 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
             ),
         ),
         Some(agent),
-        None,
         &mut None,
     )?;
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
@@ -371,7 +370,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
             .await
             .is_err()
     );
-    let foreign_issuer = AuthorityIssuer::new(
+    let foreign_issuer = AuthorityRoot::new(
         "foreign-owner",
         [126; 32],
         Authority {
@@ -383,11 +382,10 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
         .signed
         .agent()
         .ok_or_else(|| Error::Invalid("fixture agent".into()))?;
-    let signed = foreign_issuer.issue(
+    let signed = foreign_issuer.bootstrap_scope(
         "owner",
         fixture.signed.capabilities(),
         Some(agent),
-        None,
         &mut None,
     )?;
     let foreign = FilesystemTaskRuntime::open(
@@ -440,7 +438,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         .signed
         .agent()
         .ok_or_else(|| Error::Invalid("fixture agent".into()))?;
-    fixture.signed = fixture.issuer.issue(
+    fixture.signed = fixture.issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(
             fixture.signed.capabilities().iter().chain(
@@ -453,7 +451,6 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             ),
         ),
         Some(agent),
-        None,
         &mut None,
     )?;
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
@@ -549,8 +546,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         kind: AggregateKind::Conversation,
         id: "restore-history".into(),
     };
-    let issuer = AuthorityIssuer::new("restore", [132; 32], authority.clone());
-    let signed = issuer.issue(
+    let issuer = AuthorityRoot::new("restore", [132; 32], authority.clone());
+    let signed = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(fixture.signed.capabilities().iter().chain([
             "conversation:bind",
@@ -558,7 +555,6 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             "fork:publish",
         ])),
         Some(agent),
-        None,
         &mut None,
     )?;
     let reader = FilesystemContentVerifier::new(
@@ -663,11 +659,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         u64::MAX,
         &mut None,
     )?;
-    let restricted = fixture.issuer.issue(
+    let restricted = fixture.issuer.bootstrap_scope(
         "read-only",
         &Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]),
         Some(agent),
-        None,
         &mut None,
     )?;
     assert!(
@@ -932,8 +927,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         ],
     };
     let report = history.prepare_fork(&preparer, request).await?;
-    let child_issuer = AuthorityIssuer::new("restore", [132; 32], child_authority.clone());
-    let child_scope = child_issuer.issue(
+    let child_issuer = AuthorityRoot::new("restore", [132; 32], child_authority.clone());
+    let child_scope = child_issuer.bootstrap_scope(
         "child",
         &Capabilities::new([
             "conversation:bind".into(),
@@ -943,7 +938,6 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             child_project.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(child_agent),
-        None,
         &mut None,
     )?;
     let mut child = StreamAggregate::open(

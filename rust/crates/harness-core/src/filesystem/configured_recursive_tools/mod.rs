@@ -5,7 +5,7 @@ use crate::{
     conversation::{
         ContentGrant, ConversationMessage, Limits, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
+    core::{Authority, AuthorityRoot, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
@@ -51,7 +51,7 @@ pub struct ConfiguredRecursiveToolSource<P, A, O> {
     filesystem: Arc<FilesystemHost<A, O>>,
     limits: Limits,
     runtime: OnceLock<Weak<FilesystemTaskRuntime<P, A, O>>>,
-    project_policy: OnceLock<(AuthorityIssuer, Arc<dyn RootProjectSourceProvider>)>,
+    project_policy: OnceLock<(AuthorityRoot, Arc<dyn RootProjectSourceProvider>)>,
 }
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -153,7 +153,7 @@ where
     /// Installs the trusted same-graph source policy.
     pub fn with_project_source_policy(
         &self,
-        issuer: AuthorityIssuer,
+        issuer: AuthorityRoot,
         provider: Arc<dyn RootProjectSourceProvider>,
     ) -> Result<()> {
         self.project_policy.set((issuer, provider)).map_err(|_| {

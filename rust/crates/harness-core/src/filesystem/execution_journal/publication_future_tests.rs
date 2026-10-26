@@ -17,13 +17,13 @@ impl acyclic_stream::UnixMillisClock for Clock {
     }
 }
 
-async fn fixture() -> Result<(Journal, crate::core::AuthorityIssuer)> {
+async fn fixture() -> Result<(Journal, crate::core::AuthorityRoot)> {
     fixture_with_filesystem(acyclic_fs::Fs::memory()).await
 }
 
 async fn fixture_with_filesystem(
     filesystem: acyclic_fs::MemoryFs,
-) -> Result<(Journal, crate::core::AuthorityIssuer)> {
+) -> Result<(Journal, crate::core::AuthorityRoot)> {
     let provider = ProviderRef::new("future".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
@@ -35,7 +35,7 @@ async fn fixture_with_filesystem(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "future",
         [2; 32],
         crate::core::Authority {
@@ -43,14 +43,13 @@ async fn fixture_with_filesystem(
             id: crate::ConversationId::from_bytes([3; 16]).to_string(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let journal = FilesystemExecutionJournal::new(

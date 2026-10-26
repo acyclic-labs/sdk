@@ -3,7 +3,7 @@
 use crate::{
     EffectAttemptId, EffectId, Error, Result,
     conversation::{ContentResidencyVerifier, FileRef},
-    core::{AuthorityIssuer, EffectAttestation},
+    core::{AuthorityRoot, EffectAttestation},
     core::{EffectGuarantee, EffectState, EffectStatus},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;

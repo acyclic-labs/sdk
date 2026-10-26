@@ -47,7 +47,7 @@ fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Resul
     let mut tampered = event.clone();
     tampered.scope.capabilities = Capabilities::new(["conversation:bind", "effect:run"]);
     assert!(reducer.apply_committed(tampered, &mut None).is_err());
-    let foreign = AuthorityIssuer::new(
+    let foreign = AuthorityRoot::new(
         "test",
         [7; 32],
         Authority {

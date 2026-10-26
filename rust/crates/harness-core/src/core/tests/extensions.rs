@@ -41,14 +41,13 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     owner.audience.kind = AggregateKind::Agent;
     let verifier = owner.verifier(&mut None)?;
     let mut reducer = Reducer::new(owner.audience.clone(), verifier, registry);
-    let scope = owner.issue(
+    let scope = owner.bootstrap_scope(
         "owner",
         &Capabilities::new([
             "extension:configure",
             "extension:activate",
             "lifecycle:manage",
         ]),
-        None,
         None,
         &mut None,
     )?;
@@ -185,7 +184,7 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
         content: (request_file(br#"{"text":"new"}"#)?).into(),
     };
     let mut migrate = command(operation(112), 1, migration);
-    migrate.scope = issuer().issue(
+    migrate.scope = issuer().bootstrap_scope(
         "owner",
         &Capabilities::new([
             "extension:migrate".to_owned(),
@@ -194,7 +193,6 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
                 .capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(AgentId::from_bytes([8; 16])),
-        None,
         &mut None,
     )?;
     let mut stale = migrate.clone();

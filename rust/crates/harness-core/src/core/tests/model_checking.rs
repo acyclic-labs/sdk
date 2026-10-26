@@ -58,7 +58,7 @@ proptest! {
     ) {
         let owner = issuer();
         let agent = Some(AgentId::from_bytes(agent));
-        let mut parent = owner.issue("root", &capabilities(root), agent, None, &mut None).unwrap();
+        let mut parent = owner.bootstrap_scope("root", &capabilities(root), agent, &mut None).unwrap();
         let verifier = owner.verifier(&mut None).unwrap();
         for (index, requested) in requests.into_iter().enumerate() {
             let requested = capabilities(requested);
@@ -144,7 +144,7 @@ fn lifecycle_history(
         );
         if unauthorized || fault == LifecycleFault::RejectAll {
             cmd.scope = issuer()
-                .issue("empty", &Capabilities::default(), None, None, &mut None)
+                .bootstrap_scope("empty", &Capabilities::default(), None, &mut None)
                 .unwrap();
         }
         let reopening = fault == LifecycleFault::ReopenTerminal
@@ -247,7 +247,7 @@ fn scope_field_property(
 ) -> proptest::test_runner::TestCaseResult {
     let owner = issuer();
     let original = owner
-        .issue("root", &capabilities(mask), None, None, &mut None)
+        .bootstrap_scope("root", &capabilities(mask), None, &mut None)
         .unwrap();
     let mut tampered = original.clone();
     match field {
@@ -281,7 +281,7 @@ fn scope_field_property(
     );
     let mut foreign_key = [7; 32];
     foreign_key[byte] ^= 1 << bit;
-    foreign = AuthorityIssuer::new(owner.id.clone(), foreign_key, owner.audience.clone());
+    foreign = AuthorityRoot::new(owner.id.clone(), foreign_key, owner.audience.clone());
     prop_assert!(
         foreign
             .verifier(&mut None)

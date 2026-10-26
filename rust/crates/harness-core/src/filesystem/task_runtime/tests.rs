@@ -6,7 +6,7 @@ use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, AgentId, Capabilities,
     conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
     resources::ProviderRef,
     runtime::ToolContext,
@@ -336,7 +336,7 @@ struct Fixture {
     stream: Arc<MemoryStream>,
     filesystem: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     volume: VolumeRef,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     signed: Scope,
     scope: RuntimeScope,
     tasks: TaskRegistry,
@@ -364,7 +364,7 @@ impl Fixture {
             &mut None,
         )?;
         filesystem.create_volume(&volume).await?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "deadline-control",
             [102; 32],
             Authority {
@@ -372,7 +372,7 @@ impl Fixture {
                 id: "deadline-owner".into(),
             },
         );
-        let signed = issuer.issue(
+        let signed = issuer.bootstrap_scope(
             "owner",
             &Capabilities::new([
                 "operation:declare".to_owned(),
@@ -387,7 +387,6 @@ impl Fixture {
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )?;
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?

@@ -24,7 +24,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "persistent-edit",
         [4; 32],
         Authority {
@@ -33,14 +33,13 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(owner),
-            None,
             &mut None,
         )
         .expect("scope proof");

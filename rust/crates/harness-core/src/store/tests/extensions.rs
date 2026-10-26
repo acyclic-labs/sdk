@@ -75,7 +75,7 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
         kind: AggregateKind::Agent,
         id: "configured-agent".into(),
     };
-    let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
+    let issuer = AuthorityRoot::new("test", [7; 32], authority.clone());
     let extension = ExtensionDependency {
         name: "example.configured".into(),
         version: 1,
@@ -97,10 +97,9 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
         idempotency_key: IdempotencyKey("configure-extension".into()),
         expected_revision: 0,
         scope: issuer
-            .issue(
+            .bootstrap_scope(
                 "owner",
                 &Capabilities::new(["extension:configure"]),
-                None,
                 None,
                 &mut None,
             )

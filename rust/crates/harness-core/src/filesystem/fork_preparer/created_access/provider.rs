@@ -109,11 +109,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let capabilities = Capabilities::new([read, write]);
         let temporary =
             name.capacity() as u64 + id.capacity() as u64 + capabilities.logical_owned_bytes()?;
-        let scope = self.issuer.issue(
+        let scope = self.issuer.bootstrap_scope(
             &id,
             &capabilities,
             Some(allocation.agent),
-            None,
             &mut Some(&mut io.history_io()),
         )?;
         drop((name, id, capabilities));

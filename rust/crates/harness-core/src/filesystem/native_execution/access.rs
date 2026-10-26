@@ -136,7 +136,7 @@ pub struct NativeAccessAuthority<'a> {
 /// Bind a host owner's exact-volume grant through the shared policy compiler.
 pub async fn owner_mount_options<A, O>(
     workspace: &Workspace<A, O>,
-    issuer: &crate::core::AuthorityIssuer,
+    issuer: &crate::core::AuthorityRoot,
     agent: Option<crate::AgentId>,
     writable: bool,
     work: &NativeMaterializationWork,
@@ -146,7 +146,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let grants = mount_capabilities(workspace, writable)?;
-    let scope = issuer.issue("native-volume", &grants, agent, None, &mut None)?;
+    let scope = issuer.bootstrap_scope("native-volume", &grants, agent, &mut None)?;
     let verifier = issuer.verifier(&mut None)?;
     let generation = workspace.head(work, work.cancellation()).await?.id();
     authenticated_mount_options(
@@ -349,6 +349,51 @@ where
     }
 }
 
+/// An authenticated scope and invocation ceiling for a raw workspace surface.
+/// Construction is mandatory: raw facades cannot omit the grant admission.
+#[derive(Clone)]
+pub struct WorkspaceAccess {
+    verifier: AuthorityVerifier,
+    scope: Scope,
+    ceiling: crate::Capabilities,
+    volume: Option<VolumeRef>,
+}
+
+impl WorkspaceAccess {
+    /// Bind an authenticated workload to its original logical volume.
+    pub fn new(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        ceiling: &crate::Capabilities,
+        volume: Option<&VolumeRef>,
+    ) -> Result<Self> {
+        verifier.verify(scope, &mut None)?;
+        Ok(Self {
+            verifier: verifier.clone(),
+            scope: scope.copy(&mut None)?,
+            ceiling: ceiling.clone(),
+            volume: volume.cloned(),
+        })
+    }
+
+    /// Recheck revocation, the current policy revision, and both grant ceilings.
+    pub async fn require<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self,
+        workspace: &Workspace<A, O>,
+    ) -> Result<()> {
+        self.verifier.verify(&self.scope, &mut None)?;
+        require_raw_workspace_access(
+            workspace,
+            self.volume.as_ref(),
+            &self.scope,
+            &self.ceiling,
+            "raw workspace",
+        )
+        .await?;
+        self.verifier.verify(&self.scope, &mut None)
+    }
+}
+
 /// Check a verified scope and caller ceiling before exposing a raw workspace.
 /// The caller must authenticate the scope before invoking this admission check.
 pub async fn require_unrestricted_volume_access<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -358,14 +403,26 @@ pub async fn require_unrestricted_volume_access<A: AsyncAuthorityStore, O: Async
     ceiling: &crate::Capabilities,
     surface: &'static str,
 ) -> Result<()> {
+    require_raw_workspace_access(workspace, Some(volume), signed, ceiling, surface).await
+}
+
+async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    volume: Option<&VolumeRef>,
+    signed: &Scope,
+    ceiling: &crate::Capabilities,
+    surface: &'static str,
+) -> Result<()> {
     use crate::filesystem::{PreparationIo, access};
     let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
     for grants in [ceiling, signed.capabilities()] {
-        if crate::core::filesystem_scope_label(grants, &mut None)?.is_none()
-            && (!grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
-                || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?))
-        {
-            return Err(Error::FilesystemAccessConfiguration(surface));
+        if crate::core::filesystem_scope_label(grants, &mut None)?.is_none() {
+            let volume = volume.ok_or(Error::FilesystemAccessConfiguration(surface))?;
+            if !grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
+                || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?)
+            {
+                return Err(Error::FilesystemAccessConfiguration(surface));
+            }
         }
     }
     let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
@@ -441,7 +498,7 @@ mod workload_tests {
             .await?
             .workspace();
         let generation = workspace.head(&work, &cancellation).await?.id();
-        let issuer = crate::core::AuthorityIssuer::new(
+        let issuer = crate::core::AuthorityRoot::new(
             "mount",
             [72; 32],
             crate::core::Authority {
@@ -449,10 +506,9 @@ mod workload_tests {
                 id: "mount".into(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "mount",
             &crate::Capabilities::new(["unused"]),
-            None,
             None,
             &mut None,
         )?;

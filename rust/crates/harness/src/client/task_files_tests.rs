@@ -3,7 +3,7 @@
 use crate::{
     AgentId, Capabilities, TaskId,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, Scope},
     resources::ProviderRef,
     task_volume::{Error, Query, TaskFiles},
 };
@@ -16,7 +16,7 @@ fn authority(
     volume: &VolumeRef,
     operations: &[VolumeOperation],
 ) -> (AuthorityVerifier, Scope) {
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "task-files",
         [7; 32],
         Authority {
@@ -29,7 +29,7 @@ fn authority(
         .map(|operation| volume.capability(*operation, &mut None).unwrap())
         .collect();
     let scope = issuer
-        .issue("caller", &Capabilities::new(grants), agent, None, &mut None)
+        .bootstrap_scope("caller", &Capabilities::new(grants), agent, &mut None)
         .unwrap();
     (issuer.verifier(&mut None).unwrap(), scope)
 }

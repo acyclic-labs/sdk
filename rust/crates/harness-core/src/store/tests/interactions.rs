@@ -155,7 +155,7 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
         deadline_unix_ms: Some(u64::MAX),
         ..ticket.clone()
     };
-    let scope = issuer().issue(
+    let scope = issuer().bootstrap_scope(
         "owner",
         &Capabilities::new([
             "conversation:bind",
@@ -164,7 +164,6 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
             ticket.responder_grant().as_str(),
             future.responder_grant().as_str(),
         ]),
-        None,
         None,
         &mut None,
     )?;

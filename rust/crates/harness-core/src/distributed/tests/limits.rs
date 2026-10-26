@@ -243,14 +243,14 @@ async fn historical_source(
     operation: OperationId,
 ) -> Result<(
     Authority,
-    crate::core::AuthorityIssuer,
+    crate::core::AuthorityRoot,
     Scope,
     LeaseFence,
     u64,
 )> {
     let declaration = spec(operation, 0)?;
     let owner = declaration.owner.authority().clone();
-    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let issuer = crate::core::AuthorityRoot::new("test-runtime", [9; 32], owner.clone());
     let declaration_scope = declaration.owner_scope.clone();
     let mut coordinator = DistributedCoordinator::open(
         client,
@@ -302,10 +302,9 @@ async fn historical_source(
     )
     .await?;
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "original-readonly-proof",
             &crate::Capabilities::new(["operation:observe"]),
-            None,
             None,
             &mut None,
         )

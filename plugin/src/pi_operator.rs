@@ -229,11 +229,10 @@ pub(crate) fn build_control_request(
     let hash_custody = body_hash(&body, work)?;
     let hash = &hash_custody.0;
     let authority = owner.authority(work)?;
-    let operator = authority.issuer.issue(
+    let operator = authority.issuer.bootstrap_scope(
         &format!("pi:operator:{}:{hash}", body.session()),
         &Capabilities::new([capability(&body, hash)]),
         Some(owner.policy().agent),
-        None,
         &mut None,
     )?;
     let session_id = body.session().to_owned();

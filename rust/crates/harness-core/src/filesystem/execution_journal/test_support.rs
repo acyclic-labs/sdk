@@ -6,7 +6,7 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >,
-    crate::core::AuthorityIssuer,
+    crate::core::AuthorityRoot,
 )> {
     let provider = crate::resources::ProviderRef::new(
         "append-cost".into(),
@@ -24,7 +24,7 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "append-cost",
         [81; 32],
         crate::core::Authority {
@@ -32,14 +32,13 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
             id: crate::ConversationId::from_bytes([82; 16]).to_string(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let journal = FilesystemExecutionJournal::new(

@@ -29,7 +29,7 @@ fn query_scope(
         ]],
         expires_at: expired.then_some(1),
     };
-    Ok(fixture.issuer.issue(
+    Ok(fixture.issuer.bootstrap_scope(
         "query",
         &Capabilities::new([
             fixture
@@ -38,7 +38,6 @@ fn query_scope(
             capability.to_scope_label()?,
         ]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?)
 }
@@ -126,7 +125,7 @@ async fn structured_only_runtime_authority_uses_the_filesystem_owner() -> Result
 #[tokio::test]
 async fn empty_signed_or_caller_ceiling_stays_empty() -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new().await?;
-    let empty = fixture.issuer.issue(
+    let empty = fixture.issuer.bootstrap_scope(
         "empty",
         &Capabilities::new([
             fixture
@@ -139,7 +138,6 @@ async fn empty_signed_or_caller_ceiling_stays_empty() -> Result<(), Box<dyn Erro
             .to_scope_label()?,
         ]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     let all = fixture.narrowed(true, false)?;

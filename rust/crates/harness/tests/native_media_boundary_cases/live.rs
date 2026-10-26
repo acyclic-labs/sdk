@@ -21,11 +21,11 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
         kind: AggregateKind::Agent,
         id: "native-boundary".into(),
     };
-    let issuer = AuthorityIssuer::new("native-boundary", [21; 32], authority.clone());
+    let issuer = AuthorityRoot::new("native-boundary", [21; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
     let owner = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 read.clone(),
@@ -40,7 +40,6 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                 "tool:call:example.convert_image".into(),
             ]),
             Some(agent_id),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -594,16 +593,15 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
         kind: AggregateKind::Conversation,
         id: acyclic_harness::ConversationId::new().to_string(),
     };
-    let journal_issuer = AuthorityIssuer::new("native-conversation", [22; 32], journal_authority);
+    let journal_issuer = AuthorityRoot::new("native-conversation", [22; 32], journal_authority);
     let journal_scope = journal_issuer
-        .issue(
+        .bootstrap_scope(
             "conversation-owner",
             &Capabilities::new([
                 read.clone(),
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent_id),
-            None,
             &mut None,
         )
         .expect("scope proof");

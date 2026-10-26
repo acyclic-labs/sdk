@@ -69,7 +69,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Provider(
     AtomicUsize,
-    std::sync::Mutex<Option<(AuthorityIssuer, crate::core::Scope)>>,
+    std::sync::Mutex<Option<(AuthorityRoot, crate::core::Scope)>>,
 );
 impl Provider {
     fn revoke(&self) -> Result<()> {
@@ -133,7 +133,7 @@ impl EffectProvider for Provider {
 struct Fixture {
     registry: EffectRegistry,
     provider: Arc<Provider>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     scope: crate::core::Scope,
     state: EffectState,
     effect_id: EffectId,
@@ -145,7 +145,7 @@ fn fixture() -> Result<Fixture> {
     let effect_id = EffectId::from_bytes([1; 16]);
     let attempt_id = EffectAttemptId::from_bytes([2; 16]);
     let schema = json!({"type": "object", "required": ["receipt"]});
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "host",
         [4; 32],
         Authority {
@@ -153,7 +153,7 @@ fn fixture() -> Result<Fixture> {
             id: "task-1".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "planner",
         &crate::Capabilities::new([
             "event:append",
@@ -161,7 +161,6 @@ fn fixture() -> Result<Fixture> {
             "effect:run",
             "effect:provider:example.provider",
         ]),
-        None,
         None,
         &mut None,
     )?;

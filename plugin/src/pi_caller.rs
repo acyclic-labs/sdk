@@ -83,11 +83,10 @@ pub(crate) fn issue(
     )?;
     let capabilities = Capabilities::copy([CALLER_CAPABILITY], work)?;
     let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-    let scope = authority.issuer.issue(
+    let scope = authority.issuer.bootstrap_scope(
         std::str::from_utf8(&identity.0).expect("JSON encoder emits UTF-8"),
         &capabilities.0,
         Some(binding.agent_id),
-        None,
         &mut Some(&mut io),
     )?;
     Ok((scope, io.into_custody()?))

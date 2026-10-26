@@ -8,10 +8,7 @@ where
 {
     /// Transfers the configured issuer into the runtime. The harness package
     /// receives only workload scopes; it cannot issue a grant or choose an agent.
-    pub fn with_authority_custodian(
-        mut self,
-        issuer: &crate::core::AuthorityIssuer,
-    ) -> Result<Self> {
+    pub fn with_authority_custodian(mut self, issuer: &crate::core::AuthorityRoot) -> Result<Self> {
         if self.authority_custodian.is_some() {
             return Err(Error::Conflict("runtime authority is already bound".into()));
         }

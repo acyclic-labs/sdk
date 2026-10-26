@@ -8,7 +8,7 @@ use proptest::prelude::*;
 const ORIGINAL: &str = "---\nstatus: blocked\nreason: waiting\n---\nobjective";
 
 fn grant(fixture: &Fixture) -> Result<ContentGrant> {
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "goal-writer",
         &Capabilities::new([
             fixture
@@ -19,7 +19,6 @@ fn grant(fixture: &Fixture) -> Result<ContentGrant> {
                 .capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(fixture.agent),
-        None,
         &mut None,
     )?;
     ContentGrant::verify(

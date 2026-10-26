@@ -84,7 +84,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
         .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
         .push(read);
     fixture.publish_policy(policy.clone()).await?;
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "listing",
         &Capabilities::new([
             fixture
@@ -97,7 +97,6 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
             .to_scope_label()?,
         ]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     let grant = ContentGrant::verify_directory_read(

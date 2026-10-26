@@ -616,7 +616,7 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
         kind: crate::core::AggregateKind::Agent,
         id: "builder-original-registry".into(),
     };
-    let issuer = crate::core::AuthorityIssuer::new("builder-owner", [81; 32], authority.clone());
+    let issuer = crate::core::AuthorityRoot::new("builder-owner", [81; 32], authority.clone());
     let mut schemas = crate::core::SchemaRegistry::new();
     schemas.register(
         "example.builder",

@@ -1,6 +1,6 @@
 use super::*;
-fn fixture() -> AuthorityIssuer {
-    AuthorityIssuer::new(
+fn fixture() -> AuthorityRoot {
+    AuthorityRoot::new(
         "owner",
         [29; 32],
         Authority {
@@ -13,10 +13,9 @@ fn fixture() -> AuthorityIssuer {
 fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_audience()
 -> Result<()> {
     let issuer = fixture();
-    let root = issuer.issue(
+    let root = issuer.bootstrap_scope(
         "root",
         &Capabilities::new(["model:generate", "tool:call:read"]),
-        None,
         None,
         &mut None,
     )?;
@@ -80,10 +79,9 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
     let issuer = fixture();
     let audience = issuer.audience.clone();
     let mut trust = issuer.public_workload_trust()?;
-    let parent = issuer.issue(
+    let parent = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(["tool:call:read", "tool:call:write"]),
-        None,
         None,
         &mut None,
     )?;
@@ -131,10 +129,9 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
 fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
     let runtime = fixture();
     let now = now();
-    let root = runtime.issue(
+    let root = runtime.bootstrap_scope(
         "root",
         &Capabilities::new(["event:append"]),
-        None,
         None,
         &mut None,
     )?;
@@ -169,7 +166,7 @@ fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
     Ok(())
 }
 
-fn expired_historical_event(issuer: &AuthorityIssuer) -> Result<Event> {
+fn expired_historical_event(issuer: &AuthorityRoot) -> Result<Event> {
     let admitted_at = 100;
     let name = resource(&issuer.audience)?;
     let trust = issuer.public_workload_trust()?;

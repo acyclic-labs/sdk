@@ -12,7 +12,7 @@ use acyclic_harness::conversation::{
     ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, EventPayload, SchemaRegistry,
+    Action, AggregateKind, Authority, AuthorityRoot, Command, EventPayload, SchemaRegistry,
 };
 use acyclic_harness::distributed::{
     DistributedCoordinator, SchedulerPayloadStore, WorkPull, Worker,
@@ -416,7 +416,7 @@ async fn worker_pinned_policy_model_binding_survives_reopen() -> Result<()> {
 async fn resolve_worker_approval<P, A, O>(
     stream: &std::sync::Arc<P>,
     filesystem: Arc<FilesystemHost<A, O>>,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     owner_scope: acyclic_harness::core::Scope,
     volume: VolumeRef,
     agent: AgentId,
@@ -485,11 +485,10 @@ where
         Err(Error::Unauthorized(_))
     ));
     let responder = issuer
-        .issue(
+        .bootstrap_scope(
             "approver",
             &Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

@@ -10,7 +10,7 @@ use acyclic_harness::{
         VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
-        Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, EffectStatus,
+        Action, AggregateKind, Authority, AuthorityRoot, Command, EffectGuarantee, EffectStatus,
         SchemaRegistry, Scope,
     },
     distributed::{WorkPull, Worker},
@@ -56,8 +56,8 @@ struct Evidence<A, O> {
     files: std::sync::Weak<Files<A, O>>,
 }
 
-fn issuer() -> AuthorityIssuer {
-    AuthorityIssuer::new(
+fn issuer() -> AuthorityRoot {
+    AuthorityRoot::new(
         "example",
         [6; 32],
         Authority {
@@ -110,7 +110,7 @@ struct ExampleStorage<A, O> {
     task_id: TaskId,
     command: OperationId,
     approval: InteractionId,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     scope: Scope,
 }
 
@@ -170,7 +170,7 @@ where
 fn approval_scope(
     mcp: Option<&'static str>,
     volumes: [&VolumeRef; 3],
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     agent: AgentId,
     approval: InteractionId,
 ) -> Result<Scope> {
@@ -199,13 +199,7 @@ fn approval_scope(
             "tool:call:mcp.example.echo".into(),
         ]);
     }
-    issuer.issue(
-        "owner",
-        &Capabilities::new(grants),
-        Some(agent),
-        None,
-        &mut None,
-    )
+    issuer.bootstrap_scope("owner", &Capabilities::new(grants), Some(agent), &mut None)
 }
 
 async fn prepare_storage<A, O>(
@@ -247,11 +241,10 @@ where
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
-    let setup_scope = issuer.issue(
+    let setup_scope = issuer.bootstrap_scope(
         "setup",
         &Capabilities::new([source.capability(VolumeOperation::Write, &mut None)?]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let setup = ContentGrant::verify(
@@ -788,7 +781,7 @@ fn execution_journal<P, A, O>(
     stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: &VolumeRef,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     scope: &Scope,
 ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>>
 where

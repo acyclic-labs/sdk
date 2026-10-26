@@ -98,6 +98,43 @@ mod tests {
             )
             .await
             .map_err(display)?;
+        // The host's Git adapter uses the same current policy as its mounts.
+        // A raw facade cannot expose the rest of a path-restricted workspace.
+        let graph = WorkspaceGraph::new(
+            acyclic_fs::LocalCoreStateStore::open_owned(root.path().join("git-state"))
+                .map_err(display)?,
+        );
+        graph.register_root(&workspace).await.map_err(display)?;
+        let store = graph.store();
+        let access =
+            acyclic_harness::filesystem::local_owner_workspace_access("authenticated-agent")
+                .map_err(display)?;
+        let denied = acyclic_harness::tools::git::run(
+            acyclic_harness::tools::git::Workspace {
+                access: &access,
+                filesystem: &fs,
+                store,
+                view: acyclic_harness::tools::git::View::Volume(&workspace),
+                root: root.path(),
+                repository: workspace.id(),
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "fixture",
+                authored_at_seconds: 1,
+            },
+            &["status".into()],
+        )
+        .await;
+        assert!(
+            matches!(
+                denied,
+                Err(acyclic_harness::Error::FilesystemAccessConfiguration(_))
+            ),
+            "plugin Git bypassed its mount policy"
+        );
+        // Negative control: the captured pre-revision view permits this path.
+        assert!(view.decide(Action::Read, "secrets/key", now()).allowed);
         // Both recovery and subagent creation use these same authenticated options.
         for owner in ["recovered-agent", "pending-child"] {
             let options = mount_options(&workspace, owner).await?;

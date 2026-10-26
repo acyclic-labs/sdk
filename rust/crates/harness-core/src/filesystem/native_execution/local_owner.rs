@@ -54,16 +54,34 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    use crate::core::{AggregateKind, Authority, AuthorityIssuer};
     acyclic_fs::initialize_native_mount_services()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
+    let issuer = host_owner_root(owner)?;
+    owner_mount_options(workspace, &issuer, None, writable, &work).await
+}
+
+/// Authenticate the embedded host identity for the shared raw-workspace facade.
+/// The policy compiler still intersects this host grant with each volume policy.
+pub fn local_owner_workspace_access(owner: &str) -> Result<WorkspaceAccess> {
+    let issuer = host_owner_root(owner)?;
+    let capability =
+        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL);
+    let grants = crate::Capabilities::new([capability
+        .to_scope_label()
+        .map_err(|_| Error::FilesystemAccessConfiguration("host workspace"))?]);
+    let scope = issuer.bootstrap_scope("host-workspace", &grants, None, &mut None)?;
+    WorkspaceAccess::new(&issuer.verifier(&mut None)?, &scope, &grants, None)
+}
+
+fn host_owner_root(owner: &str) -> Result<crate::core::AuthorityRoot> {
+    use crate::core::{AggregateKind, Authority, AuthorityRoot};
     let mut key = [0; 32];
     crate::identity::fill_random(&mut key).map_err(|error| Error::Invalid(error.to_string()))?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         format!("host-managed:{owner}"),
         key,
         Authority {
@@ -71,6 +89,6 @@ where
             id: owner.into(),
         },
     );
-    key.fill(0);
-    owner_mount_options(workspace, &issuer, None, writable, &work).await
+    acyclic_native_runtime::owner_record::clear_secret(&mut key);
+    Ok(issuer)
 }

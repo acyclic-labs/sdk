@@ -38,13 +38,13 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         .is_err()
     );
     let wrong_actor =
-        crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue(
-            "wrong-parent",
-            &Capabilities::new(["fork:publish"]),
-            Some(AgentId::from_bytes([80; 16])),
-            None,
-            &mut None,
-        )?;
+        crate::core::AuthorityRoot::new("created-owner", [80; 32], seed.parent.clone())
+            .bootstrap_scope(
+                "wrong-parent",
+                &Capabilities::new(["fork:publish"]),
+                Some(AgentId::from_bytes([80; 16])),
+                &mut None,
+            )?;
     assert!(
         publish(
             &mut setup.parent,

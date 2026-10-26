@@ -34,7 +34,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
         id: "deep-root".into(),
     };
     let mut agent = AgentId::from_bytes([0; 16]);
-    let mut issuer = AuthorityIssuer::new("local-deep-e2e", [9; 32], authority.clone());
+    let mut issuer = AuthorityRoot::new("local-deep-e2e", [9; 32], authority.clone());
     let mut private = volume(
         &provider,
         VolumeClass::AgentPrivate,
@@ -135,7 +135,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             kind: AggregateKind::Conversation,
             id: format!("deep-child-{level}"),
         };
-        let child_issuer = AuthorityIssuer::new("local-deep-e2e", [9; 32], child_authority.clone());
+        let child_issuer = AuthorityRoot::new("local-deep-e2e", [9; 32], child_authority.clone());
         let child_private = volume(
             &provider,
             VolumeClass::AgentPrivate,
@@ -319,14 +319,13 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                     .is_err()
             );
             let reference_scope = child_issuer
-                .issue(
+                .bootstrap_scope(
                     &format!("deep-reference-reader-{level}"),
                     &Capabilities::new([
                         child_private.capability(VolumeOperation::Read, &mut None)?,
                         reference_capability,
                     ]),
                     Some(child_agent),
-                    None,
                     &mut None,
                 )
                 .expect("scope proof");

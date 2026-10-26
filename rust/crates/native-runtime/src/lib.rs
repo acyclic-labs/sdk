@@ -53,6 +53,8 @@ pub use process_tree::{
 mod file;
 pub mod owner_record;
 pub mod private_file;
+/// OS-owned custody for persisted authority signing seeds.
+pub mod signing_key;
 #[cfg(windows)]
 pub use file::device_control_in_place;
 #[cfg(unix)]

@@ -9,7 +9,7 @@ use acyclic_fs::{CancellationToken, Fs, LocalOptions};
 use acyclic_harness::conversation::{
     ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
-use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
+use acyclic_harness::core::{AggregateKind, Authority, AuthorityRoot};
 use acyclic_harness::filesystem::FilesystemHost;
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, Result};
@@ -33,7 +33,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "retention-test",
         [32; 32],
         Authority {
@@ -42,14 +42,13 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "agent",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -108,14 +107,13 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         .await?;
     let attached = AgentId::from_bytes([33; 16]);
     let attached_scope = issuer
-        .issue(
+        .bootstrap_scope(
             "unrelated-reader",
             &Capabilities::new([
                 admitted.read_capability(&mut None)?,
                 volume.directory_read_capability("messages", &mut None)?,
             ]),
             Some(attached),
-            None,
             &mut None,
         )
         .expect("scope proof");

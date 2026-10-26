@@ -2,7 +2,7 @@ use super::*;
 use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 use crate::{
     AgentId, Capabilities,
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     resources::ProviderRef,
 };
 use acyclic_stream::MemoryStream;
@@ -18,7 +18,7 @@ async fn files(provider: Arc<MemoryStream>) -> TaskFiles<MemoryStream> {
         &mut None,
     )
     .unwrap();
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "delivery",
         [1; 32],
         Authority {
@@ -32,13 +32,7 @@ async fn files(provider: Arc<MemoryStream>) -> TaskFiles<MemoryStream> {
     ]
     .map(|op| volume.capability(op, &mut None).unwrap());
     let scope = issuer
-        .issue(
-            "owner",
-            &Capabilities::new(grants),
-            Some(agent),
-            None,
-            &mut None,
-        )
+        .bootstrap_scope("owner", &Capabilities::new(grants), Some(agent), &mut None)
         .unwrap();
     TaskFiles::open(
         provider,

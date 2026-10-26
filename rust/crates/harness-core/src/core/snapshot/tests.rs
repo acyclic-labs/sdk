@@ -2,11 +2,7 @@ use super::*;
 use crate::core::tests::{command, issuer, operation, reducer_fixture, request_file};
 use serde_json::json;
 
-fn restore(
-    snapshot: Snapshot,
-    owner: &AuthorityIssuer,
-    registry: SchemaRegistry,
-) -> Result<Reducer> {
+fn restore(snapshot: Snapshot, owner: &AuthorityRoot, registry: SchemaRegistry) -> Result<Reducer> {
     Reducer::restore(snapshot, owner.verifier(&mut None)?, registry, &mut None)
 }
 
@@ -24,9 +20,9 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
     };
     let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
     for other in [
-        AuthorityIssuer::new("test", [8; 32], reducer.authority.clone()),
-        AuthorityIssuer::new("other", [7; 32], reducer.authority.clone()),
-        AuthorityIssuer::new(
+        AuthorityRoot::new("test", [8; 32], reducer.authority.clone()),
+        AuthorityRoot::new("other", [7; 32], reducer.authority.clone()),
+        AuthorityRoot::new(
             "test",
             [7; 32],
             Authority {
@@ -304,11 +300,10 @@ fn signed_snapshot_duplicate_operations_and_invalid_proofs_are_rejected() -> Res
             let mut snapshot = original.copy(&mut None)?;
             snapshot.events[duplicate_index].operation_id = snapshot.events[0].operation_id;
             let recorded = &snapshot.events[duplicate_index].scope;
-            let scope = issuer().issue(
+            let scope = issuer().bootstrap_scope(
                 &recorded.id,
                 &recorded.capabilities,
                 recorded.agent,
-                None,
                 &mut None,
             )?;
             snapshot.events[duplicate_index].attestation =

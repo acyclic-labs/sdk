@@ -20,7 +20,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         }]],
         expires_at: None,
     };
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "write-receipts",
         &Capabilities::new([
             fixture
@@ -29,7 +29,6 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
             capability.to_scope_label()?,
         ]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     let writer = FilesystemContentPublisher::new(
@@ -121,10 +120,10 @@ proptest! {
                     },
                 }]], expires_at: expired.then_some(1),
             };
-            let scope = fixture.issuer.issue("observe", &Capabilities::new([
+            let scope = fixture.issuer.bootstrap_scope("observe", &Capabilities::new([
                 fixture.volume.capability(VolumeOperation::Write, &mut None)?,
                 capability.to_scope_label()?,
-            ]), fixture.scope.agent(), None, &mut None)?;
+            ]), fixture.scope.agent(), &mut None)?;
             let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &scope,
                 &fixture.volume, VolumeOperation::Write, 4096, &mut None)?;
             let result = fixture.host.content_for_operation(&fixture.volume, &grant,
@@ -154,11 +153,10 @@ async fn legacy_write_grant_does_not_disclose_cached_metadata() -> Result<(), Bo
             read.then(|| fixture.volume.capability(VolumeOperation::Read, &mut None))
                 .transpose()?,
         );
-        let scope = fixture.issuer.issue(
+        let scope = fixture.issuer.bootstrap_scope(
             "legacy-observe",
             &Capabilities::new(grants),
             fixture.scope.agent(),
-            None,
             &mut None,
         )?;
         let grant = ContentGrant::verify(

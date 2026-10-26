@@ -7,7 +7,7 @@ use acyclic_harness::filesystem::{FilesystemHost, FilesystemProjectWorkspaces};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, Reducer, SchemaRegistry},
     fork::{CapturedResource, ForkSeed, ResourceRevision},
     merge::ProjectWorkspaceProvider,
     resources::{ProviderRef, StreamRef},
@@ -74,9 +74,9 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         VolumeOwner::Agent(parent_agent),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new("project-workspaces", [7; 32], parent.clone());
+    let issuer = AuthorityRoot::new("project-workspaces", [7; 32], parent.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "parent",
             &Capabilities::new([
                 "conversation:bind".to_owned(),
@@ -88,7 +88,6 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 parent_private.capability(VolumeOperation::Read, &mut None)?,
             ]),
             Some(parent_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -96,11 +95,10 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
     let parent_head = host.create_volume(&project).await?;
     let parent_private_head = host.create_volume(&parent_private).await?;
     let child_scope = issuer
-        .issue(
+        .bootstrap_scope(
             "child",
             &Capabilities::new([child_private.capability(VolumeOperation::Write, &mut None)?]),
             Some(child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

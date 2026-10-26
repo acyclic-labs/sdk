@@ -34,14 +34,13 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let operation = OperationId::from_bytes([14; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
-    let responder = issuer.issue(
+    let responder = issuer.bootstrap_scope(
         "human",
         &Capabilities::new([
             "interaction:resolve".to_owned(),
             format!("interaction:respond:{denied_id}"),
             format!("interaction:respond:{approved_id}"),
         ]),
-        None,
         None,
         &mut None,
     )?;

@@ -138,7 +138,12 @@ pub(super) async fn attach(
             held_directories(root, parent)?;
         }
         let options = authority
-            .mount_options(&source, !mount.mode.read_only(), &work)
+            .mount_options(
+                &source,
+                Some(&mount.view.volume),
+                !mount.mode.read_only(),
+                &work,
+            )
             .await?
             .publication(MountPublication::Manual);
         #[cfg(windows)]

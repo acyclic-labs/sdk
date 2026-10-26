@@ -89,8 +89,8 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
- "acyclic-differential",
  "acyclic-contract-derive",
+ "acyclic-differential",
  "acyclic-proto-build",
  "acyclic-test-support",
  "ed25519-dalek",
@@ -103,6 +103,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "subtle",
  "syn 3.0.6",
  "tempfile",
  "thiserror 2.0.21",
@@ -510,7 +511,6 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
- "acyclic-native-runtime",
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -797,16 +797,20 @@ dependencies = [
  "compio-driver",
  "futures-core",
  "getrandom 0.3.4",
+ "keyring",
  "libc",
  "loom",
  "pin-project-lite",
  "proptest",
  "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "subtle",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "windows 0.62.2",
+ "windows",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -873,6 +877,7 @@ dependencies = [
 name = "acyclic-plugin"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-native-runtime",

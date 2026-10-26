@@ -91,7 +91,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let project_head = storage.host.create_volume(&project).await?;
     let scope = storage
         .issuer
-        .issue(
+        .bootstrap_scope(
             "full-parent",
             &Capabilities::new(
                 storage
@@ -105,7 +105,6 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
                     ]),
             ),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

@@ -3,6 +3,14 @@ use crate::{BLOCK_DOMAIN, VERSION, verify::VerifyError};
 use ed25519_dalek::{Signature, VerifyingKey};
 use prost::Message;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq as _;
+
+/// Compare authentication material without revealing the matching prefix.
+/// Lengths are public protocol metadata; equal-length contents use `subtle`.
+#[must_use]
+pub fn authentication_eq(left: &[u8], right: &[u8]) -> bool {
+    bool::from(left.ct_eq(right))
+}
 
 /// Content-addressed block revocation identity.
 pub type BlockId = [u8; 32];
@@ -56,7 +64,11 @@ pub(crate) fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignatureVerification;
-pub(crate) fn verify_signature(
+/// Verify the shared strict Ed25519 signature contract.
+///
+/// # Errors
+/// Rejects malformed signatures, weak keys and unauthenticated messages.
+pub fn verify_signature(
     key: &VerifyingKey,
     message: &[u8],
     signature: &[u8],

@@ -109,6 +109,7 @@ async fn run_reserving(
     let argv: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
     let output = git::run(
         git::Workspace {
+            access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
             filesystem: fs,
             store,
             view: lazy.into(),
@@ -204,6 +205,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
     assert!(matches!(
         git::run(
             git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
                 filesystem: &fs,
                 store: &store,
                 view: (&main).into(),
@@ -401,7 +403,7 @@ async fn fixture_native(
         store.clone(),
         acyclic_fs::VolumeInitialization {
             config,
-            access_policy: None,
+            access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
         },
         OperationId::new(),
         &mut work,
@@ -621,6 +623,7 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
     );
     let output = git::run(
         git::Workspace {
+            access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
             filesystem: &fs,
             store: &store,
             view: (&main).into(),
@@ -698,6 +701,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
     ] {
         let error = git::run(
             git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
                 filesystem: &fs,
                 store: &store,
                 view: (&main).into(),
@@ -720,6 +724,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
         );
         let error = git::run(
             git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
                 filesystem: &fs,
                 store: &store,
                 view: (&main).into(),
@@ -1109,6 +1114,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let interrupted = git::run_with_guard(
             git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
                 filesystem: &fs,
                 store: &store,
                 view: (&main).into(),
@@ -1139,6 +1145,9 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
         for _ in 0..2 {
             let output = git::run(
                 git::Workspace {
+                    access: &acyclic_harness_core::filesystem::local_owner_workspace_access(
+                        "test",
+                    )?,
                     filesystem: &fs,
                     store: &store,
                     view: (&main).into(),
@@ -1411,6 +1420,7 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let interrupted = git::run_with_guard(
             git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
                 filesystem: &fs,
                 store: &store,
                 view: (&main).into(),
@@ -1440,6 +1450,9 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
         for _ in 0..2 {
             let output = git::run(
                 git::Workspace {
+                    access: &acyclic_harness_core::filesystem::local_owner_workspace_access(
+                        "test",
+                    )?,
                     filesystem: &fs,
                     store: &store,
                     view: (&main).into(),
@@ -1653,5 +1666,165 @@ async fn committed_links_show_and_reserved_history_stays_hidden() -> Result<()> 
             .await
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspace() -> Result<()> {
+    use acyclic_harness_core::{
+        Capabilities,
+        core::{AggregateKind, Authority, AuthorityRoot},
+        filesystem::WorkspaceAccess,
+    };
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    graph.register_root(main.workspace()).await?;
+    let root = AuthorityRoot::new(
+        "git-access",
+        [91; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "git-access".into(),
+        },
+    );
+    let mut narrow =
+        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL);
+    narrow
+        .layers
+        .first_mut()
+        .and_then(|layer| layer.first_mut())
+        .ok_or("whole-volume fixture has no grant")?
+        .resource
+        .path = "public/**".into();
+    let grants = Capabilities::new([narrow.to_scope_label()?]);
+    let scope = root.bootstrap_scope("path-only", &grants, None, &mut None)?;
+    let access = WorkspaceAccess::new(&root.verifier(&mut None)?, &scope, &grants, None)?;
+    let denied = git::run(
+        git::Workspace {
+            access: &access,
+            filesystem: &fs,
+            store: &store,
+            view: (&main).into(),
+            root: std::path::Path::new("."),
+            repository: main.workspace().id(),
+            lease: None,
+            checkout: None,
+            reserved: &[],
+            author: "test",
+            authored_at_seconds: 1,
+        },
+        &["status".into()],
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(Error::FilesystemAccessConfiguration(_))),
+        "Git exposed a workspace outside its path grant"
+    );
+    // Replacing the narrow workload with a host grant restores the old unchecked path.
+    // The same command succeeds, so the denial above is an authority observation.
+    run(&fs, &store, &main, main.workspace().id(), &["status"]).await?;
+
+    let foreign = acyclic_harness_core::filesystem::local_owner_workspace(&fs, "foreign").await?;
+    graph.register_root(&foreign).await?;
+    acyclic_fs::GitCompatRepository::new(main.workspace().id(), store.clone())
+        .register_branch_workspace("foreign", foreign.id(), None, false)
+        .await?;
+    // The old workspace resolver accepts this real, registered workspace.
+    let unchecked =
+        acyclic_fs::WorkspaceResolver::resolve(&(fs.clone(), graph), foreign.id()).await?;
+    assert_eq!(unchecked.id(), foreign.id());
+    let denied = run(
+        &fs,
+        &store,
+        &main,
+        main.workspace().id(),
+        &["checkout", "foreign"],
+    )
+    .await;
+    assert!(
+        denied
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("outside its repository lineage")),
+        "Git followed an unrelated workspace"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> Result<()> {
+    use acyclic_fs::{
+        GitCompatState, GitCompatStore, GitFilesystemAction, GitPendingMutation,
+        GitPendingTransition, GitTransitionId, WorkspaceId,
+    };
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let root = main.workspace().id();
+    let store = &store;
+    let mut state = GitCompatStore::load(store, root)
+        .await?
+        .unwrap_or_else(|| GitCompatState::new("main", root));
+    let prior = state.revision;
+    state.revision += 1;
+    state.pending = Some(GitPendingTransition {
+        id: GitTransitionId::new(),
+        action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
+        mutation: GitPendingMutation::NoOp,
+    });
+    assert!(GitCompatStore::compare_and_swap(store, root, prior, state.clone()).await?);
+    let recovered = git::run(
+        git::Workspace {
+            access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
+            filesystem: &fs,
+            store,
+            view: (&main).into(),
+            root: std::path::Path::new("."),
+            repository: root,
+            lease: None,
+            checkout: None,
+            reserved: &[],
+            author: "test",
+            authored_at_seconds: 1,
+        },
+        &["status".into()],
+    )
+    .await?;
+    assert!(recovered.command.is_none());
+
+    state = GitCompatStore::load(store, root)
+        .await?
+        .ok_or("missing recovered state")?;
+    state.pending = Some(GitPendingTransition {
+        id: GitTransitionId::new(),
+        action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
+        mutation: GitPendingMutation::NoOp,
+    });
+    // A persisted intent can refer to a source absent from every branch and
+    // commit. Recovery must authenticate that source before executing anything.
+    let unknown = WorkspaceId::from_bytes([247; 16]);
+    assert!(
+        !state
+            .branches
+            .values()
+            .any(|branch| branch.workspace_id == unknown)
+    );
+    let prior = state.revision;
+    state.revision += 1;
+    state
+        .pending
+        .as_mut()
+        .ok_or_else(|| Error::Invalid("pending fixture is absent".into()))?
+        .action = GitFilesystemAction::SwitchWorkspace {
+        workspace_id: unknown,
+    };
+    assert!(GitCompatStore::compare_and_swap(store, root, prior, state.clone()).await?);
+    assert!(run(&fs, store, &main, root, &["status"]).await.is_err());
+
+    // Negative control: omitting the pending source restores the same admission
+    // the former catalog-only check would have granted.
+    let prior = state.revision;
+    state.revision += 1;
+    state.pending = None;
+    assert!(GitCompatStore::compare_and_swap(store, root, prior, state).await?);
+    run(&fs, store, &main, root, &["status"]).await?;
     Ok(())
 }

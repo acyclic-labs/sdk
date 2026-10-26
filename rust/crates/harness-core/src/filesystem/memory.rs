@@ -12,7 +12,7 @@ use crate::{
         Attachment, BoundedContentFuture, ContentHold, ContentPublisher, ContentResidencyVerifier,
         FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
     executor::{ExecutionJournal, TurnOutput},
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
@@ -140,7 +140,7 @@ pub struct MemoryHarnessStorage<
     read_capability: String,
     write_capability: String,
     scope: Scope,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     stream: Arc<P>,
     conversation: Authority,
     maximum_file_bytes: u64,
@@ -247,10 +247,10 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             id: ConversationId::new().to_string(),
         };
         let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
-        let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
+        let issuer = AuthorityRoot::new("local-harness", key, conversation.clone());
         let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
         let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "owner",
             &Capabilities::new([
                 capability::CONVERSATION_BIND.to_owned(),
@@ -261,7 +261,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 write_capability.clone(),
             ]),
             Some(agent),
-            None,
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
@@ -546,13 +545,12 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         id: InteractionId,
         response: InteractionResponse,
     ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.issue(
+        let responder = self.issuer.bootstrap_scope(
             &format!("local-responder:{id}"),
             &Capabilities::new([
                 capability::INTERACTION_RESOLVE.to_owned(),
                 capability::interaction_respond(id),
             ]),
-            None,
             None,
             &mut None,
         )?;

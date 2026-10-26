@@ -4,7 +4,7 @@ use acyclic_harness::{
     Capabilities, Error, InteractionId, OperationId, Outcome, Result,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::Limits,
-    core::AuthorityIssuer,
+    core::AuthorityRoot,
     executor::{ExecutionJournal, StockExecutor},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
@@ -72,7 +72,7 @@ fn assert_sampling_text(model: &ScriptedModelProvider) -> Result<()> {
 
 pub(super) struct Participant {
     pub(super) journal: std::sync::Weak<LocalJournal>,
-    pub(super) issuer: AuthorityIssuer,
+    pub(super) issuer: AuthorityRoot,
 }
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -107,14 +107,13 @@ impl InteractionRouter for Participant {
         };
         let scope = self
             .issuer
-            .issue(
+            .bootstrap_scope(
                 "participant",
                 &Capabilities::new([
                     "interaction:resolve".into(),
                     format!("interaction:respond:{id}"),
                 ]),
                 Some(acyclic_harness::AgentId::from_bytes([41; 16])),
-                None,
                 &mut None,
             )
             .expect("scope proof");

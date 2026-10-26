@@ -21,13 +21,12 @@ fn host(
         kind: crate::core::AggregateKind::Conversation,
         id: "native-effect-metadata-control".into(),
     };
-    let issuer = AuthorityIssuer::new("original-effect-issuer", [41; 32], authority.clone());
-    let foreign = AuthorityIssuer::new("foreign-effect-issuer", [43; 32], authority.clone());
-    let scope = if foreign_scope { &foreign } else { &issuer }.issue(
+    let issuer = AuthorityRoot::new("original-effect-issuer", [41; 32], authority.clone());
+    let foreign = AuthorityRoot::new("foreign-effect-issuer", [43; 32], authority.clone());
+    let scope = if foreign_scope { &foreign } else { &issuer }.bootstrap_scope(
         "original-effect-scope",
         &crate::Capabilities::new([capability::EFFECT_RUN]),
         Some(crate::AgentId::from_bytes([42; 16])),
-        None,
         &mut None,
     )?;
     let files = crate::filesystem::FilesystemHost::new(

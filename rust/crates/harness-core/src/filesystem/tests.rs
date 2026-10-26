@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+use crate::core::{AggregateKind, Authority, AuthorityRoot};
 use crate::{
     AgentId, Capabilities,
     conversation::{VolumeClass, VolumeOwner},
@@ -16,7 +16,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
         &mut None,
     )?;
     let host = FilesystemHost::new(Fs::memory(), &(provider), None)?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "native-verifier-test",
         [4; 32],
         Authority {
@@ -24,11 +24,10 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
             id: "parent".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "parent-scope",
         &Capabilities::new([capability::FORK_PUBLISH, capability::PROJECT_MERGE]),
         Some(AgentId::from_bytes([8; 16])),
-        None,
         &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -63,7 +62,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
             ..
         })
     ));
-    let forged_issuer = AuthorityIssuer::new(
+    let forged_issuer = AuthorityRoot::new(
         "native-verifier-test",
         [5; 32],
         Authority {
@@ -172,7 +171,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "test",
         [4; 32],
         Authority {
@@ -180,14 +179,13 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             id: "test".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(owner),
-        None,
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
@@ -326,13 +324,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         )?;
         assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
         let denied_scope = issuer
-            .issue(
-                "no-files",
-                &Capabilities::default(),
-                Some(owner),
-                None,
-                &mut None,
-            )
+            .bootstrap_scope("no-files", &Capabilities::default(), Some(owner), &mut None)
             .expect("scope proof");
         let denied = FilesystemForkVerifier::new(
             Arc::clone(&host),
@@ -645,8 +637,8 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
         kind: AggregateKind::Conversation,
         id: "integration".into(),
     };
-    let issuer = AuthorityIssuer::new("integration", [11; 32], authority.clone());
-    let scope = issuer.issue(
+    let issuer = AuthorityRoot::new("integration", [11; 32], authority.clone());
+    let scope = issuer.bootstrap_scope(
         "agent",
         &Capabilities::new([
             "conversation:bind".to_owned(),
@@ -655,7 +647,6 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let read = ContentGrant::verify(

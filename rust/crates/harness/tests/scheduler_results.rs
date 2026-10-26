@@ -9,7 +9,7 @@ use acyclic_fs::Fs;
 use acyclic_harness::conversation::{
     ContentGrant, FileDescriptor, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
-use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
+use acyclic_harness::core::{AggregateKind, Authority, AuthorityRoot};
 use acyclic_harness::distributed::{
     DistributedCoordinator, ReducerRegistry, SchedulerPayloadStore,
 };
@@ -60,11 +60,10 @@ fn spec(
         owner: DurableOwner::Attached {
             authority: owner.clone(),
         },
-        owner_scope: AuthorityIssuer::new("qualification", [5; 32], owner.clone())
-            .issue(
+        owner_scope: AuthorityRoot::new("qualification", [5; 32], owner.clone())
+            .bootstrap_scope(
                 "original-declare",
                 &Capabilities::new(["operation:declare"]),
-                None,
                 None,
                 &mut None,
             )
@@ -150,9 +149,9 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         kind: AggregateKind::Task,
         id: "scheduler-owner".into(),
     };
-    let issuer = AuthorityIssuer::new("qualification", [5; 32], owner.clone());
+    let issuer = AuthorityRoot::new("qualification", [5; 32], owner.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "scheduler",
             &Capabilities::new([
                 "operation:declare".to_owned(),
@@ -160,7 +159,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(AgentId::from_bytes([6; 16])),
-            None,
             &mut None,
         )
         .expect("scope proof");

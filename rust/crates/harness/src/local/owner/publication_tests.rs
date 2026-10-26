@@ -93,7 +93,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
             Err(Error::NotFound(_)) => assert!(cut < 3),
             Ok(read) => {
                 assert!(cut >= 3);
-                assert_eq!(read.key, owner.key);
+                assert_eq!(read.key_ref, owner.key_ref);
                 assert_eq!(read.task, owner.task);
                 let synced = flushes.0.load(Ordering::Relaxed);
                 assert_eq!(synced, usize::from(!omit_reader_sync));
@@ -137,18 +137,42 @@ fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
     // private writer. The strict reader is the old rejected-upgrade control.
     #[cfg(windows)]
     let mut file = fs::File::create(&path).unwrap();
-    serde_json::to_writer(&mut file, &owner).unwrap();
+    let mut legacy = serde_json::to_value(&owner).unwrap();
+    legacy.as_object_mut().unwrap().remove("key_ref");
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .insert("key".into(), serde_json::json!(vec![71_u8; 32]));
+    serde_json::to_writer(&mut file, &legacy).unwrap();
     drop(file);
     assert_eq!(fs::read(&path).unwrap().first(), Some(&b'{')); // Old plaintext reader control.
     #[cfg(windows)]
     assert!(acyclic_native_runtime::private_file::read(&path, 65_536).is_err());
     let migrated = Owner::load(&path).unwrap();
-    assert_eq!(migrated.key, owner.key);
+    assert!(migrated.key.is_none());
+    assert!(
+        migrated
+            .key_ref
+            .unwrap()
+            .with_seed(|seed| *seed == [71; 32])
+            .unwrap()
+    );
     assert_eq!(migrated.agent, owner.agent);
     assert_eq!(migrated.task, owner.task);
     let protected = fs::read(&path).unwrap();
     assert!(protected.starts_with(acyclic_native_runtime::owner_record::MAGIC));
+    let plain =
+        acyclic_native_runtime::owner_record::decode_with(&protected, 65_536, None, |bytes| {
+            Ok::<_, std::io::Error>(bytes.to_vec())
+        })
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+    assert!(
+        metadata.get("key").is_none(),
+        "migration retained a plaintext seed"
+    );
+    assert!(metadata.get("key_ref").is_some());
     let reopened = Owner::load(&path).unwrap();
-    assert_eq!(reopened.key, owner.key);
+    assert_eq!(reopened.key_ref, migrated.key_ref);
     assert_eq!(fs::read(&path).unwrap(), protected);
 }

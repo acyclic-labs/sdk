@@ -22,7 +22,7 @@ fn conversation_command(revision: u64, action: Action) -> Result<Command> {
         ),
         idempotency_key: IdempotencyKey::new(format!("conversation-{revision}"))?,
         expected_revision: revision,
-        scope: issuer().issue(
+        scope: issuer().bootstrap_scope(
             "message-writer",
             &Capabilities::new([
                 "conversation:bind".to_owned(),
@@ -31,7 +31,6 @@ fn conversation_command(revision: u64, action: Action) -> Result<Command> {
                 content()?.read_capability(&mut None)?,
             ]),
             Some(crate::AgentId::from_bytes([8; 16])),
-            None,
             &mut None,
         )?,
         causal_parent: None,

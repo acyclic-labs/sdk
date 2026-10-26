@@ -9,7 +9,7 @@ pub(super) async fn exercise_media_compaction_fork_restart<A, O>(
     context: &acyclic_harness::runtime::TaskContext,
     (task_host, task_issuer, task_scope, fence): (
         &Arc<acyclic_harness::durable_host::CoordinatorTaskHost<MemoryStream>>,
-        &AuthorityIssuer,
+        &AuthorityRoot,
         &Scope,
         &LeaseFence,
     ),
@@ -37,7 +37,7 @@ where
         kind: AggregateKind::Conversation,
         id: "media-parent".into(),
     };
-    let issuer = AuthorityIssuer::new("media-fork", [42; 32], parent.clone());
+    let issuer = AuthorityRoot::new("media-fork", [42; 32], parent.clone());
     let agent = match volume.owner() {
         VolumeOwner::Agent(agent) => *agent,
         _ => return Err(Error::Invalid("private media volume".into())),
@@ -61,7 +61,7 @@ where
         project.capability(VolumeOperation::Write, &mut None)?,
     ]);
     let scope = issuer
-        .issue("media-parent", &grants, Some(agent), None, &mut None)
+        .bootstrap_scope("media-parent", &grants, Some(agent), &mut None)
         .expect("scope proof");
     let task = context
         .durable_task_id()
@@ -419,9 +419,9 @@ where
             },
         )
         .await?;
-    let child_issuer = AuthorityIssuer::new("media-fork-child", [43; 32], child.clone());
+    let child_issuer = AuthorityRoot::new("media-fork-child", [43; 32], child.clone());
     let child_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "media-child",
             &Capabilities::new(
                 [
@@ -441,7 +441,6 @@ where
                 ),
             ),
             Some(child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

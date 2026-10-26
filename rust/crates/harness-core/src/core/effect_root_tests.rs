@@ -6,10 +6,10 @@ use proptest::prelude::*;
 pub(crate) use crate::test_support::EffectRootObservation as Observation;
 
 pub(crate) fn verifier() -> AuthorityVerifier {
-    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    static RUNTIME: std::sync::OnceLock<AuthorityRoot> = std::sync::OnceLock::new();
     RUNTIME
         .get_or_init(|| {
-            AuthorityIssuer::new(
+            AuthorityRoot::new(
                 "effect-root-proof",
                 [91; 32],
                 Authority {

@@ -28,7 +28,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "observation-identity",
         [81; 32],
         crate::core::Authority {
@@ -37,14 +37,13 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &crate::Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -168,7 +167,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
 )]
 async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_restore() -> Result<()> {
     use crate::conversation::{ConversationMessage, MessageKind, ModelContextSelection};
-    use crate::core::{Action, AggregateKind, Authority, AuthorityIssuer, Command};
+    use crate::core::{Action, AggregateKind, Authority, AuthorityRoot, Command};
     use std::sync::atomic::Ordering;
     let provider = Arc::new(crate::test_stream::LostSessionAck::<
         acyclic_stream::MemoryStream,
@@ -194,9 +193,9 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
         kind: AggregateKind::Conversation,
         id: crate::ConversationId::new().to_string(),
     };
-    let issuer = AuthorityIssuer::new("cold-canonical-owner", [72; 32], authority.clone());
+    let issuer = AuthorityRoot::new("cold-canonical-owner", [72; 32], authority.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &crate::Capabilities::new([
                 "conversation:bind".into(),
@@ -206,7 +205,6 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -254,11 +252,10 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
             &mut None,
         )
         .await?;
-    let append_scope = issuer.issue(
+    let append_scope = issuer.bootstrap_scope(
         "append",
         &crate::Capabilities::new(["conversation:append"]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let mut ids = Vec::new();

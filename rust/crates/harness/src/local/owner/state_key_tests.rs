@@ -34,7 +34,7 @@ proptest! {
         let state = self::directory(&state).unwrap();
         let original = Owner::open(&state, &project, None).unwrap();
         let reopened = Owner::open(&state, &project, None).unwrap();
-        prop_assert_eq!(original.key, reopened.key);
+        prop_assert_eq!(original.key_ref, reopened.key_ref);
         prop_assert_eq!(original.task, reopened.task);
 
         // Restore the production defect: the same selection now misses that

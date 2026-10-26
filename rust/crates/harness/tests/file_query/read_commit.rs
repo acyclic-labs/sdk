@@ -12,13 +12,12 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
             let (objects, fixture) = counted_fixture().await?;
             let content = objects::blob_text(false);
             fixture.write(&[("plans/a.md", Some(&content))]).await?;
-            let scope = fixture.issuer.issue(
+            let scope = fixture.issuer.bootstrap_scope(
                 "read-race",
                 &Capabilities::new([fixture
                     .volume
                     .capability(VolumeOperation::Read, &mut None)?]),
                 Some(fixture.agent),
-                None,
                 &mut None,
             )?;
             let reader = FilesystemContentVerifier::new(

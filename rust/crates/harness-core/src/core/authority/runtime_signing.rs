@@ -83,9 +83,51 @@ mod key_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegated_issuance_requires_a_parent_and_refuses_every_widening() -> Result<()> {
+        let root = AuthorityRoot::new(
+            "delegation",
+            [73; 32],
+            Authority {
+                kind: AggregateKind::Task,
+                id: "delegation".into(),
+            },
+        );
+        let parent = root.bootstrap_scope(
+            "parent",
+            &Capabilities::new(["read", "list"]),
+            Some(AgentId::from_bytes([74; 16])),
+            &mut None,
+        )?;
+        let issuer = root.issuer(&mut None)?;
+        let narrowed = issuer.issue(&parent, "child", &Capabilities::new(["read"]))?;
+        assert_eq!(narrowed.agent(), parent.agent());
+        assert_eq!(narrowed.parent_proof, Some(*parent.proof));
+        root.verifier(&mut None)?.verify(&narrowed, &mut None)?;
+        for widened in [
+            Capabilities::new(["write"]),
+            Capabilities::new(["read", "write"]),
+        ] {
+            assert!(issuer.issue(&parent, "widened", &widened).is_err());
+            // Negative control: the trusted bootstrap custodian can create a
+            // fresh root with these grants. Delegation must never take that path.
+            assert!(
+                root.bootstrap_scope("unchecked", &widened, parent.agent(), &mut None)
+                    .is_ok()
+            );
+        }
+        root.revoke_workload(&parent)?;
+        assert!(
+            issuer
+                .issue(&parent, "revoked", &Capabilities::new(["read"]))
+                .is_err()
+        );
+        Ok(())
+    }
     #[test]
     fn public_verifier_survives_runtime_teardown_but_cannot_admit_or_mint() -> Result<()> {
-        let runtime = AuthorityIssuer::new(
+        let runtime = AuthorityRoot::new(
             "runtime",
             [87; 32],
             Authority {
@@ -94,10 +136,9 @@ mod tests {
             },
         );
         let verifier = runtime.verifier(&mut None)?;
-        let scope = runtime.issue(
+        let scope = runtime.bootstrap_scope(
             "actor",
             &Capabilities::new(["event:append"]),
-            None,
             None,
             &mut None,
         )?;
@@ -117,15 +158,14 @@ mod tests {
                 Err(Error::Unauthorized(_))
             ));
         }
-        let forged_root = AuthorityIssuer::new(
+        let forged_root = AuthorityRoot::new(
             "runtime",
             verifier.public.metadata_key,
             runtime.audience.clone(),
         );
-        let forged = forged_root.issue(
+        let forged = forged_root.bootstrap_scope(
             "actor",
             &Capabilities::new(["event:append"]),
-            None,
             None,
             &mut None,
         )?;
@@ -154,7 +194,7 @@ mod tests {
 
     #[test]
     fn revocation_reaches_existing_verifiers_and_closes_descendant_admission() -> Result<()> {
-        let runtime = AuthorityIssuer::new(
+        let runtime = AuthorityRoot::new(
             "runtime",
             [88; 32],
             Authority {
@@ -163,10 +203,9 @@ mod tests {
             },
         );
         let verifier = runtime.verifier(&mut None)?;
-        let parent = runtime.issue(
+        let parent = runtime.bootstrap_scope(
             "parent",
             &Capabilities::new(["event:append"]),
-            None,
             None,
             &mut None,
         )?;

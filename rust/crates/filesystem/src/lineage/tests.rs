@@ -107,6 +107,44 @@ async fn direct_parent_authorization_and_recursive_walk_are_durable() {
             .collect::<Vec<_>>(),
         vec![child, root]
     );
+    graph.authorize_descendant(grandchild, root).await.unwrap();
+    assert!(matches!(
+        graph.authorize_descendant(root, child).await,
+        Err(WorkspaceLineageError::UnauthorizedJoin)
+    ));
+}
+
+#[tokio::test]
+async fn descendant_authorization_stops_at_the_authenticated_anchor() {
+    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    let root = workspace("unregistered-anchor");
+    let child = workspace("registered-child");
+    graph
+        .register(WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: true,
+            workspace_id: child,
+            workspace_name: "registered-child".into(),
+            parent_workspace_id: Some(root),
+            parent_workspace_name: Some("unregistered-anchor".into()),
+            fork_generation: generation(1),
+            initial_generation: generation(2),
+        })
+        .await
+        .unwrap();
+    graph.authorize_descendant(child, root).await.unwrap();
+    // The former complete-history walk reads beyond the authenticated anchor.
+    assert!(matches!(
+        graph.ancestors(child, u32::MAX).await,
+        Err(WorkspaceLineageError::IncompatibleState)
+    ));
+    assert!(
+        graph
+            .authorize_descendant(child, workspace("foreign"))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

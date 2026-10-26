@@ -13,7 +13,7 @@ use acyclic_harness::{
         ContentGrant, ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemContentVerifier, FilesystemHost},
     model::{ModelContent, ModelEvent},
     resources::ProviderRef,
@@ -129,7 +129,7 @@ fn assert_lazy_request(provider: &ScriptedModelProvider) -> Result<()> {
 
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     volume: VolumeRef,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -147,7 +147,7 @@ impl Fixture {
         self.host.create_volume(&private).await?;
         let scope = self
             .issuer
-            .issue(
+            .bootstrap_scope(
                 "journal",
                 &Capabilities::new([
                     private.capability(VolumeOperation::Read, &mut None)?,
@@ -156,7 +156,6 @@ impl Fixture {
                     self.volume.directory_read_capability("", &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
-                None,
                 &mut None,
             )
             .expect("scope proof");
@@ -199,7 +198,7 @@ impl Fixture {
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "discovery",
             [9; 32],
             Authority {
@@ -208,7 +207,7 @@ impl Fixture {
             },
         );
         let scope = issuer
-            .issue(
+            .bootstrap_scope(
                 "owner",
                 &Capabilities::new([
                     volume.capability(VolumeOperation::Write, &mut None)?,
@@ -216,7 +215,6 @@ impl Fixture {
                     volume.directory_read_capability("", &mut None)?,
                 ]),
                 Some(agent),
-                None,
                 &mut None,
             )
             .expect("scope proof");
@@ -490,11 +488,10 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     declaration.limits.entries = 64;
     let scope = fixture
         .issuer
-        .issue(
+        .bootstrap_scope(
             "denied",
             &Capabilities::default(),
             Some(AgentId::from_bytes([1; 16])),
-            None,
             &mut None,
         )
         .expect("scope proof");

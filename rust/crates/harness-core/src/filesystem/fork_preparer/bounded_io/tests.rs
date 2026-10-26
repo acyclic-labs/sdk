@@ -1,6 +1,6 @@
 use super::*;
 use crate::conversation::{VolumeClass, VolumeOwner};
-use crate::core::{AggregateKind, AuthorityIssuer};
+use crate::core::{AggregateKind, AuthorityRoot};
 use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
@@ -407,7 +407,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             &IdempotencyKey::new("other-source-generation")?,
         )
         .await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "source-read-control",
         [41; 32],
         Authority {
@@ -416,13 +416,12 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "exact-project-read",
             &crate::Capabilities::new([
                 source.capability(VolumeOperation::Read, &mut None)?,
                 caller.capability(VolumeOperation::Read, &mut None)?,
             ]),
-            None,
             None,
             &mut None,
         )

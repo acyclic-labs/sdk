@@ -11,7 +11,7 @@ use acyclic_harness::{
         Attachment, ContentPublisher as _, ContentResidencyVerifier as _, Limits, VolumeClass,
         VolumeOperation, VolumeOwner, VolumeRef, load_manifest,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     objects::ObjectContentStore,
     resources::ProviderRef,
 };
@@ -120,7 +120,7 @@ pub(super) async fn run(
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "remote-objects",
         [9; 32],
         Authority {
@@ -128,14 +128,13 @@ pub(super) async fn run(
             id: "remote-objects".into(),
         },
     );
-    let owner_scope = issuer.issue(
+    let owner_scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(owner),
-        None,
         &mut None,
     )?;
     let store = async |scope| {

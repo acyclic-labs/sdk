@@ -31,7 +31,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
     )?;
     host.create_volume(&volume).await?;
     host.create_volume(&other).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "portable",
         [4; 32],
         Authority {
@@ -40,7 +40,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
@@ -48,7 +48,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
                 other.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(owner),
-            None,
             &mut None,
         )
         .expect("scope proof");

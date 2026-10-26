@@ -19,7 +19,7 @@ use acyclic_harness::{
         ContentGrant, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
     durable_tool::DurableToolRunner,
     executor::{
         ExecutionEvent, ExecutionJournal, ExecutionRecord, Executor, StockExecutor,
@@ -53,7 +53,7 @@ async fn filesystem(
 ) -> Result<(
     Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     VolumeRef,
-    AuthorityIssuer,
+    AuthorityRoot,
 )> {
     let provider = ProviderRef::new(name.into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
@@ -65,7 +65,7 @@ async fn filesystem(
         &mut None,
     )?;
     host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         name,
         [key; 32],
         Authority {
@@ -77,7 +77,7 @@ async fn filesystem(
 }
 
 fn scope(
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     private: &VolumeRef,
     agent: AgentId,
     extra: &[String],
@@ -90,14 +90,14 @@ fn scope(
         .into_iter()
         .chain(extra.iter().cloned()),
     );
-    issuer.issue("agent", &capabilities, Some(agent), None, &mut None)
+    issuer.bootstrap_scope("agent", &capabilities, Some(agent), &mut None)
 }
 
 fn journal(
     stream: Arc<MemoryStream>,
     host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     private: &VolumeRef,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     scope: &Scope,
 ) -> Result<FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>> {
     FilesystemExecutionJournal::new(
@@ -116,7 +116,7 @@ fn journal(
 
 async fn bind_conversation(
     stream: &std::sync::Arc<MemoryStream>,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     id: &str,
     agent: AgentId,
 ) -> Result<()> {
@@ -143,10 +143,9 @@ async fn bind_conversation(
                 operation_id: OperationId::from_bytes([30; 16]),
                 idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
                 expected_revision: 0,
-                scope: issuer.issue(
+                scope: issuer.bootstrap_scope(
                     "owner",
                     &Capabilities::new(["conversation:bind"]),
-                    None,
                     None,
                     &mut None,
                 )?,

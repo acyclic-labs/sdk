@@ -12,7 +12,7 @@ async fn fixture(
     root: &std::path::Path,
     operation: OperationId,
     io: Option<&PreparationIo>,
-) -> Result<(Journal, crate::core::AuthorityIssuer)> {
+) -> Result<(Journal, crate::core::AuthorityRoot)> {
     let stream = Arc::new(
         acyclic_stream::LocalStream::open(root.join("journal"), Default::default())
             .await

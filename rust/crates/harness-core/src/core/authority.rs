@@ -93,7 +93,7 @@ impl Authority {
 }
 
 /// Immutable authorization scope captured at admission.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
@@ -116,6 +116,20 @@ pub struct Scope {
     #[serde(with = "super::capability_bytes")]
     #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub(in crate::core) workload: Vec<u8>,
+}
+
+impl PartialEq for Scope {
+    fn eq(&self, other: &Self) -> bool {
+        // Workload bytes include signatures and the restricted append seed.
+        // Keep credential comparisons on the shared constant-time path too.
+        acyclic_auth::crypto::authentication_eq(&self.workload, &other.workload)
+            && acyclic_auth::crypto::authentication_eq(self.proof.as_ref(), other.proof.as_ref())
+            && self.id == other.id
+            && self.capabilities == other.capabilities
+            && self.agent == other.agent
+            && self.issuer == other.issuer
+            && self.parent_proof == other.parent_proof
+    }
 }
 
 impl Drop for Scope {
@@ -262,15 +276,62 @@ impl Scope {
     }
 }
 
-/// Explicit host authority capable of issuing unforgeable scopes.
+/// Bootstrap custody owned by the runtime composition, never by a workload.
+/// Workloads receive an `AuthorityIssuer` and an authenticated parent scope.
 #[derive(Clone)]
-pub struct AuthorityIssuer {
+pub struct AuthorityRoot {
     pub(in crate::core) id: String,
     runtime: std::sync::Arc<runtime_signing::RuntimeSigner>,
     pub(in crate::core) audience: Authority,
 }
 
+/// Delegation authority: public trust and a required parent append capability.
+/// This handle never retains a runtime root signing key.
+#[derive(Clone)]
+pub struct AuthorityIssuer {
+    verifier: AuthorityVerifier,
+}
+
 impl AuthorityIssuer {
+    /// Issue an authenticated descendant that can only narrow its parent.
+    /// The agent, issuer, ancestry, expiry and revocation chain are preserved.
+    pub fn issue(
+        &self,
+        parent: &Scope,
+        id: impl Into<String>,
+        capabilities: &Capabilities,
+    ) -> Result<Scope> {
+        let trust = self
+            .verifier
+            .public
+            .trust
+            .read()
+            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?
+            .clone();
+        parent.attenuate_workload(
+            id,
+            capabilities,
+            &trust,
+            &self.verifier.audience,
+            workload::now(),
+        )
+    }
+}
+
+impl AuthorityRoot {
+    /// Bootstrap a native authority from OS-owned signing custody. Host records
+    /// retain only a reference; delegation receives the parent-bound issuer below.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bootstrap(
+        id: impl Into<String>,
+        custody: &acyclic_native_runtime::signing_key::SigningKeyReference,
+        audience: Authority,
+    ) -> Result<Self> {
+        custody
+            .with_seed(|seed| Self::new(id, *seed, audience))
+            .map_err(|_| Error::Unauthorized("OS signing-key custody is unavailable".into()))
+    }
+
     /// Creates an issuer from host-managed key material.
     #[must_use]
     pub fn new(id: impl Into<String>, key: [u8; 32], audience: Authority) -> Self {
@@ -345,16 +406,23 @@ impl AuthorityIssuer {
         Ok(())
     }
 
-    /// Signs one grant using the caller's optional ledger.
-    pub fn issue(
+    /// Establishes a root scope at the trusted runtime bootstrap boundary.
+    /// Delegated callers use `AuthorityIssuer::issue`, which requires a parent.
+    pub fn bootstrap_scope(
         &self,
         id: &str,
         capabilities: &Capabilities,
         agent: Option<AgentId>,
-        parent_proof: Option<[u8; 32]>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Scope> {
-        self.issue_bound(id, capabilities, agent, parent_proof, None, work)
+        self.issue_bound(id, capabilities, agent, None, None, work)
+    }
+
+    /// Gives a workload a delegation handle containing no runtime signing key.
+    pub fn issuer(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<AuthorityIssuer> {
+        Ok(AuthorityIssuer {
+            verifier: self.verifier(work)?,
+        })
     }
 
     /// Runtime-only delegation across an attested created resource or agent boundary.
@@ -383,7 +451,7 @@ impl AuthorityIssuer {
         )
     }
 
-    fn issue_bound(
+    pub(in crate::core) fn issue_bound(
         &self,
         id: &str,
         capabilities: &Capabilities,
@@ -421,13 +489,7 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: &Capabilities,
     ) -> Result<Scope> {
-        parent.attenuate_workload(
-            id,
-            capabilities,
-            &self.public_workload_trust()?,
-            &self.audience,
-            workload::now(),
-        )
+        self.issuer(&mut None)?.issue(parent, id, capabilities)
     }
 
     /// Delegates one pinned private file to another agent without a fork or
@@ -692,7 +754,7 @@ impl AuthorityVerifier {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Scope> {
         let runtime = self.admission.runtime()?;
-        AuthorityIssuer {
+        AuthorityRoot {
             id: self.id.clone(),
             audience: self.audience.clone(),
             runtime,
@@ -781,9 +843,7 @@ impl AuthorityVerifier {
     fn verify_metadata(&self, digest: &[u8; 32], proof: &[u8]) -> Result<()> {
         let key = ed25519_dalek::VerifyingKey::from_bytes(&self.public.metadata_key)
             .map_err(|_| Error::Unauthorized("invalid runtime verification key".into()))?;
-        let signature = ed25519_dalek::Signature::from_slice(proof)
-            .map_err(|_| Error::Unauthorized("invalid runtime signature".into()))?;
-        key.verify_strict(digest, &signature).map_err(|_| {
+        acyclic_auth::crypto::verify_signature(&key, digest, proof).map_err(|_| {
             Error::Unauthorized("runtime signature does not authenticate this payload".into())
         })
     }

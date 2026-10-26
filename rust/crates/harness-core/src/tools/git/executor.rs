@@ -9,6 +9,7 @@ where
 
     async fn validate(&self) -> Result<(), Self::Error> {
         (self.before_effect)().await?;
+        self.access.require(&self.current).await?;
         let Some(lease) = &self.lease else {
             return Ok(());
         };

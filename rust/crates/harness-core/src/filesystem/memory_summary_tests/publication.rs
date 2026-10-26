@@ -229,7 +229,7 @@ async fn summary_fork_fixture(
     );
     let scope = storage
         .issuer
-        .issue("summary-parent", &grants, Some(agent), None, &mut None)
+        .bootstrap_scope("summary-parent", &grants, Some(agent), &mut None)
         .expect("scope proof");
     let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
     let archived = history
@@ -562,7 +562,7 @@ async fn assert_summary_child_import(
 ) -> Result<()> {
     use crate::context::{ContextPipeline, ContextStage};
     use crate::executor::{Executor, StockExecutor};
-    let issuer = AuthorityIssuer::new("summary-child", [42; 32], seed.child.clone());
+    let issuer = AuthorityRoot::new("summary-child", [42; 32], seed.child.clone());
     let read_grants = seed.reference_capabilities(seed.child_agent)?;
     let grants = Capabilities::new(
         read_grants.iter().map(str::to_owned).chain([
@@ -575,7 +575,7 @@ async fn assert_summary_child_import(
         ]),
     );
     let scope = issuer
-        .issue("child", &grants, Some(seed.child_agent), None, &mut None)
+        .bootstrap_scope("child", &grants, Some(seed.child_agent), &mut None)
         .expect("scope proof");
     let reader = FilesystemContentVerifier::new(
         storage.host.clone(),
@@ -632,7 +632,7 @@ async fn assert_summary_child_import(
         .as_ref()
         .ok_or_else(|| Error::Invalid("no Summary capture".into()))?;
     let denied = issuer
-        .issue(
+        .bootstrap_scope(
             "denied",
             &scope.capabilities().without(&Capabilities::new([
                 capture.context.read_capability(&mut None)?,
@@ -640,7 +640,6 @@ async fn assert_summary_child_import(
                     .capability(VolumeOperation::Read, &mut None)?,
             ])),
             Some(seed.child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

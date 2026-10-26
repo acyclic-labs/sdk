@@ -35,7 +35,7 @@ fn with_reopen<T>(old: bool, run: impl FnOnce() -> T) -> T {
 }
 
 fn grant(file: &FileRef) -> Result<ContentGrant> {
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "pinned",
         [2; 32],
         Authority {
@@ -43,7 +43,7 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
             id: "pinned".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
             file.volume()
@@ -51,7 +51,6 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
             file.volume().capability(VolumeOperation::Read, &mut None)?,
         ]),
         Some(AgentId::from_bytes([1; 16])),
-        None,
         &mut None,
     )?;
     ContentGrant::verify(

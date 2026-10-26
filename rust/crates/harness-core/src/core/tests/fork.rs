@@ -182,7 +182,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     let capabilities = Capabilities::new(["event:append", "fork:publish"]);
     for agent in [None, Some(AgentId::from_bytes([2; 16]))] {
         let mut foreign = publish.clone();
-        foreign.scope = issuer().issue("foreign", &capabilities, agent, None, &mut None)?;
+        foreign.scope = issuer().bootstrap_scope("foreign", &capabilities, agent, &mut None)?;
         assert!(reducer.plan(&foreign).is_err());
     }
     let ResourceRevision::Project { volume, .. } = &seed.resources[1].source else {
@@ -197,7 +197,8 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         .filter(|grant| *grant != read);
     let grants = Capabilities::new(grants);
     let parent_agent = AgentId::from_bytes([1; 16]);
-    unreadable.scope = issuer().issue("current", &grants, Some(parent_agent), None, &mut None)?;
+    unreadable.scope =
+        issuer().bootstrap_scope("current", &grants, Some(parent_agent), &mut None)?;
     assert!(reducer.plan(&unreadable).is_err());
     let ApplyResult::Applied { event } = reducer.plan(&publish)? else {
         panic!("fresh fork replayed")
@@ -205,7 +206,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     assert!(reducer.fork(&seed.child).is_none());
     let mut foreign = event.clone();
     let agent = Some(AgentId::from_bytes([2; 16]));
-    let scope = issuer().issue("foreign", &capabilities, agent, None, &mut None)?;
+    let scope = issuer().bootstrap_scope("foreign", &capabilities, agent, &mut None)?;
     foreign.scope = RecordedScope {
         id: scope.id.clone(),
         capabilities: scope.capabilities.clone(),

@@ -35,7 +35,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         id: "local-root".into(),
     };
     let root_agent = AgentId::from_bytes([1; 16]);
-    let root_issuer = AuthorityIssuer::new("local-recursive-e2e", [7; 32], root_authority.clone());
+    let root_issuer = AuthorityRoot::new("local-recursive-e2e", [7; 32], root_authority.clone());
     let root_private = volume(
         &provider,
         VolumeClass::AgentPrivate,
@@ -174,7 +174,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             id: format!("local-child-{level}"),
         };
         let child_issuer =
-            AuthorityIssuer::new("local-recursive-e2e", [7; 32], child_authority.clone());
+            AuthorityRoot::new("local-recursive-e2e", [7; 32], child_authority.clone());
         let child_private = volume(
             &provider,
             VolumeClass::AgentPrivate,
@@ -365,7 +365,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 id: "local-sibling".into(),
             };
             let sibling_issuer =
-                AuthorityIssuer::new("local-recursive-e2e", [7; 32], sibling_authority.clone());
+                AuthorityRoot::new("local-recursive-e2e", [7; 32], sibling_authority.clone());
             let sibling_private = volume(
                 &provider,
                 VolumeClass::AgentPrivate,
@@ -774,14 +774,13 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         if level == 1 {
             let reference_issuer = child_issuer.clone();
             let child_scope_with_reference = reference_issuer
-                .issue(
+                .bootstrap_scope(
                     "child-root-reference-reader",
                     &Capabilities::new([
                         child_private.capability(VolumeOperation::Read, &mut None)?,
                         child_attachment_capability,
                     ]),
                     Some(child_agent),
-                    None,
                     &mut None,
                 )
                 .expect("scope proof");

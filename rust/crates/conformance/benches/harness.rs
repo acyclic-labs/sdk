@@ -1,7 +1,7 @@
 //! Reducer admission and canonical snapshot cost (see `docs/observability.md`).
 
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, LifecycleState, Reducer,
+    Action, AggregateKind, Authority, AuthorityRoot, Command, LifecycleState, Reducer,
     SchemaRegistry,
 };
 use acyclic_harness::{Capabilities, IdempotencyKey, OperationId};
@@ -36,13 +36,12 @@ fn authority() -> Authority {
 }
 
 /// Keeps runtime signing custody with a reducer and its valid lifecycle commands.
-fn workload(events: u64) -> (AuthorityIssuer, Reducer, Vec<Command>) {
-    let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
+fn workload(events: u64) -> (AuthorityRoot, Reducer, Vec<Command>) {
+    let issuer = AuthorityRoot::new("bench", [7; 32], authority());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "root",
             &Capabilities::new(["lifecycle:manage"]),
-            None,
             None,
             &mut None,
         )

@@ -20,7 +20,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         kind: AggregateKind::Conversation,
         id: "wide-parent".into(),
     };
-    let parent_issuer = AuthorityIssuer::new("qualification", [19; 32], parent_authority.clone());
+    let parent_issuer = AuthorityRoot::new("qualification", [19; 32], parent_authority.clone());
     let parent_agent = AgentId::from_bytes([31; 16]);
     let mut capabilities = vec![
         "conversation:bind".to_owned(),
@@ -41,11 +41,10 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         );
     }
     let parent_scope = parent_issuer
-        .issue(
+        .bootstrap_scope(
             "parent",
             &Capabilities::new(capabilities),
             Some(parent_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -78,11 +77,10 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         root.clone(),
     )?;
     let other_agent_scope = parent_issuer
-        .issue(
+        .bootstrap_scope(
             "other-agent",
             parent_scope.capabilities(),
             Some(AgentId::from_bytes([32; 16])),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -98,14 +96,13 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .is_err()
     );
     let ungranted = parent_issuer
-        .issue(
+        .bootstrap_scope(
             "no-promotion",
             &Capabilities::new([
                 "fork:publish".to_owned(),
                 root.capability(VolumeOperation::Read, &mut None)?,
             ]),
             Some(parent_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -152,9 +149,9 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 kind: AggregateKind::Conversation,
                 id: "wide-child".into(),
             };
-            let child_issuer = AuthorityIssuer::new("qualification", [19; 32], child_authority);
+            let child_issuer = AuthorityRoot::new("qualification", [19; 32], child_authority);
             let child_scope = child_issuer
-                .issue("child", parent_scope.capabilities(), None, None, &mut None)
+                .bootstrap_scope("child", parent_scope.capabilities(), None, &mut None)
                 .expect("scope proof");
             assert!(
                 ParentProjectController::new(

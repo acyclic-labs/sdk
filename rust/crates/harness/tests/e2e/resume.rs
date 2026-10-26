@@ -10,7 +10,7 @@ use acyclic_harness::{
     AgentId, Capabilities, ConversationId, IdempotencyKey, OperationId,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     filesystem::{
         FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
@@ -98,7 +98,7 @@ impl Identity {
 
 struct Journal {
     inner: Arc<dyn ExecutionJournal>,
-    _issuer: AuthorityIssuer,
+    _issuer: AuthorityRoot,
 }
 
 impl AsRef<dyn ExecutionJournal> for Journal {
@@ -130,8 +130,8 @@ async fn journal<P: StreamProvider + 'static>(
         kind: AggregateKind::Conversation,
         id: identity.conversation.clone(),
     };
-    let issuer = AuthorityIssuer::new("resume", identity.key, conversation.clone());
-    let scope = issuer.issue(
+    let issuer = AuthorityRoot::new("resume", identity.key, conversation.clone());
+    let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             "conversation:bind".to_owned(),
@@ -139,7 +139,6 @@ async fn journal<P: StreamProvider + 'static>(
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(identity.agent),
-        None,
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;

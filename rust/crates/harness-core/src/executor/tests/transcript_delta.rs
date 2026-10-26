@@ -24,7 +24,7 @@ fn message(index: usize) -> ModelMessage {
 #[tokio::test]
 #[cfg(feature = "filesystem")]
 async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes() -> Result<()> {
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "segments",
         [91; 32],
         crate::core::Authority {

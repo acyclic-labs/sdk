@@ -6,7 +6,7 @@ fn issuance_receipts_and_metadata_share_runtime_prepared_keys() -> Result<()> {
     let (result, preparations) = acyclic_test_support::differential::observe(
         || (),
         |()| -> Result<()> {
-            let issuer = AuthorityIssuer::new(
+            let issuer = AuthorityRoot::new(
                 "prepared-runtime",
                 [89; 32],
                 Authority {
@@ -17,10 +17,9 @@ fn issuance_receipts_and_metadata_share_runtime_prepared_keys() -> Result<()> {
             let copy = issuer.copy(&mut None)?;
             let verifier = copy.verifier(&mut None)?;
             for byte in 0..8 {
-                let scope = copy.issue(
+                let scope = copy.bootstrap_scope(
                     "actor",
                     &Capabilities::new(["event:append"]),
-                    None,
                     None,
                     &mut None,
                 )?;
@@ -67,7 +66,7 @@ fn admitted_history_entry_points_authenticate_each_chain_once() -> Result<()> {
         Live,
         Effect,
     }
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "single-authentication",
         [93; 32],
         Authority {
@@ -77,10 +76,9 @@ fn admitted_history_entry_points_authenticate_each_chain_once() -> Result<()> {
     );
     let copy = issuer.copy(&mut None)?;
     let verifier = copy.verifier(&mut None)?;
-    let scope = copy.issue(
+    let scope = copy.bootstrap_scope(
         "actor",
         &Capabilities::new(["event:append"]),
-        None,
         None,
         &mut None,
     )?;
@@ -114,13 +112,12 @@ fn admitted_history_entry_points_authenticate_each_chain_once() -> Result<()> {
         status: EffectStatus::Indeterminate,
         proof: vec![],
     };
-    let effect_scope = copy.issue(
+    let effect_scope = copy.bootstrap_scope(
         "effect-observation",
         &Capabilities::new([
             "effect:run".to_owned(),
             capability::effect_provider(&observation.provider),
         ]),
-        None,
         None,
         &mut None,
     )?;

@@ -7,7 +7,7 @@ use acyclic_harness::{
     conversation::{
         ContentPublisher, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     durable_tool::DurableToolRunner,
     executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
     filesystem::{
@@ -215,7 +215,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         &mut None,
     )?;
     filesystem.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "file-replay",
         [82; 32],
         Authority {
@@ -225,7 +225,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     );
     let read_grant = volume.capability(VolumeOperation::Read, &mut None)?;
     let signed = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 "operation:declare".to_owned(),
@@ -241,7 +241,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

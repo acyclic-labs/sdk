@@ -6,7 +6,7 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result,
     TaskId,
     conversation::{FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
     durable_tool::DurableToolRunner,
     executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
@@ -293,7 +293,7 @@ type LocalJournal = FilesystemExecutionJournal<
 
 async fn bind_conversation(
     stream: &std::sync::Arc<LocalStream>,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     agent: AgentId,
 ) -> Result<()> {
     let mut aggregate = StreamAggregate::open(
@@ -320,10 +320,9 @@ async fn bind_conversation(
                 idempotency_key: IdempotencyKey::new("bind:mcp-fault")?,
                 expected_revision: 0,
                 scope: issuer
-                    .issue(
+                    .bootstrap_scope(
                         "owner",
                         &Capabilities::new(["conversation:bind"]),
-                        None,
                         None,
                         &mut None,
                     )
@@ -337,7 +336,7 @@ async fn bind_conversation(
     Ok(())
 }
 
-async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
+async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityRoot, Scope)> {
     let provider = ProviderRef::new(
         "mcp-fault".into(),
         "filesystem".into(),
@@ -362,7 +361,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
     if create {
         host.create_volume(&private).await?;
     }
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "mcp-fault",
         [41; 32],
         Authority {
@@ -371,7 +370,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         },
     );
     let signed = issuer
-        .issue(
+        .bootstrap_scope(
             "agent",
             &Capabilities::new([
                 private.capability(VolumeOperation::Read, &mut None)?,
@@ -385,7 +384,6 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
                 ),
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

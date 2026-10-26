@@ -34,7 +34,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "staged-lookup",
         [81; 32],
         crate::core::Authority {
@@ -44,11 +44,10 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
     );
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([read, write.clone()]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let mut journal = FilesystemExecutionJournal::new(
@@ -77,11 +76,10 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             Err(Error::NotFound(_))
         ));
     }
-    journal.scope = issuer.issue(
+    journal.scope = issuer.bootstrap_scope(
         "writer",
         &crate::Capabilities::new([write]),
         Some(agent),
-        None,
         &mut None,
     )?;
     assert!(matches!(
@@ -133,7 +131,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             }]],
             expires_at: None,
         };
-        let scoped = issuer.issue(
+        let scoped = issuer.bootstrap_scope(
             "projection",
             &crate::Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
@@ -142,7 +140,6 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )?;
         for read_content in [false, true] {

@@ -18,7 +18,7 @@ use crate::wire_codec::encode_event;
 use crate::{
     Capabilities, OperationId,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    core::{Action, AggregateKind, AuthorityIssuer, ExtensionDependency, ExtensionForkPolicy},
+    core::{Action, AggregateKind, AuthorityRoot, ExtensionDependency, ExtensionForkPolicy},
     interaction::{
         Interaction, InteractionKind, InteractionOutcome, InteractionResolution, InteractionTicket,
     },
@@ -54,10 +54,9 @@ fn command(identity: u8) -> Result<Command> {
         operation_id: OperationId::from_bytes([identity; 16]),
         idempotency_key: IdempotencyKey(format!("append-conversation-1-{identity}")),
         expected_revision: 0,
-        scope: issuer().issue(
+        scope: issuer().bootstrap_scope(
             "root",
             &Capabilities::new(["event:append"]),
-            None,
             None,
             &mut None,
         )?,
@@ -176,10 +175,10 @@ async fn with_content<P: StreamProvider>(client: &Arc<P>) -> Result<StreamAggreg
     .with_content_verifier(Arc::new(TestContent)))
 }
 
-fn issuer() -> AuthorityIssuer {
-    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+fn issuer() -> AuthorityRoot {
+    static RUNTIME: std::sync::OnceLock<AuthorityRoot> = std::sync::OnceLock::new();
     RUNTIME
-        .get_or_init(|| AuthorityIssuer::new("test", [7; 32], authority()))
+        .get_or_init(|| AuthorityRoot::new("test", [7; 32], authority()))
         .clone()
 }
 

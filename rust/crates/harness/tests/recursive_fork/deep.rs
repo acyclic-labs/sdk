@@ -68,7 +68,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             kind: AggregateKind::Conversation,
             id: format!("recursive-{level}"),
         };
-        let child_issuer = AuthorityIssuer::new("qualification", [17; 32], child_authority.clone());
+        let child_issuer = AuthorityRoot::new("qualification", [17; 32], child_authority.clone());
         let child_scope = scope(&child_issuer, &child_private, &shared, &child_project)?;
         let shared_read = ContentGrant::verify(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -334,13 +334,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .contains(&shared.capability(VolumeOperation::Read, &mut None)?)
             );
             let reader_scope = child_issuer
-                .issue(
-                    "deep-attached-reader",
-                    &readable,
-                    Some(attached),
-                    None,
-                    &mut None,
-                )
+                .bootstrap_scope("deep-attached-reader", &readable, Some(attached), &mut None)
                 .expect("scope proof");
             let reader = FilesystemContentVerifier::new(
                 host.clone(),
@@ -362,11 +356,10 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .contains(&child_project.capability(VolumeOperation::Write, &mut None)?)
             );
             let environment_scope = child_issuer
-                .issue(
+                .bootstrap_scope(
                     "deep-attached-environment-reader",
                     &environment,
                     Some(attached),
-                    None,
                     &mut None,
                 )
                 .expect("scope proof");
@@ -407,10 +400,9 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 Err(acyclic_harness::Error::Conflict(_))
             ));
             let unbound = issuer
-                .issue(
+                .bootstrap_scope(
                     "unbound-parent",
                     grant_scope.capabilities(),
-                    None,
                     None,
                     &mut None,
                 )

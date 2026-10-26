@@ -159,7 +159,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
         ..one
     };
     let unsigned = issuer
-        .issue("reader", &Capabilities::default(), None, None, &mut None)
+        .bootstrap_scope("reader", &Capabilities::default(), None, &mut None)
         .expect("scope proof");
     assert!(
         left.declare_session(

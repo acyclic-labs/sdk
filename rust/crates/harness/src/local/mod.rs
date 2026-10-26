@@ -5,7 +5,7 @@ use crate::{
     conversation::{
         ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, Scope},
     filesystem::{
         FilesystemContentPublisher, FilesystemHost, FilesystemResourceCreationProvider,
         FilesystemTaskRuntime,

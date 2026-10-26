@@ -158,6 +158,20 @@ impl CheckoutTools {
             }
             crate::tools::git::run_with_guard(
                 crate::tools::git::Workspace {
+                    access: &workspace
+                        .mount_authority
+                        .as_ref()
+                        .ok_or(Error::FilesystemAccessConfiguration("Git authority"))?
+                        .workspace_access(
+                            &self.signed,
+                            context.effective_scope().grants(),
+                            &workspace
+                                .mounts
+                                .named(parsed.volume.as_deref())?
+                                .1
+                                .view
+                                .volume,
+                        )?,
                     filesystem: &workspace.filesystem,
                     store: &workspace.store,
                     view,

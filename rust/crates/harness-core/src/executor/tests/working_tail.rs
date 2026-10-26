@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Result<()> {
     let mut journal = Journal::default();
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "working-cut",
         [19; 32],
         crate::core::Authority {
@@ -238,7 +238,7 @@ fn working_checkpoint_reads_require_only_the_public_key() -> Result<()> {
         kind: crate::core::AggregateKind::Conversation,
         id: crate::ConversationId::new().to_string(),
     };
-    let issuer = crate::core::AuthorityIssuer::new("working-cut", [19; 32], authority);
+    let issuer = crate::core::AuthorityRoot::new("working-cut", [19; 32], authority);
     let verifier = issuer.verifier(&mut None)?;
     let proof = verifier.working_checkpoint_proof([31; 32], &mut None)?;
     let public = crate::core::AuthorityVerifier::from_public(

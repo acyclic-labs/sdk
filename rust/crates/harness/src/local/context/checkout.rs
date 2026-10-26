@@ -231,16 +231,15 @@ mod tests {
         }
         .to_scope_label()
         .map_err(storage)?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "context-test",
             [19; 32],
             harness.verifier.audience().clone(),
         );
-        harness.signed = issuer.issue(
+        harness.signed = issuer.bootstrap_scope(
             "context-test",
             &Capabilities::new(harness.signed.capabilities().iter().chain([label.as_str()])),
             harness.signed.agent(),
-            None,
             &mut None,
         )?;
         harness.verifier = issuer.verifier(&mut None)?;

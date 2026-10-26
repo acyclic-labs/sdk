@@ -187,13 +187,12 @@ impl History {
         };
         // Construct the exact grant independently of ticket.responder_grant().
         cmd.scope = issuer()
-            .issue(
+            .bootstrap_scope(
                 "responder",
                 &Capabilities::new([
                     "interaction:resolve".to_owned(),
                     format!("interaction:respond:{grant}"),
                 ]),
-                None,
                 None,
                 &mut None,
             )

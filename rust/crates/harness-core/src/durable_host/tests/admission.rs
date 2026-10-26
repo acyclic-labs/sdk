@@ -60,7 +60,7 @@ async fn b02_retry_preserves_signed_owner() -> Result<()> {
             recovered.operation.owner_scope,
             original.operation.owner_scope
         );
-        let impostor = AuthorityIssuer::new("fixture", [8; 32], f.issuer.audience().clone());
+        let impostor = AuthorityRoot::new("fixture", [8; 32], f.issuer.audience().clone());
         assert!(matches!(
             f.reopen(&impostor, "owner")
                 .await?

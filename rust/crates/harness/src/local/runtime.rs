@@ -6,7 +6,7 @@ pub(super) struct Configuration<'a> {
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
     pub task_volume: &'a VolumeRef,
-    pub issuer: &'a AuthorityIssuer,
+    pub issuer: &'a AuthorityRoot,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,
     pub project: &'a VolumeRef,
@@ -157,11 +157,10 @@ fn scopes(
         grants.push(config.journal.capability(operation, &mut None)?);
         grants.push(config.task_volume.capability(operation, &mut None)?);
     }
-    let signed = config.issuer.issue(
+    let signed = config.issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(grants),
         Some(config.agent),
-        None,
         &mut None,
     )?;
     Ok((scope, signed))

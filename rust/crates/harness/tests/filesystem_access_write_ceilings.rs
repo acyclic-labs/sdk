@@ -179,10 +179,9 @@ async fn structured_service_grant_is_governed_by_policy_and_its_resource()
             }]],
             expires_at: None,
         };
-        let scope = fixture.issuer.issue(
+        let scope = fixture.issuer.bootstrap_scope(
             "service",
             &Capabilities::new([capability.to_scope_label()?]),
-            None,
             None,
             &mut None,
         )?;

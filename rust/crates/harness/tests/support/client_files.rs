@@ -7,7 +7,7 @@ use acyclic_harness::{
         ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemContentVerifier, FilesystemHost},
     resources::ProviderRef,
 };
@@ -38,7 +38,7 @@ impl Fixture {
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "commands",
             [9; 32],
             Authority {
@@ -46,7 +46,7 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
@@ -54,7 +54,6 @@ impl Fixture {
                 volume.directory_read_capability("", &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )?;
         host.create_volume(&volume).await?;

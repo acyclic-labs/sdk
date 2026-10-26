@@ -28,7 +28,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "tool-context",
         [11; 32],
         Authority {
@@ -39,11 +39,10 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let read_cap = volume.capability(VolumeOperation::Read, &mut None)?;
     let write_cap = volume.capability(VolumeOperation::Write, &mut None)?;
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([read_cap.clone(), write_cap.clone()]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

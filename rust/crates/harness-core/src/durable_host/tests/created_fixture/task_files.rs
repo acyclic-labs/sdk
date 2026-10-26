@@ -45,7 +45,7 @@ async fn child_task_files_use_created_private_authority_and_the_original_owner()
         crate::conversation::VolumeOwner::Agent(agent),
         &mut None,
     )?;
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "created-owner",
         [80; 32],
         created.parent_verifier.audience().clone(),
@@ -54,11 +54,10 @@ async fn child_task_files_use_created_private_authority_and_the_original_owner()
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(root.capability(operation, &mut None)?);
     }
-    let signed = issuer.issue(
+    let signed = issuer.bootstrap_scope(
         "task-files",
         &Capabilities::new(grants),
         Some(agent),
-        None,
         &mut None,
     )?;
     let root = TaskFiles::open(

@@ -263,7 +263,7 @@ fn prepared_events(seed: u8) -> Vec<crate::core::Event> {
             idempotency_key: crate::IdempotencyKey::new(format!("cut-{number}")).unwrap(),
             expected_revision: reducer.revision(),
             scope: issuer()
-                .issue(
+                .bootstrap_scope(
                     "owner",
                     &Capabilities::new([
                         "lifecycle:manage",
@@ -271,7 +271,6 @@ fn prepared_events(seed: u8) -> Vec<crate::core::Event> {
                         "effect:run",
                         "effect:provider:test.effects",
                     ]),
-                    None,
                     None,
                     &mut None,
                 )
@@ -436,7 +435,7 @@ async fn workflow(
             .unwrap();
         }
         let v = if fault == "audience" {
-            AuthorityIssuer::new(
+            AuthorityRoot::new(
                 "foreign",
                 [91; 32],
                 Authority {

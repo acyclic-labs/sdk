@@ -7,7 +7,7 @@ pub(super) async fn inherited_context(
     root_agent: AgentId,
     grant_scope: &Scope,
     previous_file: &FileRef,
-    child_issuer: &AuthorityIssuer,
+    child_issuer: &AuthorityRoot,
     host: &Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
 ) -> Result<()> {
     let reader = aggregate.history_reader()?;
@@ -120,11 +120,10 @@ pub(super) async fn inherited_context(
         checkpoint: None,
     };
     let source_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "inherited-source",
             &seed.reference_capabilities(child_agent)?,
             Some(child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -154,11 +153,10 @@ pub(super) async fn inherited_context(
         host.clone(),
         &child_issuer.verifier(&mut None).expect("verifier copy"),
         &child_issuer
-            .issue(
+            .bootstrap_scope(
                 "denied-source",
                 &Capabilities::default(),
                 Some(child_agent),
-                None,
                 &mut None,
             )
             .expect("scope proof"),

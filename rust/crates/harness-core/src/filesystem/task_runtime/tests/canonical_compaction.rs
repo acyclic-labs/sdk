@@ -27,7 +27,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         &mut None,
     )?;
     fixture.filesystem.create_volume(&private).await?;
-    fixture.issuer = AuthorityIssuer::new(
+    fixture.issuer = AuthorityRoot::new(
         "canonical-owner",
         [103; 32],
         Authority {
@@ -48,11 +48,10 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         private.capability(VolumeOperation::Read, &mut None)?,
         private.capability(VolumeOperation::Write, &mut None)?,
     ]);
-    fixture.signed = fixture.issuer.issue(
+    fixture.signed = fixture.issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(grants.clone()),
         Some(agent),
-        None,
         &mut None,
     )?;
     // Storage authority stays host-side; the model cannot read the journal.

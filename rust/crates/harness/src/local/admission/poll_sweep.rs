@@ -49,7 +49,7 @@ struct Fixture {
     schedule: Arc<Schedule>,
     events:
         RefCell<tokio::sync::mpsc::UnboundedReceiver<acyclic_native_runtime::testing::Boundary>>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     volumes: [VolumeRef; 4],
     provider: Arc<ModelEffects>,
     effect: Arc<Effect>,
@@ -120,7 +120,7 @@ impl Fixture {
             directory,
             schedule: schedule.clone(),
             events: RefCell::new(events),
-            issuer: AuthorityIssuer::new(
+            issuer: AuthorityRoot::new(
                 "acyclic.local",
                 [7; 32],
                 Authority {

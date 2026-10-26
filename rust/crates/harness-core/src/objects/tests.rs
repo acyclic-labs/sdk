@@ -4,7 +4,7 @@ use crate::conversation::Attachment;
 use crate::{
     AgentId, Capabilities,
     conversation::{ContentMountResolver, Limits, VolumeClass, VolumeOwner},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     resources::ProviderRef,
 };
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
@@ -30,7 +30,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "objects-test",
         [9; 32],
         Authority {
@@ -38,14 +38,13 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             id: "objects-test".into(),
         },
     );
-    let owner_scope = issuer.issue(
+    let owner_scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(owner),
-        None,
         &mut None,
     )?;
     let provider = volume.provider().clone();
@@ -289,7 +288,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             .await
             .is_err()
     );
-    let impostor = AuthorityIssuer::new(
+    let impostor = AuthorityRoot::new(
         "impostor",
         [13; 32],
         Authority {
@@ -297,11 +296,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             id: "impostor".into(),
         },
     );
-    let impostor_scope = impostor.issue(
+    let impostor_scope = impostor.bootstrap_scope(
         "forged",
         &Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]),
         Some(reader),
-        None,
         &mut None,
     )?;
     assert!(
@@ -445,7 +443,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
     let owner_a = AgentId::from_bytes([31; 16]);
     let owner_b = AgentId::from_bytes([32; 16]);
     let attached = AgentId::from_bytes([33; 16]);
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "objects-mount-test",
         [34; 32],
         Authority {
@@ -468,24 +466,22 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         VolumeOwner::Agent(owner_b),
         &mut None,
     )?;
-    let owner_scope_a = issuer.issue(
+    let owner_scope_a = issuer.bootstrap_scope(
         "owner-a",
         &Capabilities::new([
             volume_a.capability(VolumeOperation::Read, &mut None)?,
             volume_a.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(owner_a),
-        None,
         &mut None,
     )?;
-    let owner_scope_b = issuer.issue(
+    let owner_scope_b = issuer.bootstrap_scope(
         "owner-b",
         &Capabilities::new([
             volume_b.capability(VolumeOperation::Read, &mut None)?,
             volume_b.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(owner_b),
-        None,
         &mut None,
     )?;
     let owner_store_a = ObjectContentStore::new(
@@ -586,11 +582,10 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         b"bucket b"
     );
 
-    let no_grant = issuer.issue(
+    let no_grant = issuer.bootstrap_scope(
         "no-grant",
         &Capabilities::new([] as [String; 0]),
         Some(attached),
-        None,
         &mut None,
     )?;
     let denied_store = ObjectContentStore::new(

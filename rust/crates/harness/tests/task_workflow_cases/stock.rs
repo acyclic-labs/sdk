@@ -64,9 +64,9 @@ pub(super) async fn stock_restart_with_publication_fault(
         kind: AggregateKind::Task,
         id: "task-owner".into(),
     };
-    let issuer = AuthorityIssuer::new("task-restart", [7; 32], authority.clone());
+    let issuer = AuthorityRoot::new("task-restart", [7; 32], authority.clone());
     let signed = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 "operation:declare".to_owned(),
@@ -78,7 +78,6 @@ pub(super) async fn stock_restart_with_publication_fault(
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

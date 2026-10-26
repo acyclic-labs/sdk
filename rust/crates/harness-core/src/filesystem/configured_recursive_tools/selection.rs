@@ -111,11 +111,10 @@ where
             .map(|io| io.guard_owned(scoped.logical_owned_bytes()?))
             .transpose()?;
         let scope = crate::executor::with_history_io(io, |work| {
-            allocation.child.issuer.issue(
+            allocation.child.issuer.bootstrap_scope(
                 allocation.child.scope.id(),
                 &scoped,
                 Some(arguments.id),
-                None,
                 work,
             )
         })?;

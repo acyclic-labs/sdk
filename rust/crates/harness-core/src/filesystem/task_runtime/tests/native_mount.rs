@@ -39,11 +39,10 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         project.capability(VolumeOperation::Read, &mut None)?,
         project.capability(VolumeOperation::Write, &mut None)?,
     ]);
-    fixture.signed = fixture.issuer.issue(
+    fixture.signed = fixture.issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(grants),
         fixture.signed.agent(),
-        None,
         &mut None,
     )?;
     fixture.scope = RuntimeScope::new(

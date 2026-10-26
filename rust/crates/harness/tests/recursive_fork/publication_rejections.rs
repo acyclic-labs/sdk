@@ -8,7 +8,7 @@ pub(super) async fn publication_rejections(
     grant_scope: &Scope,
     stream: &Arc<MemoryStream>,
     authority: &Authority,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     host: &Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     stream_provider: &ProviderRef,
     child_private: &VolumeRef,
@@ -164,7 +164,7 @@ pub(super) async fn publication_rejections(
         kind: AggregateKind::Conversation,
         id: "rogue-child".into(),
     };
-    let rogue_issuer = AuthorityIssuer::new("qualification", [17; 32], rogue_authority.clone());
+    let rogue_issuer = AuthorityRoot::new("qualification", [17; 32], rogue_authority.clone());
     let rogue_scope = scope(&rogue_issuer, &rogue_private, &shared, &child_project)?;
     let rogue_write = ContentGrant::verify(
         &rogue_issuer.verifier(&mut None).expect("verifier copy"),

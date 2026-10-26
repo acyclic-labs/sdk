@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     Capabilities,
-    core::{AggregateKind, AuthorityIssuer},
+    core::{AggregateKind, AuthorityRoot},
 };
 use acyclic_fs::{MemoryAuthorityBackend, MemoryObjectBackend};
 
@@ -37,7 +37,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
 }
 
 fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant> {
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "ranges",
         [3; 32],
         Authority {
@@ -45,11 +45,10 @@ fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant>
             id: "owner".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([volume.capability(operation, &mut None)?]),
         Some(AgentId::from_bytes([1; 16])),
-        None,
         &mut None,
     )?;
     let grant = if operation == VolumeOperation::Read {

@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, IdempotencyKey, NativeCustody, NativeWork, OperationId, Result,
     conversation::ContentResidencyVerifier,
     core::{
-        Action, Authority, AuthorityIssuer, Command, EffectAttestation, EffectState, EffectStatus,
+        Action, Authority, AuthorityRoot, Command, EffectAttestation, EffectState, EffectStatus,
         SchemaRegistry, Scope,
     },
     effects::EffectRegistry,

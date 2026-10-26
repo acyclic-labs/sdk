@@ -43,16 +43,15 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         kind: AggregateKind::Conversation,
         id: "client-edit".into(),
     };
-    let issuer = AuthorityIssuer::new("client-edit", [4; 32], authority.clone());
+    let issuer = AuthorityRoot::new("client-edit", [4; 32], authority.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(owner),
-            None,
             &mut None,
         )
         .expect("scope proof");

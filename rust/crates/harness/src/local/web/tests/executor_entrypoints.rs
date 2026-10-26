@@ -38,11 +38,10 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
         fixture.schema.clone(),
         Some(&metadata_io),
     )?;
-    let signed = fixture.issuer.issue(
+    let signed = fixture.issuer.bootstrap_scope(
         "web-entrypoints",
         scope.grants(),
         Some(crate::AgentId::from_bytes([1; 16])),
-        None,
         &mut None,
     )?;
     let runtime = crate::filesystem::FilesystemTaskRuntime::open(

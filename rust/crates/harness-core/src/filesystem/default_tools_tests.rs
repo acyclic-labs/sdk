@@ -3,7 +3,7 @@ use crate::conversation::ContentGrant;
 use crate::{
     AgentId, Capabilities,
     conversation::{MessageKind, VolumeClass, VolumeOwner},
-    core::{AggregateKind, AuthorityIssuer, SchemaRegistry},
+    core::{AggregateKind, AuthorityRoot, SchemaRegistry},
     filesystem::{WorkspaceMutation, workspace_ref},
     resources::ProviderRef,
 };
@@ -20,7 +20,7 @@ struct Fixture {
     host: Arc<Host>,
     stream: Arc<MemoryStream>,
     parent: StreamAggregate<MemoryStream>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     scope: Scope,
     project: VolumeRef,
     source: VolumeRef,
@@ -90,7 +90,7 @@ async fn fixture() -> Result<Fixture> {
     )?;
     host.create_volume(&project).await?;
     host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new("recursive-default-owner", [4; 32], authority.clone());
+    let issuer = AuthorityRoot::new("recursive-default-owner", [4; 32], authority.clone());
     let mut grants = vec![
         "conversation:bind".to_owned(),
         "conversation:append".to_owned(),
@@ -102,11 +102,10 @@ async fn fixture() -> Result<Fixture> {
         grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
     }
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "parent-owner",
             &Capabilities::new(grants),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

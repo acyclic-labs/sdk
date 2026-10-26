@@ -24,16 +24,15 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         kind: AggregateKind::Conversation,
         id: "original-native-root-conversation".into(),
     };
-    let issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
+    let issuer = crate::core::AuthorityRoot::new("created-owner", [80; 32], audience.clone());
     let command = Command {
         operation_id: OperationId::from_bytes([124; 16]),
         idempotency_key: IdempotencyKey::new("original-native-root-bind")?,
         expected_revision: 0,
-        scope: issuer.issue(
+        scope: issuer.bootstrap_scope(
             "root-bind",
             &Capabilities::new(["conversation:bind"]),
             Some(agent),
-            None,
             &mut None,
         )?,
         causal_parent: None,
@@ -112,11 +111,10 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         agent: AgentId::from_bytes([125; 16]),
     };
     let mut missing_grant = command.clone();
-    missing_grant.scope = issuer.issue(
+    missing_grant.scope = issuer.bootstrap_scope(
         "root-bind",
         &Capabilities::default(),
         Some(agent),
-        None,
         &mut None,
     )?;
     for invalid in [wrong_actor, missing_grant] {
@@ -175,7 +173,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     owner
         .root_bootstrap_context(&original, &bootstrap.0, &native)
         .await?;
-    let creator = crate::core::AuthorityIssuer::new(
+    let creator = crate::core::AuthorityRoot::new(
         "created-owner",
         [80; 32],
         owner.root_bootstrap_owner().clone(),
@@ -192,7 +190,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let native_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
     publication.verify(Some(&native_io))?.await?;
     drop(publication);
-    let wrong_creator = crate::core::AuthorityIssuer::new(
+    let wrong_creator = crate::core::AuthorityRoot::new(
         "created-owner",
         [81; 32],
         owner.root_bootstrap_owner().clone(),

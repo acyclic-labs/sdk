@@ -10,7 +10,7 @@ use acyclic_harness::filesystem::{FilesystemHost, FilesystemWorkflowJournal};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     resources::ProviderRef,
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
@@ -78,7 +78,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "workflow-e2e",
         [6; 32],
         Authority {
@@ -87,14 +87,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(AgentId::from_bytes([4; 16])),
-            None,
             &mut None,
         )
         .expect("scope proof");

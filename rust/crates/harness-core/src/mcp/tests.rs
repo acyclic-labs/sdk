@@ -122,25 +122,23 @@ impl ToolApprovalVerifier for CatalogApproval {
 
 #[tokio::test]
 async fn scoped_catalog_installation_and_replacement_require_exact_approval() -> Result<()> {
-    use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+    use crate::core::{AggregateKind, Authority, AuthorityRoot};
     let authority = Authority {
         kind: AggregateKind::Conversation,
         id: "catalog".into(),
     };
-    let issuer = AuthorityIssuer::new("catalog", [8; 32], authority.clone());
-    let foreign = AuthorityIssuer::new("catalog", [9; 32], authority);
-    let scope = issuer.issue(
+    let issuer = AuthorityRoot::new("catalog", [8; 32], authority.clone());
+    let foreign = AuthorityRoot::new("catalog", [9; 32], authority);
+    let scope = issuer.bootstrap_scope(
         "installer",
         &Capabilities::new(["mcp:install:fixture"]),
-        None,
         None,
         &mut None,
     )?;
-    let missing = issuer.issue("installer", &Capabilities::default(), None, None, &mut None)?;
-    let forged = foreign.issue(
+    let missing = issuer.bootstrap_scope("installer", &Capabilities::default(), None, &mut None)?;
+    let forged = foreign.bootstrap_scope(
         "installer",
         &Capabilities::new(["mcp:install:fixture"]),
-        None,
         None,
         &mut None,
     )?;

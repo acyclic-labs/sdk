@@ -38,7 +38,7 @@ impl CreationFixture {
         };
         let parent_agent = AgentId::from_bytes([80; 16]);
         let child_agent = AgentId::from_bytes([91; 16]);
-        let issuer = AuthorityIssuer::new("created-owner", [80; 32], parent.clone());
+        let issuer = AuthorityRoot::new("created-owner", [80; 32], parent.clone());
         let verifier = issuer.verifier(&mut None)?;
         let parent_project = VolumeRef::new(
             self.filesystem_provider.clone(),
@@ -56,7 +56,7 @@ impl CreationFixture {
         )?;
         let project_head = self.filesystem.create_volume(&parent_project).await?;
         let private_head = self.filesystem.create_volume(&parent_private).await?;
-        let parent_scope = issuer.issue(
+        let parent_scope = issuer.bootstrap_scope(
             "fork-parent",
             &Capabilities::new([
                 "conversation:bind".into(),
@@ -65,7 +65,6 @@ impl CreationFixture {
                 parent_private.capability(VolumeOperation::Read, &mut None)?,
             ]),
             Some(parent_agent),
-            None,
             &mut None,
         )?;
         let resolver = FilesystemContentVerifier::new(

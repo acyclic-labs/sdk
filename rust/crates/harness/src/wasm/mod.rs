@@ -19,7 +19,7 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        AggregateKind, ApplyResult, Authority, AuthorityRoot, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
@@ -102,7 +102,7 @@ struct WasmTaskChildrenPage {
 #[wasm_bindgen]
 pub struct WasmReducer {
     reducer: Reducer,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
 }
 
 /// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.

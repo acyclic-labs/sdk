@@ -4,7 +4,7 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     Error, Result,
     conversation::{Limits, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, EventPayload, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, EventPayload, Scope},
     durable_host::TaskJournalOwner,
     filesystem::{
         PreparationIo, bind_original_root_conversation_with_native_work,
@@ -24,7 +24,7 @@ fn invalid(reason: &'static str) -> Error {
 
 pub(crate) async fn bind_task_conversation(
     stream: &Arc<LocalStream>,
-    authority_custody: ((Authority, AuthorityIssuer, Scope), NativeAllocation),
+    authority_custody: ((Authority, AuthorityRoot, Scope), NativeAllocation),
     owner: &TaskJournalOwner<LocalStream>,
     volume: &VolumeRef,
     creation: acyclic_fs::OperationId,
@@ -49,7 +49,7 @@ pub(crate) async fn bind_task_conversation(
 
 pub(crate) async fn observe_task_conversation(
     stream: &Arc<LocalStream>,
-    authority: (Authority, AuthorityIssuer, Scope),
+    authority: (Authority, AuthorityRoot, Scope),
     custody: NativeAllocation,
     volume: &VolumeRef,
     creation: acyclic_fs::OperationId,

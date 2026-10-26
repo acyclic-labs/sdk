@@ -10,7 +10,7 @@ mod volume_composition;
 use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
 use acyclic_harness::{
     Capabilities,
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
 };
 
 fn grant(path: &str) -> Grant {
@@ -27,7 +27,7 @@ fn grant(path: &str) -> Grant {
 
 #[test]
 fn signed_delegation_only_narrows() -> Result<(), Box<dyn std::error::Error>> {
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "host",
         [7; 32],
         Authority {
@@ -40,10 +40,9 @@ fn signed_delegation_only_narrows() -> Result<(), Box<dyn std::error::Error>> {
         layers: vec![vec![grant("src/**")]],
         expires_at: Some(100),
     };
-    let parent_scope = issuer.issue(
+    let parent_scope = issuer.bootstrap_scope(
         "root",
         &Capabilities::new([parent.to_scope_label()?]),
-        None,
         None,
         &mut None,
     )?;
@@ -190,7 +189,7 @@ fn policy_intersection_preserves_signed_narrowed_grants() -> Result<(), Box<dyn 
         },
     ])?;
     assert_eq!(resolved, expected);
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "host",
         [7; 32],
         Authority {
@@ -198,7 +197,7 @@ fn policy_intersection_preserves_signed_narrowed_grants() -> Result<(), Box<dyn 
             id: "task".into(),
         },
     );
-    let scope = issuer.issue("resolved", &resolved, None, None, &mut None)?;
+    let scope = issuer.bootstrap_scope("resolved", &resolved, None, &mut None)?;
     assert_eq!(
         issuer.verifier(&mut None)?.filesystem_capability(&scope)?,
         child

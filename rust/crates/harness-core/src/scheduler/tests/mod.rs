@@ -57,7 +57,7 @@ fn spec(operation_id: OperationId, orchestration: Orchestration) -> Result<Opera
                 id: operation_id.to_string(),
             },
         },
-        owner_scope: crate::core::AuthorityIssuer::new(
+        owner_scope: crate::core::AuthorityRoot::new(
             "scheduler-test",
             [9; 32],
             Authority {
@@ -65,10 +65,9 @@ fn spec(operation_id: OperationId, orchestration: Orchestration) -> Result<Opera
                 id: operation_id.to_string(),
             },
         )
-        .issue(
+        .bootstrap_scope(
             "original-declare",
             &crate::Capabilities::new(["operation:declare"]),
-            None,
             None,
             &mut None,
         )?,

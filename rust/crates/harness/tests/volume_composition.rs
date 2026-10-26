@@ -5,7 +5,7 @@ use acyclic_fs::{Fs, JoinOutcome};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemHost, workspace_ref},
     resources::ProviderRef,
 };
@@ -14,7 +14,7 @@ use acyclic_harness::{
 fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
     let owner = AgentId::from_bytes([3; 16]);
     let reader = AgentId::from_bytes([4; 16]);
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "delegation",
         [9; 32],
         Authority {
@@ -41,11 +41,10 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
         )?;
         let capability = volume.capability(VolumeOperation::Read, &mut None)?;
         let scope = issuer
-            .issue(
+            .bootstrap_scope(
                 "owner",
                 &Capabilities::new([capability.clone()]),
                 Some(owner),
-                None,
                 &mut None,
             )
             .expect("scope proof");
@@ -73,20 +72,18 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
         );
         for unauthorized in [
             issuer
-                .issue(
+                .bootstrap_scope(
                     "foreign",
                     &Capabilities::new([capability]),
                     Some(reader),
-                    None,
                     &mut None,
                 )
                 .expect("scope proof"),
             issuer
-                .issue(
+                .bootstrap_scope(
                     "no-read",
                     &Capabilities::new(std::iter::empty::<String>()),
                     Some(owner),
-                    None,
                     &mut None,
                 )
                 .expect("scope proof"),
@@ -138,7 +135,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         VolumeOwner::Project("builtin-owner".into()),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "skills",
         [7; 32],
         Authority {
@@ -147,19 +144,18 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         },
     );
     let setup = issuer
-        .issue(
+        .bootstrap_scope(
             "setup",
             &Capabilities::new([
                 root.capability(VolumeOperation::Write, &mut None)?,
                 builtins.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "session",
             &Capabilities::new([
                 root.capability(VolumeOperation::Read, &mut None)?,
@@ -168,7 +164,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
                 builtins.capability(VolumeOperation::Read, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -268,11 +263,10 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         .is_err()
     );
     let foreign = issuer
-        .issue(
+        .bootstrap_scope(
             "foreign",
             &Capabilities::new([skills.capability(VolumeOperation::Write, &mut None)?]),
             Some(foreign_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -331,11 +325,10 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &mut None,
     )?;
     let approved = issuer
-        .issue(
+        .bootstrap_scope(
             "approved-writeback",
             &Capabilities::new([root.capability(VolumeOperation::Write, &mut None)?]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

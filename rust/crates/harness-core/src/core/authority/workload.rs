@@ -213,7 +213,7 @@ fn retain(
     Ok(())
 }
 pub(super) fn issue(
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     scope: &mut Scope,
     parent: Option<&VerifiedCapability>,
     work: &mut Option<&mut dyn HistoryIo>,

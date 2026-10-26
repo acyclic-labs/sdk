@@ -3,7 +3,7 @@ use acyclic_harness_core::{
     Admission, AgentId, Capabilities, OperationId,
     context::{CompactionPolicy, ContextManifest},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     distributed::{SchedulerPayloadStore, WorkPull, Worker},
     durable_tool::ResumableToolRegistry,
     filesystem::{
@@ -249,7 +249,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "fixture",
         [47; 32],
         Authority {
@@ -257,7 +257,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
             id: "owner".into(),
         },
     );
-    let signed = issuer.issue(
+    let signed = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             "operation:declare".into(),
@@ -269,7 +269,6 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;

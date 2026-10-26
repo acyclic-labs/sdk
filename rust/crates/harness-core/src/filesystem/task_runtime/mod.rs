@@ -268,7 +268,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     volume: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
-    authority_custodian: Option<crate::core::AuthorityIssuer>,
+    authority_custodian: Option<crate::core::AuthorityRoot>,
     tools: ToolRegistry,
     maximum_payload_bytes: u64,
     policy: Option<Arc<dyn ToolPolicy>>,

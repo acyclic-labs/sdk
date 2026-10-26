@@ -41,10 +41,9 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
                 resolution: (resolution).into(),
             },
         );
-        command.scope = issuer().issue(
+        command.scope = issuer().bootstrap_scope(
             "responder",
             &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-            None,
             None,
             &mut None,
         )?;

@@ -2,7 +2,7 @@
 use super::source_graph::SourceBudget;
 use super::*;
 use crate::Capabilities;
-use crate::core::AuthorityIssuer;
+use crate::core::AuthorityRoot;
 use crate::source_authorization::{
     ProjectSourceAuthorization, ProjectSourceReadHandle, ProjectSourceSnapshot,
     RootProjectSourceContext, RootProjectSourceProvider,
@@ -17,7 +17,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub async fn authorize_project_source(
         &self,
         context: &crate::runtime::TaskContext,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         provider: &dyn RootProjectSourceProvider,
         source_task: TaskId,
         operation_id: OperationId,
@@ -260,7 +260,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             0
         };
         authorization.policy_scope =
-            issuer.issue(&label, &capabilities, None, None, quota.work())?;
+            issuer.bootstrap_scope(&label, &capabilities, None, quota.work())?;
         drop(capabilities);
         drop(label);
         quota.relinquish(label_held)?;

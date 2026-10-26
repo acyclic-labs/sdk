@@ -54,7 +54,7 @@ async fn bind(
 
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
-    _runtimes: [crate::core::AuthorityIssuer; 2],
+    _runtimes: [crate::core::AuthorityRoot; 2],
     fixture: crate::durable_host::tests::created_fixture::CreationFixture,
     owner: Arc<crate::durable_host::TaskJournalOwner<MemoryStream>>,
     lease: crate::distributed::WorkLease,
@@ -118,9 +118,9 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         )
         .await?;
     let parent_issuer =
-        crate::core::AuthorityIssuer::new("created-owner", [80; 32], created.seed.child.clone());
+        crate::core::AuthorityRoot::new("created-owner", [80; 32], created.seed.child.clone());
     let parent_scope = parent_issuer
-        .issue(
+        .bootstrap_scope(
             "measured-fork-parent",
             &Capabilities::new([
                 "conversation:bind".into(),
@@ -133,7 +133,6 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
                     .capability(VolumeOperation::Read, &mut None)?,
             ]),
             Some(created.seed.child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -328,13 +327,12 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         .prepare(fork)
         .await?;
     let child_issuer =
-        crate::core::AuthorityIssuer::new("created-owner", [80; 32], report.request.child.clone());
+        crate::core::AuthorityRoot::new("created-owner", [80; 32], report.request.child.clone());
     let child_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "measured-fork-child",
             &Capabilities::new(["conversation:bind".to_owned()]),
             Some(child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

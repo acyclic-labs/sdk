@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::core::{AggregateKind, AuthorityIssuer};
+use crate::core::{AggregateKind, AuthorityRoot};
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -103,7 +103,7 @@ impl Fixture {
             acyclic_fs::kernel::RetentionKind::Pin,
             &format!("harness-generation-{version}"),
         );
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "retention",
             [2; 32],
             Authority {
@@ -111,11 +111,10 @@ impl Fixture {
                 id: "owner".into(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "owner",
             &crate::Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]),
             Some(agent),
-            None,
             &mut None,
         )?;
         let grant = ContentGrant::verify_directory_read(

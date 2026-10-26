@@ -68,11 +68,10 @@ impl Source {
         )
         .await?;
         fixture.files.create_volume(&project).await?;
-        let boot = fixture.issuer.issue(
+        let boot = fixture.issuer.bootstrap_scope(
             "seed",
             &Capabilities::new([read, write]),
             Some(crate::AgentId::from_bytes([1; 16])),
-            None,
             &mut None,
         )?;
         let verifier = fixture.issuer.verifier(&mut None)?;
@@ -225,10 +224,9 @@ impl Source {
             ),
         };
         let label = authorization.scope_label(&mut None)?;
-        authorization.policy_scope = self.fixture.issuer.issue(
+        authorization.policy_scope = self.fixture.issuer.bootstrap_scope(
             &label,
             &Capabilities::new([label.clone()]),
-            None,
             None,
             &mut None,
         )?;

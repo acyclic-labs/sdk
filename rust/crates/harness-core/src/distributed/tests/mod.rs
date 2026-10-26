@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     Capabilities,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     resources::ProviderRef,
     scheduler::{
         DurableOwner, EntrypointRef, OperationPhase, Orchestration, ParentLink, ResourceRequest,

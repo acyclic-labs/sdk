@@ -193,7 +193,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         use acyclic_fs::access::{
             Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
         };
-        let issuer = crate::core::AuthorityIssuer::new(
+        let issuer = crate::core::AuthorityRoot::new(
             "readonly-import",
             [37; 32],
             crate::core::Authority {
@@ -228,7 +228,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
             expires_at: None,
         };
         let grants = crate::Capabilities::new([capability.to_scope_label()?]);
-        let scope = issuer.issue("native-volume", &grants, None, None, &mut None)?;
+        let scope = issuer.bootstrap_scope("native-volume", &grants, None, &mut None)?;
         authenticated_mount_options(
             lazy.workspace(),
             original,

@@ -30,10 +30,9 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
     let effect_id = EffectId::from_bytes([41; 16]);
     let attempt_id = EffectAttemptId::from_bytes([42; 16]);
     let scope = issuer()
-        .issue(
+        .bootstrap_scope(
             "effects",
             &Capabilities::new(["effect:run", "effect:plan", "effect:provider:test.effects"]),
-            None,
             None,
             &mut None,
         )

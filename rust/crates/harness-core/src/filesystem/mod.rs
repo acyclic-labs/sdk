@@ -141,7 +141,7 @@ pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
     BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountAuthority, NativeMountedVolume,
-    NativePreparationRoot, NativeViewPublicationError, NativeVolumeView,
+    NativePreparationRoot, NativeViewPublicationError, NativeVolumeView, WorkspaceAccess,
     authenticated_mount_options, owner_mount_options, require_unrestricted_volume_access,
     require_unrestricted_workspace_read,
 };
@@ -150,7 +150,9 @@ pub use native_execution::{
     feature = "filesystem-local",
     not(target_arch = "wasm32")
 ))]
-pub use native_execution::{local_owner_mount_options, local_owner_workspace};
+pub use native_execution::{
+    local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
+};
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,

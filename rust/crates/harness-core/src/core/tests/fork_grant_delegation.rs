@@ -33,11 +33,10 @@ pub(super) fn run(
         parent
     };
     let parent_scope = owner
-        .issue(
+        .bootstrap_scope(
             "parent",
             &Capabilities::new(shared_bits(&matrix, issued_parent)),
             Some(matrix.readers[1]),
-            None,
             &mut None,
         )
         .unwrap();
@@ -55,11 +54,12 @@ pub(super) fn run(
         expected,
         || {
             let child = if matches!(fault, Some(DelegationFault::SkipAttenuation)) {
-                owner.issue(
+                owner.issue_bound(
                     "child",
                     &requested,
                     parent_scope.agent(),
                     Some(*parent_scope.proof),
+                    None,
                     &mut None,
                 )
             } else {

@@ -8,7 +8,7 @@ pub(super) async fn seed_integrity(
     aggregate: &StreamAggregate<MemoryStream>,
     grant_scope: &Scope,
     child_agent: AgentId,
-    child_issuer: &AuthorityIssuer,
+    child_issuer: &AuthorityRoot,
     host: &Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     root_manifest: &FileRef,
     previous_file: &FileRef,
@@ -93,10 +93,9 @@ pub(super) async fn seed_integrity(
         "a retained original grant cannot authorize extra unpublished FileRef metadata"
     );
     let child_reference_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "child-reference-reader",
             &seed.reference_capabilities(child_agent)?,
-            None,
             None,
             &mut None,
         )
@@ -121,11 +120,10 @@ pub(super) async fn seed_integrity(
             .contains(&shared.capability(VolumeOperation::Read, &mut None)?)
     );
     let reader_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "attached-reader",
             &capabilities,
             Some(inherited_reader),
-            None,
             &mut None,
         )
         .expect("scope proof");

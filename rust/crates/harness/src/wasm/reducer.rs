@@ -61,7 +61,7 @@ impl WasmReducer {
         schemas: JsValue,
     ) -> Result<Self, JsValue> {
         let authority: Authority = from_js(authority)?;
-        let issuer = AuthorityIssuer::new(issuer_id, key_bytes(issuer_key)?, authority.clone());
+        let issuer = AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority.clone());
         Ok(Self {
             reducer: Reducer::new(
                 authority,
@@ -80,7 +80,7 @@ impl WasmReducer {
         schemas: JsValue,
     ) -> Result<Self, JsValue> {
         let snapshot: Snapshot = from_js(snapshot)?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             issuer_id,
             key_bytes(issuer_key)?,
             snapshot.authority.clone(),
@@ -148,7 +148,7 @@ impl WasmReducer {
         let capabilities = Capabilities::new(from_js::<Vec<String>>(capabilities)?);
         let scope = self
             .issuer
-            .issue(&id, &capabilities, optional_agent(agent)?, None, &mut None)
+            .bootstrap_scope(&id, &capabilities, optional_agent(agent)?, &mut None)
             .map_err(js_error)?;
         to_js(&scope)
     }
@@ -165,7 +165,7 @@ impl WasmReducer {
         let capabilities = crate::resolve_policy_layers(&layers).map_err(js_error)?;
         let scope = self
             .issuer
-            .issue(&id, &capabilities, optional_agent(agent)?, None, &mut None)
+            .bootstrap_scope(&id, &capabilities, optional_agent(agent)?, &mut None)
             .map_err(js_error)?;
         to_js(&scope)
     }

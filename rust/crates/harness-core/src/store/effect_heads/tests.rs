@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     Capabilities, IdempotencyKey, OperationId,
-    core::{Action, AggregateKind, AuthorityIssuer, Command, LifecycleState, SchemaRegistry},
+    core::{Action, AggregateKind, AuthorityRoot, Command, LifecycleState, SchemaRegistry},
 };
 use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest, MemoryStream, OwnedBytes};
 use futures::TryStreamExt as _;
@@ -43,10 +43,10 @@ fn authority() -> Authority {
         id: "effect-root-proof".into(),
     }
 }
-fn issuer() -> AuthorityIssuer {
-    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+fn issuer() -> AuthorityRoot {
+    static RUNTIME: std::sync::OnceLock<AuthorityRoot> = std::sync::OnceLock::new();
     RUNTIME
-        .get_or_init(|| AuthorityIssuer::new("effect-root-proof", [91; 32], authority()))
+        .get_or_init(|| AuthorityRoot::new("effect-root-proof", [91; 32], authority()))
         .clone()
 }
 
@@ -60,10 +60,9 @@ async fn publish_lifecycle(
                 operation_id: OperationId::from_bytes([number; 16]),
                 idempotency_key: IdempotencyKey::new(format!("root-{number}"))?,
                 expected_revision: aggregate.reducer().revision(),
-                scope: issuer().issue(
+                scope: issuer().bootstrap_scope(
                     "owner",
                     &Capabilities::new(["lifecycle:manage"]),
-                    None,
                     None,
                     &mut None,
                 )?,
@@ -201,7 +200,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         .await,
         Err(Error::Unauthorized(_))
     ));
-    let foreign = AuthorityIssuer::new(
+    let foreign = AuthorityRoot::new(
         "effect-root-proof",
         [91; 32],
         Authority {

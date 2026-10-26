@@ -97,7 +97,12 @@ impl LocalWorkspace {
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         authority
-            .mount_options(workspace, true, &work)
+            .mount_options(
+                workspace,
+                Some(&self.mounts.named(None)?.1.view.volume),
+                true,
+                &work,
+            )
             .await
             .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
     }
@@ -343,7 +348,7 @@ pub(super) struct Attach<'a> {
     pub(super) directory: &'a Path,
     pub(super) operation: acyclic_fs::OperationId,
     pub(super) native_mounts: bool,
-    pub(super) authority: Option<(&'a AuthorityIssuer, AgentId)>,
+    pub(super) authority: Option<(&'a AuthorityRoot, AgentId)>,
 }
 
 pub(super) async fn open(

@@ -119,9 +119,9 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
         kind: crate::core::AggregateKind::Conversation,
         id: crate::ConversationId::new().to_string(),
     };
-    let issuer = crate::core::AuthorityIssuer::new("one", [1; 32], authority.clone());
+    let issuer = crate::core::AuthorityRoot::new("one", [1; 32], authority.clone());
     let verifier = issuer.verifier(&mut None)?;
-    let other_issuer = crate::core::AuthorityIssuer::new("two", [2; 32], authority);
+    let other_issuer = crate::core::AuthorityRoot::new("two", [2; 32], authority);
     let other = other_issuer.verifier(&mut None)?;
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {

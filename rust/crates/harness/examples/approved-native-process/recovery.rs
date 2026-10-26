@@ -128,7 +128,7 @@ pub(super) async fn effects<P, A, O>(
     files: Arc<Files<A, O>>,
     runtime: &Runtime<P, A, O>,
     seed: &Restart,
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
 ) -> Result<(
     Arc<TaskJournalOwner<P>>,
     Arc<ConversationEffectHost<P>>,

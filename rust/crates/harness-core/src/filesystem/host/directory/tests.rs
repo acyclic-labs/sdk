@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+use crate::core::{AggregateKind, Authority, AuthorityRoot};
 use acyclic_fs::access::{Capability, Generations, Grant, ResourcePattern};
 use proptest::prelude::*;
 
@@ -25,7 +25,7 @@ async fn fixture(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "native-list",
         [7; 32],
         Authority {
@@ -35,14 +35,13 @@ async fn fixture(
     );
     let agent = Some(AgentId::from_bytes([9; 16]));
     let legacy = volume.capability(VolumeOperation::Read, &mut None)?;
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "writer",
         &crate::Capabilities::new([
             legacy.clone(),
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         agent,
-        None,
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
@@ -84,7 +83,7 @@ async fn fixture(
             grants.push(grant(path));
         }
     }
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "reader",
         &crate::Capabilities::new([
             legacy,
@@ -96,7 +95,6 @@ async fn fixture(
             .map_err(|error| Error::Invalid(error.to_string()))?,
         ]),
         agent,
-        None,
         &mut None,
     )?;
     let read = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "rows", &mut None)?;

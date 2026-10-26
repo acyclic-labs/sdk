@@ -13,7 +13,7 @@ use super::*;
 #[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
     /// Host-owned signing identity.
-    pub issuer: AuthorityIssuer,
+    pub issuer: AuthorityRoot,
     /// Signed actor scope.
     pub scope: Scope,
 }
@@ -142,14 +142,13 @@ mod tests {
             kind: crate::core::AggregateKind::Task,
             id: "configured-owner".into(),
         };
-        let issuer = AuthorityIssuer::new("configured", [71; 32], authority.clone());
+        let issuer = AuthorityRoot::new("configured", [71; 32], authority.clone());
         let agent = crate::AgentId::from_bytes([72; 16]);
         let binding = ConfiguredRecursiveAuthorityBinding {
-            scope: issuer.issue(
+            scope: issuer.bootstrap_scope(
                 "owner",
                 &Capabilities::default(),
                 Some(agent),
-                None,
                 &mut None,
             )?,
             issuer,
@@ -170,14 +169,13 @@ mod tests {
             VolumeOwner::Agent(agent),
         )?;
         binding.validate_volumes(&provider, &project, &private, None)?;
-        let foreign = AuthorityIssuer::new("configured", [73; 32], authority);
+        let foreign = AuthorityRoot::new("configured", [73; 32], authority);
         let forged = ConfiguredRecursiveAuthorityBinding {
             issuer: binding.issuer,
-            scope: foreign.issue(
+            scope: foreign.bootstrap_scope(
                 "owner",
                 &Capabilities::default(),
                 Some(agent),
-                None,
                 &mut None,
             )?,
         };

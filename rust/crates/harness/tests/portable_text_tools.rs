@@ -8,7 +8,7 @@ use acyclic_harness::{
         ContentGrant, ContentPublisher, FileRef, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{ExactTextReplacement, FilesystemHost, workspace_ref},
     resources::ProviderRef,
 };

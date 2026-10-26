@@ -24,11 +24,10 @@ async fn check(
     count: u8,
 ) -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new().await?;
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "range",
         &ceiling(scope_allowed)?,
         Some(AgentId::from_bytes([7; 16])),
-        None,
         &mut None,
     )?;
     let reader = fixture.reader(&scope)?;

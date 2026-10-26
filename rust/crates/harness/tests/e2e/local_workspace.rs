@@ -3,7 +3,7 @@ use acyclic_fs::{Fs, LocalAuthorityBackend, LocalObjectBackend, LocalOptions};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemContentVerifier, FilesystemHost, WorkspaceMutation},
     resources::WorkspaceRef,
 };
@@ -54,7 +54,7 @@ pub(super) async fn seed(
     }));
     host.apply(&workspace, None, &writes, &IdempotencyKey::new("seed")?)
         .await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "diff-reader",
         [9; 32],
         Authority {
@@ -62,14 +62,13 @@ pub(super) async fn seed(
             id: "diff-reader".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "reader",
         &Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.directory_read_capability("plans", &mut None)?,
         ]),
         Some(AgentId::new()),
-        None,
         &mut None,
     )?;
     let reader = FilesystemContentVerifier::new(

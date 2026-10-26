@@ -13,7 +13,7 @@ use acyclic_harness::{
         ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
         VolumeClass, VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, Reducer, SchemaRegistry},
     resources::ProviderRef,
     scheduler::{
         DurableOwner, EntrypointRef, LeaseFence, OperationPhase, OperationSpec, Orchestration,
@@ -325,12 +325,11 @@ pub fn trace() {
         kind: AggregateKind::Conversation,
         id: "conversation".into(),
     };
-    let issuer = AuthorityIssuer::new("example", [7; 32], authority.clone());
+    let issuer = AuthorityRoot::new("example", [7; 32], authority.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "host",
             &Capabilities::new(["conversation:bind", "conversation:append"]),
-            None,
             None,
             &mut None,
         )
@@ -531,11 +530,10 @@ pub fn trace() {
     let mut scheduler = Scheduler::default();
     let spec = OperationSpec {
         operation_id: op(20),
-        owner_scope: AuthorityIssuer::new("example", [7; 32], task_authority.clone())
-            .issue(
+        owner_scope: AuthorityRoot::new("example", [7; 32], task_authority.clone())
+            .bootstrap_scope(
                 "host",
                 &Capabilities::new(["task:declare"]),
-                None,
                 None,
                 &mut None,
             )

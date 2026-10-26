@@ -6,7 +6,7 @@ use acyclic_harness::{
         ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, Scope},
     filesystem::{FilesystemContentVerifier, FilesystemHost},
     resources::{GenerationRef, ProviderRef},
 };
@@ -36,7 +36,7 @@ mod context;
 struct Fixture<O = acyclic_fs::MemoryObjectBackend> {
     fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, O>>,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     volume: VolumeRef,
     scope: Scope,
     file: FileRef,
@@ -91,7 +91,7 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             )
             .await?;
         }
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "owner",
             [19; 32],
             Authority {
@@ -99,14 +99,13 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
                 id: "read-task".into(),
             },
         );
-        let scope = issuer.issue(
+        let scope = issuer.bootstrap_scope(
             "legacy",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(AgentId::from_bytes([7; 16])),
-            None,
             &mut None,
         )?;
         let writer = ContentGrant::verify(
@@ -272,14 +271,13 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             }]],
             expires_at: expired.then_some(1),
         };
-        Ok(self.issuer.issue(
+        Ok(self.issuer.bootstrap_scope(
             "ceiling",
             &Capabilities::new([
                 self.volume.capability(VolumeOperation::Read, &mut None)?,
                 capability.to_scope_label()?,
             ]),
             self.scope.agent(),
-            None,
             &mut None,
         )?)
     }
@@ -315,11 +313,10 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
     let fixture = Fixture::new().await?;
     let verifier = fixture.issuer.verifier(&mut None)?;
     let volume = ContentGrant::verify_read(&verifier, &fixture.scope, &fixture.file)?;
-    let exact_scope = fixture.issuer.issue(
+    let exact_scope = fixture.issuer.bootstrap_scope(
         "exact",
         &Capabilities::new([fixture.file.read_capability(&mut None)?]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     let exact = ContentGrant::verify_file_read(&verifier, &exact_scope, &fixture.file)?;
@@ -604,11 +601,10 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
         }]],
         expires_at: None,
     };
-    let only = fixture.issuer.issue(
+    let only = fixture.issuer.bootstrap_scope(
         "structured",
         &Capabilities::new([allow.to_scope_label()?]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     assert_eq!(
@@ -620,7 +616,7 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
         b"private"
     );
     let narrower = allow.clone().attenuate(vec![], None);
-    let ambiguous = fixture.issuer.issue(
+    let ambiguous = fixture.issuer.bootstrap_scope(
         "ambiguous",
         &Capabilities::new([
             fixture
@@ -630,7 +626,6 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
             narrower.to_scope_label()?,
         ]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     assert!(matches!(

@@ -102,7 +102,7 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
 async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     use super::super::history::{HistoryIo, HistoryReadLimits, HistoryReader};
     use crate::core::{
-        Action, AggregateKind, ApplyResult, AuthorityIssuer, Command, LifecycleState, Reducer,
+        Action, AggregateKind, ApplyResult, AuthorityRoot, Command, LifecycleState, Reducer,
         SchemaRegistry,
     };
     let ordinary = provider.clone();
@@ -110,7 +110,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         kind: AggregateKind::Agent,
         id: "native-only-reader".into(),
     };
-    let issuer = AuthorityIssuer::new("native-only", [29; 32], authority.clone());
+    let issuer = AuthorityRoot::new("native-only", [29; 32], authority.clone());
     let reducer = Reducer::new(
         authority.clone(),
         issuer.verifier(&mut None)?,
@@ -120,10 +120,9 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         operation_id: OperationId::from_bytes([31; 16]),
         idempotency_key: crate::IdempotencyKey("native-only-reader".into()),
         expected_revision: 0,
-        scope: issuer.issue(
+        scope: issuer.bootstrap_scope(
             "root",
             &crate::Capabilities::new(["lifecycle:manage"]),
-            None,
             None,
             &mut None,
         )?,

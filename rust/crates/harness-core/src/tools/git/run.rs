@@ -2,6 +2,8 @@ use super::*;
 
 /// The task-selected managed workspace and its publication authority.
 pub struct Workspace<'a> {
+    /// Authenticated workload and invocation ceiling, checked for every resolved volume.
+    pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Local filesystem owning the view.
     pub filesystem: &'a LocalFs,
     /// Durable lineage and git state.
@@ -49,6 +51,7 @@ where
     Fut: Future<Output = crate::Result<()>> + Send,
 {
     before_effect().await?;
+    workspace.access.require(workspace.view.workspace()).await?;
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
@@ -61,6 +64,7 @@ where
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
+        access: workspace.access,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),
@@ -74,6 +78,7 @@ where
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
+    executor.authorize_repository().await?;
     if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
         let output = executor.diff_agent(branch, tree).await?;

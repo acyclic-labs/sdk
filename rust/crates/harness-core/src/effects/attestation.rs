@@ -4,7 +4,7 @@ impl EffectRegistry {
     #[cfg(any(test, feature = "filesystem"))]
     pub(crate) async fn dispatch_and_attest(
         &self,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         effect_id: EffectId,
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -77,7 +77,7 @@ impl EffectRegistry {
 
     pub(crate) async fn reconcile_and_attest(
         &self,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         effect_id: EffectId,
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -127,7 +127,7 @@ impl EffectRegistry {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) async fn attest_native_observation(
         &self,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         effect_id: EffectId,
         effect: &EffectState,
         incoming: (EffectObservation, acyclic_fs::NativeAllocation),
@@ -172,7 +172,7 @@ impl EffectRegistry {
 
     pub(super) async fn attest_provider_observation(
         &self,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         effect_id: EffectId,
         effect: &EffectState,
         observation: EffectObservation,

@@ -55,7 +55,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
-    let foreign_issuer = AuthorityIssuer::new(
+    let foreign_issuer = AuthorityRoot::new(
         "foreign-owner",
         [45; 32],
         Authority {
@@ -63,11 +63,10 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: AgentId::from_bytes([45; 16]).to_string(),
         },
     );
-    let foreign_scope = foreign_issuer.issue(
+    let foreign_scope = foreign_issuer.bootstrap_scope(
         "foreign-owner",
         &Capabilities::new([foreign.capability(VolumeOperation::Write, &mut None)?]),
         Some(AgentId::from_bytes([45; 16])),
-        None,
         &mut None,
     )?;
     assert!(

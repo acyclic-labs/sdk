@@ -11,7 +11,7 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
         kind: crate::core::AggregateKind::Conversation,
         id: "native-message-lookup".into(),
     };
-    let issuer = crate::core::AuthorityIssuer::new("message-lookup", [9; 32], authority.clone());
+    let issuer = crate::core::AuthorityRoot::new("message-lookup", [9; 32], authority.clone());
     let id = uuid::Uuid::from_bytes([11; 16]);
     let path = publication_path(
         &authority,
@@ -108,14 +108,14 @@ async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> 
 #[tokio::test]
 async fn original_provider_publication_releases_exact_source_after_receipt_drop() -> Result<()> {
     use crate::core::{
-        Action, AggregateKind, ApplyResult, AuthorityIssuer, Command, LifecycleState, Reducer,
+        Action, AggregateKind, ApplyResult, AuthorityRoot, Command, LifecycleState, Reducer,
         SchemaRegistry,
     };
     let authority = Authority {
         kind: AggregateKind::Agent,
         id: "publication-custody".into(),
     };
-    let issuer = AuthorityIssuer::new("publication-test", [7; 32], authority.clone());
+    let issuer = AuthorityRoot::new("publication-test", [7; 32], authority.clone());
     let reducer = Reducer::new(
         authority.clone(),
         issuer.verifier(&mut None)?,
@@ -125,10 +125,9 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
         operation_id: OperationId::from_bytes([91; 16]),
         idempotency_key: crate::IdempotencyKey("publication-custody".into()),
         expected_revision: 0,
-        scope: issuer.issue(
+        scope: issuer.bootstrap_scope(
             "root",
             &crate::Capabilities::new(["lifecycle:manage"]),
-            None,
             None,
             &mut None,
         )?,

@@ -243,7 +243,7 @@ fn audience_binding(
     see: See<'_, '_>,
 ) -> std::result::Result<(), Stop> {
     for kind in KINDS {
-        let owner = AuthorityIssuer::new(
+        let owner = AuthorityRoot::new(
             "issuer",
             key,
             Authority {
@@ -252,11 +252,10 @@ fn audience_binding(
             },
         );
         let scope = owner
-            .issue(
+            .bootstrap_scope(
                 "grant",
                 &Capabilities::new(["lifecycle:manage"]),
                 Some(agent),
-                None,
                 &mut None,
             )
             .unwrap();
@@ -271,7 +270,7 @@ fn audience_binding(
         cmd.scope = scope.clone();
         for target in KINDS {
             let same = kind == target;
-            let foreign = AuthorityIssuer::new(
+            let foreign = AuthorityRoot::new(
                 "issuer",
                 key,
                 Authority {

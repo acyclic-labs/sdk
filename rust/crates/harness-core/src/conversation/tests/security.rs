@@ -6,7 +6,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
     let attached = AgentId::from_bytes([2; 16]);
     let private = file(owner, "scratch/note.txt")?.volume().clone();
     let write = private.capability(VolumeOperation::Write, &mut None)?;
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "owner",
         [7; 32],
         crate::core::Authority {
@@ -15,11 +15,10 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         },
     );
     let read = private.capability(VolumeOperation::Read, &mut None)?;
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "write",
         &crate::Capabilities::new([write.clone(), read.clone()]),
         Some(owner),
-        None,
         &mut None,
     )?;
     ContentGrant::verify(
@@ -30,10 +29,9 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         u64::MAX,
         &mut None,
     )?;
-    let unsigned = issuer.issue(
+    let unsigned = issuer.bootstrap_scope(
         "copied-capability",
         &crate::Capabilities::new([write.clone()]),
-        None,
         None,
         &mut None,
     )?;
@@ -59,7 +57,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         u64::MAX,
         &mut None,
     )?;
-    let foreign_issuer = crate::core::AuthorityIssuer::new(
+    let foreign_issuer = crate::core::AuthorityRoot::new(
         "attached",
         [8; 32],
         crate::core::Authority {
@@ -67,11 +65,10 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             id: attached.to_string(),
         },
     );
-    let copied = foreign_issuer.issue(
+    let copied = foreign_issuer.bootstrap_scope(
         "copied",
         &crate::Capabilities::new([write]),
         Some(attached),
-        None,
         &mut None,
     )?;
     assert!(
@@ -95,11 +92,10 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &internal),
         Err(Error::Unauthorized(_))
     ));
-    let internal_exact = issuer.issue(
+    let internal_exact = issuer.bootstrap_scope(
         "internal-exact",
         &crate::Capabilities::new([internal.read_capability(&mut None)?]),
         Some(owner),
-        None,
         &mut None,
     )?;
     assert!(matches!(
@@ -143,11 +139,10 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             .require(&private, VolumeOperation::Write, None)
             .is_err()
     );
-    let foreign_owner_scope = foreign_issuer.issue(
+    let foreign_owner_scope = foreign_issuer.bootstrap_scope(
         "copied-read",
         &crate::Capabilities::new([read]),
         Some(attached),
-        None,
         &mut None,
     )?;
     assert!(
@@ -249,7 +244,7 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
     let owner = AgentId::from_bytes([1; 16]);
     let selected = file(owner, "scratch/note.txt")?;
     let volume = selected.volume();
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "retained",
         [71; 32],
         crate::core::Authority {
@@ -257,7 +252,7 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
             id: owner.to_string(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
@@ -266,7 +261,6 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
             volume.directory_read_capability("scratch", &mut None)?,
         ]),
         Some(owner),
-        None,
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;

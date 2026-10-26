@@ -75,9 +75,9 @@ pub(super) async fn worker_restart_with_options(
         kind: AggregateKind::Task,
         id: "worker-owner".into(),
     };
-    let issuer = AuthorityIssuer::new("worker-restart", [23; 32], authority);
+    let issuer = AuthorityRoot::new("worker-restart", [23; 32], authority);
     let signed = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 "operation:declare".to_owned(),
@@ -96,11 +96,10 @@ pub(super) async fn worker_restart_with_options(
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
-    let conversation_issuer = AuthorityIssuer::new(
+    let conversation_issuer = AuthorityRoot::new(
         "worker-approval",
         [54; 32],
         Authority {
@@ -109,7 +108,7 @@ pub(super) async fn worker_restart_with_options(
         },
     );
     let conversation_scope = conversation_issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 "conversation:bind".to_owned(),
@@ -118,7 +117,6 @@ pub(super) async fn worker_restart_with_options(
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

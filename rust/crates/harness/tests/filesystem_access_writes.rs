@@ -30,7 +30,7 @@ fn write_scope(
         }]],
         expires_at: expired.then_some(1),
     };
-    Ok(fixture.issuer.issue(
+    Ok(fixture.issuer.bootstrap_scope(
         "write",
         &Capabilities::new([
             fixture
@@ -39,7 +39,6 @@ fn write_scope(
             capability.to_scope_label()?,
         ]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?)
 }

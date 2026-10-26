@@ -59,7 +59,7 @@ pub use snapshot::Snapshot;
 
 pub use authority::{
     AUTHORITY_ID_FORBIDDEN_EXACT, AUTHORITY_ID_FORBIDDEN_SEPARATORS, AggregateKind, Authority,
-    AuthorityIssuer, AuthorityVerifier, Scope,
+    AuthorityIssuer, AuthorityRoot, AuthorityVerifier, Scope,
 };
 
 pub use effects::{EffectAttestation, EffectGuarantee, EffectState, EffectStatus};

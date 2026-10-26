@@ -9,11 +9,10 @@ pub(super) fn legacy<O>(
     volume: &VolumeRef,
     operation: VolumeOperation,
 ) -> Result<ContentGrant, Box<dyn Error>> {
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "whole-volume",
         &Capabilities::new([volume.capability(operation, &mut None)?]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     Ok(ContentGrant::verify(
@@ -34,7 +33,7 @@ fn signed(
     path: &str,
     resource: Option<String>,
 ) -> Result<ContentGrant, Box<dyn Error>> {
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "copy",
         &Capabilities::new([Capability {
             layers: vec![vec![Grant {
@@ -50,7 +49,6 @@ fn signed(
         }
         .to_scope_label()?]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     Ok(ContentGrant::verify(

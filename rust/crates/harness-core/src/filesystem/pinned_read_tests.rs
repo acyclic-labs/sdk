@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::{AggregateKind, AuthorityIssuer};
+use crate::core::{AggregateKind, AuthorityRoot};
 use proptest::prelude::*;
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
@@ -25,7 +25,7 @@ async fn fixture_with_filesystem(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "pinned",
         [2; 32],
         Authority {
@@ -33,11 +33,10 @@ async fn fixture_with_filesystem(
             id: "pinned".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let grant = ContentGrant::verify(

@@ -8,7 +8,7 @@ use acyclic_harness::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost},
     model::{FileProjectionPolicy, ModelDataPart, ToolResultContent},
     resources::ProviderRef,
@@ -112,7 +112,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "text-variants",
         [41; 32],
         Authority {
@@ -123,11 +123,10 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
     let owner = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([read.clone(), write.clone()]),
             Some(agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

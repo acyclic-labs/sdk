@@ -14,7 +14,7 @@ use acyclic_harness::conversation::{
     VolumeRef,
 };
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry, Scope,
+    Action, AggregateKind, Authority, AuthorityRoot, Command, Reducer, SchemaRegistry, Scope,
 };
 use acyclic_harness::filesystem::workspace_ref;
 use acyclic_harness::filesystem::{
@@ -59,7 +59,7 @@ fn volume(
 }
 
 fn scope(
-    issuer: &AuthorityIssuer,
+    issuer: &AuthorityRoot,
     private: &VolumeRef,
     shared: &VolumeRef,
     project: &VolumeRef,
@@ -83,7 +83,7 @@ fn scope(
     )?;
     let source_reads = [selected.capability(VolumeOperation::Read, &mut None)?];
     Ok(issuer
-        .issue(
+        .bootstrap_scope(
             "agent",
             &Capabilities::new(
                 [
@@ -101,7 +101,6 @@ fn scope(
                 .chain(source_reads),
             ),
             Some(*agent),
-            None,
             &mut None,
         )
         .expect("scope proof"))
@@ -161,7 +160,7 @@ use deep::*;
 #[path = "recursive_fork/siblings.rs"]
 mod siblings;
 
-fn retained_reducer(reducer: &Reducer, issuer: &AuthorityIssuer) -> Result<Reducer> {
+fn retained_reducer(reducer: &Reducer, issuer: &AuthorityRoot) -> Result<Reducer> {
     Reducer::restore(
         reducer.snapshot(usize::MAX, &mut None)?.0,
         issuer.verifier(&mut None)?,

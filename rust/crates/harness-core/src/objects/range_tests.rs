@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     AgentId, Capabilities,
     conversation::{VolumeClass, VolumeOwner},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
 };
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
 use proptest::prelude::*;
@@ -26,7 +26,7 @@ async fn binding() -> Result<(Arc<MemoryObjects>, Arc<ObjectContentStore>)> {
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "ranges",
         [3; 32],
         Authority {
@@ -34,14 +34,13 @@ async fn binding() -> Result<(Arc<MemoryObjects>, Arc<ObjectContentStore>)> {
             id: "ranges".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let store = ObjectContentStore::new(

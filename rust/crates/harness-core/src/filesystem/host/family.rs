@@ -7,26 +7,13 @@ async fn authorize<S: WorkspaceLineageStore>(
     root: WorkspaceId,
     owner: WorkspaceId,
 ) -> Result<()> {
-    if owner == root {
-        return Ok(());
-    }
-    let ancestors = graph
-        .ancestors(owner, u32::MAX)
+    graph
+        .authorize_descendant(owner, root)
         .await
         .map_err(|error| match error {
             acyclic_fs::WorkspaceLineageError::Store(error) => Error::Storage(error.to_string()),
             _ => Error::Unauthorized("generation has no valid project ancestry".into()),
-        })?;
-    if ancestors
-        .iter()
-        .any(|ancestor| ancestor.workspace_id == root)
-    {
-        Ok(())
-    } else {
-        Err(Error::Unauthorized(
-            "generation belongs to another project family".into(),
-        ))
-    }
+        })
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {

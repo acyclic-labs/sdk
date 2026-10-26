@@ -37,7 +37,7 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
         // Restore the removed opens through the actual original host path.
         host = FilesystemHost::new(host.filesystem.clone(), &host.provider, None).unwrap();
     }
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "binding-test",
         [8; 32],
         Authority {
@@ -54,11 +54,10 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
         );
     }
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new(capabilities),
             Some(agent),
-            None,
             &mut None,
         )
         .unwrap();

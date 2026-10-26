@@ -3,7 +3,7 @@ use crate::task_volume::{ChildState, ChildStatus, FileQuerySource};
 use crate::{
     AgentId, Capabilities, OperationId, TaskId,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityRoot},
     resources::ProviderRef,
 };
 use acyclic_stream::MemoryStream;
@@ -43,7 +43,7 @@ async fn files_with<P: StreamProvider>(provider: Arc<P>) -> TaskFiles<P> {
         &mut None,
     )
     .unwrap();
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "agent-tool",
         [1; 32],
         Authority {
@@ -54,13 +54,7 @@ async fn files_with<P: StreamProvider>(provider: Arc<P>) -> TaskFiles<P> {
     let grants = [VolumeOperation::Read, VolumeOperation::Write]
         .map(|operation| volume.capability(operation, &mut None).unwrap());
     let scope = issuer
-        .issue(
-            "owner",
-            &Capabilities::new(grants),
-            Some(agent),
-            None,
-            &mut None,
-        )
+        .bootstrap_scope("owner", &Capabilities::new(grants), Some(agent), &mut None)
         .unwrap();
     TaskFiles::open(
         provider,

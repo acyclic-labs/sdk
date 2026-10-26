@@ -107,7 +107,7 @@ mod tests {
                 file.read_capability(&mut None)?,
                 content_label(acyclic_fs::access::FILE_READ_PREFIX, previous, &mut None)?
             );
-            let issuer = crate::core::AuthorityIssuer::new(
+            let issuer = crate::core::AuthorityRoot::new(
                 "files",
                 [9; 32],
                 crate::core::Authority {
@@ -115,10 +115,9 @@ mod tests {
                     id: "files".into(),
                 },
             );
-            let scope = issuer.issue(
+            let scope = issuer.bootstrap_scope(
                 "read",
                 &crate::Capabilities::new([file.read_capability(&mut None)?]),
-                None,
                 None,
                 &mut None,
             )?;

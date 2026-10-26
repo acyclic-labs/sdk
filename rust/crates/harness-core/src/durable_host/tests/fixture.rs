@@ -17,7 +17,7 @@ pub struct Fixture<
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub backend: Fs<A, O>,
     pub files: Arc<FilesystemHost<A, O>>,
-    pub issuer: AuthorityIssuer,
+    pub issuer: AuthorityRoot,
     pub host: Arc<CoordinatorTaskHost<P>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub destination: VolumeRef,
@@ -169,7 +169,7 @@ where
                 Err(error) => return Err(error),
             }
         }
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::new(
             "fixture",
             [7; 32],
             Authority {
@@ -205,11 +205,10 @@ where
             grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
         }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
-        let signed = issuer.issue(
+        let signed = issuer.bootstrap_scope(
             "owner",
             scope.grants(),
             Some(AgentId::from_bytes([1; 16])),
-            None,
             &mut None,
         )?;
         let implementation = Arc::new(FixtureMachine {
@@ -344,14 +343,13 @@ where
 
     pub async fn reopen(
         &self,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
         subject: &str,
     ) -> Result<Arc<CoordinatorTaskHost<P>>> {
-        let signed = issuer.issue(
+        let signed = issuer.bootstrap_scope(
             subject,
             self.host.root_scope.grants(),
             Some(AgentId::from_bytes([1; 16])),
-            None,
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;

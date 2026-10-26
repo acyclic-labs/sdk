@@ -73,7 +73,7 @@ fn event_protocol_round_trip(data: &[u8]) {
 
 fn read_event(data: &[u8]) -> acyclic_harness::Result<acyclic_harness::store::HistoryPage> {
     use acyclic_harness::{
-        core::{AggregateKind, Authority, AuthorityIssuer},
+        core::{AggregateKind, Authority, AuthorityRoot},
         store::{HistoryReadLimits, HistoryReader},
     };
     use acyclic_stream::{MemoryStream, Stream};
@@ -84,7 +84,7 @@ fn read_event(data: &[u8]) -> acyclic_harness::Result<acyclic_harness::store::Hi
             kind: AggregateKind::Conversation,
             id: "conversation-1".into(),
         };
-        let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
+        let issuer = AuthorityRoot::new("test", [7; 32], authority.clone());
         let client = Arc::new(MemoryStream::default());
         let stream = Stream::new(client.clone(), authority.stream_path(&mut None)?)?;
         // The canonical fixture is revision two. Its predecessor is outside the pinned page.

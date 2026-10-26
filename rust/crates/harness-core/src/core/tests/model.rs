@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn fixed_lifecycle_rejects_terminal_reopening() -> Result<()> {
-    let owner = AuthorityIssuer::new(
+    let owner = AuthorityRoot::new(
         "test",
         [7; 32],
         Authority {
@@ -23,10 +23,9 @@ fn fixed_lifecycle_rejects_terminal_reopening() -> Result<()> {
             Action::TransitionLifecycle { to, reason: None },
         );
         command.scope = owner
-            .issue(
+            .bootstrap_scope(
                 "turn",
                 &Capabilities::new(["lifecycle:manage"]),
-                None,
                 None,
                 &mut None,
             )

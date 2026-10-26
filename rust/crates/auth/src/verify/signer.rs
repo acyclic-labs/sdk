@@ -16,7 +16,7 @@ impl CertifiedSigner {
     /// Fails when the final certificate does not name the supplied key.
     pub fn new(certificates: CertificateChain, key: SigningKey) -> Result<Self, VerifyError> {
         let leaf = certificates.keys.last().ok_or(VerifyError::Malformed)?;
-        if leaf.key.public_key.as_slice() != key.verifying_key().as_bytes() {
+        if !authentication_eq(&leaf.key.public_key, key.verifying_key().as_bytes()) {
             return Err(VerifyError::Signature);
         }
         Ok(Self { certificates, key })

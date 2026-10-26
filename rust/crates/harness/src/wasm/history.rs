@@ -2,7 +2,7 @@
 
 use super::{from_js, js_error, key_bytes, schema_registry, to_js};
 use crate::{
-    core::{Authority, AuthorityIssuer, Command, Snapshot},
+    core::{Authority, AuthorityRoot, Command, Snapshot},
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
 use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits};
@@ -48,10 +48,10 @@ impl From<BrowserMemoryLimits> for MemoryLimits {
 }
 
 impl BrowserHistoryOptions {
-    async fn connect(self) -> Result<(std::sync::Arc<BrowserStream>, AuthorityIssuer), JsValue> {
+    async fn connect(self) -> Result<(std::sync::Arc<BrowserStream>, AuthorityRoot), JsValue> {
         self.authority.stream_path(&mut None).map_err(js_error)?;
         let issuer =
-            AuthorityIssuer::new(self.issuer_id, key_bytes(self.issuer_key)?, self.authority);
+            AuthorityRoot::new(self.issuer_id, key_bytes(self.issuer_key)?, self.authority);
         let limits = BrowserStreamLimits {
             commands: u64::from(self.maximum_commands),
             journal_bytes: self.maximum_journal_bytes,

@@ -254,17 +254,16 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
     let original = journal.scope.clone();
-    let issuer = crate::core::AuthorityIssuer::new(
+    let issuer = crate::core::AuthorityRoot::new(
         "append-cost",
         [81; 32],
         journal.verifier.audience().clone(),
     );
     for grant in [VolumeOperation::Read, VolumeOperation::Write] {
-        journal.scope = issuer.issue(
+        journal.scope = issuer.bootstrap_scope(
             "owner",
             &crate::Capabilities::new([journal.volume.capability(grant, &mut None)?]),
             Some(crate::AgentId::from_bytes([81; 16])),
-            None,
             &mut None,
         )?;
         assert!(
@@ -293,11 +292,10 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
     )
     .await?;
     for grant in [VolumeOperation::Read, VolumeOperation::Write] {
-        journal.scope = issuer.issue(
+        journal.scope = issuer.bootstrap_scope(
             "owner",
             &crate::Capabilities::new([journal.volume.capability(grant, &mut None)?]),
             Some(crate::AgentId::from_bytes([81; 16])),
-            None,
             &mut None,
         )?;
         assert_eq!(
@@ -312,7 +310,7 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
 async fn owned_journal(
     operation: OperationId,
     io: Option<&PreparationIo>,
-) -> Result<(Journal, crate::core::AuthorityIssuer)> {
+) -> Result<(Journal, crate::core::AuthorityRoot)> {
     use crate::runtime::DurableTaskHost;
     let fixture = crate::durable_host::tests::fixture::Fixture::new(
         Arc::new(acyclic_stream::MemoryStream::default()),

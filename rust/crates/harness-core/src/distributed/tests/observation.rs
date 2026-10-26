@@ -7,7 +7,7 @@ async fn declaration_point_observation_is_read_only_bounded_and_source_verified(
     let operation = OperationId::from_bytes([1; 16]);
     let declaration = spec(operation, 0)?;
     let owner = declaration.owner.authority().clone();
-    let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let issuer = AuthorityRoot::new("test-runtime", [9; 32], owner.clone());
     let scope = grant(&issuer, "observe", &["operation:observe"])?;
     let verifier = issuer.verifier(&mut None)?;
     let key = IdempotencyKey::new("point-declaration")?;
@@ -41,7 +41,7 @@ async fn declaration_point_observation_is_read_only_bounded_and_source_verified(
     );
     assert_eq!(client.observation_writes.load(Ordering::SeqCst), 0);
     let denied = issuer
-        .issue("denied", &Capabilities::default(), None, None, &mut None)
+        .bootstrap_scope("denied", &Capabilities::default(), None, &mut None)
         .expect("scope proof");
     assert!(matches!(
         observe_declaration(
@@ -67,7 +67,7 @@ async fn declaration_point_observation_is_read_only_bounded_and_source_verified(
         kind: AggregateKind::Task,
         id: "foreign".into(),
     };
-    let foreign_issuer = AuthorityIssuer::new("foreign-observer", [7; 32], foreign.clone());
+    let foreign_issuer = AuthorityRoot::new("foreign-observer", [7; 32], foreign.clone());
     let foreign_scope = grant(&foreign_issuer, "observe", &["operation:observe"])?;
     assert!(matches!(
         observe_declaration(
@@ -117,7 +117,7 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
         .remove("owner_scope");
     assert!(serde_json::from_value::<OperationSpec>(json).is_err());
     let owner = original.owner.authority().clone();
-    let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let issuer = AuthorityRoot::new("test-runtime", [9; 32], owner.clone());
     let renewed = grant(
         &issuer,
         "renewed-current-grant",
@@ -127,10 +127,9 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
     tampered["owner_scope"]["id"] = serde_json::json!("tampered-original-grant");
     let tampered: OperationSpec = serde_json::from_value(tampered).expect("typed declaration");
     let mut insufficient = original.clone();
-    insufficient.owner_scope = issuer.issue(
+    insufficient.owner_scope = issuer.bootstrap_scope(
         "observe-only",
         &Capabilities::new(["operation:observe"]),
-        None,
         None,
         &mut None,
     )?;
@@ -144,12 +143,11 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
     let mut coordinator = open(&client).await?;
     declare(&mut coordinator, original.clone(), key.as_str()).await?;
     let mut reopened = open(&client).await?;
-    let replaced = AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
+    let replaced = AuthorityRoot::new("test-runtime", [8; 32], owner.clone());
     let replacement = replaced
-        .issue(
+        .bootstrap_scope(
             "renewed-current-grant",
             renewed.capabilities(),
-            None,
             None,
             &mut None,
         )
@@ -311,13 +309,12 @@ async fn declarations_require_authenticated_matching_owner_and_capability() -> R
         kind: AggregateKind::Task,
         id: "other".into(),
     };
-    let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+    let issuer = AuthorityRoot::new("test-runtime", [9; 32], owner.clone());
     let granted = grant(&issuer, "declare", &["operation:declare"])?;
     let empty = issuer
-        .issue(
+        .bootstrap_scope(
             "empty",
             &Capabilities::new([] as [&str; 0]),
-            None,
             None,
             &mut None,
         )

@@ -3,7 +3,7 @@ use super::*;
 pub struct ConversationEffectHost<P> {
     stream: Arc<P>,
     authority: Authority,
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     scope: Scope,
     schemas: SchemaRegistry,
     content: Arc<dyn ContentResidencyVerifier>,
@@ -14,7 +14,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Binds the signed conversation and catalog in one shared host.
     pub fn new(
         stream: Arc<P>,
-        binding: (Authority, AuthorityIssuer, Scope),
+        binding: (Authority, AuthorityRoot, Scope),
         schemas: SchemaRegistry,
         content: Arc<dyn ContentResidencyVerifier>,
         providers: EffectRegistry,

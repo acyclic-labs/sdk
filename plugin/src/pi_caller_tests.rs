@@ -88,11 +88,10 @@ fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
         .authority(&work)
         .unwrap()
         .issuer
-        .issue(
+        .bootstrap_scope(
             caller.0.id(),
             &Capabilities::new([CALLER_CAPABILITY, "operation:declare"]),
             Some(binding.agent_id),
-            None,
             &mut None,
         )
         .expect("scope proof");

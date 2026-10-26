@@ -31,7 +31,7 @@ impl CreationFixture {
             kind: AggregateKind::Task,
             id: "created-owner".into(),
         };
-        let issuer = AuthorityIssuer::new("created-owner", [80; 32], authority.clone());
+        let issuer = AuthorityRoot::new("created-owner", [80; 32], authority.clone());
         let verifier = issuer.verifier(&mut None)?;
         let mut grants: Vec<String> = [
             "operation:declare",
@@ -72,11 +72,10 @@ impl CreationFixture {
             );
         }
         let grants = Capabilities::new(grants);
-        let signed = issuer.issue(
+        let signed = issuer.bootstrap_scope(
             "owner",
             &grants,
             Some(AgentId::from_bytes([80; 16])),
-            None,
             &mut None,
         )?;
         let root_scope = RuntimeScope::new(grants, Limits::default())?.with_run_limits(

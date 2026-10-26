@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
     VolumeOperation, VolumeOwner, VolumeRef,
 };
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry,
+    Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry,
 };
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemForkVerifier, FilesystemHost,
@@ -84,9 +84,9 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         VolumeOwner::Agent(child_agent),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new("local-fork-e2e", [7; 32], parent.clone());
+    let issuer = AuthorityRoot::new("local-fork-e2e", [7; 32], parent.clone());
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "parent",
             &Capabilities::new([
                 "conversation:bind".to_owned(),
@@ -100,7 +100,6 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 private.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(parent_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -545,13 +544,12 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .as_ref(),
         &[137, 80, 78, 71]
     );
-    let child_issuer = AuthorityIssuer::new("local-fork-e2e", [7; 32], child);
+    let child_issuer = AuthorityRoot::new("local-fork-e2e", [7; 32], child);
     let child_scope = child_issuer
-        .issue(
+        .bootstrap_scope(
             "child",
             &Capabilities::new([child_private.capability(VolumeOperation::Read, &mut None)?]),
             Some(child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");
@@ -591,14 +589,13 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .is_err()
     );
     let child_scope_with_reference = child_issuer
-        .issue(
+        .bootstrap_scope(
             "child-reference-reader",
             &Capabilities::new([
                 child_private.capability(VolumeOperation::Read, &mut None)?,
                 attachment_capability.clone(),
             ]),
             Some(child_agent),
-            None,
             &mut None,
         )
         .expect("scope proof");

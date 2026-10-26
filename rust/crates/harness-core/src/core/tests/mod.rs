@@ -39,11 +39,11 @@ pub(in crate::core) fn schema_file(schema: &Value) -> Result<FileRef> {
     )
 }
 
-pub(in crate::core) fn issuer() -> AuthorityIssuer {
-    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+pub(in crate::core) fn issuer() -> AuthorityRoot {
+    static RUNTIME: std::sync::OnceLock<AuthorityRoot> = std::sync::OnceLock::new();
     RUNTIME
         .get_or_init(|| {
-            AuthorityIssuer::new(
+            AuthorityRoot::new(
                 "test",
                 [7; 32],
                 Authority {
@@ -118,7 +118,7 @@ pub(in crate::core) fn command(
     // commands need a distinct grant set derived from their source resources.
     let issue = || {
         issuer()
-            .issue("root", &Capabilities::new(grants), agent, None, &mut None)
+            .bootstrap_scope("root", &Capabilities::new(grants), agent, &mut None)
             .expect("fixture scope")
     };
     let scope = if agent.is_some() {
@@ -141,7 +141,7 @@ fn apply(reducer: &mut Reducer, id: u8, action: Action) -> Result<ApplyResult> {
     reducer.apply(&command(operation(id), reducer.revision(), action))
 }
 
-pub(in crate::core) fn restore(reducer: &Reducer, owner: &AuthorityIssuer) -> Result<Reducer> {
+pub(in crate::core) fn restore(reducer: &Reducer, owner: &AuthorityRoot) -> Result<Reducer> {
     let bytes = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
     Reducer::restore(
         crate::contract::json_from_slice(&bytes)

@@ -28,7 +28,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "bounded-content",
         [92; 32],
         Authority {
@@ -37,14 +37,13 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         },
     );
     let scope = issuer
-        .issue(
+        .bootstrap_scope(
             "owner",
             &Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(owner),
-            None,
             &mut None,
         )
         .expect("scope proof");

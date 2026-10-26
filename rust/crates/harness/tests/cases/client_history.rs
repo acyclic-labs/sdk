@@ -2,7 +2,7 @@
 use acyclic_harness::{
     Capabilities, IdempotencyKey, OperationId, Result,
     core::{
-        Action, AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, EventPayload,
+        Action, AggregateKind, ApplyResult, Authority, AuthorityRoot, Command, EventPayload,
         LifecycleState, Reducer, SchemaRegistry,
     },
     store::{
@@ -21,19 +21,18 @@ fn authority() -> Authority {
         id: "live-history".into(),
     }
 }
-fn issuer() -> AuthorityIssuer {
-    AuthorityIssuer::new("test", [7; 32], authority())
+fn issuer() -> AuthorityRoot {
+    AuthorityRoot::new("test", [7; 32], authority())
 }
-fn transition(runtime: &AuthorityIssuer, revision: u64, to: LifecycleState) -> Result<Command> {
+fn transition(runtime: &AuthorityRoot, revision: u64, to: LifecycleState) -> Result<Command> {
     let operation_id = OperationId::from_bytes([revision as u8 + 1; 16]);
     Ok(Command {
         operation_id,
         idempotency_key: IdempotencyKey::new(operation_id.to_string())?,
         expected_revision: revision,
-        scope: runtime.issue(
+        scope: runtime.bootstrap_scope(
             "root",
             &Capabilities::new(["lifecycle:manage"]),
-            None,
             None,
             &mut None,
         )?,
@@ -43,7 +42,7 @@ fn transition(runtime: &AuthorityIssuer, revision: u64, to: LifecycleState) -> R
 }
 async fn writer(
     client: &Arc<MemoryStream>,
-    runtime: &AuthorityIssuer,
+    runtime: &AuthorityRoot,
 ) -> Result<StreamAggregate<MemoryStream>> {
     StreamAggregate::open(
         client,

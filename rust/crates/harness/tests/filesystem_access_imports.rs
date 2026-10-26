@@ -152,11 +152,10 @@ async fn imports_reject_expiring_source_authority() -> Result<(), Box<dyn Error>
                 + 60,
         ),
     };
-    let scope = fixture.issuer.issue(
+    let scope = fixture.issuer.bootstrap_scope(
         "expiring-import",
         &Capabilities::new([capability.to_scope_label()?]),
         fixture.scope.agent(),
-        None,
         &mut None,
     )?;
     let source = ContentGrant::verify(

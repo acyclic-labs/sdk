@@ -2,7 +2,7 @@
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, OperationId,
     core::{
-        Action, AggregateKind, ApplyResult, Authority, AuthorityIssuer, EventPayload, Reducer,
+        Action, AggregateKind, ApplyResult, Authority, AuthorityRoot, EventPayload, Reducer,
         SchemaRegistry,
     },
     wire::EventEnvelope,
@@ -20,11 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kind: AggregateKind::Conversation,
         id: "conversation-1".into(),
     };
-    let runtime = AuthorityIssuer::new("test", [7; 32], authority.clone());
-    let scope = runtime.issue(
+    let runtime = AuthorityRoot::new("test", [7; 32], authority.clone());
+    let scope = runtime.bootstrap_scope(
         "root",
         &Capabilities::new(["conversation:bind", "conversation:append"]),
-        None,
         None,
         &mut None,
     )?;

@@ -17,7 +17,7 @@ struct Opening {
 }
 
 struct Storage {
-    issuer: AuthorityIssuer,
+    issuer: AuthorityRoot,
     directory: PathBuf,
     owner: owner::Owner,
     files: Arc<LocalFilesystem>,
@@ -190,14 +190,17 @@ impl Opening {
         .map_err(storage)?;
         let provider_ref = owner.project.provider();
         let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
-        let issuer = AuthorityIssuer::new(
+        let issuer = AuthorityRoot::bootstrap(
             "acyclic.local",
-            owner.key,
+            owner
+                .key_ref
+                .as_ref()
+                .ok_or_else(|| Error::Unauthorized("local owner has no signing custody".into()))?,
             Authority {
                 kind: AggregateKind::Task,
                 id: owner.task.to_string(),
             },
-        );
+        )?;
         let PrivateVolumes {
             scratch,
             journal,
@@ -252,7 +255,7 @@ impl Opening {
         owner: &owner::Owner,
         scratch: &VolumeRef,
         checkout: Option<owner::Checkout>,
-        issuer: &AuthorityIssuer,
+        issuer: &AuthorityRoot,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
         // Retain the existing owned WAL instead of reopening/checkpointing it

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AgentId, conversation::VolumeOwner, core::AuthorityIssuer, resources::ProviderRef};
+use crate::{AgentId, conversation::VolumeOwner, core::AuthorityRoot, resources::ProviderRef};
 use proptest::prelude::*;
 
 type Journal = FilesystemExecutionJournal<
@@ -8,7 +8,7 @@ type Journal = FilesystemExecutionJournal<
     acyclic_fs::MemoryObjectBackend,
 >;
 
-async fn journal() -> Result<(Journal, AuthorityIssuer)> {
+async fn journal() -> Result<(Journal, AuthorityRoot)> {
     let provider = ProviderRef::new("replay".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
@@ -20,7 +20,7 @@ async fn journal() -> Result<(Journal, AuthorityIssuer)> {
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "replay",
         [2; 32],
         crate::core::Authority {
@@ -28,14 +28,13 @@ async fn journal() -> Result<(Journal, AuthorityIssuer)> {
             id: crate::ConversationId::from_bytes([3; 16]).to_string(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let journal = FilesystemExecutionJournal::new(

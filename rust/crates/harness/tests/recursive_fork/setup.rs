@@ -13,7 +13,7 @@ pub(super) struct RecursiveState {
     pub(super) project_head: acyclic_harness::filesystem::WorkspaceObservation,
     pub(super) parent_project_workspace: acyclic_harness::resources::WorkspaceRef,
     pub(super) authority: Authority,
-    pub(super) issuer: AuthorityIssuer,
+    pub(super) issuer: AuthorityRoot,
     pub(super) grant_scope: Scope,
     pub(super) aggregate: StreamAggregate<MemoryStream>,
     pub(super) previous_file: FileRef,
@@ -69,7 +69,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
         kind: AggregateKind::Conversation,
         id: "recursive-root".into(),
     };
-    let issuer = AuthorityIssuer::new("qualification", [17; 32], authority.clone());
+    let issuer = AuthorityRoot::new("qualification", [17; 32], authority.clone());
     let grant_scope = scope(&issuer, &private, &shared, &project)?;
     let mut aggregate = StreamAggregate::open(
         &stream,
@@ -215,10 +215,9 @@ pub(super) async fn setup() -> Result<RecursiveState> {
         .await?;
     project_head = host.resolve(&project_head.workspace, None).await?;
     let shared_writer = issuer
-        .issue(
+        .bootstrap_scope(
             "shared-writer",
             &Capabilities::new([shared.capability(VolumeOperation::Write, &mut None)?]),
-            None,
             None,
             &mut None,
         )

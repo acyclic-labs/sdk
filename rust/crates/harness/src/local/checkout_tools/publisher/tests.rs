@@ -8,7 +8,7 @@ thread_local! {
 }
 
 struct Fixture {
-    _runtime: AuthorityIssuer,
+    _runtime: AuthorityRoot,
     files: Arc<LocalFilesystem>,
     project: VolumeRef,
     verifier: AuthorityVerifier,
@@ -83,7 +83,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         .await?,
     );
     let files = FilesystemHost::new(filesystem, &provider, None)?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "publisher",
         [17; 32],
         Authority {
@@ -92,7 +92,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         },
     );
     let verifier = issuer.verifier(&mut None)?;
-    let signed = issuer.issue(
+    let signed = issuer.bootstrap_scope(
         "publisher",
         &Capabilities::new([
             project.capability(VolumeOperation::Read, &mut None)?,
@@ -101,7 +101,6 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
             private.capability(VolumeOperation::Write, &mut None)?,
         ]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let stream = Arc::new(
@@ -140,82 +139,6 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
 }
 
 #[tokio::test]
-async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> Result<()> {
-    use acyclic_fs::{
-        GitCompatState, GitCompatStore, GitFilesystemAction, GitPendingMutation,
-        GitPendingTransition, GitTransitionId, WorkspaceId,
-    };
-    let (_directory, fixture, publisher) = fixture().await?;
-    let tools = &publisher.tools;
-    let root = tools.workspace.view().workspace().id();
-    let store = &tools.workspace.store;
-    let mut state = GitCompatStore::load(store, root)
-        .await
-        .map_err(storage)?
-        .unwrap_or_else(|| GitCompatState::new("main", root));
-    let prior = state.revision;
-    state.revision += 1;
-    state.pending = Some(GitPendingTransition {
-        id: GitTransitionId::new(),
-        action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
-        mutation: GitPendingMutation::NoOp,
-    });
-    assert!(
-        GitCompatStore::compare_and_swap(store, root, prior, state.clone())
-            .await
-            .map_err(storage)?
-    );
-    tools
-        .require_repository_access(root, fixture.signed.capabilities())
-        .await?;
-
-    // A persisted intent can refer to a source absent from every branch and
-    // commit. Recovery must authenticate that source before executing anything.
-    let unknown = WorkspaceId::from_bytes([247; 16]);
-    assert!(
-        !state
-            .branches
-            .values()
-            .any(|branch| branch.workspace_id == unknown)
-    );
-    let prior = state.revision;
-    state.revision += 1;
-    state
-        .pending
-        .as_mut()
-        .ok_or_else(|| Error::Invalid("pending fixture is absent".into()))?
-        .action = GitFilesystemAction::SwitchWorkspace {
-        workspace_id: unknown,
-    };
-    assert!(
-        GitCompatStore::compare_and_swap(store, root, prior, state.clone())
-            .await
-            .map_err(storage)?
-    );
-    assert!(
-        tools
-            .require_repository_access(root, fixture.signed.capabilities())
-            .await
-            .is_err()
-    );
-
-    // Negative control: omitting the pending source restores the same admission
-    // the former catalog-only check would have granted.
-    let prior = state.revision;
-    state.revision += 1;
-    state.pending = None;
-    assert!(
-        GitCompatStore::compare_and_swap(store, root, prior, state)
-            .await
-            .map_err(storage)?
-    );
-    tools
-        .require_repository_access(root, fixture.signed.capabilities())
-        .await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() -> Result<()> {
     let (_directory, mut fixture, publisher) = fixture().await?;
     drop(publisher);
@@ -225,7 +148,7 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
         workspace.mount_options(workspace.view().workspace()).await,
         Err(Error::FilesystemAccessConfiguration("native mount owner"))
     ));
-    let issuer = AuthorityIssuer::new("publisher", [17; 32], fixture.verifier.audience().clone());
+    let issuer = AuthorityRoot::new("publisher", [17; 32], fixture.verifier.audience().clone());
     let agent = fixture.signed.agent().expect("fixture agent");
     workspace.mount_authority = Some(crate::filesystem::NativeMountAuthority::new(
         &issuer, agent,
@@ -750,6 +673,26 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         b"must not be disclosed",
     )
     .map_err(storage)?;
+    // Real shell negative control: the old raw checkout path can write the
+    // forbidden file. The product invocation below must refuse before dispatch.
+    #[cfg(unix)]
+    {
+        let status = std::process::Command::new("bash")
+            .args(["-c", "echo compromised > secrets/key"])
+            .current_dir(directory.path())
+            .status()
+            .map_err(storage)?;
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read(directory.path().join("secrets/key")).map_err(storage)?,
+            b"compromised\n"
+        );
+        std::fs::write(
+            directory.path().join("secrets/key"),
+            b"must not be disclosed",
+        )
+        .map_err(storage)?;
+    }
     let tools = publisher.tools.clone();
     let shell_grant = format!("tool:call:{}", crate::tools::shell::PLATFORM.name);
     let all = Capabilities::new(
@@ -791,7 +734,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             async move {
                 let context = ToolContext::new(Arc::new(task), OperationId::new(), "policy-call", None)?;
                 let invocation = ToolInvocation { operation_id: context.operation_id(), call_id: context.call_id().into(),
-                    name: name.clone(), arguments: serde_json::json!({"command": if name == "fs" { "grep secret" } else { "cat secrets/key" }}) };
+                    name: name.clone(), arguments: serde_json::json!({"command": if name == "fs" { "grep secret" } else { "echo compromised > secrets/key" }}) };
                 match tools.execute(invocation, Some(context)).await {
                     Err(Error::FilesystemAccessConfiguration(_)) => Ok::<_, Error>(()),
                     result => Err(Error::Invalid(format!("{name} must reject filesystem access configuration: {result:?}"))),
@@ -872,6 +815,19 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         ))
     ));
     execute(tools.clone(), restricted).await?;
+    // Legacy directory/file labels carry no whole-volume authority. Preserve
+    // the task/tool grants but remove every whole-volume read/write label.
+    let directory_grant = fixture
+        .project
+        .directory_read_capability("public", &mut None)?;
+    let legacy_path_only = Capabilities::new(
+        all.iter()
+            .filter(|grant| {
+                !grant.starts_with("volume:read:") && !grant.starts_with("volume:write:")
+            })
+            .chain([directory_grant.as_str()]),
+    );
+    execute(tools.clone(), legacy_path_only).await?;
     let mut policy: Policy =
         serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY).map_err(storage)?;
     policy.version += 1;

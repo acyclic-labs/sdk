@@ -201,7 +201,7 @@ pub fn verify(
                 .try_into()
                 .map_err(|_| VerifyError::Malformed)?;
             let key = SigningKey::from_bytes(seed);
-            if key.verifying_key() != signer {
+            if !authentication_eq(key.verifying_key().as_bytes(), signer.as_bytes()) {
                 return Err(VerifyError::Signature);
             }
             Proof::Append(key)

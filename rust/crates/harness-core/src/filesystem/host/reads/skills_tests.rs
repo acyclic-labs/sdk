@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     Capabilities,
     context::native_skills::NativeSkills,
-    core::{AggregateKind, AuthorityIssuer},
+    core::{AggregateKind, AuthorityRoot},
 };
 use futures::FutureExt as _;
 
@@ -53,7 +53,7 @@ async fn fixture() -> Result<Fixture> {
     let filesystem = Fs::memory();
     let mut host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
+    let issuer = AuthorityRoot::new(
         "skill-race",
         [3; 32],
         Authority {
@@ -61,11 +61,10 @@ async fn fixture() -> Result<Fixture> {
             id: "owner".into(),
         },
     );
-    let scope = issuer.issue(
+    let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]),
         Some(agent),
-        None,
         &mut None,
     )?;
     let grant = ContentGrant::verify_directory_read(
