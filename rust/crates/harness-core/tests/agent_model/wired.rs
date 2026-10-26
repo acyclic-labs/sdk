@@ -6,12 +6,13 @@ use acyclic_harness_core::{
     OperationId,
     agent::*,
     context::{CompactionPolicy, ContextPipeline},
-    conversation::{VolumeClass, VolumeOwner, VolumeRef},
+    contract::{Capabilities, capability::INTERACTION_ROUTE},
+    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
     executor::StockExecutor,
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnLimits},
-    filesystem::{TurnAuthority, TurnExecutors},
+    filesystem::{TurnAdmission, TurnAuthority, TurnExecutors},
     model::{Model, ModelContent, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
@@ -124,6 +125,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
                 id: "agents".into(),
             },
         ),
+        TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
     ));
@@ -175,6 +177,7 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
                 id: "agents".into(),
             },
         ),
+        TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
     ));
@@ -229,5 +232,64 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
         .find(|message| message.role == ModelRole::Assistant)
         .ok_or("no assistant history")?;
     assert_eq!(assistant.content, ModelContent::Text("one".into()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_write() -> Result {
+    let parent = AgentPath::root(&id(4));
+    let path = parent.child(&id(5))?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "workload".into(),
+    };
+    let root = AuthorityRoot::new("agents", [7; 32], audience.clone());
+    let run = |operations: &'static [VolumeOperation]| {
+        let (parent, path, audience, root) =
+            (parent.clone(), path.clone(), audience.clone(), root.clone());
+        async move {
+            let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                "done".into(),
+            )]));
+            let (host, binding) = private(&path).await?;
+            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
+            for operation in operations {
+                grants.push(binding.volume.capability(*operation, &mut None)?);
+            }
+            let scope =
+                root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
+            let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+                Arc::new(MemoryStream::default()),
+                host,
+                root,
+                TurnAdmission::Admitted { audience, scope },
+                executors(model.clone())?,
+                LIMITS,
+            ));
+            let mut adoption = adopted(id(5));
+            adoption.parent = Some(parent.clone());
+            adoption.volumes = vec![binding];
+            let state = AgentState::adopted(path.clone(), &adoption);
+            let stepped = step(&driver, &path, Some(state), 2, requested("r1", &parent)).await;
+            Ok::<_, Box<dyn std::error::Error>>((
+                stepped.map(|stepped| stepped.state.phase),
+                model.requests().len(),
+            ))
+        }
+    };
+    let (admitted, calls) = run(&[VolumeOperation::Read, VolumeOperation::Write]).await?;
+    assert!(
+        matches!(
+            admitted?,
+            Phase::Done {
+                outcome: AgentOutcome::Succeeded { .. }
+            }
+        ),
+        "a read-write admission runs the turn"
+    );
+    assert_eq!(calls, 1);
+    let (read_only, calls) = run(&[VolumeOperation::Read]).await?;
+    assert!(read_only.is_err(), "a read-only admission cannot write");
+    assert_eq!(calls, 0, "refused before the model runs");
     Ok(())
 }

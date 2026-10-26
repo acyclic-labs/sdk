@@ -14,7 +14,7 @@ use crate::{
     executor::TurnOutput,
     filesystem::{
         AgentAuthority, FilesystemContentPublisher, FilesystemContentVerifier,
-        FilesystemSpawnVolumes, PRIVATE_VOLUME, agent_authority,
+        FilesystemSpawnVolumes, PRIVATE_VOLUME, TurnAdmission, agent_authority,
     },
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
@@ -198,7 +198,13 @@ impl HostDriver {
             verifier,
             private,
             ..
-        } = agent_authority(&self.issuer, &agent.path, &agent.volumes, &[])?;
+        } = agent_authority(
+            &self.issuer,
+            &TurnAdmission::LocalRoot,
+            &agent.path,
+            &agent.volumes,
+            &[],
+        )?;
         Ok(Content {
             reader: FilesystemContentVerifier::new(
                 Arc::clone(&self.files),
@@ -541,6 +547,7 @@ impl NativeAgents {
             Arc::new(FilesystemSpawnVolumes::new(
                 local.files.clone(),
                 issuer.clone(),
+                TurnAdmission::LocalRoot,
                 MAXIMUM_BYTES,
             )),
         )
@@ -736,7 +743,13 @@ impl NativeAgents {
     /// `agent`'s workload over its own volumes, signed for its native views.
     pub(super) fn view_scope(&self, agent: &AgentState) -> Result<Scope> {
         // The agent's own grants, signed by the root issuer that admits views.
-        let authority = agent_authority(&self.issuer, &agent.path, &agent.volumes, &[])?;
+        let authority = agent_authority(
+            &self.issuer,
+            &TurnAdmission::LocalRoot,
+            &agent.path,
+            &agent.volumes,
+            &[],
+        )?;
         let mut grants = authority
             .grants
             .iter()

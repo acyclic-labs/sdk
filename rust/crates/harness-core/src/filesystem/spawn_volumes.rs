@@ -25,18 +25,26 @@ type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 pub struct FilesystemSpawnVolumes<P: 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     issuer: AuthorityRoot,
+    admission: super::TurnAdmission,
     maximum_bytes: u64,
 }
 
 impl<P, O> FilesystemSpawnVolumes<P, O> {
     /// Volumes on `host`, whose authority must be the agents' stream
     /// provider; `issuer` is the agents' signing custody, which stages each
-    /// child's brief of at most `maximum_bytes` under the child's own authority.
+    /// child's brief of at most `maximum_bytes` under the child's own authority,
+    /// derived from `admission` like the child's turns.
     #[must_use]
-    pub const fn new(host: Arc<Host<P, O>>, issuer: AuthorityRoot, maximum_bytes: u64) -> Self {
+    pub fn new(
+        host: Arc<Host<P, O>>,
+        issuer: AuthorityRoot,
+        admission: super::TurnAdmission,
+        maximum_bytes: u64,
+    ) -> Self {
         Self {
             host,
             issuer,
+            admission,
             maximum_bytes,
         }
     }
@@ -192,8 +200,14 @@ where
             // the child's own file, retained like every other staged file,
             // under the child's one brief operation, so a replayed adoption
             // names the identical file.
-            let authority = super::agent_turns::agent_authority(&self.issuer, child, volumes, &[])
-                .map_err(invalid)?;
+            let authority = super::agent_turns::agent_authority(
+                &self.issuer,
+                &self.admission,
+                child,
+                volumes,
+                &[],
+            )
+            .map_err(invalid)?;
             let writer = super::FilesystemContentPublisher::new(
                 Arc::clone(&self.host),
                 &private.volume,

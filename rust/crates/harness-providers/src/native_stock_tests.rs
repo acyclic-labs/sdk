@@ -16,7 +16,7 @@ use acyclic_harness_core::{
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemContentPublisher, FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME,
-        TurnAuthority, TurnExecutors, TurnLimits,
+        TurnAdmission, TurnAuthority, TurnExecutors, TurnLimits,
     },
     resources::ProviderRef,
     tool::ToolRegistry,
@@ -196,6 +196,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         stream.clone(),
         host,
         issuer,
+        TurnAdmission::LocalRoot,
         Arc::new(Stock {
             provider: Arc::new(provider),
             policy,

@@ -66,12 +66,30 @@ pub struct AgentAuthority<'v> {
     pub private: &'v VolumeBinding,
 }
 
+/// What every agent scope of a host derives from.
+#[derive(Clone, Debug)]
+pub enum TurnAdmission {
+    /// The trusted local runtime root: each agent's scope is a root grant over
+    /// its bound volumes, under the agent's conversation audience.
+    LocalRoot,
+    /// A workload scope admitted under `audience`. Each agent's scope is
+    /// delegated from it, keeping its audience, agent and lifetime, and grants
+    /// only what it admits: a read-only admission cannot write.
+    Admitted {
+        /// The audience the admitted scope was issued for.
+        audience: Authority,
+        /// The admitted scope.
+        scope: Scope,
+    },
+}
+
 /// The authority of the agent at `path` over `volumes`, signed with
-/// `issuer`'s custody. Each `external` file on a volume the agent does not
-/// bind (a message or result from another agent) is granted alone, by its
-/// exact version.
+/// `issuer`'s custody under `admission`. Each `external` file on a volume the
+/// agent does not bind (a message or result from another agent) is granted
+/// alone, by its exact version.
 pub fn agent_authority<'v>(
     issuer: &AuthorityRoot,
+    admission: &TurnAdmission,
     path: &AgentPath,
     volumes: &'v [VolumeBinding],
     external: &[FileRef],
@@ -88,10 +106,6 @@ pub fn agent_authority<'v>(
             "private volume belongs to another agent".into(),
         ));
     }
-    let issuer = issuer.with_audience(Authority {
-        kind: AggregateKind::Conversation,
-        id: path.id().as_str().to_owned(),
-    });
     let mut grants = Vec::with_capacity(2 * volumes.len() + 1);
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // Every agent may spawn, message and archive within its own subtree.
@@ -116,8 +130,38 @@ pub fn agent_authority<'v>(
             grants.push(file.read_capability(&mut None)?);
         }
     }
-    let grants = Capabilities::new(grants);
-    let scope = issuer.bootstrap_scope("agent", &grants, Some(owner), &mut None)?;
+    let (issuer, grants, scope) = match admission {
+        TurnAdmission::LocalRoot => {
+            let issuer = issuer.with_audience(Authority {
+                kind: AggregateKind::Conversation,
+                id: path.id().as_str().to_owned(),
+            });
+            let grants = Capabilities::new(grants);
+            let scope = issuer.bootstrap_scope("agent", &grants, Some(owner), &mut None)?;
+            (issuer, grants, scope)
+        }
+        TurnAdmission::Admitted { audience, scope } => {
+            if scope.agent().is_some_and(|agent| agent != owner) {
+                return Err(Error::Unauthorized(
+                    "admitted scope belongs to another agent".into(),
+                ));
+            }
+            let issuer = issuer.with_audience(audience.clone());
+            let admitted = scope.capabilities();
+            let grants = Capabilities::new(
+                grants
+                    .into_iter()
+                    .filter(|grant| Capabilities::new([grant.as_str()]).is_subset_of(admitted)),
+            );
+            if !grants.is_subset_of(admitted) {
+                return Err(Error::Unauthorized(
+                    "agent scope cannot widen its admission".into(),
+                ));
+            }
+            let derived = issuer.issue_derived(scope, "agent", &grants, Some(owner), &mut None)?;
+            (issuer, grants, derived)
+        }
+    };
     let verifier = issuer.verifier(&mut None)?;
     Ok(AgentAuthority {
         issuer,
@@ -159,6 +203,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityRoot,
+    admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,
     schemas: SchemaRegistry,
     limits: TurnLimits,
@@ -172,13 +217,14 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Host signing each agent's authority with `issuer`'s custody, under
-    /// that agent's conversation audience.
+    /// Host signing each agent's authority with `issuer`'s custody, derived
+    /// from `admission`.
     #[must_use]
     pub fn new(
         stream: Arc<P>,
         host: Arc<FilesystemHost<A, O>>,
         issuer: AuthorityRoot,
+        admission: TurnAdmission,
         executors: Arc<dyn TurnExecutors>,
         limits: TurnLimits,
     ) -> Self {
@@ -186,6 +232,7 @@ where
             stream,
             host,
             issuer,
+            admission,
             executors,
             schemas: SchemaRegistry::new(),
             limits,
@@ -275,7 +322,13 @@ where
             grants: capabilities,
             verifier,
             private,
-        } = agent_authority(&self.issuer, &agent.path, &agent.volumes, external)?;
+        } = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &agent.path,
+            &agent.volumes,
+            external,
+        )?;
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
             &verifier,

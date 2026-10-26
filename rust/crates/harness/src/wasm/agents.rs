@@ -19,7 +19,7 @@ use crate::{
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
-        PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
+        PRIVATE_VOLUME, TurnAdmission, TurnAuthority, TurnExecutors, TurnLimits,
     },
     model::{Model, ModelContent, ModelProvider as _},
     resources::ProviderRef,
@@ -381,6 +381,7 @@ impl WasmAgents {
             Arc::clone(&stream),
             Arc::clone(&filesystem),
             owner.issuer.clone(),
+            TurnAdmission::LocalRoot,
             Arc::new(Executors {
                 model,
                 provider,
