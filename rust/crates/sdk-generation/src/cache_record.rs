@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -10,10 +9,7 @@ struct Record {
 }
 
 fn checksum(key: &str, digest: &str) -> String {
-    format!(
-        "sha256:{:x}",
-        Sha256::digest(format!("{key}\0{digest}").as_bytes())
-    )
+    super::sha256_bytes(format!("{key}\0{digest}").as_bytes())
 }
 
 fn valid_hash(value: &str) -> bool {
