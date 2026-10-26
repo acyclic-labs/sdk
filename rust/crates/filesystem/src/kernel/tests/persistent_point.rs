@@ -1,16 +1,13 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::file_table_mutation::FileTableFormat;
 use crate::kernel::persistent_btree::Child;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
     FileKind, FilePayload, FileRecord, FileTablePage, LogicalName, NameEncoding, TreeEntry,
-    encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
-use acyclic_stream::OwnedBytes;
 
 fn record(byte: u8) -> FileRecord {
     FileRecord {
@@ -25,25 +22,7 @@ fn record(byte: u8) -> FileRecord {
     }
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &FileTablePage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = file_table_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_file_table_page(
-            page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_file_table_page as put;
 
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
@@ -120,7 +99,7 @@ fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std:
 async fn native_point_uses_the_original_counters_and_retires_scratch()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)])).await?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]), 8).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -149,7 +128,7 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
 async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1)])).await?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1)]), 8).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget {

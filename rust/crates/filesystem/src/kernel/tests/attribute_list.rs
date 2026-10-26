@@ -1,13 +1,11 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::kernel::{
-    AttributeClass, AttributePage, DirectoryReadError, attribute_page_id, encode_attribute_page,
+    AttributeClass, AttributePage, DirectoryReadError
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use crate::{CachedObjectStore, ObjectCacheOptions};
-use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 fn name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
@@ -29,40 +27,25 @@ fn entry(value: &str, byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Er
     })
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &AttributePage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = attribute_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_attribute_page(
-            page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_attribute_page as put;
 
 async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let a = put(
         store,
         &AttributePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
+        8,
     )
     .await?;
     let c = put(
         store,
         &AttributePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        8,
     )
     .await?;
     let e = put(
         store,
         &AttributePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]),
+        8,
     )
     .await?;
     put(
@@ -81,6 +64,7 @@ async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error:
                 page: e,
             },
         ]),
+        8,
     )
     .await
 }
@@ -97,6 +81,7 @@ async fn four_leaf_tree(
                 value,
                 u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
             )?]),
+            8,
         )
         .await?;
         if index == 2 {
@@ -108,7 +93,7 @@ async fn four_leaf_tree(
         });
     }
     Ok((
-        put(store, &AttributePage::Internal(children)).await?,
+        put(store, &AttributePage::Internal(children), 8).await?,
         third.ok_or("missing third fixture leaf")?,
     ))
 }
@@ -288,6 +273,7 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
     let leaf = put(
         &store,
         &AttributePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        8,
     )
     .await?;
     let root = put(
@@ -296,6 +282,7 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
             first: name("a")?,
             page: leaf,
         }]),
+        8,
     )
     .await?;
     let failure = list_attributes(
@@ -480,6 +467,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     let leaf = put(
         &store,
         &AttributePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
+        8,
     )
     .await?;
     let alias_root = put(
@@ -494,6 +482,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
                 page: leaf,
             },
         ]),
+        8,
     )
     .await?;
     let alias = list_attributes(

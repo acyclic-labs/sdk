@@ -2,31 +2,15 @@ use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::kernel::{
-    Extent, ExtentKind, ExtentPage, decode_extent_page, encode_extent_page, extent_page_id,
+    Extent, ExtentKind, ExtentPage, decode_extent_page,
 };
 use crate::memory::MemoryObjectStore;
-
-use acyclic_stream::OwnedBytes;
 
 async fn put(
     store: &MemoryObjectStore,
     extents: Vec<Extent>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let page = ExtentPage::Leaf(extents);
-    let root = extent_page_id(&page, 16)?;
-    store
-        .put(
-            root,
-            OwnedBytes::from(encode_extent_page(
-                &page,
-                16,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(root)
+    crate::test_support::put_extent_page(store, &ExtentPage::Leaf(extents), 16).await
 }
 
 async fn extents(

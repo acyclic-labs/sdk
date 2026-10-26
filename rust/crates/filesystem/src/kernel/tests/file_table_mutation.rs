@@ -4,11 +4,9 @@ use crate::foundation::Digest;
 use crate::kernel::decode_file_table_page;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{
-    FileKind, FilePayload, FileTablePage, encode_file_table_page, file_table_page_id,
+    FileKind, FilePayload, FileTablePage
 };
 use crate::memory::MemoryObjectStore;
-
-use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,26 +65,7 @@ fn record(byte: u8, metadata_byte: u8) -> FileRecord {
     }
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &FileTablePage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = file_table_page_id(page, maximum_items)?;
-    store
-        .put(
-            id,
-            OwnedBytes::from(encode_file_table_page(
-                page,
-                maximum_items,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(id)
-}
+use crate::test_support::put_file_table_page as put;
 
 async fn three_leaf_table(
     store: &MemoryObjectStore,

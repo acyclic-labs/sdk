@@ -1,11 +1,9 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage};
 use crate::memory::MemoryObjectStore;
 use crate::performance::WorkCounters;
 use crate::storage::ObjectKind;
-use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
 use crate::kernel::Child;
@@ -21,25 +19,7 @@ fn unlimited() -> WorkBudget {
     WorkBudget::UNBOUNDED
 }
 
-async fn put_page(
-    store: &MemoryObjectStore,
-    page: &TreePage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = tree_page_id(page, 16)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_tree_page(
-            page,
-            16,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_tree_page as put_page;
 
 #[tokio::test]
 async fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,12 +29,12 @@ async fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Erro
         file_id: FileId::from_bytes([4; 16]),
         kind: FileKind::Regular,
     }]);
-    let leaf_id = put_page(&store, &leaf).await?;
+    let leaf_id = put_page(&store, &leaf, 16).await?;
     let root = TreePage::Internal(vec![Child {
         first: name("target")?,
         page: leaf_id,
     }]);
-    let root_id = put_page(&store, &root).await?;
+    let root_id = put_page(&store, &root, 16).await?;
 
     let result = lookup_tree_entry(
         &store,
@@ -76,13 +56,14 @@ async fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Erro
 #[tokio::test]
 async fn budget_stops_before_an_unadmitted_child_read() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let leaf_id = put_page(&store, &TreePage::Leaf(Vec::new())).await?;
+    let leaf_id = put_page(&store, &TreePage::Leaf(Vec::new()), 16).await?;
     let root_id = put_page(
         &store,
         &TreePage::Internal(vec![Child {
             first: name("a")?,
             page: leaf_id,
         }]),
+        16,
     )
     .await?;
     let mut budget = unlimited();
@@ -167,6 +148,7 @@ async fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::err
             file_id: FileId::from_bytes([8; 16]),
             kind: FileKind::Regular,
         }]),
+        16,
     )
     .await?;
     let root = put_page(
@@ -175,6 +157,7 @@ async fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::err
             first: name("a")?,
             page: leaf,
         }]),
+        16,
     )
     .await?;
     assert!(matches!(
@@ -198,7 +181,7 @@ async fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::err
 #[tokio::test]
 async fn pre_cancelled_async_lookup_reads_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put_page(&store, &TreePage::Leaf(Vec::new())).await?;
+    let root = put_page(&store, &TreePage::Leaf(Vec::new()), 16).await?;
     let target = name("target")?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -241,6 +224,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
                 kind: FileKind::Regular,
             },
         ]),
+        16,
     )
     .await?;
     let right = put_page(
@@ -257,6 +241,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
                 kind: FileKind::Regular,
             },
         ]),
+        16,
     )
     .await?;
     let root = put_page(
@@ -271,6 +256,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
                 page: right,
             },
         ]),
+        16,
     )
     .await?;
     let queries = vec![name("n")?, name("a")?, name("n")?, name("z")?];
@@ -308,7 +294,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
 async fn batch_cancellation_and_query_admission_precede_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put_page(&store, &TreePage::Leaf(Vec::new())).await?;
+    let root = put_page(&store, &TreePage::Leaf(Vec::new()), 16).await?;
     let queries = vec![name("a")?, name("b")?];
     let cancellation = CancellationToken::new();
     cancellation.cancel();

@@ -1,5 +1,4 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent, ExtentChild,
@@ -8,7 +7,6 @@ use crate::kernel::{
     encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::object_digest;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 
@@ -30,24 +28,7 @@ fn metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    kind: ObjectKind,
-    bytes: Vec<u8>,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let object = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    store
-        .put(
-            object,
-            acyclic_stream::OwnedBytes::from(bytes),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(object)
-}
+use crate::test_support::put_object as put;
 
 async fn minimal_generation(
     store: &MemoryObjectStore,

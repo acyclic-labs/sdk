@@ -4,7 +4,6 @@ use crate::kernel::decode_tree_page;
 use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 
-use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 
 use crate::kernel::Child;
@@ -143,26 +142,7 @@ fn entry(value: &str, byte: u8, kind: FileKind) -> Result<TreeEntry, Box<dyn std
     })
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &TreePage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = tree_page_id(page, maximum_items)?;
-    store
-        .put(
-            id,
-            OwnedBytes::from(encode_tree_page(
-                page,
-                maximum_items,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(id)
-}
+use crate::test_support::put_tree_page as put;
 
 async fn three_leaf_tree(
     store: &MemoryObjectStore,

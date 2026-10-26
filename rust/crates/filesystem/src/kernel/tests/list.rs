@@ -1,6 +1,6 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use acyclic_stream::OwnedBytes;
@@ -22,30 +22,12 @@ fn entry(value: &str, byte: u8) -> Result<TreeEntry, Box<dyn std::error::Error>>
     })
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &TreePage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = tree_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_tree_page(
-            page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_tree_page as put;
 
 async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let a = put(store, &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?])).await?;
-    let c = put(store, &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?])).await?;
-    let e = put(store, &TreePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?])).await?;
+    let a = put(store, &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]), 8).await?;
+    let c = put(store, &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]), 8).await?;
+    let e = put(store, &TreePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]), 8).await?;
     put(
         store,
         &TreePage::Internal(vec![
@@ -62,6 +44,7 @@ async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error:
                 page: e,
             },
         ]),
+        8,
     )
     .await
 }
@@ -78,6 +61,7 @@ async fn four_leaf_tree(
                 value,
                 u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
             )?]),
+            8,
         )
         .await?;
         if index == 2 {
@@ -89,7 +73,7 @@ async fn four_leaf_tree(
         });
     }
     Ok((
-        put(store, &TreePage::Internal(children)).await?,
+        put(store, &TreePage::Internal(children), 8).await?,
         third.ok_or("missing third fixture leaf")?,
     ))
 }
@@ -355,6 +339,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     let leaf = put(
         &store,
         &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        8,
     )
     .await?;
     let forged = put(
@@ -363,6 +348,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
             first: name("a")?,
             page: leaf,
         }]),
+        8,
     )
     .await?;
     let failure = list_tree_entries(
@@ -401,6 +387,7 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             id: ObjectId,
             bytes: OwnedBytes,
             context: &mut crate::AuthorityWork<'_>,
+            8,
         ) -> Result<(), crate::ObjectStoreError> {
             #[cfg(not(target_arch = "wasm32"))]
             if context.original.is_some() {

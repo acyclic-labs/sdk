@@ -1,7 +1,7 @@
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::GuardedAppend;
 use crate::async_storage::AsyncAuthorityStore;
-use crate::async_storage::AsyncObjectStore;
 use crate::foundation::FileId;
 use crate::foundation::Sequence;
 use crate::kernel::{
@@ -48,7 +48,7 @@ async fn initialized(
 ) -> TestResult<Head> {
     use crate::model::{
         CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
-    };
+};
     let authority_id = volume_authority_id(volume_id);
     created(authority, authority_id).await?;
     let creation = crate::kernel::VolumeCreated {
@@ -109,20 +109,7 @@ async fn fenced(
         .await?)
 }
 
-async fn put(store: &MemoryObjectStore, kind: ObjectKind, bytes: Vec<u8>) -> TestResult<ObjectId> {
-    let object = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    store
-        .put(
-            object,
-            acyclic_stream::OwnedBytes::from(bytes),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    Ok(object)
-}
+use crate::test_support::put_object as put;
 
 async fn fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> TestResult<ObjectId> {
     let metadata = metadata_object(objects).await?;

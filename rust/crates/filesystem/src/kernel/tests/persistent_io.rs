@@ -25,20 +25,7 @@ async fn put_tree_page(
         file_id: FileId::from_bytes([file_byte; 16]),
         kind: FileKind::Regular,
     }]);
-    let object = tree_page_id(&page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        object,
-        OwnedBytes::from(encode_tree_page(
-            &page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(object)
+    crate::test_support::put_tree_page(store, &page, 8).await
 }
 
 fn only_page_name(page: &OwnedPage<TreeFormat>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {

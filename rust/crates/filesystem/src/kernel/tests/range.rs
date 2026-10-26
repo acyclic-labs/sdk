@@ -1,11 +1,9 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
-use crate::kernel::{Extent, ExtentChild, encode_extent_page, extent_page_id};
+use crate::kernel::{Extent, ExtentChild};
 use crate::memory::MemoryObjectStore;
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
-use acyclic_stream::OwnedBytes;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
 
@@ -13,25 +11,7 @@ fn unlimited() -> WorkBudget {
     WorkBudget::UNBOUNDED
 }
 
-async fn put_page(
-    store: &MemoryObjectStore,
-    page: &ExtentPage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = extent_page_id(page, 16)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_extent_page(
-            page,
-            16,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_extent_page as put_page;
 
 #[tokio::test]
 async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,6 +23,7 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
             length: 100,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let second = put_page(
@@ -52,6 +33,7 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
             length: 100,
             kind: ExtentKind::AllocatedZero,
         }]),
+        16,
     )
     .await?;
     let root = put_page(
@@ -68,6 +50,7 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
                 page: second,
             },
         ]),
+        16,
     )
     .await?;
     let request = ExtentRangeRequest {
@@ -119,6 +102,7 @@ async fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
             length: 8,
             kind: ExtentKind::AllocatedZero,
         }]),
+        16,
     )
     .await?;
     let request = ExtentRangeRequest {
@@ -151,6 +135,7 @@ async fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admissi
             length: 8,
             kind: ExtentKind::AllocatedZero,
         }]),
+        16,
     )
     .await?;
     store
@@ -193,6 +178,7 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
             length: 100,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let second = put_page(
@@ -202,6 +188,7 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
             length: 100,
             kind: ExtentKind::AllocatedZero,
         }]),
+        16,
     )
     .await?;
     let root = put_page(
@@ -218,6 +205,7 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
                 page: second,
             },
         ]),
+        16,
     )
     .await?;
     let limits = DecodeLimits::default();
@@ -262,6 +250,7 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
             length: 100,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let second = put_page(
@@ -271,6 +260,7 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
             length: 100,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let content = ObjectId {
@@ -287,6 +277,7 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
                 object_offset: 0,
             },
         }]),
+        16,
     )
     .await?;
     let root = put_page(
@@ -308,6 +299,7 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
                 page: third,
             },
         ]),
+        16,
     )
     .await?;
     let data = seek_extent(
@@ -389,6 +381,7 @@ async fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
                 },
             },
         ]),
+        16,
     )
     .await?;
     let cancellation = CancellationToken::new();
@@ -435,6 +428,7 @@ async fn empty_and_all_hole_files_have_exact_seek_boundaries()
             length: 10,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     for (file_size, target, expected) in [
@@ -481,6 +475,7 @@ async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std:
                 kind: ExtentKind::AllocatedZero,
             },
         ]),
+        16,
     )
     .await?;
     let failure = plan_extent_range(
@@ -628,6 +623,7 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
                 kind: ExtentKind::Hole,
             },
         ]),
+        16,
     )
     .await?;
     let limits = DecodeLimits {
@@ -690,6 +686,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
             length: 4,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let request = ExtentRangeRequest {
@@ -784,6 +781,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
             length: 1,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let nested = put_page(
@@ -793,6 +791,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
             end_offset: 1,
             page: leaf,
         }]),
+        16,
     )
     .await?;
     let root = put_page(
@@ -802,6 +801,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
             end_offset: 2,
             page: nested,
         }]),
+        16,
     )
     .await?;
     let failure = plan_extent_range(
@@ -844,6 +844,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
             length: 1,
             kind: ExtentKind::Hole,
         }]),
+        16,
     )
     .await?;
     let one_child = put_page(
@@ -853,6 +854,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
             end_offset: 2,
             page: leaf,
         }]),
+        16,
     )
     .await?;
     let request = |root, limits| ExtentRangeRequest {
@@ -908,6 +910,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
                 page: leaf,
             },
         ]),
+        16,
     )
     .await?;
     let alias = plan_extent_range(

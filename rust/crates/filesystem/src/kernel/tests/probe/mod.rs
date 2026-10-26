@@ -9,29 +9,11 @@ use crate::kernel::{
     encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::object_digest;
 use acyclic_stream::OwnedBytes;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-async fn put(
-    store: &MemoryObjectStore,
-    kind: ObjectKind,
-    bytes: Vec<u8>,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(bytes),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_object as put;
 
 async fn fixture(
     store: &MemoryObjectStore,

@@ -1,31 +1,12 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
-use crate::kernel::{decode_extent_page, encode_extent_page, extent_page_id};
+use crate::kernel::{decode_extent_page, encode_extent_page};
 use crate::memory::MemoryObjectStore;
 
 use crate::storage::object_digest;
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &ExtentPage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = extent_page_id(page, maximum_items)?;
-    store
-        .put(
-            id,
-            acyclic_stream::OwnedBytes::from(encode_extent_page(
-                page,
-                maximum_items,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(id)
-}
+use crate::test_support::put_extent_page as put;
 
 fn hole(offset: u64, length: u64) -> Extent {
     Extent {

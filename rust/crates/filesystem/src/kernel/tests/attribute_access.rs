@@ -1,7 +1,7 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
-use crate::kernel::{AttributeClass, AttributePage, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributeClass, AttributePage};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, object_digest};
 use crate::test_support::OwnedReadObjectStore;
@@ -27,29 +27,11 @@ fn entry(byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Error>> {
     })
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &AttributePage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = attribute_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_attribute_page(
-            page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_attribute_page as put;
 
 async fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let first = put(store, &AttributePage::Leaf(vec![entry(1)?])).await?;
-    let second = put(store, &AttributePage::Leaf(vec![entry(3)?, entry(4)?])).await?;
+    let first = put(store, &AttributePage::Leaf(vec![entry(1)?]), 8).await?;
+    let second = put(store, &AttributePage::Leaf(vec![entry(3)?, entry(4)?]), 8).await?;
     put(
         store,
         &AttributePage::Internal(vec![
@@ -62,6 +44,7 @@ async fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn s
                 page: second,
             },
         ]),
+        8,
     )
     .await
 }
@@ -230,7 +213,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
     assert_eq!(failure.work.page_reads, 1);
     assert_eq!(failure.work.backend_read_operations, 1);
 
-    let valid = put(&store, &AttributePage::Leaf(vec![entry(1)?])).await?;
+    let valid = put(&store, &AttributePage::Leaf(vec![entry(1)?]), 8).await?;
     let limits = DecodeLimits {
         maximum_object_bytes: 1,
         maximum_page_bytes: 1,
@@ -301,13 +284,14 @@ async fn decoded_attribute_page_is_admitted_before_allocation()
 async fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let leaf = put(&store, &AttributePage::Leaf(vec![entry(1)?])).await?;
+    let leaf = put(&store, &AttributePage::Leaf(vec![entry(1)?]), 8).await?;
     let forged = put(
         &store,
         &AttributePage::Internal(vec![Child {
             first: name(2)?,
             page: leaf,
         }]),
+        8,
     )
     .await?;
     let failure = lookup_attribute(
@@ -461,13 +445,14 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
 async fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, &AttributePage::Leaf(vec![entry(1)?])).await?;
+    let first = put(&store, &AttributePage::Leaf(vec![entry(1)?]), 8).await?;
     let forged_middle = put(
         &store,
         &AttributePage::Leaf(vec![entry(3)?, entry(4)?, entry(5)?]),
+        8,
     )
     .await?;
-    let last = put(&store, &AttributePage::Leaf(vec![entry(5)?])).await?;
+    let last = put(&store, &AttributePage::Leaf(vec![entry(5)?]), 8).await?;
     let root = put(
         &store,
         &AttributePage::Internal(vec![
@@ -484,6 +469,7 @@ async fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
                 page: last,
             },
         ]),
+        8,
     )
     .await?;
     let failure = lookup_attribute(

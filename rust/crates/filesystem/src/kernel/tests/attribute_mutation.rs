@@ -1,13 +1,11 @@
 use super::*;
-use crate::CancellationToken;
 use crate::async_storage::AsyncObjectStore;
+use crate::CancellationToken;
 use crate::foundation::Digest;
 use crate::kernel::decode_attribute_page;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::{AttributePage, attribute_page_id, encode_attribute_page};
+use crate::kernel::AttributePage;
 use crate::memory::MemoryObjectStore;
-
-use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Error>> {
@@ -33,26 +31,7 @@ fn entry(
     })
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    page: &AttributePage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = attribute_page_id(page, maximum_items)?;
-    store
-        .put(
-            id,
-            OwnedBytes::from(encode_attribute_page(
-                page,
-                maximum_items,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(id)
-}
+use crate::test_support::put_attribute_page as put;
 
 async fn three_leaf_tree(
     store: &MemoryObjectStore,

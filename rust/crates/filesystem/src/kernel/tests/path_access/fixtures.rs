@@ -10,7 +10,7 @@ use crate::kernel::{
 use crate::memory::MemoryObjectStore;
 use crate::model::{CaseSensitivity, ConcurrencyMode, Lifecycle, UnicodePolicy, VolumeLimits};
 use crate::storage::{
-    ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError, object_digest,
+    ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -51,20 +51,7 @@ fn metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-async fn put<S: AsyncObjectStore>(
-    store: &S,
-    kind: ObjectKind,
-    bytes: Vec<u8>,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    let cancellation = CancellationToken::new();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    store.put(id, bytes.into(), &mut work).await?;
-    Ok(id)
-}
+use crate::test_support::put_object as put;
 
 struct CancellingStore {
     inner: MemoryObjectStore,

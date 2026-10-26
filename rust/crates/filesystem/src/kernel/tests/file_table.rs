@@ -1,36 +1,14 @@
 use super::*;
-use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::kernel::EncodeError;
 #[cfg(feature = "memory")]
 use crate::memory::MemoryObjectStore;
 #[cfg(feature = "memory")]
-#[cfg(feature = "memory")]
-use acyclic_stream::OwnedBytes;
-#[cfg(feature = "memory")]
 use std::task::{Context, Poll, Waker};
 
 use crate::kernel::Child;
 #[cfg(feature = "memory")]
-async fn put_memory_page(
-    store: &MemoryObjectStore,
-    page: &FileTablePage,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = file_table_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
-        OwnedBytes::from(encode_file_table_page(
-            page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(id)
-}
+use crate::test_support::put_file_table_page as put_memory_page;
 
 #[cfg(feature = "memory")]
 fn fifo_record(byte: u8) -> FileRecord {
@@ -50,8 +28,8 @@ fn fifo_record(byte: u8) -> FileRecord {
 async fn two_level_file_table(
     store: &MemoryObjectStore,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let first = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(1)])).await?;
-    let second = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(2)])).await?;
+    let first = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(1)]), 8).await?;
+    let second = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(2)]), 8).await?;
     put_memory_page(
         store,
         &FileTablePage::Internal(vec![
@@ -64,6 +42,7 @@ async fn two_level_file_table(
                 page: second,
             },
         ]),
+        8,
     )
     .await
 }
@@ -944,13 +923,14 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     ));
     assert_eq!(excessive.work.backend_read_operations, 0);
 
-    let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)])).await?;
+    let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)]), 8).await?;
     let forged = put_memory_page(
         &store,
         &FileTablePage::Internal(vec![Child {
             first: FileId::from_bytes([0; 16]),
             page: leaf,
         }]),
+        8,
     )
     .await?;
     let failure = lookup_file_record(

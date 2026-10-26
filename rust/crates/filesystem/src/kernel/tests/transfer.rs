@@ -38,24 +38,7 @@ fn empty_metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    kind: ObjectKind,
-    bytes: Vec<u8>,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let object_id = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    AsyncObjectStore::put(
-        store,
-        object_id,
-        acyclic_stream::OwnedBytes::from(bytes),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(object_id)
-}
+use crate::test_support::put_object as put;
 
 async fn minimal_generation(
     store: &MemoryObjectStore,

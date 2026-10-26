@@ -103,24 +103,7 @@ impl AsyncBlobSource for ScriptedSource {
     }
 }
 
-async fn put<S: AsyncObjectStore>(
-    store: &S,
-    kind: ObjectKind,
-    bytes: OwnedBytes,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let id = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    store
-        .put(
-            id,
-            bytes,
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-        )
-        .await?;
-    Ok(id)
-}
+use crate::test_support::put_object as put;
 
 #[cfg(not(target_arch = "wasm32"))]
 struct NativePartialBlobSource {

@@ -133,3 +133,9 @@ fn ordinary(context: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> 
 pub(crate) fn finish_physical_cuts<F: FnOnce() -> usize + Send>(jobs: Vec<F>) -> Vec<usize> {
     acyclic_test_support::physical_cuts::run(jobs, acyclic_native_runtime::InlineBlocking::enter)
 }
+
+#[path = "support/objects.rs"]
+mod objects;
+pub(crate) use objects::{
+    put_attribute_page, put_extent_page, put_file_table_page, put_object, put_tree_page,
+};
