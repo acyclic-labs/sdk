@@ -58,9 +58,6 @@ impl std::fmt::Display for ModelTransportFailure {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Logical task-file storage or publication failure.
-    #[error(transparent)]
-    TaskFiles(Box<crate::task_volume::Error>),
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -467,20 +464,6 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self.cause() {
-            Self::TaskFiles(error) => match error.as_ref() {
-                crate::task_volume::Error::FileRead(error) => error.code(),
-                crate::task_volume::Error::FenceConflict
-                | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
-                crate::task_volume::Error::Conflict(_)
-                | crate::task_volume::Error::ImmutableConflict(_)
-                | crate::task_volume::Error::SequenceConflict(_)
-                | crate::task_volume::Error::AwaitingDurability
-                | crate::task_volume::Error::ResetRequired => ErrorCode::Conflict,
-                crate::task_volume::Error::InvalidPath
-                | crate::task_volume::Error::InvalidSegment
-                | crate::task_volume::Error::LimitExceeded => ErrorCode::Invalid,
-                crate::task_volume::Error::Storage(_) => ErrorCode::Storage,
-            },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
@@ -567,23 +550,10 @@ impl Error {
         self.code().as_str_name()
     }
 
-    /// The error a task-file read wraps, peeled recursively. The wire code and the uncertainty
-    /// classes all read through this one function, so a wrapped cause keeps its class.
-    fn cause(&self) -> &Self {
-        match self {
-            #[cfg(feature = "filesystem")]
-            Self::TaskFiles(error) => match error.as_ref() {
-                crate::task_volume::Error::FileRead(inner) => inner.cause(),
-                _ => self,
-            },
-            _ => self,
-        }
-    }
-
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
         matches!(
-            self.cause(),
+            self,
             Self::Indeterminate(_)
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
@@ -599,10 +569,9 @@ impl Error {
     #[doc(hidden)]
     pub fn leaves_outcome_uncertain(&self) -> bool {
         use crate::wire::ErrorCode;
-        let cause = self.cause();
-        !matches!(cause, Self::TaskFailed { .. })
+        !matches!(self, Self::TaskFailed { .. })
             && matches!(
-                cause.code(),
+                self.code(),
                 ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
             )
     }
@@ -621,8 +590,7 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
-            Self::TaskFiles(_)
-            | Self::NotFound(_)
+            Self::NotFound(_)
             | Self::Conflict(_)
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)
@@ -720,12 +688,6 @@ pub(crate) fn indeterminate_display(
 impl From<acyclic_fs::CancellationError> for Error {
     fn from(_: acyclic_fs::CancellationError) -> Self {
         Self::Cancelled
-    }
-}
-
-impl From<crate::task_volume::Error> for Error {
-    fn from(error: crate::task_volume::Error) -> Self {
-        Self::TaskFiles(Box::new(error))
     }
 }
 

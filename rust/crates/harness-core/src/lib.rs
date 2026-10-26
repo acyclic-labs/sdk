@@ -72,7 +72,6 @@ pub mod contract;
 pub mod conversation;
 pub mod core;
 pub mod distributed;
-pub mod durable_host;
 pub mod durable_tool;
 pub mod effect_host;
 pub mod effects;
@@ -116,10 +115,8 @@ pub mod registry;
 pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
-pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
-pub mod task_volume;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool;

@@ -133,10 +133,7 @@ mod default_tools;
 ))]
 #[doc(hidden)]
 pub use default_tools::InvocationCancellation;
-mod mailbox_machine;
 mod recursive;
-mod task_commands;
-mod task_runtime;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
     ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
@@ -146,7 +143,6 @@ pub(in crate::filesystem) use default_tools::{
     RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
     RecursiveMergeToolBinding, RecursiveMergeToolPlan,
 };
-pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -168,18 +164,6 @@ pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
     recursive_fork_source, restore_recursive_fork_source,
-};
-pub use task_commands::{
-    EFFECT_TASK_COMMAND_KIND, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemTaskCommands,
-    MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
-    MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, PreparedTaskAdmitCommand,
-    TASK_ADMIT_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, TASK_CANCEL_COMMAND_KIND,
-    TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
-    TaskCancelCommand, TaskObserveCommand, TimerTaskCommand, ToolTaskCommand,
-};
-pub use task_runtime::{
-    FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
-    TaskSourceInspection, TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome,
 };
 mod config;
 use config::*;
