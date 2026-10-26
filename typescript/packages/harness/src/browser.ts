@@ -1,19 +1,11 @@
-/** Ordinary Rust task runtime backed by real browser providers. */
+/** Rust agent host backed by real browser providers. */
 export {
-  WasmReducer as BrowserTaskAuthority,
-  WasmTaskRegistry as BrowserTaskRegistry,
-  WasmTaskRuntime as BrowserTaskRuntime,
-  type WasmBrowserTaskOptions as BrowserTaskOptions,
-  type WasmMachineDefinition as BrowserMachineDefinition,
-  type Worker as BrowserWorker,
-  type TaskWakeCursor as BrowserWakeCursor,
-  type WorkLease as BrowserWorkLease,
-  type WasmBrowserAdmission as BrowserAdmission,
-  type WasmBrowserTick as BrowserTick,
-  type WasmBrowserWork as BrowserWork,
-  type WasmBrowserRecoveredWork as BrowserRecoveredWork,
-  type InboxItem as BrowserInboxItem,
+  WasmReducer as BrowserAgentAuthority,
+  WasmAgentRegistry as BrowserAgentRegistry,
+  WasmAgents as BrowserAgents,
+  type WasmBrowserAgentOptions as BrowserAgentOptions,
+  type WasmDelivered as BrowserDelivered,
+  type WasmAgentPage as BrowserAgentPage,
+  type WasmAgentRecord as BrowserAgentRecord,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureHarnessWasm as initializeBrowserRuntime } from "./wasm-runtime.js";
-
-export * from "./providers.js";

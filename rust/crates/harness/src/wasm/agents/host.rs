@@ -1,73 +1,28 @@
-use super::*;
+//! Trusted JavaScript model and tool callbacks behind the stock executor's
+//! provider and tool contracts.
+
+use super::{Error, Result, from_js, to_js};
 use crate::{
     context::{ModelContextCapacity, ModelTokenCount},
-    model::{ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
-    runtime::{TaskDefinition, TaskRegistry},
-    tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
-        ToolResult,
+    conversation::{ContentResidencyVerifier, verified_content_bytes},
+    model::{
+        FileProjectionPolicy, Model, ModelDispatch, ModelEvent, ModelProvider,
+        PreparedModelRequest,
     },
-    workflow::{MachineIdentity, MachineRegistry, MachineTransition, ResumableMachine},
+    tool::{ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
-use js_sys::Promise;
+use js_sys::{Function, Promise};
+use serde_json::Value;
+use std::sync::Arc;
+use wasm_bindgen::{JsCast as _, prelude::*};
 use wasm_bindgen_futures::JsFuture;
-
-#[derive(Deserialize, Tsify)]
-#[serde(deny_unknown_fields)]
-struct WasmMachineDefinition {
-    name: String,
-    version: String,
-    digest: Vec<u8>,
-    #[tsify(type = "WasmModelJsonSchema")]
-    state_schema: Value,
-    #[tsify(type = "WasmModelJsonSchema")]
-    input_schema: Value,
-    #[tsify(type = "WasmModelJsonSchema")]
-    output_schema: Value,
-    requirements: Vec<String>,
-}
-
-struct HostMachine {
-    identity: MachineIdentity,
-    state_schema: Value,
-    initialize: Function,
-    transition: Function,
-}
-impl ResumableMachine for HostMachine {
-    fn identity(&self) -> &MachineIdentity {
-        &self.identity
-    }
-    fn state_schema(&self) -> &Value {
-        &self.state_schema
-    }
-    fn initialize(&self, input: &Value) -> Result<Value> {
-        let input =
-            to_js(input).map_err(|_| Error::Invalid("machine input encoding failed".into()))?;
-        let output = self
-            .initialize
-            .call1(&JsValue::UNDEFINED, &input)
-            .map_err(|_| Error::Invalid("machine initialization failed".into()))?;
-        from_js(output).map_err(|_| Error::Invalid("machine initial state is invalid".into()))
-    }
-    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
-        let state =
-            to_js(state).map_err(|_| Error::Invalid("machine state encoding failed".into()))?;
-        let input =
-            to_js(input).map_err(|_| Error::Invalid("machine input encoding failed".into()))?;
-        let output = self
-            .transition
-            .call2(&JsValue::UNDEFINED, &state, &input)
-            .map_err(|_| Error::Invalid("machine transition failed".into()))?;
-        from_js(output).map_err(|_| Error::Invalid("machine transition is invalid".into()))
-    }
-}
 
 /// Trusted host effects are explicitly composed; rejection is an uncertain
 /// provider result, so the existing runner retains its reconciliation journal.
-struct HostTool {
-    execute: Function,
-    reconcile: Function,
-    project: Function,
+pub(super) struct HostTool {
+    pub(super) execute: Function,
+    pub(super) reconcile: Function,
+    pub(super) project: Function,
 }
 impl HostTool {
     async fn call<T: serde::de::DeserializeOwned>(
@@ -125,11 +80,16 @@ impl ToolProjection for HostTool {
     }
 }
 
+/// A trusted JavaScript model. Its `generate` receives the canonical request
+/// bytes, then the verified bytes of each file the request projects in full, in
+/// request order, read through the turn's authenticated reader.
+#[derive(Clone)]
 pub(super) struct HostModel {
     pub(super) generate: Function,
     pub(super) reconcile: Function,
     pub(super) capacity: Option<Function>,
     pub(super) count_tokens: Option<Function>,
+    pub(super) content: Option<(Arc<dyn ContentResidencyVerifier>, u64)>,
 }
 
 struct HostModelIterator {
@@ -149,11 +109,31 @@ impl Drop for HostModelIterator {
 }
 
 impl HostModel {
-    fn start(
+    /// Verified bytes of every non-reference file part, in request order.
+    async fn files(&self, request: &PreparedModelRequest) -> Result<js_sys::Array> {
+        let files = js_sys::Array::new();
+        for message in &request.request().messages {
+            for (file, policy) in message.content.file_parts() {
+                if matches!(policy, FileProjectionPolicy::Reference) {
+                    continue;
+                }
+                let (reader, maximum) = self.content.as_ref().ok_or_else(|| {
+                    Error::Unsupported("model file byte resolution is unavailable".into())
+                })?;
+                let (bytes, _hold) =
+                    verified_content_bytes(reader.as_ref(), file, *maximum, None, None).await?;
+                files.push(&js_sys::Uint8Array::from(bytes.as_slice()));
+            }
+        }
+        Ok(files)
+    }
+
+    async fn start(
         &self,
         request: &PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> Result<HostModelIterator> {
+        let files = self.files(request).await?;
         let constructor =
             js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("AbortController"))
                 .ok()
@@ -178,21 +158,33 @@ impl HostModel {
             controller,
             abort,
         };
+        let arguments = js_sys::Array::new();
+        arguments.push(&js_sys::Uint8Array::from(request.bytes()));
+        arguments.push(
+            &to_js(&dispatch).map_err(|_| Error::Invalid("model dispatch encoding failed".into()))?,
+        );
+        arguments.push(&signal);
+        arguments.push(&files);
         attempt.iterator = self
             .generate
-            .call3(
-                &JsValue::UNDEFINED,
-                &js_sys::Uint8Array::from(request.bytes()),
-                &to_js(&dispatch)
-                    .map_err(|_| Error::Invalid("model dispatch encoding failed".into()))?,
-                &signal,
-            )
+            .apply(&JsValue::UNDEFINED, &arguments)
             .map_err(|_| Error::Storage("host model dispatch is uncertain".into()))?;
         Ok(attempt)
     }
 }
 
 impl ModelProvider for HostModel {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        maximum_bytes: u64,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        Some(Arc::new(Self {
+            content: Some((reader, maximum_bytes)),
+            ..self.clone()
+        }))
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         let callback = self.capacity.as_ref().ok_or_else(|| {
             Error::Unsupported("selected model context capacity is unavailable".into())
@@ -248,7 +240,7 @@ impl ModelProvider for HostModel {
             move |iterator: Option<HostModelIterator>| async move {
                 let iterator = match iterator {
                     Some(iterator) => iterator,
-                    None => self.start(request, dispatch)?,
+                    None => self.start(request, dispatch).await?,
                 };
                 let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
                     .ok()
@@ -309,118 +301,7 @@ impl ModelProvider for HostModel {
     }
 }
 
-/// The existing typed registries, sealed into each opened runtime. Host callbacks
-/// are trusted pure machine implementations, with the same contract as Rust.
-#[wasm_bindgen]
-#[derive(Default)]
-pub struct WasmTaskRegistry {
-    pub(super) tasks: TaskRegistry,
-    pub(super) machines: MachineRegistry,
-    pub(super) tools: ToolRegistry,
-}
-#[wasm_bindgen]
-impl WasmTaskRegistry {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Callbacks share one immutable definition revision and are trusted host
-    /// implementations. They receive runtime-owned invocation identities.
-    #[wasm_bindgen(js_name = registerTool)]
-    pub fn register_tool(
-        &mut self,
-        #[wasm_bindgen(unchecked_param_type = "ToolDefinition")] definition: JsValue,
-        execute: Function,
-        reconcile: Function,
-        project: Function,
-    ) -> std::result::Result<(), JsValue> {
-        let definition: ToolDefinition = from_js(definition)?;
-        let host = Arc::new(HostTool {
-            execute,
-            reconcile,
-            project,
-        });
-        self.tools
-            .register(
-                (
-                    Tool {
-                        hook_names: &[],
-                        definition,
-                        executor: host.clone(),
-                        projection: host,
-                    },
-                    None,
-                ),
-                &mut None,
-                None,
-            )
-            .map_err(js_error)
-    }
-
-    #[wasm_bindgen(js_name = registerMachine)]
-    pub fn register_machine(
-        &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmMachineDefinition")] definition: JsValue,
-        initialize: Function,
-        transition: Function,
-    ) -> std::result::Result<(), JsValue> {
-        let definition: WasmMachineDefinition = from_js(definition)?;
-        let machine = Arc::new(HostMachine {
-            identity: MachineIdentity {
-                name: definition.name,
-                version: definition.version,
-                digest: key_bytes(definition.digest)?,
-            },
-            state_schema: definition.state_schema,
-            initialize,
-            transition,
-        });
-        let mut task = TaskDefinition::<Value, Value>::resumable(
-            machine.clone(),
-            definition.input_schema,
-            definition.output_schema,
-        )
-        .map_err(js_error)?;
-        for requirement in definition.requirements {
-            task = task.requires(requirement).map_err(js_error)?;
-        }
-        self.register_definition(machine, task)
-    }
-
-    /// Registers the Rust stock-turn adapter over the ordinary model outbox.
-    /// Registration starts no worker and grants no model or task authority.
-    #[wasm_bindgen(js_name = registerStockTurn)]
-    pub fn register_stock_turn(&mut self) -> std::result::Result<(), JsValue> {
-        let machine = Arc::new(StockTurnMachine::new());
-        let task = machine.wire_definition().map_err(js_error)?;
-        self.register_definition(machine, task)
-    }
-}
-
-impl WasmTaskRegistry {
-    fn register_definition(
-        &mut self,
-        machine: Arc<dyn ResumableMachine>,
-        task: TaskDefinition<Value, Value>,
-    ) -> std::result::Result<(), JsValue> {
-        // Only NotFound means this exact task key is vacant, including when an
-        // occupied key has different Rust types. With exclusive synchronous
-        // access, task insertion cannot conflict after machine registration.
-        let identity = machine.identity();
-        if !matches!(
-            self.tasks
-                .get_version::<Value, Value>(&identity.name, &identity.version),
-            Err(Error::NotFound(_))
-        ) {
-            return Err(js_error(Error::Conflict(
-                "task version is already registered".into(),
-            )));
-        }
-        self.machines
-            .register(machine, &mut None)
-            .map_err(js_error)?;
-        self.tasks.register(task).map_err(js_error)?;
-        Ok(())
-    }
-}
+#[cfg(test)]
+#[cfg(target_arch = "wasm32")]
+#[path = "accounting_tests.rs"]
+mod accounting_tests;

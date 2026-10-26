@@ -698,7 +698,7 @@ pub(super) async fn worker_restart_with_options(
                 .tail()
                 .await?;
                 assert!(matches!(
-                    runtime.worker_tick(&worker, None, &NoCommands, 1, 0).await,
+                    runtime.run_operation(&worker, task, &NoCommands, 0, None).await,
                     Err(Error::Invalid(_))
                 ));
                 assert_eq!(
@@ -710,20 +710,14 @@ pub(super) async fn worker_restart_with_options(
                     .await?,
                     before
                 );
-                let tick = runtime
-                    .worker_tick(&worker, None, &runtime.commands(), 1, 1)
-                    .await?;
-                assert_eq!(tick.wake.events_read, 1);
                 let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) =
-                    tick.work
+                    runtime
+                        .run_operation(&worker, task, &runtime.commands(), 1, None)
+                        .await?
                 else {
-                    return Err(Error::NotFound("initial worker tick lease".into()));
+                    return Err(Error::NotFound("initial worker lease".into()));
                 };
                 assert_eq!(lease.operation.operation_id, operation);
-                let idle = runtime
-                    .worker_tick(&worker, tick.wake.cursor, &NoCommands, 1, 1)
-                    .await?;
-                assert!(idle.work.is_none());
                 lease
             } else if reopened && (uncertain || with_mail_send) {
                 let retained = coordinator

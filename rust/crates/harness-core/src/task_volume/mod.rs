@@ -327,7 +327,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self.path
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(feature = "filesystem")]
     #[doc(hidden)]
     pub fn shares_provider<Q: StreamProvider + ?Sized>(&self, provider: &Arc<Q>) -> bool {
         std::ptr::addr_eq(Arc::as_ptr(&self.provider), Arc::as_ptr(provider))

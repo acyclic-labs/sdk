@@ -18,6 +18,7 @@ fn provider() -> HostModel {
         reconcile: Function::new_no_args("throw new Error('accounting invoked reconciliation')"),
         capacity: None,
         count_tokens: None,
+        content: None,
     }
 }
 

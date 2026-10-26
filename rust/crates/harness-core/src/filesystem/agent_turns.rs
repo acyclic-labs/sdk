@@ -49,7 +49,7 @@ pub struct TurnAuthority {
 /// Builds the executor of one agent turn: its tools, context, policy, limits
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
-pub trait TurnExecutors: Send + Sync {
+pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     /// Executor for `agent`'s turn `turn` on `input`.
     fn executor<'a>(
         &'a self,

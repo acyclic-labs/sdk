@@ -152,8 +152,6 @@ enum CommandDispatch {
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct TaskWakeCursor {
     /// Last inspected coordinator revision.
@@ -188,14 +186,6 @@ pub enum TaskWorkerAttempt {
         /// Admission or execution error.
         error: Error,
     },
-}
-
-/// One caller-driven service tick. It retains no background future.
-pub struct TaskWorkerTick {
-    /// Bounded discovery page; carry its cursor into the next tick.
-    pub wake: TaskWakePage,
-    /// At most one owned task attempt; none means no work was admitted.
-    pub work: Option<TaskWorkerAttempt>,
 }
 
 /// A bounded worker turn retains no suspended future or second queue.

@@ -7,13 +7,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         &self,
     ) -> Result<BoxProviderStream<'static, Result<()>>> {
         use futures::StreamExt as _;
-        Ok(self
-            .stream
-            .0
-            .follow(self.revision, acyclic_stream::FollowFilter::default())
-            .await?
-            .map(|record| record.map(|_| ()).map_err(Error::from))
-            .boxed())
+        Ok(Box::pin(
+            self.stream
+                .0
+                .follow(self.revision, acyclic_stream::FollowFilter::default())
+                .await?
+                .map(|record| record.map(|_| ()).map_err(Error::from)),
+        ))
     }
 
     /// Follows verified events from an already observed coordinator cut.

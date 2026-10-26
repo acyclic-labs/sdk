@@ -176,7 +176,6 @@ pub use task_commands::{
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
     TaskSourceInspection, TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome,
-    TaskWorkerTick,
 };
 mod config;
 use config::*;

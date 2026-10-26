@@ -81,7 +81,7 @@ mod context_discovery;
 mod history;
 mod mcp;
 #[cfg(feature = "browser")]
-mod task_runtime;
+mod agents;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

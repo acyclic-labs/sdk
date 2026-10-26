@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Harness agent tool call in the browser</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { agentsFixture, until, turnText } from "./browser-agents-fixture.mjs";
+import { jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
+const result = document.querySelector("#result");
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+let fixture;
+let agents;
+try {
+  const invocations = [];
+  fixture = await agentsFixture(crypto.randomUUID(), async function* ({ dispatch, request }) {
+    if (dispatch.step === 0) {
+      yield { kind: "tool_call", call_id: "effect", name: "test.effect", arguments: { value: "committed" } };
+    } else {
+      yield { kind: "content", delta: `saw:${JSON.stringify(request.messages.at(-1))}` };
+    }
+  });
+  const definition = { name: "test.effect", revision: "1", description: "Browser host effect",
+    input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+    output_schema: { type: "string" },
+    projection_schema: jsonToolProjectionSchema({ type: "object", properties: { observed: { type: "string" } },
+      required: ["observed"], additionalProperties: false }) };
+  fixture.registry.registerTool(definition, async invocation => {
+    invocations.push(invocation);
+    return { value: invocation.arguments.value };
+  }, async () => { throw new Error("a settled effect was reconciled"); },
+  (_, canonical) => ({ kind: "json", value: { observed: canonical.value } }));
+  let rejected = false;
+  try { fixture.registry.registerTool({ ...definition, description: "changed" }, () => {}, () => {}, () => {}); }
+  catch { rejected = true; }
+  assert(rejected, "same tool revision accepted a replacement definition");
+  agents = await fixture.open();
+  result.dataset.waiting = "turn calls the host tool and sees its projection";
+  const agent = await agents.create("tool-agent", "use the tool");
+  const entries = await until(() => agents.read(agent, "conversation", 0n, 4), entries => entries.length === 1);
+  const text = await turnText(agents, agent, entries[0]);
+  assert(invocations.length === 1 && invocations[0].arguments.value === "committed", describe(invocations));
+  assert(fixture.requests.length === 2 && text.includes("committed"), `tool result did not reach the model: ${text}`);
+  assert(fixture.failures.length === 0, describe(fixture.failures));
+  result.dataset.status = "passed";
+  result.textContent = "pinned host tool executed once and its projection reached the next model step";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  agents?.free();
+  fixture?.free();
+}
+</script>
+</html>

@@ -39,16 +39,6 @@ impl StockTurnMachine {
 
     /// Creates the typed registered definition for the existing durable host.
     pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, TurnOutput>> {
-        self.registered_definition()
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    #[doc(hidden)]
-    pub fn wire_definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
-        self.registered_definition()
-    }
-
-    fn registered_definition<I, O>(self: &Arc<Self>) -> Result<TaskDefinition<I, O>> {
         TaskDefinition::resumable(
             self.clone(),
             json!({

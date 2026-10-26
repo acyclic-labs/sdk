@@ -15,7 +15,6 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { remoteToolFixture } from "./remote-tool-fixture.mjs";
 
 const PAGES = [
   "browser-smoke.html",
@@ -26,14 +25,8 @@ const PAGES = [
   "../harness/test/browser-wire.html",
   "../harness/test/browser-context.html",
   "../harness/test/browser-wasm-init-failure.html",
-  "../harness/test/browser-task.html",
-  "../harness/test/browser-task-multitab.html",
-  "../harness/test/browser-task-tool.html",
-  "../harness/test/browser-task-tool.html?profile=http",
-  "../harness/test/browser-task-tool-malformed.html",
-  "../harness/test/browser-task-model.html",
-  "../harness/test/browser-task-compaction.html",
-  "../harness/test/browser-task-mail.html",
+  "../harness/test/browser-agents.html",
+  "../harness/test/browser-agents-tool.html",
 ];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
@@ -80,7 +73,7 @@ function chromeExecutable() {
 // page: a page's "Failed to fetch" names no request, but these do.
 const anomalies = [];
 
-async function serve(remoteTool) {
+async function serve() {
   const server = createServer((request, response) => {
     const started = Date.now();
     response.on("close", () => {
@@ -90,7 +83,6 @@ async function serve(remoteTool) {
       }
     });
     const pathname = decodeURIComponent(new URL(request.url, "http://host").pathname);
-    if (remoteTool.handle(request, response, pathname)) return;
     const dependency = [...dependencyRoots].find(([prefix]) => pathname.startsWith(prefix));
     const base = dependency?.[1] ?? root;
     const relative = dependency === undefined ? pathname : pathname.slice(dependency[0].length);
@@ -357,8 +349,7 @@ async function runPage(browser, observer, origin, page) {
 }
 
 const pages = process.argv.length > 2 ? process.argv.slice(2) : PAGES;
-const remoteTool = remoteToolFixture();
-const server = await serve(remoteTool);
+const server = await serve();
 const origin = `http://127.0.0.1:${server.address().port}`;
 const profile = mkdtempSync(join(tmpdir(), "acyclic-fs-browser-"));
 let launched;
@@ -398,7 +389,6 @@ try {
     await launched.exited;
   }
   server.close();
-  remoteTool.close();
   // Chrome's helper processes can hold profile files briefly after the
   // browser itself exits; a profile that still cannot be removed is only
   // reported, since the qualification result is already known.

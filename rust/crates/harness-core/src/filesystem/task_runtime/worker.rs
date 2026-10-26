@@ -60,31 +60,6 @@ where
         .await
     }
 
-    /// Performs one bounded discovery page followed by at most one owner-scoped admission and worker turn through the trusted command adapter.
-    pub async fn worker_tick(
-        &self,
-        worker: &crate::distributed::Worker,
-        cursor: Option<TaskWakeCursor>,
-        commands: &dyn TaskCommandHost,
-        maximum_events: u32,
-        maximum_transitions: u32,
-    ) -> Result<TaskWorkerTick> {
-        if worker.id.trim().is_empty() || maximum_transitions == 0 {
-            return Err(Error::Invalid(
-                "invalid worker tick allowance or identity".into(),
-            ));
-        }
-        crate::conversation::BoundedContentFuture::new(None, || async move {
-            let wake = self.poll_task_wake_page(cursor, maximum_events).await?;
-            let pulled = self.host.pull_work(worker, None, &mut None).await?;
-            let work = self
-                .resume_pulled(pulled, commands, maximum_transitions, None)
-                .await;
-            Ok(TaskWorkerTick { wake, work })
-        })?
-        .await
-    }
-
     /// Polls and claims only the original admitted task, then uses the same fenced worker execution path.
     pub async fn run_operation(
         &self,
