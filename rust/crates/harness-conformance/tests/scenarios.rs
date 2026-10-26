@@ -374,7 +374,6 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
         "subagents",
         "swarm",
         "plans",
-        "plan-query",
         "executor",
         "composer",
     ];

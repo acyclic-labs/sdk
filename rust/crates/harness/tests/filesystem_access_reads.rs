@@ -23,7 +23,7 @@ mod copies;
 mod fork_fence;
 #[path = "filesystem_access_imports.rs"]
 mod imports;
-#[path = "file_query/objects.rs"]
+#[path = "support/counting_objects.rs"]
 mod objects;
 #[path = "filesystem_access_observation.rs"]
 mod observation;

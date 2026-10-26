@@ -79,7 +79,6 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
                 "local",
                 "swarm",
                 "plans",
-                "plan-query",
             ]
             .contains(&driver.as_str()) =>
         {
@@ -254,7 +253,7 @@ fn fixture_reason(value: &Value) -> &'static str {
             "driver asserts synchronous delivery from its concrete MemoryStream fixture"
         }
         Some("notifications") => "driver inspects its fixture-owned notification projection",
-        Some("plans" | "plan-query") => {
+        Some("plans") => {
             "driver uses native storage.builder/run_prompt and fixture-owned file-query projections"
         }
         _ => "host did not declare the required capability",

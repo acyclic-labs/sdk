@@ -13,8 +13,6 @@ mod goals;
 mod local;
 #[path = "../../harness/tests/support/schema/notifications.rs"]
 mod notifications;
-#[path = "../../harness/tests/support/schema/plan_query.rs"]
-mod plan_query;
 #[path = "../../harness/tests/support/schema/plans.rs"]
 mod plans;
 #[path = "../../harness/tests/support/schema/subagents.rs"]
@@ -46,9 +44,6 @@ pub(super) fn validate(mut value: Value) -> TestResult {
         }
         Some("plans") => {
             plans::Plans::parse(value)?;
-        }
-        Some("plan-query") => {
-            plan_query::PlanQuery::parse(value)?;
         }
         Some("task_query") => {
             let _: task_query::TaskQueryCase = serde_json::from_value(value)?;
