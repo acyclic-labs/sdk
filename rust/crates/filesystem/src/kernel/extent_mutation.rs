@@ -452,10 +452,8 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
             ..WorkCounters::UNCHARGED
         })?;
         {
-            let __object_args = (hashed, original, cancellation);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-
-            store.put_hashed(__object_args.0, &mut __object_work).await
+            let mut work = crate::AuthorityWork::native(original, cancellation);
+            store.put_hashed(hashed, &mut work).await
         }
         .map_err(super::file_read::read_store_error)?;
         return Ok(object);

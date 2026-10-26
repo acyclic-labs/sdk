@@ -331,16 +331,8 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
                     std::panic::resume_unwind(Box::new("cold original authenticated probe read"));
                 }
                 {
-                    let __object_args = (object, maximum_bytes, work, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    AsyncObjectStore::read(
-                        &self.store,
-                        __object_args.0,
-                        __object_args.1,
-                        &mut __object_work,
-                    )
-                    .await
+                    let mut work = crate::AuthorityWork::native(work, cancellation);
+                    AsyncObjectStore::read(&self.store, object, maximum_bytes, &mut work).await
                 }
             }
             .await;
@@ -349,16 +341,10 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
         let cancellation = context.cancellation;
         let result = async {
             {
-                let __object_args = (object, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(
-                    &self.store,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
+                let mut work = crate::AuthorityWork::new(budget, cancellation);
+                let result =
+                    AsyncObjectStore::read(&self.store, object, maximum_bytes, &mut work).await;
+                work.receipt(result)
             }
         }
         .await;

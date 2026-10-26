@@ -93,18 +93,12 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             .check()
             .map_err(|_| MarkError::Storage(ObjectStoreError::Cancelled))?;
         let read = {
-            let __object_args = (
-                object,
-                self.limits.maximum_object_bytes,
-                WorkBudget::UNBOUNDED,
-                self.cancellation,
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = self
+            let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, self.cancellation);
+            let result = self
                 .store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .read(object, self.limits.maximum_object_bytes, &mut work)
                 .await;
-            __object_work.receipt(__object_result)
+            work.receipt(result)
         }
         .map_err(|failure| MarkError::Storage(failure.error))?;
         Ok(Some(read.value.bytes))
@@ -133,18 +127,12 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         };
         self.marked.insert(object);
         let read = {
-            let __object_args = (
-                object,
-                self.limits.maximum_object_bytes,
-                WorkBudget::UNBOUNDED,
-                self.cancellation,
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = self
+            let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, self.cancellation);
+            let result = self
                 .store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .read(object, self.limits.maximum_object_bytes, &mut work)
                 .await;
-            __object_work.receipt(__object_result)
+            work.receipt(result)
         }
         .map_err(|failure| MarkError::Storage(failure.error))?;
         decode(decode_generation_root(

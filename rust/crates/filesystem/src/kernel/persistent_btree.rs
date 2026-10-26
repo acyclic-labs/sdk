@@ -709,12 +709,8 @@ where
             let object = hashed.object_id();
             self.accounting.charge(PAGE_WRITE)?;
             {
-                let __object_args = (hashed, work, self.cancellation);
-                let mut __object_work =
-                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
-
-                crate::AsyncObjectStore::put_hashed(self.store, __object_args.0, &mut __object_work)
-                    .await
+                let mut work = crate::AuthorityWork::native(work, self.cancellation);
+                crate::AsyncObjectStore::put_hashed(self.store, hashed, &mut work).await
             }
             .map_err(storage_error)?;
             drop(encoded);
@@ -733,15 +729,9 @@ where
         self.accounting.charge(PAGE_WRITE)?;
         let remaining = self.accounting.remaining()?;
         let res = {
-            let __object_args = (hashed, remaining, self.cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = crate::AsyncObjectStore::put_hashed(
-                self.store,
-                __object_args.0,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
+            let mut work = crate::AuthorityWork::new(remaining, self.cancellation);
+            let result = crate::AsyncObjectStore::put_hashed(self.store, hashed, &mut work).await;
+            work.receipt(result)
         };
         match res {
             Ok(receipt) => self.accounting.charge(receipt.work)?,
