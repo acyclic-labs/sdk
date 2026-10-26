@@ -154,8 +154,7 @@ fn chunking_is_bounded_by_items_bytes_and_encoder_contracts()
     ));
     limits.maximum_page_items = 3;
     assert!(matches!(
-        PageChunks::new(&[1_u8], limits, |_| Err(CanonicalDecodeError::Truncated))
-            .map(|_| ()),
+        PageChunks::new(&[1_u8], limits, |_| Err(CanonicalDecodeError::Truncated)).map(|_| ()),
         Err(Error::<TreeMutationError>::Decode(
             CanonicalDecodeError::Truncated
         ))
