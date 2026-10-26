@@ -22,6 +22,9 @@ export const packagedTypeScriptBindings = [
   ["actors/v1/actors_pb", ["actors"]],
 ];
 
+// These packages intentionally own no protobuf outputs after protocol retirement.
+export const retiredTypeScriptBindingPackages = ["harness"];
+
 export const compatibilityArtifacts = {
   auth: {
     schemaDigest: "rust/crates/auth/proto/auth/v1/auth.proto",
