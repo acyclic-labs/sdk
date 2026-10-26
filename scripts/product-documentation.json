@@ -143,5 +143,15 @@
   "docs/proofs/streams-checkpoint.md",
   "docs/proofs/wave1-actor-contract.md",
   "docs/proofs/wave1-auth-contract.md",
-  "docs/proofs/wave1-client-contract.md"
+  "docs/proofs/wave1-client-contract.md",
+  "docs/backends/anthropic.md",
+  "docs/backends/bedrock.md",
+  "docs/backends/inference.md",
+  "docs/backends/local-inference.md",
+  "docs/backends/oidc.md",
+  "docs/backends/openai.md",
+  "docs/backends/openrouter.md",
+  "docs/backends/vertex.md",
+  "rust/crates/conformance/fixtures/identity/dex/README.md",
+  "rust/crates/conformance/fixtures/inference/llamacpp/README.md"
 ]
