@@ -7,7 +7,10 @@ fn reentrant_waker_cleanup(entry: u8) {
         dropped: Arc<AtomicUsize>,
     }
     impl Wake for Reenter {
-        fn wake(self: Arc<Self>) {}
+        fn wake(self: Arc<Self>) {
+            // Dropping the last waker reenters the executor through Drop.
+            drop(self);
+        }
     }
     impl Drop for Reenter {
         fn drop(&mut self) {
@@ -108,14 +111,18 @@ fn abandoned_scope(polled: bool, panic: bool) -> io::Result<()> {
     }));
     assert_eq!(result.is_err(), panic);
     if polled {
-        let executor = schedule.0.executor.as_ref().unwrap();
+        let executor = schedule
+            .0
+            .executor
+            .as_ref()
+            .ok_or_else(|| io::Error::other("seeded schedule has no executor"))?;
         let cx = PollContext::from_waker(Waker::noop());
         executor.poll_owned(&cx);
-        events.try_recv().unwrap().release();
+        events.try_recv().map_err(io::Error::other)?.release();
         executor.poll_owned(&cx);
         assert!(was_polled.load(Ordering::SeqCst));
     }
-    let handle = handle.unwrap();
+    let handle = handle.ok_or_else(|| io::Error::other("scope did not submit its task"))?;
     let abort = handle.abort_handle();
     drop(events);
     drop(schedule);
@@ -133,7 +140,10 @@ fn abandoned_scope(polled: bool, panic: bool) -> io::Result<()> {
         "task context retained its schedule"
     );
     abort.abort();
-    let error = runtime.block_on(handle).unwrap_err();
+    let error = runtime
+        .block_on(handle)
+        .err()
+        .ok_or_else(|| io::Error::other("abandoned task unexpectedly completed"))?;
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     Ok(())
 }
@@ -390,7 +400,7 @@ fn cancellation_of_the_root_keeps_owned_work_drivable() -> io::Result<()> {
                 yield_once().await;
                 finished.send(57).unwrap();
             }));
-            std::future::pending::<()>().await
+            std::future::pending::<()>().await;
         }));
         // Poll the root until its real owned submission has been accepted.
         std::future::poll_fn(|cx| {

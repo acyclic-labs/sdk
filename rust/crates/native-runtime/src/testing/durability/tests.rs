@@ -58,7 +58,8 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
                 DurableFault::Torn(count) => count.min(offered.len() - 1),
                 _ => 0,
             };
-            assert_eq!(actual, [prefix, &offered[..kept]].concat());
+            let (retained, _) = offered.split_at(kept);
+            assert_eq!(actual, [prefix, retained].concat());
             for (index, result) in results.into_iter().enumerate() {
                 if index < cut {
                     assert!(result.is_ok());
@@ -115,7 +116,7 @@ fn physical_write_accounting_precedes_acknowledgement_loss() {
         assert_eq!(operations, usize::from(expected != 0));
         assert_eq!(file.metadata().unwrap().len(), transferred as u64);
         assert_eq!(
-            schedule.durable_writes()[0].transferred,
+            schedule.durable_writes().first().unwrap().transferred,
             (operations != 0).then_some(transferred)
         );
         assert_eq!(
@@ -146,10 +147,11 @@ fn parent_flush_cut(fault: Option<DurableFault>, nested: bool) {
     }));
     let trace = schedule.durable_writes();
     assert_eq!(trace.len(), 1, "nested parent flush boundary");
-    assert_eq!(trace[0].operation, "file:sync_parent");
+    let event = trace.first().unwrap();
+    assert_eq!(event.operation, "file:sync_parent");
     let completed = fault.is_none() || fault == Some(DurableFault::After);
     assert_eq!(
-        trace[0].transferred,
+        event.transferred,
         completed.then_some(0),
         "parent flush was skipped"
     );
@@ -278,7 +280,8 @@ proptest::proptest! {
         impl Write for Short {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 let count = bytes.len().min(self.width);
-                self.bytes.extend_from_slice(&bytes[..count]);
+                let (written, _) = bytes.split_at(count);
+                self.bytes.extend_from_slice(written);
                 Ok(count)
             }
             fn flush(&mut self) -> io::Result<()> { Ok(()) }

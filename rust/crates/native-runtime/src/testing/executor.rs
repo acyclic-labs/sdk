@@ -244,11 +244,13 @@ impl Executor {
         let mut draw = [0; 8];
         state.random.fill(&mut draw);
         let index = u64::from_le_bytes(draw) % count as u64;
+        // The draw is bounded by a usize-sized population on every target.
+        let index = usize::try_from(index).ok()?;
         let id = *state
             .ready
             .difference(&state.served)
             .filter(|id| eligible(state, id))
-            .nth(index as usize)?;
+            .nth(index)?;
         state.ready.remove(&id);
         state.served.insert(id);
         let cancelled = state.cancelled.contains(&id);
@@ -508,10 +510,10 @@ pub(super) fn complete_io<F: Future>(future: F) -> F::Output {
         #[cfg(test)]
         omit_latch: false,
     });
-    wait_io(future, wake)
+    wait_io(future, &wake)
 }
 
-fn wait_io<F: Future>(future: F, wake: Arc<CompletionWake>) -> F::Output {
+fn wait_io<F: Future>(future: F, wake: &Arc<CompletionWake>) -> F::Output {
     let waker = Waker::from(wake.clone());
     let mut cx = PollContext::from_waker(&waker);
     let mut future = std::pin::pin!(future);

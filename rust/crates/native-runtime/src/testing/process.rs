@@ -26,6 +26,11 @@ pub(super) type Provider = dyn Fn(
 impl Schedule {
     /// Installs one process boundary before dispatch. It cannot change while a
     /// turn or any accepted descendant owns this schedule.
+    ///
+    /// # Panics
+    ///
+    /// Panics after dispatch, while owned work is active, or if a process
+    /// provider is already installed.
     pub fn set_process_provider(
         &self,
         provider: impl Fn(

@@ -186,7 +186,7 @@ fn completion(omit_latch: bool) {
                     Poll::Pending
                 }
             }),
-            wake,
+            &wake,
         );
         worker.join().unwrap();
     });

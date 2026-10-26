@@ -112,7 +112,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
                     Poll::Pending
                 }
             }));
-        })
+        });
     });
     let mut state = host.state.lock().unwrap_or_else(PoisonError::into_inner);
     while state.phase != Phase::Parked {
@@ -535,7 +535,7 @@ fn native_callback(
                         blocking_on(read)
                     }
                     .unwrap();
-                    bytes.extend_from_slice(&batch[0]);
+                    bytes.extend_from_slice(batch.first().unwrap());
                 }
                 bytes
             })

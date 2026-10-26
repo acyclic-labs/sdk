@@ -86,6 +86,10 @@ struct Call {
 
 impl Schedule {
     /// Arms a fresh scope. No operation can clear a crash while descendants live.
+    ///
+    /// # Panics
+    ///
+    /// Panics if owned work is active or any durable operation has already run.
     pub fn cut_at(&self, ordinal: usize, fault: DurableFault) {
         let mut state = self.0.state();
         assert_eq!(state.active, 0, "cannot arm live owned work");
@@ -171,11 +175,32 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
 }
 
 impl Call {
-    fn finish(&self, result: &io::Result<usize>) {
+    fn record(&self, update: impl FnOnce(&mut DurableWrite)) -> io::Result<()> {
         let mut state = self.schedule.0.state();
-        let event = &mut state.writes.trace[self.ordinal];
-        event.transferred = result.as_ref().ok().copied();
-        event.failure = result.as_ref().err().map(io::Error::kind);
+        let event = state.writes.trace.get_mut(self.ordinal).ok_or_else(|| {
+            io::Error::other("durable operation is missing its registered trace entry")
+        })?;
+        update(event);
+        Ok(())
+    }
+
+    fn finish(&self, result: &io::Result<usize>) -> io::Result<()> {
+        self.record(|event| {
+            event.transferred = result.as_ref().ok().copied();
+            event.failure = result.as_ref().err().map(io::Error::kind);
+        })
+    }
+
+    fn after<T>(&self, result: &io::Result<T>) -> io::Result<()> {
+        if let Some(fault) = &self.fault
+            && fault.fault == DurableFault::After
+            && result.is_ok()
+        {
+            let error = fault.error();
+            self.record(|event| event.failure = Some(error.kind()))?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn before(&self) -> io::Result<()> {
@@ -208,7 +233,7 @@ pub fn durable_write(
         let offered = if let Some(fault) = &call.fault
             && let DurableFault::Torn(prefix) = fault.fault
         {
-            let offered = &bytes[..prefix.min(bytes.len().saturating_sub(1))];
+            let (offered, _) = bytes.split_at(prefix.min(bytes.len().saturating_sub(1)));
             if offered.is_empty() && !bytes.is_empty() {
                 return Err(fault.error());
             }
@@ -218,14 +243,8 @@ pub fn durable_write(
         };
         write(offered)
     });
-    call.finish(&result);
-    if let Some(fault) = &call.fault
-        && fault.fault == DurableFault::After
-        && result.is_ok()
-    {
-        call.schedule.0.state().writes.trace[call.ordinal].failure = Some(fault.error().kind());
-        return Err(fault.error());
-    }
+    call.finish(&result)?;
+    call.after(&result)?;
     result
 }
 
@@ -253,14 +272,8 @@ pub fn durable_operation<T>(
             .as_ref()
             .map(|_| 0)
             .map_err(|error| io::Error::from(error.kind())),
-    );
-    if let Some(fault) = &call.fault
-        && fault.fault == DurableFault::After
-        && result.is_ok()
-    {
-        call.schedule.0.state().writes.trace[call.ordinal].failure = Some(fault.error().kind());
-        return Err(fault.error());
-    }
+    )?;
+    call.after(&result)?;
     result
 }
 

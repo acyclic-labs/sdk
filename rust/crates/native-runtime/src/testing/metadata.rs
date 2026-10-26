@@ -33,6 +33,11 @@ impl Schedule {
     /// Supplies explicit native timestamp inputs before dispatch. Physical
     /// identity, content and snapshot revalidation still use the original host.
     /// Without a provider, captures retain every original native timestamp.
+    ///
+    /// # Panics
+    ///
+    /// Panics after dispatch, while owned work is active, or if a timestamp
+    /// provider is already installed.
     pub fn set_native_times_provider(
         &self,
         provider: impl Fn(NativeMetadataInput) -> NativeTimes + Send + Sync + 'static,
