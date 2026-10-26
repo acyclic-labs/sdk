@@ -46,7 +46,6 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     );
 }
 use super::*;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "source_attestation_tests.rs"]
 mod source_attestation;
@@ -64,17 +63,11 @@ fn release_version_must_match_published_sdk_version() {
 }
 
 fn test_root(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be available")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "sdk-generation-collector-{label}-{}-{nonce}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("test root should be creatable");
-    root
+    tempfile::Builder::new()
+        .prefix(&format!("sdk-generation-{label}-"))
+        .tempdir()
+        .expect("test root should be creatable")
+        .keep()
 }
 
 fn write(root: &Path, relative: &str, bytes: &[u8]) {

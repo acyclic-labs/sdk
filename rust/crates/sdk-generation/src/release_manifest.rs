@@ -309,18 +309,11 @@ fn mode_name(mode: ScenarioMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn candidate_then_registry_release_preserves_both_sidecars() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let output = std::env::temp_dir().join(format!(
-            "sdk-sidecar-namespaces-{nonce}-{}",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path();
         let candidate = output_path(
             &output,
             &Channel::Release,
@@ -344,19 +337,12 @@ mod tests {
         assert_eq!(fs::read(&released).unwrap(), b"registry source");
         assert!(super::super::write_immutable(&candidate, b"different candidate").is_err());
         assert!(super::super::write_immutable(&released, b"different release").is_err());
-        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
     fn validate_rejects_generated_artifacts_missing_from_release_manifest() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be available")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "sdk-generation-release-manifest-{nonce}-{}",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
         let output = root.join("output");
         let release = output.join("preview/v1/sdk-generation-release-manifest.v1.json");
         fs::create_dir_all(release.parent().expect("release path has a parent"))
@@ -410,6 +396,5 @@ mod tests {
         )
         .expect_err("an unlisted generated artifact must fail closed");
         assert!(error.contains("artifact set differs"), "{error}");
-        let _ = fs::remove_dir_all(root);
     }
 }

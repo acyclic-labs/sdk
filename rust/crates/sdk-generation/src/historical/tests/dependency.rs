@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates() {
     let fixture = Fixture::new();
-    let root = fixture.0.canonicalize().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
     let directory = "historical-fixture-0.1.0";
     let producer_dir = root.join(format!(".docs-producer/{directory}"));
     fs::create_dir_all(producer_dir.join("registry-archives")).unwrap();

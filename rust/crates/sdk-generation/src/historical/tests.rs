@@ -42,7 +42,7 @@ fn batch_protocol_fixture(
     };
     #[cfg(not(windows))]
     let mut command = {
-        let script = fixture.0.join("batch.sh");
+        let script = fixture.path().join("batch.sh");
         // POSIX shell builtin printf writes arbitrary binary bytes without an extra process.
         let bytes = response
             .iter()
@@ -170,12 +170,12 @@ fn git_batch_reader_propagates_callback_failure_and_terminates_child() {
 #[test]
 fn registry_frontier_rejects_redirect_before_first_export_write() {
     let fixture = Fixture::new();
-    let repository = fixture.0.join("repository");
-    let foreign = fixture.0.join("foreign");
+    let repository = fixture.path().join("repository");
+    let foreign = fixture.path().join("foreign");
     fs::create_dir(&repository).unwrap();
     fs::create_dir(&foreign).unwrap();
     fs::write(foreign.join("sentinel"), "preserve").unwrap();
-    let linked = fixture.0.join("frontier");
+    let linked = fixture.path().join("frontier");
     std::os::unix::fs::symlink(&foreign, &linked).unwrap();
     let error = capture_registry_corpus(
         &repository,
@@ -192,7 +192,7 @@ fn registry_frontier_rejects_redirect_before_first_export_write() {
 #[test]
 fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
     let fixture = Fixture::new();
-    let repository = fixture.0.join("repository");
+    let repository = fixture.path().join("repository");
     fs::create_dir_all(repository.join("src")).unwrap();
     fs::create_dir_all(repository.join("release")).unwrap();
     fs::write(
@@ -212,7 +212,7 @@ fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
     };
     git(&["init", "--quiet"]);
     git(&["add", "."]);
-    let blob_file = fixture.0.join("link-blob");
+    let blob_file = fixture.path().join("link-blob");
     let link_bytes = b"../../../../foreign-outside-workspace";
     fs::write(&blob_file, link_bytes).unwrap();
     let object =
@@ -244,7 +244,7 @@ fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
             .to_owned()
     };
     let revision = commit();
-    let export = fixture.0.join("export");
+    let export = fixture.path().join("export");
     fs::create_dir(&export).unwrap();
     let captured =
         registry_owner_source_inner(&repository, &export, &revision, &cargo(), true, None).unwrap();
@@ -273,7 +273,7 @@ fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
             &format!("120000,{object},{linked_input}"),
         ]);
         let revision = commit();
-        let export = fixture.0.join(format!("rejected-{index}"));
+        let export = fixture.path().join(format!("rejected-{index}"));
         fs::create_dir(&export).unwrap();
         let error =
             registry_owner_source_inner(&repository, &export, &revision, &cargo(), true, None)
@@ -285,7 +285,7 @@ fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
 #[test]
 fn original_release_history_retains_retired_owner_and_rejects_missing_frontier() {
     let fixture = Fixture::new();
-    let repository = fixture.0.join("repository");
+    let repository = fixture.path().join("repository");
     fs::create_dir_all(repository.join("release")).unwrap();
     fs::write(
         repository.join(".gitattributes"),
@@ -382,14 +382,14 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
             current.clone()
         ])
     );
-    let (sources, authority) = original_sources(&repository, &fixture.0, &revisions, true).unwrap();
+    let (sources, authority) = original_sources(&repository, fixture.path(), &revisions, true).unwrap();
     assert_eq!(
         authority,
         BTreeSet::from(["current-owner".into(), "retired-owner".into()])
     );
     for source in sources {
         let revision = source.revision.clone();
-        let export = fixture.0.join(&revision);
+        let export = fixture.path().join(&revision);
         let captured = discover_owner(&export, &cargo(), source, Some(&authority)).unwrap();
         assert_eq!(captured.uses_frontier_authority, revision == before_index);
         assert_eq!(
@@ -430,10 +430,10 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
     };
     assert!(verify_registry_corpus(
         &corpus,
-        &fixture.0.join("frontier"),
+        fixture.path().join("frontier"),
         Path::new("absent-cargo"),
         "0.1.1",
-        &fixture.0
+        fixture.path()
     )
     .unwrap_err()
     .contains("empty"));
@@ -444,7 +444,7 @@ fn cohort_publisher_anchors_require_immutable_archive_checksum_lineage() {
     let fixture = Fixture::new();
     let publisher = "a".repeat(40);
     let (release, archive) = fixture.archive_with_dirty(&publisher, "original-owner", true);
-    let archives = fixture.0.join("cohort");
+    let archives = fixture.path().join("cohort");
     fs::create_dir(&archives).unwrap();
     let name = "historical-fixture-0.1.0.crate";
     let retained = archives.join(name);
@@ -600,7 +600,7 @@ fn complete_registry_inventory_keeps_yanked_prereleases_and_rejects_partial_sets
 #[test]
 fn complete_registry_cohort_rejects_missing_retired_owner_before_import() {
     let fixture = Fixture::new();
-    let archive_dir = fixture.0.join("inventory-inputs");
+    let archive_dir = fixture.path().join("inventory-inputs");
     fs::create_dir(&archive_dir).unwrap();
     let mut inventory = BTreeMap::new();
     for package in ["current-owner", "retired-owner"] {
@@ -636,16 +636,11 @@ fn complete_registry_cohort_rejects_missing_retired_owner_before_import() {
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Fixture(PathBuf);
+struct Fixture(tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "sdk-historical-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("examples")).unwrap();
         fs::write(root.join("Cargo.toml"), "[package]\nname='historical-fixture'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[features]\nold-feature=[]\n[[example]]\nname='old-example'\nrequired-features=['old-feature']\n").unwrap();
@@ -660,11 +655,14 @@ impl Fixture {
         )
         .unwrap();
         fs::write(root.join("Cargo.lock"), "# This file is automatically @generated by Cargo.\nversion = 4\n[[package]]\nname = \"historical-fixture\"\nversion = \"0.1.0\"\n").unwrap();
-        Self(root)
+        Self(directory)
+    }
+    fn path(&self) -> &Path {
+        self.0.path()
     }
     fn metadata(&self) -> Metadata {
         sdk_docs::rustdoc_profiles::load_metadata(
-            self.0.join("Cargo.toml"),
+            self.path().join("Cargo.toml"),
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(&cargo()),
                 lock_selection: None,
@@ -681,7 +679,7 @@ impl Fixture {
         vcs_path: &str,
         dirty: bool,
     ) -> (RegistryVersion, PathBuf) {
-        let entry = self.0.join("historical-fixture-0.1.0");
+        let entry = self.path().join("historical-fixture-0.1.0");
         fs::create_dir_all(&entry).unwrap();
         fs::write(
             entry.join(".cargo_vcs_info.json"),
@@ -693,20 +691,20 @@ impl Fixture {
         .unwrap();
         fs::create_dir_all(entry.join("src")).unwrap();
         fs::create_dir_all(entry.join("examples")).unwrap();
-        fs::copy(self.0.join("src/lib.rs"), entry.join("src/lib.rs")).unwrap();
+        fs::copy(self.path().join("src/lib.rs"), entry.join("src/lib.rs")).unwrap();
         fs::copy(
-            self.0.join("examples/old-example.rs"),
+            self.path().join("examples/old-example.rs"),
             entry.join("examples/old-example.rs"),
         )
         .unwrap();
-        fs::copy(self.0.join("Cargo.toml"), entry.join("Cargo.toml.orig")).unwrap();
-        let archive = self.0.join("release.crate");
+        fs::copy(self.path().join("Cargo.toml"), entry.join("Cargo.toml.orig")).unwrap();
+        let archive = self.path().join("release.crate");
         command_output(
             Command::new("tar")
                 .arg("-cf")
                 .arg(&archive)
                 .arg("-C")
-                .arg(&self.0)
+                .arg(self.path())
                 .arg("historical-fixture-0.1.0"),
         )
         .unwrap();
@@ -723,11 +721,6 @@ impl Fixture {
             },
             archive,
         )
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 fn cargo() -> PathBuf {
