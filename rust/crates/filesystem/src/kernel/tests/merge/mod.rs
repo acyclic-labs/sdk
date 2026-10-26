@@ -2,11 +2,11 @@ use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
-    FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, encode_file_metadata,
-    file_metadata_id};
+    FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, file_metadata_id,
+};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
-use acyclic_stream::OwnedBytes;
+use crate::test_support::{put_file_metadata as put_metadata, put_generation_root as put_generation};
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
     ObjectId {
@@ -72,25 +72,6 @@ fn directory(file: u8, metadata: u8, link_count: u64, entries: u8) -> FileRecord
     )
 }
 
-async fn put_metadata(
-    store: &MemoryObjectStore,
-    metadata: FileMetadata,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let object = file_metadata_id(metadata)?;
-    AsyncObjectStore::put(
-        store,
-        object,
-        OwnedBytes::from(encode_file_metadata(
-            metadata,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(object)
-}
-
 fn timed(modified_ns: i64, posix_mode: u32) -> FileMetadata {
     FileMetadata {
         posix_mode: MetadataField::Value(posix_mode),
@@ -116,18 +97,6 @@ async fn put_table(
         8,
     )
     .await
-}
-
-async fn put_generation(
-    store: &MemoryObjectStore,
-    generation: &GenerationRoot,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let encoded = super::super::encode_generation_root(
-        generation,
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?;
-    crate::test_support::put_object(store, ObjectKind::GenerationRoot, encoded).await
 }
 
 async fn stored_request(

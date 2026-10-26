@@ -9,46 +9,36 @@ enum NativePublicationTestError {
 }
 
 async fn native_fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> TestResult<ObjectId> {
-    use crate::kernel::{BlobChunkRef, BlobNode, BlobPage, encode_blob_page};
+    use crate::kernel::{BlobChunkRef, BlobNode, BlobPage};
     let metadata = metadata_object(objects).await?;
     let content = b"original closure content";
     let chunk = put(objects, ObjectKind::BlobChunk, content.to_vec()).await?;
     let logical_bytes = content.len() as u64;
-    let blob = put(
+    let blob = crate::test_support::put_blob_page(
         objects,
-        ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        &BlobPage {
+            first_offset: 0,
+            end_offset: logical_bytes,
+            node: BlobNode::Leaf(vec![BlobChunkRef {
                 first_offset: 0,
                 end_offset: logical_bytes,
-                node: BlobNode::Leaf(vec![BlobChunkRef {
-                    first_offset: 0,
-                    end_offset: logical_bytes,
-                    chunk,
-                }]),
-            },
-            8,
-            accept,
-            allocation_failed,
-        )?,
+                chunk,
+            }]),
+        },
+        8,
     )
     .await?;
-    let extents = put(
+    let extents = crate::test_support::put_extent_page(
         objects,
-        ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
-                offset: 0,
-                length: logical_bytes,
-                kind: ExtentKind::Content {
-                    object: blob,
-                    object_offset: 0,
-                },
-            }]),
-            8,
-            accept,
-            allocation_failed,
-        )?,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: logical_bytes,
+            kind: ExtentKind::Content {
+                object: blob,
+                object_offset: 0,
+            },
+        }]),
+        8,
     )
     .await?;
     let child = FileId::from_bytes([2; 16]);

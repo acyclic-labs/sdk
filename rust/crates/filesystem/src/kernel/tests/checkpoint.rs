@@ -17,7 +17,8 @@ async fn put_root(
     root_file_byte: u8,
     table_byte: u8,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let encoded = encode_generation_root(
+    crate::test_support::put_generation_root(
+        store,
         &GenerationRoot {
             volume_id: VolumeId::from_bytes([volume_byte; 16]),
             root_file_id: FileId::from_bytes([root_file_byte; 16]),
@@ -25,10 +26,8 @@ async fn put_root(
             parents: Vec::new(),
             required_features: 0,
         },
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?;
-    crate::test_support::put_object(store, ObjectKind::GenerationRoot, encoded).await
+    )
+    .await
 }
 
 #[tokio::test]

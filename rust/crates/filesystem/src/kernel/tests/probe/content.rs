@@ -13,19 +13,14 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
         ..WorkBudget::UNBOUNDED
     };
     let inline = capture_content_range_bytes(&[0; 8], 8, exact_budget)?;
-    let extents = put(
+    let extents = crate::test_support::put_extent_page(
         &store,
-        ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
-                offset: 0,
-                length: 8,
-                kind: ExtentKind::Hole,
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 8,
+            kind: ExtentKind::Hole,
+        }]),
+        8,
     )
     .await?;
     let sparse = probe

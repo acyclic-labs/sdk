@@ -58,19 +58,14 @@ async fn evidence_fixture() -> TestResult<(
     let objects = MemoryObjectStore::default();
     let volume_id = VolumeId::from_bytes([61; 16]);
     let metadata = metadata_object(&objects).await?;
-    let extents = put(
+    let extents = crate::test_support::put_extent_page(
         &objects,
-        ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
-                offset: 0,
-                length: u64::MAX,
-                kind: ExtentKind::Hole,
-            }]),
-            8,
-            accept,
-            allocation_failed,
-        )?,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: u64::MAX,
+            kind: ExtentKind::Hole,
+        }]),
+        8,
     )
     .await?;
     let first = FileId::from_bytes([2; 16]);
