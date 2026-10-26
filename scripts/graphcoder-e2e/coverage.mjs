@@ -9,7 +9,11 @@ const directory = dirname(fileURLToPath(import.meta.url));
 
 export function inventory(root = directory) {
   return readdirSync(join(root, "cases")).filter(name => name.endsWith(".json")).sort()
-    .map(name => JSON.parse(readFileSync(join(root, "cases", name), "utf8")));
+    .map(name => JSON.parse(readFileSync(join(root, "cases", name), "utf8")))
+    .flatMap(test => Array.isArray(test.workspace?.kind)
+      ? test.workspace.kind.map(kind => ({ ...test, id: `${test.id}-${kind}`,
+        workspace: { ...test.workspace, kind } }))
+      : [test]);
 }
 
 export function coverage(manifest, cases) {

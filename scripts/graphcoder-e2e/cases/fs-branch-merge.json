@@ -1,7 +1,7 @@
 {
-  "id": "fs-branch-merge-git",
+  "id": "fs-branch-merge",
   "workspace": {
-    "kind": "git",
+    "kind": ["git", "plain"],
     "files": {}
   },
   "model": {
