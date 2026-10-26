@@ -334,7 +334,10 @@ impl PreparedCommit {
                     ));
                     self.plan.publish(
                         &mut state,
-                        &mut NamespaceBuilder { allocate: &|_| Err(StreamError::Capacity), reserve: Some(&mut self.namespace) },
+                        &mut NamespaceBuilder {
+                            allocate: &|_| Err(StreamError::Capacity),
+                            reserve: Some(&mut self.namespace),
+                        },
                         &mut || self.provider.record_replay_probe(&mut self.probes),
                         self.key,
                         digest,

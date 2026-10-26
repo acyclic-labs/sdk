@@ -289,7 +289,9 @@ mod http {
                 path(field(child, "path")?)?;
                 let result = Object::new();
                 set(&result, "path", &string_js(field(child, "path")?)?)?;
-                if let Some(record) = child.get("tailRecord") { set(&result, "tailRecord", &record_js(record)?)?; }
+                if let Some(record) = child.get("tailRecord") {
+                    set(&result, "tailRecord", &record_js(record)?)?;
+                }
                 Ok(result.into())
             })?,
         )?;
@@ -462,9 +464,17 @@ mod http {
             }
             "fork" => {
                 let excluded = array(field(item, "exclude")?)?;
-                if excluded.len() > crate::MAX_ITEMS { return Err("too many exclusions"); }
-                for excluded in excluded { path(excluded)?; }
-                set(&result, "exclude", &array_js(field(item, "exclude")?, string_js)?)?;
+                if excluded.len() > crate::MAX_ITEMS {
+                    return Err("too many exclusions");
+                }
+                for excluded in excluded {
+                    path(excluded)?;
+                }
+                set(
+                    &result,
+                    "exclude",
+                    &array_js(field(item, "exclude")?, string_js)?,
+                )?;
                 path(field(item, "source")?)?;
                 path(field(item, "destination")?)?;
                 let forked_at = u64_string(field(item, "forkedAt")?)?;

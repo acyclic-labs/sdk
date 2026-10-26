@@ -135,7 +135,7 @@ impl OwnedBytes {
         let (length, capacity) = (storage.0.len(), storage.0.capacity());
         GuardBundle::with_allocation(
             storage,
-            reservation.allocate_exact(Self::vec_guard_header_bytes::<G>() as usize),
+            reservation.allocate_exact(GuardBundle::<G>::allocation_bytes()),
         )
         .map(|guard| Self {
             data: Data::Native(guard),
@@ -153,7 +153,7 @@ impl OwnedBytes {
         if guard.is_none() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let metadata = ReadAllocation::new(meter, Self::vec_guard_header_bytes::<G>() as usize)?;
+        let metadata = ReadAllocation::new(meter, GuardBundle::<G>::allocation_bytes())?;
         let original_guard = guard.take().ok_or(io::ErrorKind::InvalidInput)?;
         let (length, capacity) = (data.len(), data.capacity());
         let guard = Arc::new(GuardBundle {

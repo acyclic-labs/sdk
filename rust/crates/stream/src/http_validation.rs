@@ -108,7 +108,9 @@ fn validate_children_page(value: &Value) -> Result {
     let mut previous: Option<&str> = None;
     for child in children {
         let child = object(child)?;
-        if let Some(record) = child.get("tailRecord") { validate_record(record)?; }
+        if let Some(record) = child.get("tailRecord") {
+            validate_record(record)?;
+        }
         let path_value = field(child, "path")?;
         path(path_value)?;
         let current = string(path_value)?;
@@ -255,8 +257,12 @@ fn validate_mutation(value: &Value) -> Result {
             path(field(item, "source")?)?;
             path(field(item, "destination")?)?;
             let excluded = array(field(item, "exclude")?)?;
-            if excluded.len() > crate::MAX_ITEMS { return Err("too many exclusions"); }
-            for excluded in excluded { path(excluded)?; }
+            if excluded.len() > crate::MAX_ITEMS {
+                return Err("too many exclusions");
+            }
+            for excluded in excluded {
+                path(excluded)?;
+            }
             let forked_at = u64_string(field(item, "forkedAt")?)?;
             let tail = u64_string(field(item, "tail")?)?;
             if forked_at > tail {

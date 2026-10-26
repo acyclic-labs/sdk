@@ -231,8 +231,7 @@ impl Pool {
             );
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
-            bytes: (u64::from(capacity) * FRAME_BYTES)
-            .saturating_sub(route.credit.bytes),
+            bytes: (u64::from(capacity) * FRAME_BYTES).saturating_sub(route.credit.bytes),
         };
         if grant.frames == 0 && grant.bytes == 0 {
             return Ok(());

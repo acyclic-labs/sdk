@@ -432,17 +432,6 @@ fn key(value: &'static [u8]) -> Result<IdempotencyKey, StreamError> {
     IdempotencyKey::new(Bytes::from_static(value))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::verify;
-    use crate::{MemoryLimits, MemoryStream, StreamError};
-
-    #[tokio::test]
-    async fn memory_provider_passes_the_public_suite() -> Result<(), StreamError> {
-        verify(&MemoryStream::new(MemoryLimits::default())).await
-    }
-}
-
 /// Conflicts publish nothing: the same intent key may be retried at a fresh tail.
 async fn verify_unspent_conflicts(
     provider: &(impl StreamProvider + ?Sized),
@@ -485,8 +474,8 @@ async fn verify_unspent_conflicts(
     {
         return Err(StreamError::Unavailable);
     }
-    let CommitCondition::Tail { expected, .. } = &mut request.conditions[0] else {
-        unreachable!()
+    let Some(CommitCondition::Tail { expected, .. }) = request.conditions.first_mut() else {
+        return Err(StreamError::Unavailable);
     };
     *expected = 1;
     if !matches!(provider.commit(request).await?, CommitOutcome::Committed(_)) {
@@ -607,7 +596,11 @@ pub async fn verify_subtree_fork(
         .await?
         .try_collect()
         .await?;
-    if records.len() != 1 || records[0].commit_id != seed.commit_id {
+    if records.len() != 1
+        || records
+            .first()
+            .is_none_or(|record| record.commit_id != seed.commit_id)
+    {
         return Err(StreamError::Unavailable);
     }
     for name in [
@@ -623,7 +616,11 @@ pub async fn verify_subtree_fork(
             .await?
             .try_collect()
             .await?;
-        if records.len() != 1 || records[0].commit_id != envelope.commit_id {
+        if records.len() != 1
+            || records
+                .first()
+                .is_none_or(|record| record.commit_id != envelope.commit_id)
+        {
             return Err(StreamError::Unavailable);
         }
     }
@@ -645,7 +642,13 @@ pub async fn verify_subtree_fork(
         .await?
         .try_collect()
         .await?;
-    if bound[0].commit_id != envelope.commit_id || adopted[0].commit_id != envelope.commit_id {
+    if bound
+        .first()
+        .is_none_or(|record| record.commit_id != envelope.commit_id)
+        || adopted
+            .first()
+            .is_none_or(|record| record.commit_id != envelope.commit_id)
+    {
         return Err(StreamError::Unavailable);
     }
     provider
@@ -665,7 +668,11 @@ pub async fn verify_subtree_fork(
         .await?
         .try_collect()
         .await?;
-    if source_records.len() != 1 || source_records[0].value.as_ref() != b"source-after-cut" {
+    if source_records.len() != 1
+        || source_records
+            .first()
+            .is_none_or(|record| record.value.as_ref() != b"source-after-cut")
+    {
         return Err(StreamError::Unavailable);
     }
     let page = provider
@@ -747,8 +754,14 @@ pub async fn verify_page_tails(
             tail_stream: Some(path("status")?),
         })
         .await?;
-    assert_eq!(page.children.len(), 3);
-    assert!(page.children[2].tail_record.is_none());
+    if page.children.len() != 3
+        || page
+            .children
+            .get(2)
+            .is_none_or(|child| child.tail_record.is_some())
+    {
+        return Err(StreamError::Unavailable);
+    }
     let cut = provider
         .commit(CommitRequest {
             conditions: [&a, &b]
@@ -771,14 +784,15 @@ pub async fn verify_page_tails(
     let CommitOutcome::Committed(cut) = cut else {
         return Err(StreamError::Unavailable);
     };
-    for child in &page.children[..2] {
-        assert_eq!(
-            child
-                .tail_record
-                .as_ref()
-                .map(|record| record.value.as_ref()),
-            Some(b"old".as_slice())
-        );
+    for child in page.children.iter().take(2) {
+        if child
+            .tail_record
+            .as_ref()
+            .map(|record| record.value.as_ref())
+            != Some(b"old".as_slice())
+        {
+            return Err(StreamError::Unavailable);
+        }
     }
     let next = provider
         .children_page(ChildrenPageRequest {
@@ -789,17 +803,31 @@ pub async fn verify_page_tails(
             tail_stream: Some(path("status")?),
         })
         .await?;
-    for child in &next.children[..2] {
-        assert_eq!(
-            child.tail_record.as_ref().map(|record| record.commit_id),
-            Some(cut.commit_id)
-        );
+    if next.children.len() != 3 {
+        return Err(StreamError::Unavailable);
     }
-    assert_eq!(
-        provider
-            .tail(path("conformance/page-tails/c/status")?)
-            .await,
-        Err(StreamError::NotFound)
-    );
+    for child in next.children.iter().take(2) {
+        if child.tail_record.as_ref().map(|record| record.commit_id) != Some(cut.commit_id) {
+            return Err(StreamError::Unavailable);
+        }
+    }
+    if provider
+        .tail(path("conformance/page-tails/c/status")?)
+        .await
+        != Err(StreamError::NotFound)
+    {
+        return Err(StreamError::Unavailable);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify;
+    use crate::{MemoryLimits, MemoryStream, StreamError};
+
+    #[tokio::test]
+    async fn memory_provider_passes_the_public_suite() -> Result<(), StreamError> {
+        verify(&MemoryStream::new(MemoryLimits::default())).await
+    }
 }

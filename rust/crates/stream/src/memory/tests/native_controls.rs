@@ -78,8 +78,14 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
         AppendOutcome::TailConflict { actual_tail: 256 }
     ));
     // A rejected insertion performs lookup only and leaves no replay node.
-    assert!(provider.inspect_idempotency(IdempotencyKey::new(OwnedBytes::from(
-        256_u64.to_be_bytes().to_vec()))?).await?.is_none());
+    assert!(
+        provider
+            .inspect_idempotency(IdempotencyKey::new(OwnedBytes::from(
+                256_u64.to_be_bytes().to_vec()
+            ))?)
+            .await?
+            .is_none()
+    );
     for index in 0..256_u64 {
         let observed = provider
             .inspect_idempotency(IdempotencyKey::new(OwnedBytes::from(
@@ -149,9 +155,13 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
         );
         let cached = provider.inspect_idempotency(key).await?;
         if index == 0 {
-            assert_eq!(cached.ok_or(StreamError::Unavailable)?.outcome,
-                IdempotencyOutcome::Commit(output.value().clone()));
-        } else { assert!(cached.is_none()); }
+            assert_eq!(
+                cached.ok_or(StreamError::Unavailable)?.outcome,
+                IdempotencyOutcome::Commit(output.value().clone())
+            );
+        } else {
+            assert!(cached.is_none());
+        }
     }
     assert_eq!(provider.tail(path("completion/target")?).await?, 2);
     assert!(meter.examined.load(Ordering::SeqCst) > examined);
@@ -557,7 +567,7 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
         };
         let fork = ForkRequest {
             exclude: Vec::new(),
-source: path("completion/owner")?,
+            source: path("completion/owner")?,
             destination: path("unrelated")?,
             at_tail: Some(1),
             idempotency_key: None,

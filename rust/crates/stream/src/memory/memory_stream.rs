@@ -70,5 +70,7 @@ impl MemoryStream {
 
 #[cfg(acyclic_loom)]
 impl MemoryStream {
-    pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ { self.state.write().await }
+    pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
+        self.state.write().await
+    }
 }

@@ -43,22 +43,34 @@ pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
 }
 
 /// Canonical exclusions are segment prefixes, never textual prefixes.
-pub(crate) fn canonical_exclusions(paths: &[crate::RelativePath]) -> Result<Vec<crate::RelativePath>, StreamError> {
-    if paths.len() > MAX_ITEMS { return Err(StreamError::LimitExceeded); }
+pub(crate) fn canonical_exclusions(
+    paths: &[crate::RelativePath],
+) -> Result<Vec<crate::RelativePath>, StreamError> {
+    if paths.len() > MAX_ITEMS {
+        return Err(StreamError::LimitExceeded);
+    }
     let all: std::collections::BTreeSet<_> = paths.iter().cloned().collect();
-    Ok(all.iter().filter(|path| {
-        let mut parent = path.parent();
-        while let Some(ancestor) = parent {
-            if all.contains(&ancestor) { return false; }
-            parent = ancestor.parent();
-        }
-        true
-    }).cloned().collect())
+    Ok(all
+        .iter()
+        .filter(|path| {
+            let mut parent = path.parent();
+            while let Some(ancestor) = parent {
+                if all.contains(&ancestor) {
+                    return false;
+                }
+                parent = ancestor.parent();
+            }
+            true
+        })
+        .cloned()
+        .collect())
 }
 fn hash_exclusions(hash: &mut Sha256, paths: &[crate::RelativePath]) -> Result<(), StreamError> {
     let canonical = canonical_exclusions(paths)?;
     hash.update((canonical.len() as u64).to_le_bytes());
-    for path in &canonical { hash_path(hash, path); }
+    for path in &canonical {
+        hash_path(hash, path);
+    }
     Ok(())
 }
 
@@ -178,7 +190,9 @@ pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
                     exclude,
                     ..
                 } => {
-                    8 + exclude.iter().map(path_hash_bytes).sum::<u64>() + 1 + path_hash_bytes(source)
+                    8 + exclude.iter().map(path_hash_bytes).sum::<u64>()
+                        + 1
+                        + path_hash_bytes(source)
                         + path_hash_bytes(destination)
                         + 8
                         + records_hash_bytes(records)
@@ -253,7 +267,9 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
         return Err(StreamError::InvalidArgument);
     }
     for mutation in &mut request.mutations {
-        if let CommitMutation::Fork { exclude, .. } = mutation { *exclude = canonical_exclusions(exclude)?; }
+        if let CommitMutation::Fork { exclude, .. } = mutation {
+            *exclude = canonical_exclusions(exclude)?;
+        }
     }
     request.conditions.sort_unstable_by(|left, right| {
         condition_path(left)
@@ -285,11 +301,19 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
 
 pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
     for mutation in &request.mutations {
-        if let CommitMutation::Fork { source, destination, .. } = mutation {
-            if source == destination || request.mutations.iter().any(|other| {
-                let path = mutation_path(other).as_str();
-                path.strip_prefix(destination.as_str()).is_some_and(|suffix| suffix.starts_with('/'))
-            }) {
+        if let CommitMutation::Fork {
+            source,
+            destination,
+            ..
+        } = mutation
+        {
+            if source == destination
+                || request.mutations.iter().any(|other| {
+                    let path = mutation_path(other).as_str();
+                    path.strip_prefix(destination.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                })
+            {
                 return Err(StreamError::InvalidArgument);
             }
         }

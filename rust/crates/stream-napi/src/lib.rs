@@ -688,7 +688,6 @@ impl NativeStreamClient {
 
     /// Opens live child discovery using the client's shared Streams session.
 
-
     /// Executes a canonical children-page request.
     #[napi(js_name = "childrenPageResult")]
     pub async fn children_page_result(
@@ -718,8 +717,6 @@ impl NativeStreamClient {
     ) -> Result<NativeStreamOperationResult> {
         operation_result(read_commit(&self.provider, request, cancellation)).await
     }
-
-
 }
 
 mod credentials;

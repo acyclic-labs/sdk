@@ -13,7 +13,6 @@ pub(super) mod retry_model;
 #[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
 mod route_searches;
 
-
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
@@ -179,7 +178,9 @@ impl Pool {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
                 let error = match error {
-                    StreamError::Unavailable | StreamError::InvalidArgument => StreamError::InvalidResponse,
+                    StreamError::Unavailable | StreamError::InvalidArgument => {
+                        StreamError::InvalidResponse
+                    }
                     other => other,
                 };
                 self.fail_link(node, &error);

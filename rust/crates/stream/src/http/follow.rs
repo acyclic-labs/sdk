@@ -77,7 +77,14 @@ fn parse_children(value: &Value) -> Result<Vec<Child>, StreamError> {
         .ok_or(StreamError::Unavailable)?
         .iter()
         .map(|value| {
-            Ok(Child { tail_record: value.get("tailRecord").map(|record| parse_records(&Value::Array(vec![record.clone()])).map(|mut records| records.remove(0))).transpose()?,
+            Ok(Child {
+                tail_record: value
+                    .get("tailRecord")
+                    .map(|record| {
+                        parse_records(&Value::Array(vec![record.clone()]))
+                            .map(|mut records| records.remove(0))
+                    })
+                    .transpose()?,
                 path: parse_path(field(value, "path")?)?,
             })
         })
@@ -133,8 +140,12 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                     records,
                 })),
                 "fork" => Ok(CommittedMutation::Fork(CommittedFork {
-                    exclude: field(value, "exclude")?.as_array().ok_or(StreamError::Unavailable)?
-                        .iter().map(parse_path).collect::<Result<_, _>>()?,
+                    exclude: field(value, "exclude")?
+                        .as_array()
+                        .ok_or(StreamError::Unavailable)?
+                        .iter()
+                        .map(parse_path)
+                        .collect::<Result<_, _>>()?,
                     source: parse_path(field(value, "source")?)?,
                     destination: parse_path(field(value, "destination")?)?,
                     forked_at: parse_u64(field(value, "forkedAt")?)?,

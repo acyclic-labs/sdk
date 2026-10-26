@@ -500,7 +500,6 @@ impl Client {
         ))
     }
 
-
     async fn open_kind(
         &self,
         kind: Kind,

@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitId,
-    CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, ReadRequest, StreamBounds,
+    AppendOutcome, AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome,
+    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, StreamBounds,
 };
 use futures::{
     stream::{FuturesUnordered, SelectAll},

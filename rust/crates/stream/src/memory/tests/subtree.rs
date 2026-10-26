@@ -54,14 +54,31 @@ async fn fork_namespace_allocation_is_independent_of_descendant_count() -> Resul
     for count in [2, 1024] {
         let provider = MemoryStream::default();
         for index in 0..count {
-            provider.append(AppendRequest { path: StreamPath::new(format!("tree/{index}"))?, records: vec![Bytes::from_static(b"body").into()], if_tail: Some(0), idempotency_key: None }).await?;
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new(format!("tree/{index}"))?,
+                    records: vec![Bytes::from_static(b"body").into()],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await?;
         }
         let state = provider.state.read().await;
         let source = state.paths.node(&StreamPath::new("tree")?).unwrap().clone();
         let mut next = state.paths.clone();
         let count = std::cell::Cell::new(0);
-        next.put(&StreamPath::new("copy")?, source.clone(), &mut NamespaceBuilder::new(&|_| { count.set(count.get()+1); Ok(None) }))?;
-        assert!(Arc::ptr_eq(&source, next.node(&StreamPath::new("copy")?).unwrap()));
+        next.put(
+            &StreamPath::new("copy")?,
+            source.clone(),
+            &mut NamespaceBuilder::new(&|_| {
+                count.set(count.get() + 1);
+                Ok(None)
+            }),
+        )?;
+        assert!(Arc::ptr_eq(
+            &source,
+            next.node(&StreamPath::new("copy")?).unwrap()
+        ));
         costs.push(count.get());
     }
     assert_eq!(costs[0], costs[1]);
@@ -73,11 +90,22 @@ async fn rejected_conditions_retain_no_key_or_namespace_state() -> Result<(), St
     let provider = MemoryStream::default();
     let key = IdempotencyKey::new(b"stable-intent".to_vec())?;
     for _ in 0..128 {
-        assert!(matches!(provider.commit(CommitRequest {
-            conditions: vec![CommitCondition::Tail { path: StreamPath::new("absent")?, expected: 1 }],
-            mutations: vec![CommitMutation::Append { path: StreamPath::new("absent")?, records: vec![Bytes::from_static(b"intent").into()] }],
-            idempotency_key: key.clone(),
-        }).await?, CommitOutcome::Conflict(_)));
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    conditions: vec![CommitCondition::Tail {
+                        path: StreamPath::new("absent")?,
+                        expected: 1
+                    }],
+                    mutations: vec![CommitMutation::Append {
+                        path: StreamPath::new("absent")?,
+                        records: vec![Bytes::from_static(b"intent").into()]
+                    }],
+                    idempotency_key: key.clone(),
+                })
+                .await?,
+            CommitOutcome::Conflict(_)
+        ));
     }
     let state = provider.state.read().await;
     assert_eq!(state.replay_count, 0);
@@ -95,9 +123,25 @@ async fn page_projection_charges_record_bytes_and_headers() -> Result<(), Stream
     let count = crate::MAX_COMMAND_BYTES / value.len() + 1;
     assert!(count < crate::MAX_ITEMS);
     for index in 0..count {
-        provider.append(AppendRequest { path: StreamPath::new(format!("agents/{index:04}/status"))?, records: vec![value.clone().into()], if_tail: Some(0), idempotency_key: None }).await?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new(format!("agents/{index:04}/status"))?,
+                records: vec![value.clone().into()],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
     }
-    let request = ChildrenPageRequest { parent: Some(StreamPath::new("agents")?), tail_stream: Some(StreamPath::new("status")?), after: None, hierarchy_version: None, limit: count as u32 };
-    assert_eq!(provider.children_page(request).await, Err(StreamError::LimitExceeded));
+    let request = ChildrenPageRequest {
+        parent: Some(StreamPath::new("agents")?),
+        tail_stream: Some(StreamPath::new("status")?),
+        after: None,
+        hierarchy_version: None,
+        limit: count as u32,
+    };
+    assert_eq!(
+        provider.children_page(request).await,
+        Err(StreamError::LimitExceeded)
+    );
     Ok(())
 }

@@ -126,35 +126,77 @@ fn reserve_coordinated(
     let mut inherited_paths = 0usize;
     let mut inherited_bytes = 0usize;
     for mutation in &request.mutations {
-        if let CommitMutation::Fork { source, destination, exclude, .. } = mutation {
+        if let CommitMutation::Fork {
+            source,
+            destination,
+            exclude,
+            ..
+        } = mutation
+        {
             let node = checked_subtree(state, source, destination, exclude)?;
             inherited_paths = inherited_paths.saturating_add(node.count() - 1);
-            inherited_bytes = inherited_bytes.saturating_add((node.count() - 1).saturating_mul(destination.as_str().len()).saturating_add(node.suffix_bytes()));
+            inherited_bytes = inherited_bytes.saturating_add(
+                (node.count() - 1)
+                    .saturating_mul(destination.as_str().len())
+                    .saturating_add(node.suffix_bytes()),
+            );
         }
     }
-    if state.paths.len().saturating_add(new_paths).saturating_add(inherited_paths) > limits.paths
-        || state.path_bytes.saturating_add(path_bytes).saturating_add(inherited_bytes) > limits.path_bytes
+    if state
+        .paths
+        .len()
+        .saturating_add(new_paths)
+        .saturating_add(inherited_paths)
+        > limits.paths
+        || state
+            .path_bytes
+            .saturating_add(path_bytes)
+            .saturating_add(inherited_bytes)
+            > limits.path_bytes
     {
         return Err(StreamError::Capacity);
     }
     reserve_records(state, records, bytes, limits)
 }
 
-fn checked_subtree(state: &State, source: &StreamPath, destination: &StreamPath, exclude: &[crate::RelativePath]) -> Result<Arc<NamespaceNode>, StreamError> {
+fn checked_subtree(
+    state: &State,
+    source: &StreamPath,
+    destination: &StreamPath,
+    exclude: &[crate::RelativePath],
+) -> Result<Arc<NamespaceNode>, StreamError> {
     let source = state.paths.node(source).ok_or(StreamError::NotFound)?;
     let node = Namespace::excluded(source, exclude, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
     if destination.as_str().len().saturating_add(node.max_suffix()) > crate::MAX_PATH_BYTES
-        || destination.as_str().split('/').count() + node.depth() - 1 > MAX_ITEMS {
+        || destination.as_str().split('/').count() + node.depth() - 1 > MAX_ITEMS
+    {
         return Err(StreamError::InvalidPath);
     }
     Ok(node)
 }
-fn reserve_fork(state: &State, request: &ForkRequest, limits: MemoryLimits) -> Result<(), StreamError> {
-    let node = checked_subtree(state, &request.source, &request.destination, &request.exclude)?;
-    let (count, bytes) = missing_paths(state, std::iter::once(&request.destination))
-        .fold((node.count() - 1, (node.count() - 1).saturating_mul(request.destination.as_str().len()).saturating_add(node.suffix_bytes())),
-            |(count, bytes), (_, end)| (count + 1, bytes.saturating_add(end)));
-    if state.paths.len().saturating_add(count) > limits.paths || state.path_bytes.saturating_add(bytes) > limits.path_bytes {
+fn reserve_fork(
+    state: &State,
+    request: &ForkRequest,
+    limits: MemoryLimits,
+) -> Result<(), StreamError> {
+    let node = checked_subtree(
+        state,
+        &request.source,
+        &request.destination,
+        &request.exclude,
+    )?;
+    let (count, bytes) = missing_paths(state, std::iter::once(&request.destination)).fold(
+        (
+            node.count() - 1,
+            (node.count() - 1)
+                .saturating_mul(request.destination.as_str().len())
+                .saturating_add(node.suffix_bytes()),
+        ),
+        |(count, bytes), (_, end)| (count + 1, bytes.saturating_add(end)),
+    );
+    if state.paths.len().saturating_add(count) > limits.paths
+        || state.path_bytes.saturating_add(bytes) > limits.path_bytes
+    {
         return Err(StreamError::Capacity);
     }
     Ok(())

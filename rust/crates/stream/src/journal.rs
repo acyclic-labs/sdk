@@ -110,7 +110,7 @@ mod tests {
         });
         let fork = Command::Fork(ForkRequest {
             exclude: Vec::new(),
-source: crate::StreamPath::new("codec/events")?,
+            source: crate::StreamPath::new("codec/events")?,
             destination: crate::StreamPath::new("codec/fork")?,
             at_tail: Some(0),
             idempotency_key: None,

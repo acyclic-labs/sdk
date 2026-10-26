@@ -420,7 +420,7 @@ impl StreamProvider for HttpStream {
         let destination = request.destination.clone();
         let wire = wire::ForkRequest {
             exclude: Vec::new(),
-source: source.to_string(),
+            source: source.to_string(),
             destination: destination.to_string(),
             at_tail: request.at_tail,
             idempotency_key: request
@@ -475,7 +475,8 @@ source: source.to_string(),
         let value = self
             .request(
                 "children/page",
-                wire::ChildrenPageRequest { tail_stream: request.tail_stream.map(|path| path.to_string()),
+                wire::ChildrenPageRequest {
+                    tail_stream: request.tail_stream.map(|path| path.to_string()),
                     parent: request.parent.map(|path| path.to_string()),
                     after: request.after.map(|path| path.to_string()),
                     hierarchy_version: request

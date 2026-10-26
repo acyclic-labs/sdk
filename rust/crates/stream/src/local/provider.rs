@@ -192,8 +192,6 @@ impl StreamProvider for LocalStream {
         self.progress_from(path, from, preceding, filter).await
     }
 
-
-
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
@@ -346,7 +344,8 @@ async fn commit<const ELIDE_REPLAY: bool>(
                     .commit_inner(request, deadline)
                     .await?;
                 if let Some(frame) = frame
-                    && matches!(outcome, CommitOutcome::Committed(_)) {
+                    && matches!(outcome, CommitOutcome::Committed(_))
+                {
                     stream.persist(frame).await?;
                 } else {
                     stream.require_accepted::<true>()?;

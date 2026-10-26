@@ -95,7 +95,16 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
     let mut value = serde_json::Map::from_iter([
         ("source".into(), json!(request.source.to_string())),
         ("destination".into(), json!(request.destination.to_string())),
-        ("exclude".into(), json!(request.exclude.iter().map(ToString::to_string).collect::<Vec<_>>())),
+        (
+            "exclude".into(),
+            json!(
+                request
+                    .exclude
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            ),
+        ),
     ]);
     if let Some(options) = options("atTail", request.at_tail, request.idempotency_key.as_ref()) {
         value.insert("options".into(), options);

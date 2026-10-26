@@ -257,7 +257,7 @@ pub(super) async fn subtree<P: StreamProvider + ?Sized>(
 ) -> Result<(), Failure> {
     let destination = prepare(history).await?;
     let request = ForkRequest {
-exclude: Vec::new(),
+        exclude: Vec::new(),
         source: history.path.clone(),
         destination: destination.clone(),
         at_tail: Some(1),
@@ -320,7 +320,7 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
                 records: vec![OwnedBytes::from_static(b"branch-after").into()],
             },
             CommitMutation::Fork {
-exclude: Vec::new(),
+                exclude: Vec::new(),
                 source: history.path.clone(),
                 destination: destination.clone(),
                 at_tail: 1,

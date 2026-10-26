@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
-    AppendOutcome, CommitId, CommitOutcome, CommitRequest,
-    CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    ReadRequest, StreamBounds,
+    AppendOutcome, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, StreamBounds,
 };
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {

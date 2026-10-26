@@ -200,7 +200,7 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
         provider
             .fork(ForkRequest {
                 exclude: Vec::new(),
-source: StreamPath::new("missing").expect("path"),
+                source: StreamPath::new("missing").expect("path"),
                 destination: StreamPath::new("rejected").expect("path"),
                 at_tail: None,
                 idempotency_key: None,
@@ -355,7 +355,11 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
 
 #[wasm_bindgen_test]
 async fn browser_wave1_conformance() {
-    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default()).await.unwrap();
+    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
+        .await
+        .unwrap();
     crate::conformance::verify(&provider).await.unwrap();
-    crate::conformance::wave1::verify(&provider, &StreamPath::new("wave1").unwrap()).await.unwrap();
+    crate::conformance::wave1::verify(&provider, &StreamPath::new("wave1").unwrap())
+        .await
+        .unwrap();
 }

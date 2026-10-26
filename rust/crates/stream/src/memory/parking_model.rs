@@ -71,12 +71,7 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
 // Capture tasks at the real snapshot dispatch boundary, then destroy the worker
 // future like executor shutdown. Race its drop (and optional consumer drop) with
 // releasing the state writer, including fair handoff to a granted read.
-pub(crate) fn shutdown(
-    discard: bool,
-    checked: bool,
-    cancel: bool,
-    poll_worker: bool,
-) {
+pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: bool) {
     loom::model(move || {
         let provider = MemoryStream::default();
         let keeper = ManuallyDrop::new(provider.clone());

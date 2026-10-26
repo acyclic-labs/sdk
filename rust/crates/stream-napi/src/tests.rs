@@ -1,8 +1,9 @@
 use super::*;
 mod reconnect;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, RecordStream, StreamBounds, StreamProvider,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
+    CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    ReadRequest, RecordStream, StreamBounds, StreamProvider,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -300,8 +301,6 @@ impl StreamProvider for TcpDropProbe {
             item.map(acyclic_stream::FollowUpdate::Record)
         })))
     }
-
-
 
     async fn children_page(
         &self,

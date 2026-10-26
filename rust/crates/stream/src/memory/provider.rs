@@ -75,7 +75,7 @@ impl StreamProvider for MemoryStream {
             commit_id,
             mutations: vec![CommittedMutation::Fork(CommittedFork {
                 exclude: crate::request::canonical_exclusions(&request.exclude)?,
-source: receipt.source.clone(),
+                source: receipt.source.clone(),
                 destination: receipt.destination.clone(),
                 forked_at,
                 tail: forked_at,
@@ -85,7 +85,13 @@ source: receipt.source.clone(),
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
         self.reserve_retained(&mut state)?;
-        publish(&mut state, paths, histories, &envelope, &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)))?;
+        publish(
+            &mut state,
+            paths,
+            histories,
+            &envelope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+        )?;
         state.decision = decision;
         retain(
             &mut state,
@@ -150,8 +156,6 @@ source: receipt.source.clone(),
         self.progress_from(path, from, preceding, filter).await
     }
 
-
-
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
@@ -175,24 +179,50 @@ source: receipt.source.clone(),
         {
             return Err(StreamError::HierarchyChanged);
         }
-        let children = request.parent.as_ref().map_or(Some(&state.paths.roots),
-            |parent| state.paths.node(parent).map(|node| &node.children));
-        let lower = request.after.as_ref().map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
-        fn page(index: &Index, lower: Option<&str>, parent: Option<&StreamPath>, limit: usize,
-                out: &mut Vec<StreamPath>) -> Result<(), StreamError> {
-            let Some(edge) = index else { return Ok(()); };
+        let children = request
+            .parent
+            .as_ref()
+            .map_or(Some(&state.paths.roots), |parent| {
+                state.paths.node(parent).map(|node| &node.children)
+            });
+        let lower = request
+            .after
+            .as_ref()
+            .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
+        fn page(
+            index: &Index,
+            lower: Option<&str>,
+            parent: Option<&StreamPath>,
+            limit: usize,
+            out: &mut Vec<StreamPath>,
+        ) -> Result<(), StreamError> {
+            let Some(edge) = index else {
+                return Ok(());
+            };
             if lower.is_none_or(|after| edge.name.text.as_str() > after) {
                 page(&edge.left, lower, parent, limit, out)?;
-                if out.len() == limit { return Ok(()); }
-                out.push(StreamPath::new(parent.map_or_else(|| edge.name.text.to_string(),
-                    |parent| format!("{}/{}", parent.as_str(), edge.name.text)))?);
+                if out.len() == limit {
+                    return Ok(());
+                }
+                out.push(StreamPath::new(parent.map_or_else(
+                    || edge.name.text.to_string(),
+                    |parent| format!("{}/{}", parent.as_str(), edge.name.text),
+                ))?);
             }
-            if out.len() < limit { page(&edge.right, lower, parent, limit, out)?; }
+            if out.len() < limit {
+                page(&edge.right, lower, parent, limit, out)?;
+            }
             Ok(())
         }
         let mut paths = Vec::new();
         if let Some(children) = children {
-            page(children, lower, request.parent.as_ref(), request.limit as usize + 1, &mut paths)?;
+            page(
+                children,
+                lower,
+                request.parent.as_ref(),
+                request.limit as usize + 1,
+                &mut paths,
+            )?;
         }
         let has_more = paths.len() > request.limit as usize;
         paths.truncate(request.limit as usize);
@@ -201,31 +231,54 @@ source: receipt.source.clone(),
         } else {
             None
         };
-        let mut page_bytes = 64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-        let children = paths.into_iter().map(|path| {
-            let tail_record = request.tail_stream.as_ref().map(|relative| {
-                let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
-                Ok::<_, StreamError>(state.paths.get(&target).and_then(|stream| {
-                    let from = stream.tail.checked_sub(1)?;
-                    if let Some(window) = stream.prefix_window(from, stream.tail) {
-                        return window.records.records.get(window.start).cloned();
-                    }
-                    HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(|(history, ceiling)| {
-                        if let History::Batch { records, .. } = history {
-                            history_window(Arc::clone(records), ceiling, from)
-                                .and_then(|window| window.records.records.get(window.start).cloned())
-                        } else { None }
+        let mut page_bytes =
+            64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
+        let children = paths
+            .into_iter()
+            .map(|path| {
+                let tail_record = request
+                    .tail_stream
+                    .as_ref()
+                    .map(|relative| {
+                        let target =
+                            StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
+                        Ok::<_, StreamError>(state.paths.get(&target).and_then(|stream| {
+                            let from = stream.tail.checked_sub(1)?;
+                            if let Some(window) = stream.prefix_window(from, stream.tail) {
+                                return window.records.records.get(window.start).cloned();
+                            }
+                            HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
+                                |(history, ceiling)| {
+                                    if let History::Batch { records, .. } = history {
+                                        history_window(Arc::clone(records), ceiling, from).and_then(
+                                            |window| {
+                                                window.records.records.get(window.start).cloned()
+                                            },
+                                        )
+                                    } else {
+                                        None
+                                    }
+                                },
+                            )
+                        }))
                     })
-                }))
-            }).transpose()?.flatten();
-            let child = Child { path, tail_record };
-            let size = prost::Message::encoded_len(&crate::wire::Child {
-                path: child.path.to_string(), tail_record: child.tail_record.clone().map(crate::wire_codec::record_wire),
-            });
-            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-            if page_bytes > crate::MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded); }
-            Ok(child)
-        }).collect::<Result<Vec<_>, StreamError>>()?;
+                    .transpose()?
+                    .flatten();
+                let child = Child { path, tail_record };
+                let size = prost::Message::encoded_len(&crate::wire::Child {
+                    path: child.path.to_string(),
+                    tail_record: child
+                        .tail_record
+                        .clone()
+                        .map(crate::wire_codec::record_wire),
+                });
+                page_bytes = page_bytes.saturating_add(size).saturating_add(10);
+                if page_bytes > crate::MAX_COMMAND_BYTES {
+                    return Err(StreamError::LimitExceeded);
+                }
+                Ok(child)
+            })
+            .collect::<Result<Vec<_>, StreamError>>()?;
         let result = ChildrenPage {
             hierarchy_version: state.hierarchy_version,
             children,

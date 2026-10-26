@@ -4,16 +4,14 @@
 #[test]
 fn executor_shutdown_returns_unpolled_snapshot_ownership() {
     for checked in [false, true] {
-        acyclic_stream::verification::snapshot_executor_shutdown(
-            false, checked, false, false);
+        acyclic_stream::verification::snapshot_executor_shutdown(false, checked, false, false);
     }
 }
 
 #[test]
 fn executor_shutdown_returns_queued_or_granted_snapshot_ownership() {
     for checked in [false, true] {
-        acyclic_stream::verification::snapshot_executor_shutdown(
-            false, checked, false, true);
+        acyclic_stream::verification::snapshot_executor_shutdown(false, checked, false, true);
     }
 }
 

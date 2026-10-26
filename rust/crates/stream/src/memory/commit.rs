@@ -467,18 +467,33 @@ fn publish(
     build: &mut NamespaceBuilder<'_>,
 ) -> Result<(), StreamError> {
     let mut next = state.paths.clone();
-    for (path, data) in paths { next.put_data(&path, data, build)?; }
+    for (path, data) in paths {
+        next.put_data(&path, data, build)?;
+    }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => {
-                let subtree = state.paths.node(&fork.source).ok_or(StreamError::NotFound)?.clone();
+                let subtree = state
+                    .paths
+                    .node(&fork.source)
+                    .ok_or(StreamError::NotFound)?
+                    .clone();
                 #[cfg(all(acyclic_loom, feature = "local"))]
-                let subtree = if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
-                    build.node(subtree.data.clone(), None)?
-                } else { subtree };
+                let subtree =
+                    if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
+                        build.node(subtree.data.clone(), None)?
+                    } else {
+                        subtree
+                    };
                 #[cfg(all(acyclic_loom, feature = "local"))]
-                let excludes = if crate::verification::fault_is(crate::verification::Fault::IgnoreForkExclusions) { &[][..] } else { &fork.exclude[..] };
+                let excludes = if crate::verification::fault_is(
+                    crate::verification::Fault::IgnoreForkExclusions,
+                ) {
+                    &[][..]
+                } else {
+                    &fork.exclude[..]
+                };
                 #[cfg(not(all(acyclic_loom, feature = "local")))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
@@ -491,7 +506,9 @@ fn publish(
         let data = fact_data(&state.paths, fact, history, tail)?;
         next.put_data(path, data, build)?;
     }
-    if next.len() != state.paths.len() { state.hierarchy_version = envelope.commit_id; }
+    if next.len() != state.paths.len() {
+        state.hierarchy_version = envelope.commit_id;
+    }
     state.path_bytes = next.bytes();
     state.paths = next;
     for fact in &envelope.mutations {
@@ -505,15 +522,26 @@ fn publish(
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path) {
             signals.changed.send_replace(tail);
-            signals.follows.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            signals
+                .follows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .publish(fact_records(fact), tail);
         }
         state.record_count += fact_records(fact).len();
-        state.payload_bytes += fact_records(fact).iter().map(|record| record.payload_bytes()).sum::<usize>();
+        state.payload_bytes += fact_records(fact)
+            .iter()
+            .map(|record| record.payload_bytes())
+            .sum::<usize>();
     }
     Ok(())
 }
-fn fact_data(paths: &Namespace, fact: &CommittedMutation, history: Arc<History>, tail: u64) -> Result<PathState, StreamError> {
+fn fact_data(
+    paths: &Namespace,
+    fact: &CommittedMutation,
+    history: Arc<History>,
+    tail: u64,
+) -> Result<PathState, StreamError> {
     let source = match fact {
         CommittedMutation::Append(append) => &append.path,
         CommittedMutation::Fork(fork) => &fork.source,
@@ -546,5 +574,9 @@ fn fact_data(paths: &Namespace, fact: &CommittedMutation, history: Arc<History>,
             }
         }
     }
-    Ok(PathState { prefix, history: Some(history), tail })
+    Ok(PathState {
+        prefix,
+        history: Some(history),
+        tail,
+    })
 }

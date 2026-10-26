@@ -145,7 +145,14 @@ mod replay_tests {
                 .map(|sequence| crate::AppendRecord::from(sequence.to_be_bytes().to_vec()))
                 .collect::<Vec<_>>();
             next += batch.len() as u64;
-            stream.append_batch(batch, None, IdempotencyKey::new(next.to_be_bytes().to_vec()).unwrap()).await.unwrap();
+            stream
+                .append_batch(
+                    batch,
+                    None,
+                    IdempotencyKey::new(next.to_be_bytes().to_vec()).unwrap(),
+                )
+                .await
+                .unwrap();
         }
         stream
     }

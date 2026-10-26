@@ -56,8 +56,12 @@ pub(crate) fn append_len(request: &AppendRequest) -> usize {
             .map_or(0, |key| block_len(key.as_bytes().len()))
 }
 pub(crate) fn fork_len(request: &ForkRequest) -> usize {
-    request.exclude.iter().map(|path| block_len(path.as_str().len())).sum::<usize>() +
-    block_len(request.source.as_str().len())
+    request
+        .exclude
+        .iter()
+        .map(|path| block_len(path.as_str().len()))
+        .sum::<usize>()
+        + block_len(request.source.as_str().len())
         + block_len(request.destination.as_str().len())
         + uint_len(request.at_tail)
         + request
@@ -93,10 +97,16 @@ fn mutation_len_with(mutation: &CommitMutation, length: &impl Fn(&AppendRecord) 
             at_tail,
             records,
             exclude,
-        } => exclude.iter().map(|path| block_len(path.as_str().len())).sum::<usize>() + block_len(source.as_str().len())
-            .saturating_add(block_len(destination.as_str().len()))
-            .saturating_add(uint_len((*at_tail != 0).then_some(*at_tail)))
-            .saturating_add(records_len_with(records, length)),
+        } => {
+            exclude
+                .iter()
+                .map(|path| block_len(path.as_str().len()))
+                .sum::<usize>()
+                + block_len(source.as_str().len())
+                    .saturating_add(block_len(destination.as_str().len()))
+                    .saturating_add(uint_len((*at_tail != 0).then_some(*at_tail)))
+                    .saturating_add(records_len_with(records, length))
+        }
     })
 }
 pub(crate) fn commit_len(request: &CommitRequest) -> usize {
@@ -197,7 +207,9 @@ pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
 }
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
-    for path in &request.exclude { bytes(out, 5, path.as_str().as_bytes()); }
+    for path in &request.exclude {
+        bytes(out, 5, path.as_str().as_bytes());
+    }
     bytes(out, 1, request.source.as_str().as_bytes());
     bytes(out, 2, request.destination.as_str().as_bytes());
     uint(out, 3, request.at_tail);
@@ -267,13 +279,18 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
                         + block_len(destination.as_str().len())
                         + uint_len((*at_tail != 0).then_some(*at_tail))
                         + records_len(values)
-                        + exclude.iter().map(|path| block_len(path.as_str().len())).sum::<usize>(),
+                        + exclude
+                            .iter()
+                            .map(|path| block_len(path.as_str().len()))
+                            .sum::<usize>(),
                 );
                 bytes(out, 1, source.as_str().as_bytes());
                 bytes(out, 2, destination.as_str().as_bytes());
                 uint(out, 3, (*at_tail != 0).then_some(*at_tail));
                 records(out, 4, values);
-                for path in exclude { bytes(out, 5, path.as_str().as_bytes()); }
+                for path in exclude {
+                    bytes(out, 5, path.as_str().as_bytes());
+                }
             }
         }
     }
@@ -317,8 +334,11 @@ mod tests {
                             records: records.clone(),
                         },
                         CommitMutation::Fork {
-                            exclude: vec![crate::StreamPath::new("children")?, crate::StreamPath::new("volumes/cache")?],
-source: path.clone(),
+                            exclude: vec![
+                                crate::StreamPath::new("children")?,
+                                crate::StreamPath::new("volumes/cache")?,
+                            ],
+                            source: path.clone(),
                             destination: destination.clone(),
                             at_tail: tail,
                             records,

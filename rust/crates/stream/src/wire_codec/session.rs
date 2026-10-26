@@ -6,12 +6,12 @@ use prost::Message as _;
 mod resource;
 pub use resource::{stream_path, stream_resource, validate_resource};
 
-/// Decodes a bounded physical session message; protocol validation remains in the pool.
+/// Decodes a bounded peer session message; protocol validation remains in the pool.
 pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
     if bytes.len() > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    wire::SessionFrame::decode(bytes).map_err(|_| StreamError::InvalidArgument)
+    wire::SessionFrame::decode(bytes).map_err(|_| StreamError::InvalidResponse)
 }
 
 /// Validates a logical Streams follow without creating transport state.

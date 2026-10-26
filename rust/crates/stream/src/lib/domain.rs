@@ -219,7 +219,6 @@ pub struct Child {
     pub path: StreamPath,
 }
 
-
 /// Bounded hierarchy traversal. A continuation is valid only while the
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPageRequest {

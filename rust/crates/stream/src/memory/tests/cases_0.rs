@@ -139,7 +139,8 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
     let mut found = Vec::new();
     loop {
         let page = provider
-            .children_page(ChildrenPageRequest { tail_stream: None,
+            .children_page(ChildrenPageRequest {
+                tail_stream: None,
                 parent: Some(path("agents")?),
                 after,
                 hierarchy_version: revision,
@@ -178,7 +179,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
         let destination = path(&format!("deep/fork-{depth}"))?;
         provider
             .fork(ForkRequest {
-exclude: Vec::new(),
+                exclude: Vec::new(),
                 source,
                 destination: destination.clone(),
                 at_tail: None,
@@ -258,7 +259,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
     provider
         .fork(ForkRequest {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(128),
             idempotency_key: None,
@@ -286,7 +287,7 @@ source: source.clone(),
     provider
         .fork(ForkRequest {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: child.clone(),
             at_tail: Some(1),
             idempotency_key: None,
@@ -406,7 +407,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
         provider
             .fork(ForkRequest {
                 exclude: Vec::new(),
-source: source.clone(),
+                source: source.clone(),
                 destination: destination.clone(),
                 at_tail: Some(cut),
                 idempotency_key: None,
@@ -659,7 +660,8 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
             .await?;
     }
     let page = provider
-        .children_page(ChildrenPageRequest { tail_stream: None,
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(path("a")?),
             after: None,
             hierarchy_version: None,

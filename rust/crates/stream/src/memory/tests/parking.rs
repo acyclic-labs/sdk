@@ -98,11 +98,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         // Run the spawned job while the writer still holds the lock.
         tokio::task::yield_now().await;
         drop(held);
-        assert_eq!(
-            provider.state.try_write().is_ok(),
-            !keep,
-            "keep={keep}"
-        );
+        assert_eq!(provider.state.try_write().is_ok(), !keep, "keep={keep}");
         if let Some(mut follow) = kept {
             assert_eq!(follow.next().await, Some(Ok(())));
             drop(follow);

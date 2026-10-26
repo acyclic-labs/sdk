@@ -18,8 +18,8 @@ use std::{
 };
 use wasm_bindgen::{JsCast, JsValue};
 
-mod notifications;
 mod follow;
+mod notifications;
 mod publication;
 #[cfg(test)]
 mod tests;
@@ -323,7 +323,11 @@ impl BrowserStream {
             }),
         };
         if existing
-            || matches!(outcome, Outcome::Append(AppendOutcome::TailConflict { .. }) | Outcome::Commit(CommitOutcome::Conflict(_)))
+            || matches!(
+                outcome,
+                Outcome::Append(AppendOutcome::TailConflict { .. })
+                    | Outcome::Commit(CommitOutcome::Conflict(_))
+            )
         {
             cache.valid = true;
             return Ok(outcome);

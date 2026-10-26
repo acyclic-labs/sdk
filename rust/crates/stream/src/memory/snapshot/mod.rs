@@ -205,7 +205,14 @@ fn decode(encoded: &[u8]) -> Option<State> {
                 }),
             )
             .ok()?;
-        publish(&mut state, paths, histories, envelope, &mut super::NamespaceBuilder::new(&|_| Ok(None))).ok()?;
+        publish(
+            &mut state,
+            paths,
+            histories,
+            envelope,
+            &mut super::NamespaceBuilder::new(&|_| Ok(None)),
+        )
+        .ok()?;
     }
     state.retained = inventory;
     state.decision = decision;

@@ -7,6 +7,17 @@ fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::D
 }
 
 #[test]
+fn malformed_peer_protobuf_is_a_terminal_response_error() {
+    assert_eq!(decode_frame(&[255]), Err(StreamError::InvalidResponse));
+    let frame = wire::SessionFrame {
+        channel_id: 1,
+        generation: 1,
+        body: Some(Body::Closed(wire::SessionClosed::default())),
+    };
+    assert_eq!(decode_frame(&frame.encode_to_vec()), Ok(frame));
+}
+
+#[test]
 fn latest_values_round_trip_with_additive_credit() -> Result<(), Box<dyn std::error::Error>> {
     let frame = round_trip(&wire::SessionFrame {
         channel_id: 1,

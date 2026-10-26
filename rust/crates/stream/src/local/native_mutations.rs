@@ -68,7 +68,8 @@ impl LocalStream {
                         };
                         let result = provider.commit_inner(request, deadline).await?;
                         if let Some(frame) = frame
-                    && matches!(result.0, CommitOutcome::Committed(_)) {
+                            && matches!(result.0, CommitOutcome::Committed(_))
+                        {
                             stream.persist(frame).await?;
                         } else {
                             stream.require_accepted::<true>()?;

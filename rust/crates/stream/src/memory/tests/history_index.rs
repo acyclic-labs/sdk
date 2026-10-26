@@ -176,7 +176,7 @@ async fn jumps_preserve_nested_fork_cuts_inside_batches_and_recovery() -> TestRe
         let cut = (depth * 7 + 3) % expected.len();
         provider
             .fork(ForkRequest {
-exclude: Vec::new(),
+                exclude: Vec::new(),
                 source,
                 destination: destination.clone(),
                 at_tail: Some(cut as u64),

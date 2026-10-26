@@ -212,7 +212,7 @@ impl Transport for Endpoint {
 }
 fn decode_frame(data: JsValue) -> Result<wire::SessionFrame, StreamError> {
     if !data.is_instance_of::<js_sys::ArrayBuffer>() {
-        return Err(StreamError::InvalidArgument);
+        return Err(StreamError::InvalidResponse);
     }
     let bytes = Uint8Array::new(&data);
     if bytes.length() as usize > MAX_COMMAND_BYTES {

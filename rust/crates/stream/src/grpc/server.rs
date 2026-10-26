@@ -107,7 +107,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             let request = request.into_inner();
             let request = ForkRequest {
                 exclude: Vec::new(),
-source: path(request.source).map_err(|error| error_status(&error))?,
+                source: path(request.source).map_err(|error| error_status(&error))?,
                 destination: path(request.destination).map_err(|error| error_status(&error))?,
                 at_tail: request.at_tail,
                 idempotency_key: optional_key(request.idempotency_key)
@@ -201,8 +201,6 @@ source: path(request.source).map_err(|error| error_status(&error))?,
         }
         Err(error_status(&StreamError::Unsupported))
     }
-
-
 
     async fn children_page(
         &self,

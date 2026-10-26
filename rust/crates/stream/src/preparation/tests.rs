@@ -108,7 +108,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
         },
         CommitMutation::Fork {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: destination.clone(),
             at_tail: 1,
             records: bodies.clone(),
@@ -148,7 +148,7 @@ source: source.clone(),
                 records(4, &bodies, identity, 9_000, Vec::with_capacity(2))?
             )?),
             CommittedMutation::Fork(CommittedFork {
-exclude: Vec::new(),
+                exclude: Vec::new(),
                 source,
                 destination,
                 forked_at: 1,
@@ -199,7 +199,7 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Fork {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: StreamPath::new("destination")?,
             at_tail: 3,
             records: Vec::new(),

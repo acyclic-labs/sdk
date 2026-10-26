@@ -130,7 +130,9 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
         .into_iter()
         .map(|child| {
             let mut value = json!({ "path": child.path });
-            if let Some(record) = child.tail_record { value["tailRecord"] = record_json(&record); }
+            if let Some(record) = child.tail_record {
+                value["tailRecord"] = record_json(&record);
+            }
             value
         })
         .collect();

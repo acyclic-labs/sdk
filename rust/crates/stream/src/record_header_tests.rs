@@ -93,7 +93,7 @@ fn commit(record: AppendRecord, fork: bool) -> Result<CommitRequest, StreamError
     let mutation = if fork {
         CommitMutation::Fork {
             exclude: Vec::new(),
-source: StreamPath::new("headers/source")?,
+            source: StreamPath::new("headers/source")?,
             destination: destination.clone(),
             at_tail: 1,
             records: vec![record],

@@ -82,9 +82,15 @@ pub(super) async fn append(
     let request = wire_codec::append_from_wire(decode::<wire::AppendRequest>(&request, "append")?)
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async move { client.append(request).await.map_err(|error| stream_error(&error)) },
+        async move {
+            client
+                .append(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
         cancellation_state(cancellation),
-    ).await?;
+    )
+    .await?;
     encode(&wire_codec::append_outcome_to_wire(value), "append")
 }
 
@@ -96,9 +102,15 @@ pub(super) async fn fork(
     let request = wire_codec::fork_from_wire(decode::<wire::ForkRequest>(&request, "fork")?)
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async move { client.fork(request).await.map_err(|error| stream_error(&error)) },
+        async move {
+            client
+                .fork(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
         cancellation_state(cancellation),
-    ).await?;
+    )
+    .await?;
     encode(&wire_codec::fork_receipt_to_wire(&value), "fork")
 }
 
@@ -179,10 +191,6 @@ pub(super) fn record_frames(records: acyclic_stream::RecordStream) -> FollowFram
         })
         .boxed()
 }
-
-
-
-
 
 pub(super) async fn children_page(
     client: &Arc<grpc::Client>,

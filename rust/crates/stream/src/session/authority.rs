@@ -290,7 +290,6 @@ impl Authority {
         Ok((binding, filter, authorization))
     }
 
-
     pub(super) fn validate(
         &self,
         slots: &Slots,

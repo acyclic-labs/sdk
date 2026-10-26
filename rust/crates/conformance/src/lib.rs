@@ -403,7 +403,8 @@ mod tests {
         filesystem_smoke(&filesystem).await?;
 
         let stream_children = stream_provider
-            .children_page(acyclic_stream::ChildrenPageRequest { tail_stream: None,
+            .children_page(acyclic_stream::ChildrenPageRequest {
+                tail_stream: None,
                 parent: None,
                 limit: 8,
                 after: None,

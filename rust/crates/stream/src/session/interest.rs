@@ -167,8 +167,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         })))
     }
 
-
-
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         self.sources.remove(id);
         self.terminals.remove(id);

@@ -48,11 +48,16 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
     let mut conflict = append.clone();
     conflict.idempotency_key = Some(key(b"append-conflict")?);
     provider.append(conflict).await?;
-    assert!(provider.inspect_idempotency(key(b"append-conflict")?).await?.is_none());
+    assert!(
+        provider
+            .inspect_idempotency(key(b"append-conflict")?)
+            .await?
+            .is_none()
+    );
     provider
         .fork(ForkRequest {
             exclude: Vec::new(),
-source: source.clone(),
+            source: source.clone(),
             destination: StreamPath::new("copy")?,
             at_tail: Some(1),
             idempotency_key: Some(key(b"fork")?),
@@ -76,7 +81,7 @@ source: source.clone(),
             },
             CommitMutation::Fork {
                 exclude: Vec::new(),
-source: source.clone(),
+                source: source.clone(),
                 destination: StreamPath::new("forked")?,
                 at_tail: 1,
                 records: vec![(Bytes::from_static(b"fork-two")).into()],
@@ -89,7 +94,12 @@ source: source.clone(),
     let mut conflict = request.clone();
     conflict.idempotency_key = key(b"commit-conflict")?;
     provider.commit(conflict).await?;
-    assert!(provider.inspect_idempotency(key(b"commit-conflict")?).await?.is_none());
+    assert!(
+        provider
+            .inspect_idempotency(key(b"commit-conflict")?)
+            .await?
+            .is_none()
+    );
     assert_eq!(provider.commit(request).await?, outcome);
     assert_eq!(
         provider.append(append).await?.clone(),

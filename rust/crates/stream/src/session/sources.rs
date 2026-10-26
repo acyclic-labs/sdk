@@ -272,14 +272,6 @@ impl Sources {
             }
         })
     }
-    #[cfg(test)]
-    #[cfg(test)]
-    pub(super) fn next(
-        &mut self,
-        room: (bool, bool, bool),
-    ) -> impl std::future::Future<Output = Result<Option<SourceItem>, StreamError>> + Unpin {
-        std::future::poll_fn(move |cx| self.poll(room, cx))
-    }
     fn poll(
         &mut self,
         room: (bool, bool, bool),

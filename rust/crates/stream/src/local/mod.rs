@@ -23,7 +23,6 @@ use tokio::sync::mpsc;
 #[cfg(all(not(acyclic_loom), not(feature = "test-support")))]
 use tokio::{spawn, task::spawn_blocking};
 
-
 #[cfg(acyclic_loom)]
 pub(crate) mod parking_model;
 #[cfg(test)]
@@ -36,10 +35,10 @@ use tracing::field::Empty;
 use crate::journal::{Command, decode_command, replay};
 use crate::obs;
 use crate::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest,
-    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
-    UnixMillisClock,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitOutcome, CommitRequest,
+    CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest, RecordStream, StreamBounds,
+    StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";

@@ -71,7 +71,13 @@ impl MemoryStream {
             mutations: facts,
         };
         self.publish(bytes, || {
-            publish(&mut state, paths, histories, &envelope, &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)))?;
+            publish(
+                &mut state,
+                paths,
+                histories,
+                &envelope,
+                &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+            )?;
             state.decision = decision;
             state.last_committed_at_micros = time;
             retain(

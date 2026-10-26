@@ -207,8 +207,6 @@ impl WasmStream {
         Ok(bytes_array(output))
     }
 
-
-
     /// Opens a live follow cursor backed by the canonical provider.
     #[wasm_bindgen]
     pub async fn open_follow(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
@@ -233,7 +231,6 @@ impl WasmStream {
             )),
         })
     }
-
 }
 
 impl WasmStream {

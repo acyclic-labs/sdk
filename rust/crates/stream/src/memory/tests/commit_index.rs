@@ -208,7 +208,7 @@ fn indexed_commit(
     let mutation = if fork {
         CommitMutation::Fork {
             exclude: Vec::new(),
-source: request.path.clone(),
+            source: request.path.clone(),
             destination: destination.clone(),
             at_tail: 1,
             records: request.records.clone(),

@@ -130,7 +130,8 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
         "invalid_path"
     );
 
-    let invalid_limit = wire::ChildrenPageRequest { tail_stream: None,
+    let invalid_limit = wire::ChildrenPageRequest {
+        tail_stream: None,
         parent: Some("events".to_owned()),
         limit: 0,
         ..Default::default()
@@ -146,7 +147,7 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
 fn fork_validation_rejects_same_paths_and_oversized_payloads() {
     let same = wire::ForkRequest {
         exclude: Vec::new(),
-source: "events".to_owned(),
+        source: "events".to_owned(),
         destination: "events".to_owned(),
         at_tail: None,
         idempotency_key: None,
@@ -158,7 +159,7 @@ source: "events".to_owned(),
 
     let oversized = wire::ForkRequest {
         exclude: Vec::new(),
-source: "a".repeat(crate::MAX_PATH_BYTES + 1),
+        source: "a".repeat(crate::MAX_PATH_BYTES + 1),
         destination: "b".to_owned(),
         at_tail: None,
         idempotency_key: None,

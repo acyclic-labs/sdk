@@ -120,8 +120,6 @@ async fn records(provider: BaselineProvider) -> RecordStream {
     }
 }
 
-
-
 fn compare<T: Send + Debug + Eq + 'static>(
     old: BoxStream<'static, Result<T, StreamError>>,
     candidate: BoxStream<'static, Result<T, StreamError>>,

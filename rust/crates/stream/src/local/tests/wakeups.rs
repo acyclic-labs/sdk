@@ -57,13 +57,10 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         wakes.push(probe(follow.as_mut()));
         records.push(follow);
-
     }
     // Seeding must not have woken earlier, unrelated subscriptions either.
     assert!(
-        wakes
-            .iter()
-            .all(|wake| wake.0.load(Ordering::SeqCst) == 0),
+        wakes.iter().all(|wake| wake.0.load(Ordering::SeqCst) == 0),
         "seeding woke unrelated subscriptions"
     );
     assert_eq!(provider.inner.revision.receiver_count(), 0);
@@ -100,11 +97,7 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
             .is_pending()
     );
     provider.inner.poison();
-    assert!(
-        wakes
-            .iter()
-            .all(|wake| wake.0.load(Ordering::SeqCst) > 0)
-    );
+    assert!(wakes.iter().all(|wake| wake.0.load(Ordering::SeqCst) > 0));
     assert_failed(&mut records).await?;
     assert_eq!(provider.inner.failed.receiver_count(), 0);
     eprintln!(

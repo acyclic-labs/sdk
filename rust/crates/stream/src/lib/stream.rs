@@ -44,7 +44,8 @@ impl<P: StreamProvider> Stream<P> {
         value: impl Into<AppendRecord>,
         idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
-        self.append_batch(vec![value.into()], None, idempotency_key).await
+        self.append_batch(vec![value.into()], None, idempotency_key)
+            .await
     }
 
     /// Appends one record only at the exact tail.
@@ -86,7 +87,7 @@ impl<P: StreamProvider> Stream<P> {
         self.provider
             .fork(ForkRequest {
                 exclude,
-source: self.path.clone(),
+                source: self.path.clone(),
                 destination: StreamPath::new(destination)?,
                 at_tail,
                 idempotency_key: Some(idempotency_key),

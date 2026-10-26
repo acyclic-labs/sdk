@@ -214,13 +214,22 @@ async fn native_append_conflicts_leave_keys_free_and_journal_unchanged()
     assert_eq!(reopened.append(request.clone()).await?, expected);
     let mut retry = request;
     retry.if_tail = Some(1);
-    assert!(matches!(reopened.append(retry.clone()).await?, AppendOutcome::Committed(_)));
-    let accepted = reopened.inspect_idempotency(key.clone()).await?.ok_or("missing success")?;
+    assert!(matches!(
+        reopened.append(retry.clone()).await?,
+        AppendOutcome::Committed(_)
+    ));
+    let accepted = reopened
+        .inspect_idempotency(key.clone())
+        .await?
+        .ok_or("missing success")?;
     assert_eq!(reopened.tail(path).await?, 2);
     drop(reopened);
     let reopened = LocalStream::open(directory.path(), limits).await?;
     assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
-    assert!(matches!(reopened.append(retry).await?, AppendOutcome::Committed(_)));
+    assert!(matches!(
+        reopened.append(retry).await?,
+        AppendOutcome::Committed(_)
+    ));
     drop(reopened);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -721,13 +730,27 @@ async fn rejected_commits_do_not_grow_the_journal() -> Result<(), Box<dyn std::e
     let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
     let key = IdempotencyKey::new(b"stable-commit-intent".to_vec())?;
     for _ in 0..32 {
-        assert!(matches!(provider.commit(CommitRequest {
-            conditions: vec![crate::CommitCondition::Tail { path: StreamPath::new("absent")?, expected: 1 }],
-            mutations: vec![crate::CommitMutation::Append { path: StreamPath::new("absent")?, records: vec![OwnedBytes::from_static(b"intent").into()] }],
-            idempotency_key: key.clone(),
-        }).await?, CommitOutcome::Conflict(_)));
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    conditions: vec![crate::CommitCondition::Tail {
+                        path: StreamPath::new("absent")?,
+                        expected: 1
+                    }],
+                    mutations: vec![crate::CommitMutation::Append {
+                        path: StreamPath::new("absent")?,
+                        records: vec![OwnedBytes::from_static(b"intent").into()]
+                    }],
+                    idempotency_key: key.clone(),
+                })
+                .await?,
+            CommitOutcome::Conflict(_)
+        ));
     }
     assert!(provider.inspect_idempotency(key).await?.is_none());
-    assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), before);
+    assert_eq!(
+        std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(),
+        before
+    );
     Ok(())
 }

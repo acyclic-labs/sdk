@@ -82,7 +82,7 @@ pub(crate) fn clone_commit(
                     }
                     CommittedMutation::Fork(fork) => CommittedMutation::Fork(CommittedFork {
                         exclude: Vec::new(),
-source: fork.source.clone(),
+                        source: fork.source.clone(),
                         destination: fork.destination.clone(),
                         forked_at: fork.forked_at,
                         tail: fork.tail,

@@ -153,9 +153,7 @@ pub(crate) fn verify(fault: u8) {
             "compaction must preserve accepted reads and the snapshot cut"
         );
         assert!(
-            record.is_ready()
-                && matches!(opened, Poll::Ready(Ok(_)))
-                && marks.is_ready(),
+            record.is_ready() && matches!(opened, Poll::Ready(Ok(_))) && marks.is_ready(),
             "compaction must preserve accepted reads and the snapshot cut"
         );
         assert!(matches!(record, Poll::Ready(Some(Ok(record))) if record.sequence == 1));
