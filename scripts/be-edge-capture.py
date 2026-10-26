@@ -20,7 +20,7 @@ def main():
     cases = {
         "text": {"messages": [{"role": "user", "content": "Reply with exactly: hello"}]},
         "tool": {"messages": [{"role": "user", "content": "Call echo with value 1."}],
-                 "tools": [tool], "tool_choice": {"type": "function", "function": {"name": "echo"}}},
+                 "tools": [tool]},
         "result": {"messages": [{"role": "user", "content": "Call echo with value 1."},
                                 {"role": "assistant", "content": None, "tool_calls": [
                                     {"id": "capture_echo", "type": "function", "function": {
@@ -32,6 +32,7 @@ def main():
         "rate": {"messages": [{"role": "user", "content": "hello"}]},
     }
     captures = {}
+    usage = {}
     for name, case in cases.items():
         request = dict(base, **case)
         request_bytes = json.dumps(request).encode()
@@ -57,10 +58,12 @@ def main():
         if name == "result":
             captures[name]["assertions"] = {"/messages": request["messages"]}
         print(f"CAPTURE {name} status={status} bytes={len(body)} sha256={captures[name]['sha256']}")
-        if name == "text":
+        if name in ("text", "tool", "result"):
             events = [json.loads(line[6:]) for line in body.decode().splitlines()
                       if line.startswith("data: ") and line != "data: [DONE]"]
-            usage = next(event["usage"] for event in events if event.get("usage"))
+            counter = next(event["usage"] for event in events if event.get("usage"))
+            usage[name] = {"input": "/usage/prompt_tokens", "input_tokens": counter["prompt_tokens"],
+                           "output": "/usage/completion_tokens", "output_tokens": counter["completion_tokens"]}
         if name == "tool":
             events = [json.loads(line[6:]) for line in body.decode().splitlines()
                       if line.startswith("data: ") and line != "data: [DONE]"]
@@ -77,8 +80,7 @@ def main():
                         "capacity": {"context_tokens": 2048, "output_tokens": 128},
                         "features": {"tools": True, "images": False}}}},
                 "options": {"temperature": 0, "seed": 1, "chat_template_kwargs": {"enable_thinking": False}},
-                "usage": {"input": "/usage/prompt_tokens", "input_tokens": usage["prompt_tokens"],
-                          "output": "/usage/completion_tokens", "output_tokens": usage["completion_tokens"]},
+                "usage": usage["text"], "tool_usage": [usage["tool"], usage["result"]],
                 "rate_source": "real nginx limit_req configured at 1 request/minute, limit_req_status 429"}
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 

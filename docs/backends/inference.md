@@ -32,7 +32,8 @@ public test credential and never consult CLI login, environment or keychain data
 Usage pointers are relative to public completion metadata: Chat uses
 `/usage/prompt_tokens` and `/usage/completion_tokens`; Responses and Messages use
 `/usage/input_tokens` and `/usage/output_tokens`. Record exact expected counters
-from the original wire response. Preserve original response bytes with Git's
+from the original wire response. `usage` describes the text step; `tool_usage`
+contains separate exact counters for the tool and result steps. Preserve original response bytes with Git's
 `-text` attribute. The common runner refuses incomplete families and changed hashes.
 
 Enable `acyclic-harness-providers/endpoint-presets` for `endpoints::{openrouter,
