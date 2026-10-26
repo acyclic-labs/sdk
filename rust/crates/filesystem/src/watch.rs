@@ -2601,69 +2601,6 @@ impl NativeWatch {
         Ok(())
     }
 
-    /// Adds every directory beneath the root, except the root names in `excluded`, to a non-recursive native watcher: what a baseline that captures the whole tree needs before it starts, so a change to anything it captured is reported.
-    pub fn watch_tree(&mut self, excluded: &[&str]) -> Result<(), NativeWatchError> {
-        if self.recursive {
-            return Ok(());
-        }
-        let mut pending = vec![self.root.clone()];
-        while let Some(directory) = pending.pop() {
-            let entries = match std::fs::read_dir(&directory) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(NativeWatchError::Io(error)),
-            };
-            for entry in entries {
-                let entry = entry.map_err(NativeWatchError::Io)?;
-                let is_directory = entry
-                    .file_type()
-                    .is_ok_and(|file_type| file_type.is_dir() && !file_type.is_symlink());
-                if !is_directory
-                    || (directory == self.root
-                        && excluded.iter().any(|name| entry.file_name() == *name))
-                {
-                    continue;
-                }
-                let path = entry.path();
-                // The capture policy may exclude a nested SDK projection,
-                // while authored siblings under its parent still need watches.
-                // Do not traverse or register that excluded physical subtree.
-                if self
-                    .shared
-                    .lock()
-                    .map_err(|_| NativeWatchError::StatePoisoned)?
-                    .excluded
-                    .iter()
-                    .any(|excluded| path.starts_with(excluded))
-                {
-                    continue;
-                }
-                let relative = path
-                    .strip_prefix(&self.root)
-                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-                let cancellation = CancellationToken::new();
-                let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let (namespace, bytes, allocation) =
-                    namespace_hint_with_work(relative, self.profile, self.limits, &mut work)
-                        .map_err(demand_watch_error)?;
-                let observed = self.watch_directory(&namespace);
-                drop(namespace);
-                let guarded = allocation.is_some();
-                drop(allocation);
-                if !guarded {
-                    work.release(bytes).map_err(demand_watch_error)?;
-                }
-                match observed {
-                    Ok(()) => {}
-                    Err(_) if !path.is_dir() => continue,
-                    Err(error) => return Err(error),
-                }
-                pending.push(path);
-            }
-        }
-        Ok(())
-    }
-
     /// Drops the registrations at and beneath a removed or renamed path,
     /// except those whose path a later demand already bound to a
     /// replacement directory.
