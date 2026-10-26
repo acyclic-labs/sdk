@@ -3,8 +3,6 @@
 use crate::TestResult;
 use serde_json::Value;
 
-#[path = "../../harness/tests/support/schema/agents.rs"]
-mod agents;
 #[path = "../../harness/tests/support/schema/composer_entry.rs"]
 mod composer_entry;
 #[path = "../../harness/tests/support/expected_outcome.rs"]
@@ -33,10 +31,6 @@ pub(super) fn validate(mut value: Value) -> TestResult {
         .remove("driver")
         .ok_or("native driver is missing")?;
     match driver.as_str() {
-        Some("agents") => {
-            let case: agents::Case = serde_json::from_value(value)?;
-            case.validate()?;
-        }
         Some("goal-local") => {
             goals::GoalCase::parse(value)?;
         }
