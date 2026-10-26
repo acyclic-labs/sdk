@@ -10,7 +10,7 @@
 use super::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
     FilesystemHost, FilesystemJournalBinding, agent_effects::FilesystemTurnEffects,
-    agent_internal::AgentInternalFiles,
+    agent_goal::FilesystemTurnGoal, agent_internal::AgentInternalFiles,
 };
 use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
@@ -163,6 +163,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     schemas: SchemaRegistry,
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
+    goals: Option<crate::goal::GoalContinuationPolicy>,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -189,7 +190,15 @@ where
             schemas: SchemaRegistry::new(),
             limits,
             approvers: Default::default(),
+            goals: Some(Default::default()),
         }
+    }
+
+    /// Continues each agent's active goal within `goals`; `None` runs no goals.
+    #[must_use]
+    pub const fn with_goals(mut self, goals: Option<crate::goal::GoalContinuationPolicy>) -> Self {
+        self.goals = goals;
+        self
     }
 
     /// Binds the independent models that `llm` approval stages name.
@@ -467,6 +476,18 @@ where
                 turn,
                 self.limits.maximum_bytes,
             )) as Arc<dyn crate::agent::TurnEffects>);
+            let goal = match self.goals {
+                Some(policy) => FilesystemTurnGoal::bind(
+                    &self.host,
+                    agent,
+                    &authority.issuer.verifier(&mut None)?,
+                    &authority.scope,
+                    self.limits.maximum_bytes,
+                    policy,
+                )?
+                .map(|goal| Arc::new(goal) as Arc<dyn crate::agent::TurnGoal>),
+                None => None,
+            };
             let (policy, configured) = self.approvals(agent, &authority.content).await?;
             authority.approval = configured
                 .map(|policy| {
@@ -496,6 +517,7 @@ where
                 selected,
                 approvals: Some(approvals),
                 effects,
+                goal,
             })
         })
     }

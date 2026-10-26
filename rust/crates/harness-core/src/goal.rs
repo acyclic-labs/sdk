@@ -131,19 +131,22 @@ impl GoalContinuationPolicy {
     ) -> Option<GoalContinuation> {
         let operation = goal.continuation_operation(task, settled_turn)?;
         Some(if admitted_continuations >= self.max_continuations {
-            // This fixed ASCII reason, even at u32::MAX, fits GOAL_REASON_BYTES.
-            let reason = format!(
-                "\"Maximum goal continuations reached (limit {}).\"",
-                self.max_continuations,
-            );
-            GoalContinuation::Block(status_contents(
-                GoalStatus::Blocked,
-                Some(&reason),
-                &goal.markdown,
-            ))
+            GoalContinuation::Block(self.blocked(goal))
         } else {
             GoalContinuation::Continue(operation)
         })
+    }
+
+    /// GOAL.md contents once this loop's allowance is spent: `goal`'s body,
+    /// blocked with the allowance as its reason.
+    #[must_use]
+    pub fn blocked(&self, goal: &GoalView) -> String {
+        // This fixed ASCII reason, even at u32::MAX, fits GOAL_REASON_BYTES.
+        let reason = format!(
+            "\"Maximum goal continuations reached (limit {}).\"",
+            self.max_continuations,
+        );
+        status_contents(GoalStatus::Blocked, Some(&reason), &goal.markdown)
     }
 }
 

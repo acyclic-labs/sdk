@@ -13,8 +13,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemSpawnVolumes, FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors,
-        TurnLimits,
+        FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAuthority,
+        TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };
@@ -205,7 +205,8 @@ impl LocalHarness {
                 Arc::new(Executors(Arc::downgrade(self))),
                 limits,
             )
-            .with_approvers(self.approval_models.clone()),
+            .with_approvers(self.approval_models.clone())
+            .with_goals(self.goal_continuations),
         );
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
@@ -239,7 +240,7 @@ impl LocalHarness {
                     volumes: vec![
                         bind(PRIVATE_VOLUME, &self.journal),
                         bind("project", &self.project),
-                        bind("scratch", &self.scratch),
+                        bind(GOAL_VOLUME, &self.scratch),
                     ],
                     brief: None,
                     policy: None,

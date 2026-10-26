@@ -43,6 +43,8 @@ pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod agent_effects;
+mod agent_goal;
+pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
 mod spawn_volumes;
 pub use spawn_volumes::FilesystemSpawnVolumes;

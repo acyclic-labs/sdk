@@ -4,11 +4,12 @@ use super::{Result, adopted, id, intent};
 use acyclic_harness_core::{
     Error as CoreError, InteractionRejection, OperationId,
     agent::*,
-    conversation::FileRef,
+    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     executor::{
         ExecutionClaim, ExecutionEvent, ExecutionJournal, ExecutionProgress, ExecutionRecord,
         Executor, PreparationIo, TurnInput as ExecutorInput, TurnOutput,
     },
+    goal::{GoalContinuationPolicy, GoalStatus, GoalView},
     interaction::{Interaction, InteractionOutcome},
 };
 use acyclic_stream::{BoxProviderFuture as BoxFuture, OwnedBytes};
@@ -17,7 +18,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Journal the scripted executor never touches; every method refuses.
+/// Journal the scripted executor never touches; every method but `stage`
+/// refuses, and `stage` names one fixed output file.
 struct Unused;
 
 fn unused<T>() -> acyclic_harness_core::Result<T> {
@@ -67,7 +69,10 @@ impl ExecutionJournal for Unused {
     ) -> acyclic_harness_core::Result<
         acyclic_harness_core::conversation::BoundedContentFuture<'a, FileRef>,
     > {
-        unused()
+        let file = file("output.json")?;
+        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
+            Ok(file)
+        })
     }
 
     fn load<'a>(
@@ -132,8 +137,8 @@ impl Executor for Script {
     }
 }
 
-/// Host binding every turn to the script.
-struct Host(Arc<Script>);
+/// Host binding every turn to the script and, optionally, a goal.
+struct Host(Arc<Script>, Option<Arc<Goal>>);
 
 impl TurnHost for Host {
     fn open<'a>(
@@ -151,6 +156,10 @@ impl TurnHost for Host {
             selected: None,
             approvals: None,
             effects: None,
+            goal: self
+                .1
+                .clone()
+                .map(|goal| goal as Arc<dyn acyclic_harness_core::agent::TurnGoal>),
         };
         Box::pin(async move { Ok(open) })
     }
@@ -161,7 +170,7 @@ fn driver(progress: Vec<ExecutionProgress<TurnOutput>>) -> (Arc<Script>, Executo
         progress: Mutex::new(progress.into()),
         ..Script::default()
     });
-    (script.clone(), ExecutorDriver::new(Host(script)))
+    (script.clone(), ExecutorDriver::new(Host(script, None)))
 }
 
 /// A turn-starting input that carries no file: a child's approval request.
@@ -267,5 +276,176 @@ fn distinct_inputs_start_distinct_turns() -> Result {
         turn_id(&state, &input("a")?)?,
         turn_id(&state, &input("b")?)?
     );
+    Ok(())
+}
+
+/// A file on a private volume of agent 1.
+fn file(path: &str) -> acyclic_harness_core::Result<FileRef> {
+    FileRef::new(
+        VolumeRef::new(
+            acyclic_harness_core::resources::ProviderRef::new(
+                "test".into(),
+                "filesystem".into(),
+                "1".into(),
+                &mut None,
+            )?,
+            "scratch".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([1; 16])),
+            &mut None,
+        )?,
+        path.into(),
+        "version-1".into(),
+        FileDescriptor::from_bytes(b"ship it", "text/markdown", &mut None)?,
+        path.into(),
+        &mut None,
+    )
+}
+
+/// A GOAL.md whose status the test sets, recording every rewrite.
+struct Goal {
+    status: Mutex<GoalStatus>,
+    rewrites: Mutex<Vec<String>>,
+}
+
+impl TurnGoal for Goal {
+    fn policy(&self) -> GoalContinuationPolicy {
+        GoalContinuationPolicy {
+            max_continuations: 2,
+        }
+    }
+
+    fn read(&self) -> BoxFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
+        let status = *self.status.lock().expect("lock");
+        Box::pin(async move {
+            Ok(Some(GoalView {
+                source: file("GOAL.md")?,
+                status,
+                reason: None,
+                markdown: "ship it
+"
+                .into(),
+            }))
+        })
+    }
+
+    fn rewrite<'a>(
+        &'a self,
+        _: &'a GoalView,
+        contents: &'a str,
+        _: &'a str,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.rewrites
+            .lock()
+            .expect("lock")
+            .push(contents.to_owned());
+        *self.status.lock().expect("lock") = GoalStatus::Blocked;
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn ready() -> ExecutionProgress<TurnOutput> {
+    ExecutionProgress::Ready(TurnOutput {
+        text: "worked".into(),
+        attachments: Vec::new(),
+        metadata: Default::default(),
+        steps: 1,
+    })
+}
+
+/// The goal continuation a step sent its own agent, if any.
+fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
+    let sends: Vec<_> = step
+        .outs
+        .iter()
+        .filter_map(|out| match out {
+            Out::Send {
+                to,
+                record: InboxRecord::Message(message),
+            } if to == path => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(sends.len() <= 1, "one continuation per settled turn");
+    sends.into_iter().next()
+}
+
+#[tokio::test]
+async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_blocks_it() -> Result {
+    let path = AgentPath::root(&id(1));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+    let goal = Arc::new(Goal {
+        status: Mutex::new(GoalStatus::Active),
+        rewrites: Mutex::new(Vec::new()),
+    });
+    let script = Arc::new(Script {
+        progress: Mutex::new((0..5).map(|_| ready()).collect()),
+        ..Script::default()
+    });
+    let driver = ExecutorDriver::new(Host(script, Some(Arc::clone(&goal))));
+    let user = InboxRecord::Message(Message {
+        from: super::user(),
+        id: intent("m1"),
+        body: Box::new(file("prompt.md")?),
+    });
+    let mut next = Some(user.clone());
+    let mut sent = Vec::new();
+    for sequence in 1..=3 {
+        let record = next.take().expect("a continuation woke the agent");
+        let settled = step(
+            &driver,
+            &path,
+            Some(state),
+            sequence,
+            Wake::Inbox { sequence, record },
+        )
+        .await?;
+        assert_eq!(settled.state.phase, Phase::Idle);
+        if let Some(message) = continuation(&settled, &path) {
+            assert_eq!(message.from, Sender::Agent { path: path.clone() });
+            assert_eq!(*message.body, file("GOAL.md")?);
+            sent.push(message.id.as_str().to_owned());
+            next = Some(InboxRecord::Message(message));
+        }
+        state = settled.state;
+    }
+    // Two continuations of one loop, then the allowance blocks the goal.
+    assert_eq!(sent.len(), 2);
+    let run = sent[0]
+        .strip_prefix(GOAL_INTENT)
+        .and_then(|rest| rest.strip_suffix(":1"))
+        .expect("first continuation of the loop");
+    assert_eq!(sent[1], format!("{GOAL_INTENT}{run}:2"));
+    let rewrites = goal.rewrites.lock().expect("lock").clone();
+    assert_eq!(rewrites.len(), 1);
+    assert!(rewrites[0].starts_with(
+        "---
+status: blocked
+reason: \"Maximum goal continuations"
+    ));
+    assert!(rewrites[0].ends_with(
+        "---
+ship it
+"
+    ));
+    // A blocked or done goal sends nothing and rewrites nothing.
+    for status in [GoalStatus::Blocked, GoalStatus::Done] {
+        *goal.status.lock().expect("lock") = status;
+        let sequence = 4 + u64::from(status == GoalStatus::Done);
+        let settled = step(
+            &driver,
+            &path,
+            Some(state),
+            sequence,
+            Wake::Inbox {
+                sequence,
+                record: user.clone(),
+            },
+        )
+        .await?;
+        assert!(continuation(&settled, &path).is_none());
+        state = settled.state;
+    }
+    assert_eq!(goal.rewrites.lock().expect("lock").len(), 1);
     Ok(())
 }

@@ -10,6 +10,8 @@ mod commit;
 mod driver;
 mod effects;
 pub use effects::{TurnEffect, TurnEffects, outs as effect_outs};
+mod goal;
+pub use goal::{GOAL_INTENT, TurnGoal};
 mod handler;
 mod host;
 pub mod kernel;

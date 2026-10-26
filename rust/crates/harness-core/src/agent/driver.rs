@@ -43,6 +43,9 @@ pub struct OpenTurn {
     /// Effects recorded by the turn's agent tools, lowered when it settles;
     /// `None` when the host binds no agent tools.
     pub effects: Option<Arc<dyn super::TurnEffects>>,
+    /// The agent's goal file, checked once when the turn settles; `None` when
+    /// the host runs no goals.
+    pub goal: Option<Arc<dyn super::TurnGoal>>,
 }
 
 /// Host binding of agent turns to an executor and journal.
@@ -270,18 +273,25 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         .map_err(host_error)?
                         .await
                         .map_err(host_error)?;
+                    // An active goal continues the agent through its own inbox.
+                    let goal = match &open.goal {
+                        Some(goal) => super::goal::settle(agent, &input, turn, &**goal).await?,
+                        None => None,
+                    };
                     let entry = ConversationEntry {
                         input,
                         output: output.clone(),
                     };
-                    // A child reports when its work is done; a root waits for input.
-                    let wait = if agent.parent.is_some() && agent.queued.is_empty() {
-                        Wait::Done(AgentOutcome::Succeeded {
-                            result: Some(Box::new(output)),
-                        })
-                    } else {
-                        Wait::Input
-                    };
+                    // A child reports when its work is done and no goal continues it;
+                    // a root waits for input.
+                    let wait =
+                        if goal.is_none() && agent.parent.is_some() && agent.queued.is_empty() {
+                            Wait::Done(AgentOutcome::Succeeded {
+                                result: Some(Box::new(output)),
+                            })
+                        } else {
+                            Wait::Input
+                        };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = match &open.effects {
                         Some(effects) => {
@@ -290,6 +300,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         None => Vec::new(),
                     };
                     outs.push(Out::Conversation(entry.encode()?));
+                    outs.extend(goal);
                     TurnStep {
                         checkpoint: None,
                         outs,
