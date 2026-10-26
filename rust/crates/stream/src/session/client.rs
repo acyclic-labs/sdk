@@ -3,7 +3,7 @@ use super::*;
 use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
 use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,12 +17,12 @@ mod admissions;
 mod call;
 mod data;
 use admissions::Admissions;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
 mod deadline;
 mod observation;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use cache::Cache;
 use observation::Observation;
 mod outbound;

@@ -3,7 +3,7 @@
 use crate::StreamProvider;
 use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 use futures::stream::BoxStream;
 use futures::{StreamExt, future, stream};
 use prost::Message as _;
@@ -40,11 +40,11 @@ mod interest;
 mod policy;
 mod queue;
 mod runtime;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod service;
 mod signal;
 mod sync;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use client::Cache;
 pub use client::Client;
 pub use client::transport;
@@ -55,7 +55,7 @@ pub use client::{
     verify_link_isolation, verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
     verify_terminal_cursor_dial,
 };
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
 #[cfg(acyclic_stream_loom)]

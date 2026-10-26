@@ -29,7 +29,7 @@ pub mod preparation;
 pub mod request;
 pub mod runtime;
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "session", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub mod session;
