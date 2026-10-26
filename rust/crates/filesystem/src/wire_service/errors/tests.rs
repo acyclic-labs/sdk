@@ -234,6 +234,7 @@ cases! {
     fs_policy_capacity: fs(FsError::AccessPolicyCacheCapacity) => ResourceExhausted;
     fs_cancelled: fs(FsError::Cancelled(CancellationError)) => Cancelled;
     fs_source_changed: fs(FsError::SourceSnapshotStale) => FailedPrecondition;
+    fs_accounting_handoff: fs(FsError::AccountingHandoffActive) => FailedPrecondition;
     fs_handle_allocation: fs(FsError::HandleAllocationFailed) => ResourceExhausted;
     fs_encoding_allocation: fs(FsError::EncodedAllocationFailed(allocation())) => ResourceExhausted;
     fs_config: fs(FsError::Config(crate::model::VolumeConfigError::ZeroLimit)) => InvalidArgument;

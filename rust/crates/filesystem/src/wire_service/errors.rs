@@ -77,7 +77,8 @@ fn filesystem_code(error: &FsError) -> Code {
         | E::InlineFile(_) => Code::InvalidArgument,
         E::NameCollision | E::FileIdentityCollision | E::CreationRejected => Code::AlreadyExists,
         E::ExclusiveWriterConflict { .. } | E::LiveConflict { .. } => Code::Aborted,
-        E::SourceSnapshotStale
+        E::AccountingHandoffActive
+        | E::SourceSnapshotStale
         | E::UnsupportedDurability
         | E::UnsupportedCheckout
         | E::LiveRequiresSerializedAuthority

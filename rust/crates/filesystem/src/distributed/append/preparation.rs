@@ -44,9 +44,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let commit = &request.commit;
         let (durable, encoded) = prepare_record(request, work)?;
         let sequence = durable.sequence;
-        let records = work.path(authority_id, "/records", None)?;
-        let epochs = work.path(authority_id, "/epochs", None)?;
-        let retirement = work.path(authority_id, "/retirement", None)?;
+        let records = work.path(&self.placement, authority_id, "/records", None)?;
+        let epochs = work.path(&self.placement, authority_id, "/epochs", None)?;
+        let retirement = work.path(&self.placement, authority_id, "/retirement", None)?;
         // Four authority fences, lease, operation locator, changes, and two
         // generation lineage fences must all fit the admitted allocation.
         let mut conditions = work.vec(9)?;
@@ -177,7 +177,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         let (gate, gate_tail, active) = match view.projection {
             Some(projection) => (
-                work.path(authority_id, "/publication-gate", None)?,
+                work.path(&self.placement, authority_id, "/publication-gate", None)?,
                 projection.gate_tail,
                 projection.active,
             ),
@@ -347,8 +347,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             mutations,
             fresh_lineage,
         } = publication;
-        let lineage = work.path(authority_id, "/lineage", None)?;
-        let locator = work.path(authority_id, "/generations/", Some(generation))?;
+        let lineage = work.path(&self.placement, authority_id, "/lineage", None)?;
+        let locator = work.path(
+            &self.placement,
+            authority_id,
+            "/generations/",
+            Some(generation),
+        )?;
         use super::super::actor::GenerationKnowledge;
         let known = match (fresh_lineage, view.staged(&locator, work)?, view.projection) {
             (true, _, _) => GenerationKnowledge::Absent,

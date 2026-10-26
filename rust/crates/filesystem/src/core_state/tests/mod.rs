@@ -358,7 +358,7 @@ pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
         for record in frame.change.0 {
             let key = record.key;
             let paths = key.paths(&namespace).unwrap();
-            std::fs::create_dir_all(paths.directory().unwrap()).unwrap();
+            std::fs::create_dir_all(paths.directory()).unwrap();
             std::fs::write(paths.current, b"{\"torn").unwrap();
         }
     }

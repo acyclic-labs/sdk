@@ -4,6 +4,13 @@ pub(super) const ROOT_FILE_DOMAIN: &[u8] = b"acyclic-fs-root-file-v1\0";
 pub(super) const CREATION_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-create-operation-v1\0";
 pub(super) const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-fingerprint-v1\0";
 
+pub(super) struct PreparedCreationCommit {
+    pub(super) commit: ProposedCommit,
+    pub(super) changes: Option<crate::PublicationChanges>,
+    pub(super) hold: crate::PublicationHold,
+    pub(super) capacity: u64,
+}
+
 /// Immutable semantics and optional policy published in the first generation.
 #[derive(Clone, Copy)]
 pub struct VolumeInitialization<'a> {
@@ -242,6 +249,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let VolumeCreated {
             volume_id, config, ..
         } = creation;
+        let prepared = self
+            .prepare_creation_commit(
+                creation,
+                operation_id,
+                closure,
+                proven_at,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        accounting.check()?;
+        let mut authority = authority_work(accounting, cancellation)?;
+        let result = self
+            .inner
+            .authority
+            .create_first_record(
+                volume_authority_id(volume_id),
+                prepared.commit,
+                &mut authority,
+                guard,
+            )
+            .await;
+        let recorded = record_authority_work(accounting, &authority);
+        Self::retire_creation_commit(prepared.changes, prepared.capacity, accounting)?;
+        recorded?;
+        drop(prepared.hold);
+        let created = result.map_err(|error| match error {
+            crate::AuthorityError::Authority(error) => E::from(FsError::from(error)),
+            crate::AuthorityError::Owner(error) => error.into(),
+        })?;
+        if !created {
+            return Err(FsError::CreationRejected.into());
+        }
+        Ok(Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
+        })
+    }
+
+    /// Encodes one volume's first record and holds its closure live until
+    /// the commit that carries it is durable.
+    pub(super) async fn prepare_creation_commit(
+        &self,
+        creation: VolumeCreated,
+        operation_id: Option<OperationId>,
+        closure: &[ObjectId],
+        proven_at: u64,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<PreparedCreationCommit, FsError> {
+        let volume_id = creation.volume_id;
         accounting.check()?;
         let operation_id = if let Some(id) = operation_id {
             id
@@ -278,40 +337,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await?;
-        accounting.check()?;
-        let mut authority = authority_work(accounting, cancellation)?;
         let changes = commit.publication.clone();
-        let result = self
-            .inner
-            .authority
-            .create_first_record(
-                volume_authority_id(volume_id),
-                commit,
-                &mut authority,
-                guard,
-            )
-            .await;
-        let recorded = record_authority_work(accounting, &authority);
+        Ok(PreparedCreationCommit {
+            commit,
+            changes,
+            hold,
+            capacity,
+        })
+    }
+
+    pub(super) fn retire_creation_commit(
+        changes: Option<crate::PublicationChanges>,
+        capacity: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
         if let Some(changes) = changes {
             changes.retire(accounting)?;
         }
-        recorded?;
         if readonly_standalone_live(accounting).is_some() {
             accounting.release_owned(&mut KernelOwnedAllocation::Standalone, capacity)?;
         }
-        drop(hold);
-        let created = result.map_err(|error| match error {
-            crate::AuthorityError::Authority(error) => E::from(FsError::from(error)),
-            crate::AuthorityError::Owner(error) => error.into(),
-        })?;
-        if !created {
-            return Err(FsError::CreationRejected.into());
-        }
-        Ok(Volume {
-            fs: self.clone(),
-            id: volume_id,
-            config,
-        })
+        Ok(())
     }
     pub(crate) async fn read_creation_record<W: FsWork>(
         &self,

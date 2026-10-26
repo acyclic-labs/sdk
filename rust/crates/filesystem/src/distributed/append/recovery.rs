@@ -40,9 +40,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             &mut AuthorityWork<'_>,
         ) -> Result<(), AuthorityStoreError>,
     ) -> Result<Head, AuthorityStoreError> {
-        let records = work.path(authority, "/records", None)?;
-        let epochs = work.path(authority, "/epochs", None)?;
-        let retirement = work.path(authority, "/retirement", None)?;
+        let records = work.path(&self.placement, authority, "/records", None)?;
+        let epochs = work.path(&self.placement, authority, "/epochs", None)?;
+        let retirement = work.path(&self.placement, authority, "/retirement", None)?;
         let expected_tail = anchor
             .head
             .sequence

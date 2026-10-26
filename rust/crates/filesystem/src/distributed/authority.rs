@@ -5,7 +5,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
         /// Restarts tolerated when authorities come and go mid-listing.
         const RESTARTS: usize = 16;
-        let parent = acyclic_stream::StreamPath::new("fs/authorities").map_err(map_stream_error)?;
+        let parent = self.placement.authorities_parent().clone();
         let page = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
         'listing: for _ in 0..RESTARTS {
             let mut authorities = Vec::new();
@@ -28,7 +28,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     Err(error) => return Err(map_stream_error(error)),
                 };
                 for child in &listed.children {
-                    let authority = authority_child(&child.path)?;
+                    let authority = self.placement.authority_child(&child.path)?;
                     if !self.is_retired(authority).await? {
                         authorities.push(authority);
                     }
@@ -72,7 +72,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         suffix: &str,
         work: &mut AuthorityWork<'_>,
     ) -> Result<u64, AuthorityStoreError> {
-        let path = work.path(authority, suffix, None)?;
+        let path = work.path(&self.placement, authority, suffix, None)?;
         let bytes = path.as_str().len() as u64;
         let result = self.tail(path, work).await;
         work.release(bytes)?;
@@ -101,7 +101,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         from: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(acyclic_stream::Record, ProviderAllocation), AuthorityStoreError> {
-        let path = work.path(authority, suffix, None)?;
+        let path = work.path(&self.placement, authority, suffix, None)?;
         let bytes = path.as_str().len() as u64;
         let result = self.record(path, from, work).await;
         work.release(bytes)?;
@@ -296,7 +296,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Err(error) if authority_missing(&error) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let locator = work.path(authority, "/generations/", Some(generation))?;
+        let locator = work.path(
+            &self.placement,
+            authority,
+            "/generations/",
+            Some(generation),
+        )?;
         let bytes = locator.as_str().len() as u64;
         let record = self.record(locator, 0, work).await?;
         work.release(bytes)?;
@@ -330,7 +335,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     ) -> Result<bool, AuthorityStoreError> {
         work.check()?;
         self.authority_require_live(authority, work).await?;
-        let locator = work.path(authority, "/generations/", Some(generation))?;
+        let locator = work.path(
+            &self.placement,
+            authority,
+            "/generations/",
+            Some(generation),
+        )?;
         let bytes = locator.as_str().len() as u64;
         let result = self.record(locator, 0, work).await;
         work.release(bytes)?;
@@ -363,8 +373,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         generation: GenerationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(StreamPath, u64), AuthorityStoreError> {
-        let lineage = work.path(authority, "/lineage", None)?;
-        let locator = work.path(authority, "/generations/", Some(generation))?;
+        let lineage = work.path(&self.placement, authority, "/lineage", None)?;
+        let locator = work.path(
+            &self.placement,
+            authority,
+            "/generations/",
+            Some(generation),
+        )?;
         let bytes = locator.as_str().len() as u64;
         let record = self.record(locator, 0, work).await.map_err(|error| {
             if authority_missing(&error) && !work.is_native() {

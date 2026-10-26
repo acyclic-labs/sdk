@@ -997,7 +997,7 @@ async fn rejected_single_and_group_appends_require_atomic_operation_locator_proo
                     .ok_or("missing second proposal")?
                     .expected = next;
             }
-            let path = work.operation_path(authority, operation)?;
+            let path = work.operation_path(&AuthorityPlacement::default(), authority, operation)?;
             let mut spy = ReleaseSpy::new(stream);
             spy.before_commit = winners;
             spy.deny_probes_after_commit = true;

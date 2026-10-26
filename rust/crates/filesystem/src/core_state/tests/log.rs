@@ -1,22 +1,5 @@
 use super::*;
 
-#[test]
-fn record_directory_refuses_a_path_without_a_parent() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = LocalCoreStateStore::new(directory.path());
-    let namespace = store.namespace().unwrap();
-    let mut paths = namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap();
-    assert_eq!(
-        paths.directory().unwrap(),
-        directory.path().join(CORE_LOG_FAMILY)
-    );
-    paths.current = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
-    assert!(matches!(
-        paths.directory(),
-        Err(LocalCoreStateStoreError::Integrity)
-    ));
-}
-
 #[tokio::test]
 async fn committed_change_survives_a_failing_checkpoint() {
     let directory = tempfile::tempdir().unwrap();
@@ -136,23 +119,6 @@ async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
             )
             .await
             .unwrap(),
-        Some(lazy_state(workspace(), 2))
-    );
-}
-
-#[tokio::test]
-async fn abandoned_deferral_releases_the_flag_for_every_store_alias() {
-    let directory = tempfile::tempdir().unwrap();
-    let owner = LocalCoreStateStore::open_owned(directory.path()).unwrap();
-    let (deferred, durability) = owner.defer_durability();
-    let alias = deferred.clone();
-    assert!(swap_binding(&deferred, 0, lazy_state(workspace(), 1)).await);
-    drop((deferred, durability));
-    assert!(!alias.deferral.as_ref().unwrap().load(Ordering::Acquire));
-    assert!(swap_binding(&alias, 1, lazy_state(workspace(), 2)).await);
-    drop((owner, alias));
-    assert_eq!(
-        load_binding(&LocalCoreStateStore::new(directory.path()), workspace()).await,
         Some(lazy_state(workspace(), 2))
     );
 }

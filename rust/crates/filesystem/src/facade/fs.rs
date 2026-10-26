@@ -244,7 +244,10 @@ impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
     ) -> Result<(Arc<P>, acyclic_stream::StreamPath), crate::AuthorityStoreError> {
         Ok((
             self.inner.authority.provider(),
-            crate::distributed::authority_records_path(volume)?,
+            self.inner
+                .authority
+                .placement()
+                .stream_path(crate::kernel::volume_authority_id(volume), "/records")?,
         ))
     }
 

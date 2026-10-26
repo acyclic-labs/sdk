@@ -190,7 +190,9 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(any(test, feature = "distributed"))]
-pub use distributed::StreamAuthorityStore;
+pub use distributed::{
+    AuthorityPlacement, FilesystemCommit, FilesystemCommitOutcome, StreamAuthorityStore,
+};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     ContentAddress, ContentChange, ContentFile, ContentTimes, CreationOperation, DetachedFile,
@@ -201,6 +203,8 @@ pub use facade::{
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
+#[cfg(any(test, feature = "distributed"))]
+pub use facade::{CreateSpec, ForkSpec};
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
@@ -399,8 +403,8 @@ pub use windows_usn::{
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
 pub use workspace::{
-    ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation, IdempotencyKey,
-    JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
+    ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, FileCondition, ForkOptions, Generation,
+    IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
     TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
     WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,

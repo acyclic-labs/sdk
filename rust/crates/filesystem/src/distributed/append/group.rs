@@ -11,6 +11,7 @@ struct PreparedGroup<'a> {
 impl PreparedGroup<'_> {
     fn project(
         &self,
+        placement: &AuthorityPlacement,
         projection: crate::distributed::actor::Projection,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::distributed::actor::PreparedProjection, AuthorityStoreError> {
@@ -33,7 +34,7 @@ impl PreparedGroup<'_> {
             (first.commit.operation_id, last.commit.publication.as_ref()),
             &last.records,
             &self.transaction,
-            first.authority_id,
+            (placement, first.authority_id),
             work,
         )
     }
@@ -132,7 +133,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     });
                 }
             };
-            let next_projection = prepared.project(projection, &mut child)?;
+            let next_projection = prepared.project(&self.placement, projection, &mut child)?;
             let PreparedGroup {
                 anchor,
                 receipts: prepared,
@@ -262,8 +263,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 }
                 None => {
                     if let CommitOutcome::Conflict(conflicts) = output {
-                        let operation =
-                            work.operation_path(member.authority_id, member.commit.operation_id)?;
+                        let operation = work.operation_path(
+                            &self.placement,
+                            member.authority_id,
+                            member.commit.operation_id,
+                        )?;
                         if conflicts.iter().any(|conflict| matches!(conflict, acyclic_stream::CommitConflict::Exists { path } if path == &operation)) {
                             Some(self.authority_find_operation(member.authority_id, member.commit.operation_id, work).await?
                                 .ok_or_else(|| authority_corrupt("rejected operation locator has no authenticated receipt", work))?)

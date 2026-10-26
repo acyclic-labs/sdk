@@ -38,7 +38,7 @@ pub(crate) async fn apply_generation_delta<O: AsyncObjectStore>(
             .await
         },
     )?;
-    let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
+    let mut future = future.erase_send();
     let result = future.as_mut().await;
     drop(future);
     frame.finish(result)

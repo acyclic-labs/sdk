@@ -12,10 +12,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     ) -> Result<super::actor::PreparedProjection, AuthorityStoreError> {
         let mut head = Head::genesis(epoch);
         let lineage_tail = source.as_ref().map_or(0, |(_, tail, _)| *tail);
-        let root = work.path(authority, "", None)?;
-        let records = work.path(authority, "/records", None)?;
-        let epochs = work.path(authority, "/epochs", None)?;
-        let gate = work.path(authority, "/publication-gate", None)?;
+        let root = work.path(&self.placement, authority, "", None)?;
+        let records = work.path(&self.placement, authority, "/records", None)?;
+        let epochs = work.path(&self.placement, authority, "/epochs", None)?;
+        let gate = work.path(&self.placement, authority, "/publication-gate", None)?;
         request.conditions.extend(
             [&root, &records, &epochs, &gate]
                 .map(|path| CommitCondition::Absent { path: path.clone() }),
@@ -100,7 +100,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         lineage_tail: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
-        let lineage = work.path(authority, "/lineage", None)?;
+        let lineage = work.path(&self.placement, authority, "/lineage", None)?;
         request.conditions.push(CommitCondition::Absent {
             path: lineage.clone(),
         });
@@ -116,7 +116,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .map(|(_, tail, generation)| (*tail, *generation));
         match source {
             Some((source, at_tail, generation)) => {
-                let locator = work.path(authority, "/generations/", Some(generation))?;
+                let locator = work.path(
+                    &self.placement,
+                    authority,
+                    "/generations/",
+                    Some(generation),
+                )?;
                 request.conditions.push(CommitCondition::Absent {
                     path: locator.clone(),
                 });
@@ -141,7 +146,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     "a fork cannot publish its source generation again",
                 ));
             }
-            let locator = work.path(authority, "/generations/", Some(generation))?;
+            let locator = work.path(
+                &self.placement,
+                authority,
+                "/generations/",
+                Some(generation),
+            )?;
             request.conditions.push(CommitCondition::Absent {
                 path: locator.clone(),
             });

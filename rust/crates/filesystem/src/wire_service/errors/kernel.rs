@@ -165,6 +165,7 @@ project!(AuthenticatedProbeError, {
 });
 project!(RebaseError<AuthenticatedProbeError>, {
     E::Cancelled => Code::Cancelled,
+    E::DependenciesChanged => Code::Aborted,
     E::ZeroConflictLimit => Code::InvalidArgument,
     E::Work(_) | E::AllocationFailed => Code::ResourceExhausted,
     E::Probe(error) => kernel_code(error),
@@ -179,6 +180,7 @@ project!(CheckpointError, {
 project!(PublicationError, {
     E::ChangeLimit | E::Work(_) => Code::ResourceExhausted,
     E::AuthorityMismatch { .. } | E::VolumeMismatch { .. } | E::ActiveProjection => Code::FailedPrecondition,
+    E::GroupAborted => Code::Aborted,
     E::ChangeValidation(error) | E::ProjectionValidation(error) => filesystem_code(error),
     E::Closure(error) => kernel_code(error),
     E::Objects(error) => object_code(error),

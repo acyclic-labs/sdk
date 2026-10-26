@@ -10,7 +10,7 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
     let paths = namespace
         .record(MATERIALIZATION_FAMILY, &held_id.into_bytes())
         .unwrap();
-    std::fs::create_dir_all(paths.directory().unwrap()).unwrap();
+    std::fs::create_dir_all(paths.directory()).unwrap();
     let held = FileLock::acquire(
         OpenOptions::new()
             .create(true)

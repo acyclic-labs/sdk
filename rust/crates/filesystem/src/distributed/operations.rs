@@ -62,7 +62,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         proof: &OperationRecordProof,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
-        let path = work.operation_path(authority, operation)?;
+        let path = work.operation_path(&self.placement, authority, operation)?;
         if !work.is_native() {
             work.admit(WorkCounters {
                 authority_records_read: 2,
@@ -127,7 +127,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         mutations: &mut Vec<CommitMutation>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
-        let path = work.operation_path(authority, record.operation_id)?;
+        let path = work.operation_path(&self.placement, authority, record.operation_id)?;
         let value = work.stream_bytes(
             OPERATION_LOCATOR_DOMAIN,
             &[
@@ -147,7 +147,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<(DurableCommit, acyclic_stream::CommitId)>, AuthorityStoreError> {
-        let path = work.path(authority, "/records", None)?;
+        let path = work.path(&self.placement, authority, "/records", None)?;
         let tail = match self.tail(path.clone(), work).await {
             Err(error) if authority_missing(&error) => return Ok(None),
             result => result?,
@@ -180,7 +180,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     ) -> Result<Option<(DurableCommit, acyclic_stream::CommitId)>, AuthorityStoreError> {
         work.check()?;
         self.authority_require_live(authority, work).await?;
-        let path = work.operation_path(authority, operation)?;
+        let path = work.operation_path(&self.placement, authority, operation)?;
         match self.tail(path.clone(), work).await {
             Err(error) if authority_missing(&error) => {
                 return self.initial_operation(authority, operation, work).await;
@@ -208,7 +208,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         if sequence == 0 {
             return Err(authority_corrupt("operation locator selects genesis", work));
         }
-        let path = work.path(authority, "/records", None)?;
+        let path = work.path(&self.placement, authority, "/records", None)?;
         let tail = match self.tail(path.clone(), work).await {
             Err(error) if authority_missing(&error) => 0,
             result => result?,

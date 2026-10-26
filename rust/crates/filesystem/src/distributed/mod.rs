@@ -63,12 +63,14 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
 /// Filesystem authority over the canonical hierarchical Streams provider.
 pub struct StreamAuthorityStore<P: ?Sized> {
     provider: Arc<P>,
+    placement: Arc<AuthorityPlacement>,
 }
 
 impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
     fn clone(&self) -> Self {
         Self {
             provider: Arc::clone(&self.provider),
+            placement: Arc::clone(&self.placement),
         }
     }
 }
@@ -77,7 +79,22 @@ impl<P: ?Sized> StreamAuthorityStore<P> {
     /// Binds one authenticated public Stream provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
-        Self { provider }
+        Self::with_placement(provider, AuthorityPlacement::default())
+    }
+
+    /// Binds a provider with authority streams at a caller-chosen placement.
+    #[must_use]
+    pub fn with_placement(provider: Arc<P>, placement: AuthorityPlacement) -> Self {
+        Self {
+            provider,
+            placement: Arc::new(placement),
+        }
+    }
+
+    /// Returns where this store places authority streams.
+    #[must_use]
+    pub fn placement(&self) -> &AuthorityPlacement {
+        &self.placement
     }
 
     /// Returns the shared public Stream provider.
@@ -121,6 +138,10 @@ mod lineage;
 mod operations;
 mod replay;
 use append::seal;
+mod composition;
+pub use composition::{FilesystemCommit, FilesystemCommitOutcome};
+mod placement;
+pub use placement::AuthorityPlacement;
 mod records;
 mod reservations;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
@@ -128,11 +149,6 @@ pub(crate) use records::object_id_from_key;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 pub(crate) use records::object_key;
 use records::*;
-pub(crate) fn authority_records_path(
-    volume: crate::VolumeId,
-) -> Result<StreamPath, AuthorityStoreError> {
-    stream_path(volume_authority_id(volume), "/records")
-}
 mod accounting;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

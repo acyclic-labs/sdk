@@ -153,7 +153,7 @@ async fn conflicting_atomic_fork_never_publishes_its_other_authority_or_locator(
             );
             assert!(matches!(store.head(untouched, &mut work).await,
                 Err(error) if authority_missing(&error)));
-            let path = work.operation_path(untouched, operation)?;
+            let path = work.operation_path(&AuthorityPlacement::default(), untouched, operation)?;
             assert!(matches!(store.tail(path, &mut work).await,
                 Err(error) if authority_missing(&error)));
             assert_eq!(
@@ -611,7 +611,7 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
             .map_err(AuthorityStoreError::DurableCodec)??;
             stream
                 .append(AppendRequest {
-                    path: work.path(id, "/records", None)?,
+                    path: work.path(&AuthorityPlacement::default(), id, "/records", None)?,
                     if_tail: Some(2),
                     records: vec![encoded.into()],
                     idempotency_key: Some(stream_key(b"separate-record", &[invalid])?),
@@ -629,7 +629,11 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
         if invalid == 3 {
             digest = Digest::ZERO;
         }
-        let path = work.operation_path(id, proposed(94).operation_id)?;
+        let path = work.operation_path(
+            &AuthorityPlacement::default(),
+            id,
+            proposed(94).operation_id,
+        )?;
         let value = if invalid == 0 {
             acyclic_stream::OwnedBytes::from_static(b"bad")
         } else {
@@ -704,7 +708,11 @@ async fn refused_or_cancelled_forks_publish_neither_records_nor_locators() -> Te
             ] {
                 assert!(matches!(store.head(authority, &mut inspection).await,
                     Err(error) if authority_missing(&error)));
-                let path = inspection.operation_path(authority, operation)?;
+                let path = inspection.operation_path(
+                    &AuthorityPlacement::default(),
+                    authority,
+                    operation,
+                )?;
                 assert!(matches!(store.tail(path, &mut inspection).await,
                     Err(error) if authority_missing(&error)));
             }

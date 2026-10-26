@@ -77,7 +77,7 @@ async fn authority_batches_reject_a_changed_record_identity_without_publishing()
             else {
                 return Err("group was rejected before CAS".into());
             };
-            let records = work.path(authority, "/records", None)?;
+            let records = work.path(&AuthorityPlacement::default(), authority, "/records", None)?;
             for condition in &mut group.transaction.conditions {
                 if let CommitCondition::Head {
                     path, commit_id, ..
@@ -119,7 +119,7 @@ async fn authority_conflict_recovery_rejects_a_lost_record_identity_without_a_pr
         let mut work = work(native, &original, &cancel);
         let anchor = store.fork_snapshot(authority, &mut work).await?;
         let conflicts = [acyclic_stream::CommitConflict::Head {
-            path: work.path(authority, "/records", None)?,
+            path: work.path(&AuthorityPlacement::default(), authority, "/records", None)?,
             expected: anchor.record_commit_id,
             actual: CHANGED,
         }];

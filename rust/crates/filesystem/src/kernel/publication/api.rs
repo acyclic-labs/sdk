@@ -1,9 +1,9 @@
 use super::*;
+use crate::AsyncAuthorityStore;
 
 /// Authenticates an immutable generation's complete closure, then atomically submits it to the volume authority.
-pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
-    objects: &O,
-    authority: &A,
+pub async fn publish_generation<P: PublicationOwner>(
+    owner: P,
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
@@ -11,8 +11,7 @@ pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAutho
     cancellation: &CancellationToken,
 ) -> Result<PublicationReceipt, PublicationFailure> {
     publish_generation_async_guarded(
-        objects,
-        authority,
+        owner,
         request,
         intent,
         closure_limits,
@@ -40,9 +39,8 @@ pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAutho
     clippy::expect_used,
     reason = "The standalone engine always supplies a budget to these standalone callbacks."
 )]
-pub(crate) async fn publish_generation_async_guarded<O, A, E, F, Fut>(
-    objects: &O,
-    authority: &A,
+pub(crate) async fn publish_generation_async_guarded<P, E, F, Fut>(
+    owner: P,
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
@@ -54,12 +52,12 @@ pub(crate) async fn publish_generation_async_guarded<O, A, E, F, Fut>(
     mut prepare_roots: Option<PublicationRootPreparation<'_, E>>,
 ) -> Result<PublicationReceipt, OperationFailure<E>>
 where
-    O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
+    P: PublicationOwner,
     E: From<crate::FsError> + Send,
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
 {
+    let authority = owner.authority();
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let mut seal = |allowance: Option<WorkBudget>| {
         let future = before_publication(
@@ -107,8 +105,7 @@ where
         Ok(())
     };
     let result = publish_generation_async_inner(
-        objects,
-        authority,
+        &owner,
         request,
         intent,
         closure_limits,
@@ -119,6 +116,7 @@ where
         &mut dispatch,
         resolved,
         &mut roots,
+        None,
     )
     .await;
     result
@@ -131,7 +129,7 @@ where
     clippy::type_complexity,
     reason = "Either keeps rejected admission synchronous and successful work in its funded future."
 )]
-fn native_publication_owner<E, F, Fut>(
+pub(super) fn native_publication_owner<E, F, Fut>(
     original: crate::NativeMaterializationWork,
     mut factory: F,
 ) -> impl FnMut(
@@ -182,9 +180,8 @@ where
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, E, F, Fut>(
-    objects: &O,
-    authority: &A,
+pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, P, E, F, Fut>(
+    owner: P,
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
@@ -196,12 +193,24 @@ pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, 
     mut prepare_roots: Option<NativePublicationRootPreparation<'_, E>>,
 ) -> Result<(PublicationReceipt, crate::NativeAllocation), E>
 where
-    O: crate::AsyncObjectStore,
-    A: crate::AsyncAuthorityStore,
+    P: PublicationOwner,
     E: From<crate::FsError> + Send + 'static,
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
+    let authority = owner.authority();
+    let shared_seal = if resolved.is_none()
+        && intent.preconditions.is_some()
+        && authority.supports_atomic_group_commit()
+        && !matches!(intent.permit, PublicationPermit::Reservation { .. })
+    {
+        Some(seals::shared(original, before_publication.clone())?)
+    } else {
+        None
+    };
+    let seal_error = shared_seal
+        .as_ref()
+        .map(|seal| std::sync::Arc::clone(&seal.error));
     let mut accounting = KernelAccounting::native(original, cancellation);
     let owned_owner = native_publication_owner(original.clone(), before_publication.clone());
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
@@ -241,8 +250,7 @@ where
         Ok(())
     };
     let mut output = publish_generation_async_inner(
-        objects,
-        authority,
+        &owner,
         request,
         intent,
         closure_limits,
@@ -253,8 +261,15 @@ where
         &mut dispatch,
         resolved,
         &mut roots,
+        shared_seal.map(|seal| seal.seal),
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        seal_error
+            .as_ref()
+            .and_then(|slot| slot.take())
+            .unwrap_or(error)
+    })?;
     match &mut output.1 {
         ProofGuard::Native(guard) => {
             let allocation = guard

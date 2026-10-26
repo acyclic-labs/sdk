@@ -1,6 +1,7 @@
 use super::*;
 
 fn request(
+    placement: &AuthorityPlacement,
     authority: AuthorityId,
     snapshot: Option<AuthoritySnapshot>,
     operation: OperationId,
@@ -10,12 +11,12 @@ fn request(
 ) -> Result<CommitRequest, AuthorityStoreError> {
     let gate = match gate {
         Some(path) => path,
-        None => work.path(authority, "/publication-gate", None)?,
+        None => work.path(placement, authority, "/publication-gate", None)?,
     };
     let mut conditions = work.vec(if snapshot.is_some() { 4 } else { 2 })?;
     if let Some(snapshot) = snapshot {
         conditions.push(CommitCondition::Tail {
-            path: work.path(authority, "/epochs", None)?,
+            path: work.path(placement, authority, "/epochs", None)?,
             expected: snapshot.epoch_tail,
         });
     }
@@ -25,12 +26,12 @@ fn request(
     });
     if let Some(snapshot) = snapshot {
         conditions.push(CommitCondition::Tail {
-            path: work.path(authority, "/records", None)?,
+            path: work.path(placement, authority, "/records", None)?,
             expected: snapshot.head.sequence.get() + 1,
         });
     }
     conditions.push(CommitCondition::Absent {
-        path: work.path(authority, "/retirement", None)?,
+        path: work.path(placement, authority, "/retirement", None)?,
     });
     let body = if snapshot.is_some() {
         work.stream_bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()])?
@@ -106,6 +107,7 @@ fn key_matches(key: &[u8], domain: &[u8], parts: &[&[u8]]) -> bool {
 }
 
 fn verify_release(
+    placement: &AuthorityPlacement,
     reservation: PublicationReservation,
     observation: &acyclic_stream::IdempotencyObservation,
     work: &mut AuthorityWork<'_>,
@@ -136,6 +138,7 @@ fn verify_release(
         ));
     };
     let mut request = request(
+        placement,
         reservation.authority_id,
         None,
         reservation.operation_id,
@@ -166,6 +169,7 @@ fn verify_release(
 }
 
 fn qualified(
+    placement: &AuthorityPlacement,
     observation: &acyclic_stream::IdempotencyObservation,
     authority: AuthorityId,
     operation: OperationId,
@@ -209,7 +213,7 @@ fn qualified(
     }
     Ok(key_matches(
         append.path.as_str().as_bytes(),
-        b"fs/authorities/",
+        placement.authorities_prefix(),
         &[&hex, b"/publication-gate"],
     ) && append.start == prior
         && append.end == tail
@@ -229,7 +233,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(StreamPath, u64, Option<OperationId>), AuthorityStoreError> {
-        let gate = work.path(authority, "/publication-gate", None)?;
+        let gate = work.path(&self.placement, authority, "/publication-gate", None)?;
         let tail = self.tail(gate.clone(), work).await?;
         let from = tail
             .checked_sub(1)
@@ -332,11 +336,19 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             )
             .await?;
         let observation = observed.0.as_ref().ok_or_else(unavailable)?;
-        if !qualified(observation, authority_id, operation_id, gate_tail, work)? {
+        if !qualified(
+            &self.placement,
+            observation,
+            authority_id,
+            operation_id,
+            gate_tail,
+            work,
+        )? {
             return Err(unavailable());
         }
         let snapshot = self.fork_snapshot(authority_id, work).await?;
         let mut candidate = request(
+            &self.placement,
             authority_id,
             Some(snapshot),
             operation_id,
@@ -478,7 +490,15 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             });
         }
         let gate_tail = tail.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-        let request = request(authority, Some(snapshot), operation, tail, Some(gate), work)?;
+        let request = request(
+            &self.placement,
+            authority,
+            Some(snapshot),
+            operation,
+            tail,
+            Some(gate),
+            work,
+        )?;
         let output = self.commit(request, None, work, None::<&mut ()>).await;
         work.release_request()?;
         let output = output.map_err(|error| error.into_error(std::convert::identity))?;
@@ -524,7 +544,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             )
             .await?;
         if let Some(observation) = &observed.0 {
-            verify_release(reservation, observation, work)?;
+            verify_release(&self.placement, reservation, observation, work)?;
             drop(observed);
             work.release_request()?;
             return work.finish(());
@@ -539,6 +559,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             ));
         }
         let request = request(
+            &self.placement,
             reservation.authority_id,
             None,
             reservation.operation_id,

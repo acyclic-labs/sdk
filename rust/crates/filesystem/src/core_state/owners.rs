@@ -12,8 +12,8 @@ fn join<T, const FENCE: bool>(
     identity: [u8; 16],
     create: impl FnOnce() -> Result<Arc<T>, LocalCoreStateStoreError>,
 ) -> Result<Arc<T>, LocalCoreStateStoreError> {
-    let guard = owners.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((original, owner)) = guard.get(&root)
+    let mut guard = Some(owners.lock().unwrap_or_else(PoisonError::into_inner));
+    if let Some((original, owner)) = guard.as_ref().unwrap().get(&root)
         && let Some(owner) = owner.upgrade()
     {
         return if *original == identity {
@@ -22,7 +22,6 @@ fn join<T, const FENCE: bool>(
             Err(LocalCoreStateStoreError::OwnershipConflict(root))
         };
     }
-    let mut guard = Some(guard);
     // FENCE=false is the deliberately broken initialization race.
     if !FENCE {
         guard.take();
@@ -55,9 +54,8 @@ impl LocalCoreStateStore {
                 let Ownership::Owned(mut owner) = store.ownership else {
                     unreachable!()
                 };
-                Arc::get_mut(&mut owner)
-                    .ok_or(LocalCoreStateStoreError::Integrity)?
-                    .cache_limit = Some(super::contexts::OWNED_CHECKPOINT as usize);
+                Arc::get_mut(&mut owner).expect("new owner").cache_limit =
+                    Some(super::contexts::OWNED_CHECKPOINT as usize);
                 Ok(owner)
             },
         )?;

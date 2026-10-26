@@ -29,7 +29,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         work.finish(result, &accounting)
     }
 
-    async fn write_with_accounting(
+    pub(super) async fn write_with_accounting(
         &mut self,
         path: &str,
         bytes: impl Into<acyclic_stream::OwnedBytes>,

@@ -198,20 +198,25 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn path(
         &mut self,
+        placement: &AuthorityPlacement,
         authority: AuthorityId,
         suffix: &str,
         generation: Option<GenerationId>,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
         match generation {
-            Some(generation) => {
-                self.identity_path(authority, suffix, Some(generation.digest().as_bytes()))
-            }
-            None => self.identity_path(authority, suffix, None),
+            Some(generation) => self.identity_path(
+                placement,
+                authority,
+                suffix,
+                Some(generation.digest().as_bytes()),
+            ),
+            None => self.identity_path(placement, authority, suffix, None),
         }
     }
 
     pub(super) fn operation_path(
         &mut self,
+        placement: &AuthorityPlacement,
         authority: AuthorityId,
         operation: OperationId,
     ) -> Result<StreamPath, AuthorityStoreError> {
@@ -219,7 +224,7 @@ impl<'a> AuthorityWork<'a> {
         // Per-authority index directories otherwise consume one extra provider
         // path for every authority, even when it has only its initial operation.
         self.prefixed_identity_path(
-            b"fs/operations/",
+            placement.operations_prefix(),
             authority,
             "",
             Some(&operation.into_bytes()),
@@ -228,11 +233,12 @@ impl<'a> AuthorityWork<'a> {
 
     fn identity_path(
         &mut self,
+        placement: &AuthorityPlacement,
         authority: AuthorityId,
         suffix: &str,
         identity: Option<&[u8]>,
     ) -> Result<StreamPath, AuthorityStoreError> {
-        self.prefixed_identity_path(b"fs/authorities/", authority, suffix, identity)
+        self.prefixed_identity_path(placement.authorities_prefix(), authority, suffix, identity)
     }
 
     fn prefixed_identity_path(

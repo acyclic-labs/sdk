@@ -72,7 +72,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         merge_policy_condition(
             &mut conditions,
             CommitCondition::Tail {
-                path: work.path(cut.authority, "/records", None)?,
+                path: work.path(&self.placement, cut.authority, "/records", None)?,
                 expected: cut
                     .head
                     .sequence
@@ -85,7 +85,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         merge_policy_condition(
             &mut conditions,
             CommitCondition::Tail {
-                path: work.path(cut.authority, "/epochs", None)?,
+                path: work.path(&self.placement, cut.authority, "/epochs", None)?,
                 expected: cut.epoch_tail,
             },
             work,
@@ -93,7 +93,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         merge_policy_condition(
             &mut conditions,
             CommitCondition::Absent {
-                path: work.path(cut.authority, "/retirement", None)?,
+                path: work.path(&self.placement, cut.authority, "/retirement", None)?,
             },
             work,
         )?;

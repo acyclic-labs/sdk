@@ -21,29 +21,6 @@ pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
     (object_key(object) == key).then_some(object)
 }
 
-pub(super) fn authority_child(
-    child: &acyclic_stream::StreamPath,
-) -> Result<AuthorityId, AuthorityStoreError> {
-    let encoded = child
-        .as_str()
-        .strip_prefix("fs/authorities/")
-        .ok_or_else(|| {
-            AuthorityStoreError::Corrupt("Stream authority child escaped its parent".to_owned())
-        })?;
-    if encoded.len() != 32 || encoded.contains('/') {
-        return Err(AuthorityStoreError::Corrupt(
-            "Stream authority child has a noncanonical identity".to_owned(),
-        ));
-    }
-    let mut bytes = [0_u8; 16];
-    hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
-        AuthorityStoreError::Corrupt(
-            "Stream authority child has a noncanonical identity".to_owned(),
-        )
-    })?;
-    Ok(AuthorityId::from_bytes(bytes))
-}
-
 pub(super) fn decode_publication_gate(
     value: &[u8],
 ) -> Result<Option<OperationId>, AuthorityStoreError> {
@@ -98,15 +75,12 @@ pub(super) fn record_bytes<'a, const N: usize>(
 ) -> Option<&'a [u8; N]> {
     bytes.strip_prefix(domain)?.try_into().ok()
 }
+#[cfg(test)]
 pub(super) fn stream_path(
     authority: AuthorityId,
     suffix: &str,
 ) -> Result<StreamPath, AuthorityStoreError> {
-    StreamPath::new(format!(
-        "fs/authorities/{}{suffix}",
-        hex::encode(authority.into_bytes())
-    ))
-    .map_err(map_stream_error)
+    AuthorityPlacement::default().stream_path(authority, suffix)
 }
 pub(super) fn decode_lineage_generation(bytes: &[u8]) -> Result<GenerationId, AuthorityStoreError> {
     record_bytes::<32>(bytes, LINEAGE_DOMAIN)

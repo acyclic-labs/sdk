@@ -41,7 +41,11 @@ impl AuthorityGuard for OperationRace {
                 );
             };
             if self.omit_locator && index == 1 {
-                let path = work.operation_path(winner.authority_id, winner.commit.operation_id)?;
+                let path = work.operation_path(
+                    &AuthorityPlacement::default(),
+                    winner.authority_id,
+                    winner.commit.operation_id,
+                )?;
                 prepared.request.mutations.retain(|mutation| !matches!(mutation, CommitMutation::Append { path: target, .. } if target == &path));
             }
             let result = self

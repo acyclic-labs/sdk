@@ -269,7 +269,7 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
     let store = LocalCoreStateStore::new(directory.path());
     let namespace = store.namespace().unwrap();
     let paths = namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap();
-    std::fs::create_dir_all(paths.directory().unwrap()).unwrap();
+    std::fs::create_dir_all(paths.directory()).unwrap();
     let frame = format!("{} {{}}\n", blake3::hash(b"{}").to_hex());
     std::fs::write(&paths.current, frame).unwrap();
     let cxl = crate::CancellationToken::new();

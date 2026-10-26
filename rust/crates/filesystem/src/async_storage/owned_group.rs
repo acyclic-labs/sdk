@@ -24,7 +24,7 @@ pub struct OwnedAuthorityGroup<G: OwnedAuthorityGuard> {
 
 /// The boxed operation is destroyed before its original frame funding.
 pub struct OwnedAuthorityTask {
-    future: acyclic_stream::BoxProviderFuture<'static, ()>,
+    future: crate::heap_future::OwnedFuture<dyn Future<Output = ()> + Send + 'static, ()>,
     _allocation: RetainedAllocation,
 }
 
@@ -57,7 +57,7 @@ impl OwnedAuthorityTask {
             create,
         )?;
         Ok(Self {
-            future,
+            future: future.erase_send(),
             _allocation: allocation
                 .unwrap_or_else(|| unreachable!("frame admitted before construction")),
         })

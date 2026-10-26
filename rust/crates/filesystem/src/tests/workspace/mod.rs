@@ -91,6 +91,9 @@ mod materialization;
 
 mod merge_drivers;
 
+mod composition;
+mod conditions;
+
 mod creation_race;
 
 mod populated_creation;

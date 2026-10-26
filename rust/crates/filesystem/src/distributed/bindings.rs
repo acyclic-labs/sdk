@@ -351,8 +351,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
-        let root = stream_path(authority, "")?;
-        let path = stream_path(authority, "/retirement")?;
+        let root = self.placement.stream_path(authority, "")?;
+        let path = self.placement.stream_path(authority, "/retirement")?;
         work.record(authority_read_work(1))?;
         work.remaining()?;
         match self.provider.tail(root).await {

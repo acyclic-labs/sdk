@@ -12,7 +12,12 @@ fn authority_paths_keep_the_full_stream_bound_on_either_side_of_small_scratch()
         for length in [fixed, 127, 128, 129, acyclic_stream::MAX_PATH_BYTES] {
             let suffix = "x".repeat(length - fixed);
             let mut work = AuthorityWork::new(BUDGET, &cancellation);
-            let path = work.path(authority, &suffix, generation)?;
+            let path = work.path(
+                &AuthorityPlacement::default(),
+                authority,
+                &suffix,
+                generation,
+            )?;
             assert_eq!(path.as_str().len(), length);
             assert_eq!(work.spent().bytes_encoded, length as u64);
             assert_eq!(
@@ -24,7 +29,12 @@ fn authority_paths_keep_the_full_stream_bound_on_either_side_of_small_scratch()
         let suffix = "x".repeat(acyclic_stream::MAX_PATH_BYTES + 1 - fixed);
         let mut work = AuthorityWork::new(BUDGET, &cancellation);
         assert!(matches!(
-            work.path(authority, &suffix, generation),
+            work.path(
+                &AuthorityPlacement::default(),
+                authority,
+                &suffix,
+                generation
+            ),
             Err(AuthorityStoreError::RejectedStatic("fork path is too long"))
         ));
         assert_eq!(work.spent(), WorkCounters::UNCHARGED);
@@ -67,7 +77,7 @@ proptest::proptest! {
         let old_result = old.admit(writes).and_then(|()| old.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
             b"fs/authorities/", authority, &suffix, digest.as_ref().map(|bytes| bytes.as_slice()), length, writes));
         let mut work = AuthorityWork::new(budget, &cancellation);
-        let actual = work.path(authority, &suffix, generation);
+        let actual = work.path(&AuthorityPlacement::default(), authority, &suffix, generation);
         match (actual, old_result) {
             (Ok(actual), Ok(old)) => {
                 proptest::prop_assert_eq!(actual.as_str(), old.as_str());

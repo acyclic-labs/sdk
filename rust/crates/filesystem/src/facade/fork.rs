@@ -1,12 +1,19 @@
 use super::*;
 
-struct ForkPublication<'a, A: 'static, O: 'static> {
-    source: &'a crate::Generation<A, O>,
-    destination_id: crate::WorkspaceId,
-    fork_root: &'a VerifiedPublication<A, O>,
-    source_root: ObjectId,
-    idempotency_key: crate::IdempotencyKey,
-    permit: PublicationPermit,
+pub(super) struct PreparedForkCommit {
+    pub(super) fork: crate::WorkspaceForkCommit,
+    pub(super) changes: Option<crate::PublicationChanges>,
+    pub(super) hold: crate::PublicationHold,
+    pub(super) payload_bytes: u64,
+}
+
+pub(super) struct ForkPublication<'a, A: 'static, O: 'static> {
+    pub(super) source: &'a crate::Generation<A, O>,
+    pub(super) destination_id: crate::WorkspaceId,
+    pub(super) fork_root: &'a VerifiedPublication<A, O>,
+    pub(super) source_root: ObjectId,
+    pub(super) idempotency_key: crate::IdempotencyKey,
+    pub(super) permit: PublicationPermit,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
@@ -286,14 +293,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + Send,
     {
-        let ForkPublication {
-            source,
-            destination_id,
-            fork_root,
-            source_root,
-            idempotency_key,
-            permit,
-        } = publication;
+        let permit = publication.permit;
+        let prepared = self
+            .prepare_fork_commit(&publication, accounting, cancellation)
+            .await?;
+        accounting.check()?;
+        let mut authority = authority_work(accounting, cancellation)?;
+        let result = self
+            .inner
+            .authority
+            .fork_workspace(prepared.fork, permit, &mut authority, guard)
+            .await;
+        let recorded = record_authority_work(accounting, &authority);
+        Self::retire_fork_commit(prepared.changes, prepared.payload_bytes, accounting)?;
+        recorded?;
+        drop(prepared.hold);
+        let outcome = result.map_err(|error| match error {
+            crate::AuthorityError::Authority(error) => E::from(FsError::from(error)),
+            crate::AuthorityError::Owner(error) => error.into(),
+        })?;
+        match outcome {
+            crate::WorkspaceForkOutcome::Committed => {}
+            crate::WorkspaceForkOutcome::RetentionConflict => {
+                return Err(WorkspaceError::RetentionConflict.into());
+            }
+            crate::WorkspaceForkOutcome::CreationRejected => {
+                return Err(WorkspaceError::from(FsError::CreationRejected).into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Builds one fork's authority records and holds its closure live until
+    /// the commit that carries them is durable.
+    pub(super) async fn prepare_fork_commit(
+        &self,
+        publication: &ForkPublication<'_, A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<PreparedForkCommit, WorkspaceError> {
+        let source = publication.source;
+        let destination_id = publication.destination_id;
+        let fork_root = publication.fork_root;
+        let source_root = publication.source_root;
+        let operation_id = publication.idempotency_key.operation_id();
         let source_volume = &source.workspace.volume;
         let volume_id = destination_id.volume_id();
         let lineage = self
@@ -304,7 +347,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source_root,
             destination_id,
             fork_root.generation_root,
-            idempotency_key.operation_id(),
+            operation_id,
             accounting,
         )?;
         creation.publication = Some(
@@ -338,34 +381,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await?;
-        accounting.check()?;
-        let mut authority = authority_work(accounting, cancellation)?;
-        let result = self
-            .inner
-            .authority
-            .fork_workspace(fork, permit, &mut authority, guard)
-            .await;
-        let recorded = record_authority_work(accounting, &authority);
+        Ok(PreparedForkCommit {
+            fork,
+            changes,
+            hold,
+            payload_bytes,
+        })
+    }
+
+    pub(super) fn retire_fork_commit(
+        changes: Option<crate::PublicationChanges>,
+        payload_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
         if let Some(changes) = changes {
             changes.retire(accounting)?;
         }
-        recorded?;
         if readonly_standalone_live(accounting).is_some() {
             accounting.release_owned(&mut KernelOwnedAllocation::Standalone, payload_bytes)?;
-        }
-        drop(hold);
-        let outcome = result.map_err(|error| match error {
-            crate::AuthorityError::Authority(error) => E::from(FsError::from(error)),
-            crate::AuthorityError::Owner(error) => error.into(),
-        })?;
-        match outcome {
-            crate::WorkspaceForkOutcome::Committed => {}
-            crate::WorkspaceForkOutcome::RetentionConflict => {
-                return Err(WorkspaceError::RetentionConflict.into());
-            }
-            crate::WorkspaceForkOutcome::CreationRejected => {
-                return Err(WorkspaceError::from(FsError::CreationRejected).into());
-            }
         }
         Ok(())
     }

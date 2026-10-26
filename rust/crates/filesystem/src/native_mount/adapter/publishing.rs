@@ -113,16 +113,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                         deadline,
                     )
                 };
-                let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
-                    &mut original.checkout,
-                    operation,
-                    permit,
-                    force,
-                    crate::kernel::KernelAccounting::native(work, cancellation),
-                    &mut guarded,
-                    proof,
-                )
-                .await?;
+                // Erase the seal state machine into its own funded frame so callers
+                // prove `Send` for a shallow type instead of the whole composition.
+                let seal = native_future(work, || {
+                    super::publication::seal_checkout_with_permit_guarded_with_native_work(
+                        &mut original.checkout,
+                        operation,
+                        permit,
+                        force,
+                        crate::kernel::KernelAccounting::native(work, cancellation),
+                        &mut guarded,
+                        proof,
+                    )
+                })
+                .map_err(FsError::from)?
+                .erase_send();
+                let ack = seal.await?;
                 original.acknowledge_publication(operation, ack, context, acknowledged)?;
                 Ok(())
             }

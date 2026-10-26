@@ -65,7 +65,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             return Err(AuthorityStoreError::InvalidReplayLimit);
         }
         let mut output = work.vec_owned((limit.records as usize).min(acyclic_stream::MAX_ITEMS))?;
-        let path = work.path(authority, "/records", None)?;
+        let path = work.path(&self.placement, authority, "/records", None)?;
         if !work.is_native() {
             work.admit(WorkCounters {
                 authority_records_read: u64::from(limit.records),
@@ -173,9 +173,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .and_then(|n| Epoch::new(n).ok())
             .ok_or(AuthorityStoreError::EpochExhausted)?;
         let projection = projection.prepare_epoch_fence(epoch)?;
-        let records = work.path(authority, "/records", None)?;
-        let epochs = work.path(authority, "/epochs", None)?;
-        let retirement = work.path(authority, "/retirement", None)?;
+        let records = work.path(&self.placement, authority, "/records", None)?;
+        let epochs = work.path(&self.placement, authority, "/epochs", None)?;
+        let retirement = work.path(&self.placement, authority, "/retirement", None)?;
         let idempotency_key = fence_attempt_key(
             authority,
             expected,

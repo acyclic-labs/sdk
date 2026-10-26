@@ -253,10 +253,10 @@ impl LocalCoreStateStore {
     pub fn defer_durability(&self) -> (Self, DeferredDurability) {
         let deferral = Arc::new(AtomicBool::new(true));
         let store = Self {
-            deferral: Some(deferral.clone()),
+            deferral: Some(deferral),
             ..self.clone()
         };
-        (store.clone(), DeferredDurability { store, deferral })
+        (store.clone(), DeferredDurability { store })
     }
 
     /// Retains an external storage owner through clones and in-flight transactions.
@@ -681,13 +681,16 @@ const FAMILY_LOCK: &str = ".lock";
 #[derive(Debug)]
 pub struct DeferredDurability {
     store: LocalCoreStateStore,
-    deferral: Arc<AtomicBool>,
 }
 
 impl DeferredDurability {
     /// Ends the scope and makes every commit made through the log so far durable.
     pub async fn commit(self) -> Result<(), LocalCoreStateStoreError> {
-        self.deferral.store(false, Ordering::Release);
+        self.store
+            .deferral
+            .as_ref()
+            .expect("deferred store")
+            .store(false, Ordering::Release);
         self.store
             .transaction(|root| root.with_log(|log| log.flush(&root)))
             .await
@@ -697,7 +700,11 @@ impl DeferredDurability {
 impl Drop for DeferredDurability {
     fn drop(&mut self) {
         // Abandoned commits become durable with the log's next flush.
-        self.deferral.store(false, Ordering::Release);
+        self.store
+            .deferral
+            .as_ref()
+            .expect("deferred store")
+            .store(false, Ordering::Release);
     }
 }
 

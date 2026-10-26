@@ -343,7 +343,7 @@ impl Projection {
         members: (OperationId, Option<&crate::PublicationChanges>),
         records: &StreamPath,
         transaction: &CommitRequest,
-        authority: AuthorityId,
+        (placement, authority): (&AuthorityPlacement, AuthorityId),
         work: &mut AuthorityWork<'_>,
     ) -> Result<PreparedProjection, AuthorityStoreError> {
         if head.epoch != self.snapshot.head.epoch || head.sequence <= self.snapshot.head.sequence {
@@ -368,7 +368,7 @@ impl Projection {
                 "prepared actor cursor disagrees with its prefix",
             ));
         }
-        let lineage = work.path(authority, "/lineage", None)?;
+        let lineage = work.path(placement, authority, "/lineage", None)?;
         let mut generation_identity = None;
         if let Some((start, rows)) = view.staged(&lineage, work)? {
             if let Some(catalog) = &self.generations {
