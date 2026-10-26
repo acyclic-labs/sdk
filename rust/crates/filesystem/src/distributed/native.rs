@@ -119,7 +119,7 @@ impl<'a> AuthorityWork<'a> {
     }
 
     pub(super) fn bytes(&mut self, payload: &[u8]) -> Result<Bytes, AuthorityStoreError> {
-        let buffer = self.byte_buffer(&[], &[payload])?;
+        let buffer = self.byte_buffer(&[], &[], &[payload])?;
         #[cfg(not(target_arch = "wasm32"))]
         if self.original.is_some() {
             let mut buffer = buffer;
@@ -157,7 +157,16 @@ impl<'a> AuthorityWork<'a> {
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
-        let buffer = self.byte_buffer(domain, fields)?;
+        self.scoped_stream_bytes(&[], domain, fields)
+    }
+
+    fn scoped_stream_bytes(
+        &mut self,
+        scope: &[u8],
+        domain: &[u8],
+        fields: &[&[u8]],
+    ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+        let buffer = self.byte_buffer(scope, domain, fields)?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut buffer = buffer;
         #[cfg(not(target_arch = "wasm32"))]
@@ -174,20 +183,27 @@ impl<'a> AuthorityWork<'a> {
 
     fn byte_buffer(
         &mut self,
+        scope: &[u8],
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<(Vec<u8>, AuthorityAllocation), AuthorityStoreError> {
         let length = fields
             .iter()
             .try_fold(domain.len(), |n, field| n.checked_add(field.len()))
+            .and_then(|n| n.checked_add(scope.len()))
             .ok_or(crate::WorkError::Overflow)?;
         let writes = WorkCounters {
-            bytes_encoded: if domain.is_empty() { 0 } else { length as u64 },
+            bytes_encoded: if scope.is_empty() && domain.is_empty() {
+                0
+            } else {
+                length as u64
+            },
             bytes_copied: length as u64,
             ..WorkCounters::UNCHARGED
         };
         self.admit(writes)?;
         let mut buffer = self.vec_owned::<u8>(length)?;
+        buffer.value.extend_from_slice(scope);
         buffer.value.extend_from_slice(domain);
         for field in fields {
             buffer.value.extend_from_slice(field);
@@ -344,10 +360,11 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn key(
         &mut self,
+        scope: &[u8],
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-        let bytes = self.stream_bytes(domain, fields)?;
+        let bytes = self.scoped_stream_bytes(scope, domain, fields)?;
         acyclic_stream::IdempotencyKey::new(bytes).map_err(|error| {
             if self.is_native() {
                 AuthorityStoreError::NativeStream(error)
@@ -380,7 +397,7 @@ impl<'a> AuthorityWork<'a> {
         }
         let digest = hasher.finalize();
         self.charge(hashing)?;
-        self.key(domain, &[digest.as_bytes()])
+        self.key(&[], domain, &[digest.as_bytes()])
     }
 
     pub(super) fn request_write_work(

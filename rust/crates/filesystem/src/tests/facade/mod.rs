@@ -308,6 +308,9 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.inner.actor_scope()
+    }
 
     async fn create_authority<G: crate::AuthorityGuard>(
         &self,
@@ -392,6 +395,9 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
 impl AsyncAuthorityStore for PostAppendAuthorityStore {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
+    }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.inner.actor_scope()
     }
 
     async fn create_authority<G: crate::AuthorityGuard>(

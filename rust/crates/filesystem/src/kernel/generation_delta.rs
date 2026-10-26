@@ -38,7 +38,7 @@ pub(crate) async fn apply_generation_delta<O: AsyncObjectStore>(
             .await
         },
     )?;
-    let mut future = future.erase_send();
+    let mut future = future.erase_task();
     let result = future.as_mut().await;
     drop(future);
     frame.finish(result)

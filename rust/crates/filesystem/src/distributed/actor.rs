@@ -128,8 +128,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Arc<crate::kernel::AuthorityActor>, AuthorityStoreError> {
-        crate::kernel::authority_actor(self.operation_claims(), authority, &mut work.accounting())
-            .map_err(authority_error)
+        crate::kernel::authority_actor(
+            self.operation_claims(),
+            self.placement.actor_scope(),
+            authority,
+            &mut work.accounting(),
+        )
+        .map_err(authority_error)
     }
 
     async fn initialize_projection(

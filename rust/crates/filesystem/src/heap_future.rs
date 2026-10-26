@@ -58,6 +58,36 @@ impl<F: Future, A> OwnedFuture<F, A> {
     }
 }
 
+/// A heap future erased to the platform executor's bound: `Send` natively,
+/// event-loop owned in browsers, as `acyclic_stream::ProviderTask` is.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type TaskFuture<'a, T> = dyn Future<Output = T> + Send + 'a;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type TaskFuture<'a, T> = dyn Future<Output = T> + 'a;
+
+impl<F: Future, A> OwnedFuture<F, A> {
+    /// Erases the body to [`TaskFuture`] without moving its storage.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn erase_task<'a>(self) -> OwnedFuture<TaskFuture<'a, F::Output>, A>
+    where
+        F: Send + 'a,
+    {
+        self.erase_send()
+    }
+
+    /// Erases the body to [`TaskFuture`] without moving its storage.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn erase_task<'a>(self) -> OwnedFuture<TaskFuture<'a, F::Output>, A>
+    where
+        F: 'a,
+    {
+        OwnedFuture {
+            future: self.future,
+            _allocation: self._allocation,
+        }
+    }
+}
+
 impl<F> OwnedFuture<F, ()> {
     fn with_allocation<A>(self, allocation: A) -> OwnedFuture<F, A> {
         OwnedFuture {

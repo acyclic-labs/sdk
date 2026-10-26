@@ -219,7 +219,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut request = CommitRequest {
             conditions: work.vec(4)?,
             mutations: work.vec(4)?,
-            idempotency_key: work.key(b"create\0", &[&authority.into_bytes()])?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"create\0",
+                &[&authority.into_bytes()],
+            )?,
         };
         let projection = self.creation_request(&mut request, authority, epoch, None, None, work)?;
         let outcome = self
@@ -261,6 +265,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             conditions: work.vec(9)?,
             mutations: work.vec(9)?,
             idempotency_key: work.key(
+                self.placement.key_scope(),
                 b"operation\0",
                 &[&authority.into_bytes(), &commit.operation_id.into_bytes()],
             )?,
@@ -339,7 +344,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut request = CommitRequest {
             conditions: work.vec(6)?,
             mutations: work.vec(6)?,
-            idempotency_key: work.key(b"fork-authority\0", &[&operation.into_bytes()])?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"fork-authority\0",
+                &[&operation.into_bytes()],
+            )?,
         };
         let projection = self.creation_request(
             &mut request,
@@ -497,6 +506,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             conditions: work.vec(18)?,
             mutations: work.vec(17)?,
             idempotency_key: work.key(
+                self.placement.key_scope(),
                 b"workspace-fork-attempt\0",
                 &[
                     &fork.destination.into_bytes(),

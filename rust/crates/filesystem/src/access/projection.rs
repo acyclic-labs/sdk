@@ -354,6 +354,9 @@ mod properties {
             fn operation_claims(&self) -> &crate::OperationClaims {
                 &self.0
             }
+            fn actor_scope(&self) -> [u8; 16] {
+                [0; 16]
+            }
             async fn head(
                 &self,
                 _: crate::AuthorityId,

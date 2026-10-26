@@ -39,6 +39,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
     /// Live ownership of this backend owner, preserved by forwarding adapters.
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims;
+    /// Separates actor registries of distinct stores sharing one owner, such
+    /// as two Streams placements on one provider. Forwarding adapters forward it.
+    fn actor_scope(&self) -> [u8; 16];
     /// Backend guarantee used to keep authorization and publication on one cut.
     fn policy_owner(&self) -> PolicyOwner {
         PolicyOwner::Unsupported

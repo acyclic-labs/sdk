@@ -458,7 +458,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .await
             },
         )?;
-        let mut future = future.erase_send();
+        let mut future = future.erase_task();
         let result = future.as_mut().await;
         drop(future);
         frame.finish(result)
@@ -592,7 +592,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .await
             },
         )?;
-        let mut future = future.erase_send();
+        let mut future = future.erase_task();
         let result = future.as_mut().await;
         drop(future);
         frame.finish(result)

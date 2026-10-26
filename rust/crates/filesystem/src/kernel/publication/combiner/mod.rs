@@ -16,11 +16,17 @@ use state::{Phase, Plan, State};
 use volume::PendingBatch;
 pub(crate) use volume::Volume;
 
+// Seals are funded by the native original only; browser builds never construct
+// one, so their frame carries no allocation.
+#[cfg(not(target_arch = "wasm32"))]
+type SealAllocation = crate::NativeAllocation;
+#[cfg(target_arch = "wasm32")]
+type SealAllocation = ();
 type SealFuture = futures::future::Either<
     std::future::Ready<Result<(), crate::FsError>>,
     crate::heap_future::OwnedFuture<
         dyn std::future::Future<Output = Result<(), crate::FsError>> + Send,
-        crate::NativeAllocation,
+        SealAllocation,
     >,
 >;
 type SealCallback = Box<dyn FnMut() -> SealFuture + Send>;
@@ -133,7 +139,7 @@ struct Group {
 }
 
 struct Registry {
-    entries: Mutex<FixedIndex<Arc<Volume>>>,
+    entries: Mutex<FixedIndex<Arc<Volume>, 32>>,
     _allocation: RetainedAllocation,
 }
 
@@ -219,6 +225,7 @@ impl Ticket {
         let authority = owner.authority();
         let volume = authority_actor(
             authority.operation_claims(),
+            authority.actor_scope(),
             core.request.authority_id,
             accounting,
         )?;
@@ -432,9 +439,15 @@ impl Drop for Ticket {
 
 pub(crate) fn authority_actor(
     owner: &acyclic_stream::OperationClaims,
+    scope: [u8; 16],
     key: AuthorityId,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Arc<Volume>, crate::FsError> {
+    // Stores sharing one owner keep separate actors per scope: distinct
+    // placements never share cached heads or publication groups.
+    let mut slot_key = [0; 32];
+    slot_key[..16].copy_from_slice(&scope);
+    slot_key[16..].copy_from_slice(&key.into_bytes());
     let owned = owner.shared_resource(
         accounting,
         |accounting| accounting.charge_items(1),
@@ -445,10 +458,10 @@ pub(crate) fn authority_actor(
         .entries
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(volume) = registry.get(key.into_bytes(), accounting)? {
+    if let Some(volume) = registry.get(slot_key, accounting)? {
         return Ok(Arc::clone(volume));
     }
-    let slot = registry.get_or_try_insert_with(key.into_bytes(), accounting, Volume::new)?;
+    let slot = registry.get_or_try_insert_with(slot_key, accounting, Volume::new)?;
     Ok(Arc::clone(slot))
 }
 

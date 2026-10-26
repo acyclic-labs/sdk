@@ -8,6 +8,9 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.operation_claims
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        [0; 16]
+    }
 
     async fn fork_workspace<G: crate::AuthorityGuard>(
         &self,

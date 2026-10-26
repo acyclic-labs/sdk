@@ -49,6 +49,9 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.inner.actor_scope()
+    }
 
     fn supports_atomic_group_commit(&self) -> bool {
         self.inner.supports_atomic_group_commit()

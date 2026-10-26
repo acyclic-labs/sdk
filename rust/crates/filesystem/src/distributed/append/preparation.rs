@@ -95,6 +95,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         // this exact publication attempt; the atomic locator owns semantic
         // operation identity across changing heads, gates and lease grants.
         let idempotency_key = work.key(
+            self.placement.key_scope(),
             b"operation-attempt\0",
             &[
                 &authority_id.into_bytes(),

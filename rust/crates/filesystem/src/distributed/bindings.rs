@@ -57,6 +57,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.provider.operation_claims()
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.placement.actor_scope()
+    }
 
     fn supports_deferred_durability(&self) -> bool {
         self.provider.supports_deferred_durability()
@@ -372,7 +375,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
             path,
             records: vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED).into()],
             if_tail: Some(0),
-            idempotency_key: Some(stream_key(b"retire-authority", &authority.into_bytes())?),
+            idempotency_key: Some(placed_stream_key(
+                self.placement.key_scope(),
+                b"retire-authority",
+                &authority.into_bytes(),
+            )?),
         };
         match self.provider.append(request).await {
             Ok(acyclic_stream::AppendOutcome::Committed(_)) => Ok(()),

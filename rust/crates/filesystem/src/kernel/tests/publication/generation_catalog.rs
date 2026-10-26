@@ -120,9 +120,12 @@ mod probe {
             self.read_request();
             self.inner.follow(path, from, filter).await
         }
-        async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        async fn children_page(
+            &self,
+            request: acyclic_stream::ChildrenPageRequest,
+        ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
             self.read_request();
-            self.inner.children(request).await
+            self.inner.children_page(request).await
         }
         async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
             self.append_request();

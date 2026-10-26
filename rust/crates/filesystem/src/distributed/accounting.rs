@@ -6,6 +6,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.0.placement.actor_scope()
+    }
 
     async fn head(
         &self,

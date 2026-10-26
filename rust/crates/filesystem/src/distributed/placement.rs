@@ -11,6 +11,8 @@ pub struct AuthorityPlacement {
     authorities: Box<[u8]>,
     operations: Box<[u8]>,
     parent: StreamPath,
+    key_scope: Box<[u8]>,
+    actor_scope: [u8; 16],
 }
 
 impl AuthorityPlacement {
@@ -26,6 +28,19 @@ impl AuthorityPlacement {
             ));
         }
         StreamPath::new(format!("{root}/operations")).map_err(map_stream_error)?;
+        // Store-generated retry keys and actor registries are scoped by the
+        // root, so separate placements on one provider never share a key or
+        // a cached head. The default placement keeps unscoped keys.
+        let (key_scope, actor_scope) = if root == Self::DEFAULT_ROOT {
+            (Box::default(), [0; 16])
+        } else {
+            let mut scope = b"placement\0".to_vec();
+            scope.extend_from_slice(&(root.len() as u64).to_le_bytes());
+            scope.extend_from_slice(root.as_bytes());
+            let mut actor = [0; 16];
+            actor.copy_from_slice(&blake3::hash(&scope).as_bytes()[..16]);
+            (scope.into_boxed_slice(), actor)
+        };
         Ok(Self {
             authorities: format!("{root}/authorities/")
                 .into_bytes()
@@ -34,7 +49,19 @@ impl AuthorityPlacement {
                 .into_bytes()
                 .into_boxed_slice(),
             parent,
+            key_scope,
+            actor_scope,
         })
+    }
+
+    /// Prefix of every retry key this placement's store generates.
+    pub(super) fn key_scope(&self) -> &[u8] {
+        &self.key_scope
+    }
+
+    /// Registry scope of this placement's authority actors.
+    pub(super) fn actor_scope(&self) -> [u8; 16] {
+        self.actor_scope
     }
 
     /// The parent Stream that lists every authority in this placement.

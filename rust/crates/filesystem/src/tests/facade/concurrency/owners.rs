@@ -22,6 +22,9 @@ impl AsyncAuthorityStore for ForeignOwner {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.claims
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        [0; 16]
+    }
     fn supports_atomic_group_commit(&self) -> bool {
         self.inner.supports_atomic_group_commit()
     }
@@ -683,6 +686,7 @@ async fn check_successor_intake(
         let mut inspection = KernelAccounting::standalone(B, &cancel);
         let actor = crate::kernel::authority_actor(
             observer.inner.authority.operation_claims(),
+            observer.inner.authority.actor_scope(),
             volume_authority_id(volume.id()),
             &mut inspection,
         )?;

@@ -25,6 +25,9 @@ pub struct FilesystemCommit {
     authorities: Vec<AuthorityId>,
     contributions: Vec<Contribution>,
     holds: Vec<crate::PublicationHold>,
+    /// Set once the request was fenced and sent: retries resend these exact
+    /// bytes and key, never a request re-fenced under a newer policy cut.
+    submitted: bool,
 }
 
 /// Terminal and nonterminal results of one composed submission.
@@ -53,6 +56,7 @@ impl FilesystemCommit {
             authorities: Vec::new(),
             contributions: Vec::new(),
             holds: Vec::new(),
+            submitted: false,
         }
     }
 
@@ -64,8 +68,10 @@ impl FilesystemCommit {
 
     /// Adds caller conditions or mutations. Filesystem contributions own their
     /// own entries; changing those makes the commit fail its conditions.
-    pub fn request_mut(&mut self) -> &mut CommitRequest {
-        &mut self.request
+    /// Returns `None` once the commit was submitted: its sent bytes and key
+    /// are fixed so an exact retry replays the original receipt.
+    pub fn request_mut(&mut self) -> Option<&mut CommitRequest> {
+        (!self.submitted).then_some(&mut self.request)
     }
 
     /// Volume authorities this commit creates.
@@ -190,12 +196,19 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// Submits a composed commit once, through this store's provider.
     pub async fn submit(
         &self,
-        commit: FilesystemCommit,
+        mut commit: FilesystemCommit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        // Fences the active access-policy cut, as every filesystem publication does.
-        let request = self.with_policy_cuts(commit.request.clone(), &[], work)?;
-        let result = self.commit(request, None, work, None::<&mut ()>).await;
+        // The first submission fences the active access-policy cut, as every
+        // filesystem publication does, and keeps the fenced request. Retries
+        // after `Unknown` resend exactly those bytes and that key.
+        if !commit.submitted {
+            commit.request = self.with_policy_cuts(commit.request.clone(), &[], work)?;
+            commit.submitted = true;
+        }
+        let result = self
+            .commit(commit.request.clone(), None, work, None::<&mut ()>)
+            .await;
         if !work.is_native() {
             work.release_request()?;
         }

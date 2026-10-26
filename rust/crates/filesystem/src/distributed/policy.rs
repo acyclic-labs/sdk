@@ -100,6 +100,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         request.conditions = conditions;
         // A rejected stale cut cannot consume a later freshly authorized attempt.
         let key = work.key(
+            self.placement.key_scope(),
             b"policy-cut-attempt\0",
             &[
                 &cut.authority.into_bytes(),

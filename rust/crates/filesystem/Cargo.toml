@@ -151,6 +151,8 @@ rustix = { workspace = true, features = ["fs"] }
 cc = "1.2.56"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# Browser builds always run shared publication groups on the event-loop executor.
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["wasm"] }
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }

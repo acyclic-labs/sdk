@@ -46,6 +46,9 @@ impl AsyncAuthorityStore for Stores {
             Self::Local(fs) => fs.operation_claims(),
         }
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        [0; 16]
+    }
 
     async fn create_authority<G: crate::AuthorityGuard>(
         &self,

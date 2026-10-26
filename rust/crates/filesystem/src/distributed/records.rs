@@ -40,12 +40,23 @@ pub(super) fn stream_key(
     domain: &[u8],
     identity: &[u8],
 ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    placed_stream_key(&[], domain, identity)
+}
+
+/// A retry key inside one placement's key scope.
+pub(super) fn placed_stream_key(
+    scope: &[u8],
+    domain: &[u8],
+    identity: &[u8],
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
     let mut value = Vec::with_capacity(
-        domain
+        scope
             .len()
+            .saturating_add(domain.len())
             .saturating_add(identity.len())
             .saturating_add(1),
     );
+    value.extend_from_slice(scope);
     value.extend_from_slice(domain);
     value.push(0);
     value.extend_from_slice(identity);

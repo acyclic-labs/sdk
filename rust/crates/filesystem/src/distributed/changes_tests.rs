@@ -58,6 +58,7 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
             );
             let actor = crate::kernel::authority_actor(
                 store.operation_claims(),
+                store.actor_scope(),
                 authority,
                 &mut accounting,
             )?;

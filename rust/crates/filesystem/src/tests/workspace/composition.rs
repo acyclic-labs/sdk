@@ -17,9 +17,13 @@ type PlacedFork<'g> = ForkSpec<'g, StreamAuthorityStore<MemoryStream>, crate::Me
 const VOLUMES: &str = "harness/volumes";
 
 fn placed(stream: &Arc<MemoryStream>) -> Result<PlacedFs, Box<dyn Error>> {
+    placed_at(stream, VOLUMES)
+}
+
+fn placed_at(stream: &Arc<MemoryStream>, root: &str) -> Result<PlacedFs, Box<dyn Error>> {
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     Ok(Fs::new(
-        StreamAuthorityStore::with_placement(Arc::clone(stream), AuthorityPlacement::new(VOLUMES)?),
+        StreamAuthorityStore::with_placement(Arc::clone(stream), AuthorityPlacement::new(root)?),
         crate::LogicalObjectStore::new(Arc::new(objects), bucket),
         crate::EmbeddedCapabilities::MEMORY,
     ))
@@ -59,6 +63,7 @@ fn spawn_request(stream_fork_at: u64, state_absent: bool) -> Result<CommitReques
                 records: vec![record(b"spawned")],
             },
             CommitMutation::Fork {
+                exclude: Vec::new(),
                 source: StreamPath::new("harness/agents/root/log")?,
                 destination: StreamPath::new("harness/agents/child/log")?,
                 at_tail: stream_fork_at,
@@ -294,7 +299,11 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
     ];
     let mut commit = FilesystemCommit::new(spawn_request(0, true)?);
     // The root has no parent log to fork; keep only the state append.
-    commit.request_mut().mutations.truncate(1);
+    commit
+        .request_mut()
+        .ok_or("an unsubmitted commit accepts caller entries")?
+        .mutations
+        .truncate(1);
     let created = unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
     assert_eq!(created.len(), 2);
     let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
@@ -321,4 +330,26 @@ fn placement_roots_must_be_canonical_stream_paths() {
     assert!(AuthorityPlacement::new("").is_err());
     assert!(AuthorityPlacement::new("/harness").is_err());
     assert!(AuthorityPlacement::new("harness//volumes").is_err());
+}
+
+/// Negative control for placement isolation: the same workspace name, and so
+/// the same authority identity, created under two roots on one provider. With
+/// unscoped retry keys the second creation hit the first one's key with other
+/// bytes; with a shared actor registry it read the first root's cached head.
+#[tokio::test]
+async fn distinct_placements_on_one_provider_never_share_keys_or_actors()
+-> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let first = placed_at(&stream, "tenant-a/volumes")?;
+    let second = placed_at(&stream, "tenant-b/volumes")?;
+    let a = unbounded!(first, create_workspace("shared"))?;
+    a.write_text("/owner", "a").await?;
+    let b = unbounded!(second, create_workspace("shared"))?;
+    b.write_text("/owner", "b").await?;
+    a.write_text("/owner", "a2").await?;
+    let a = unbounded!(first, open_workspace("shared"))?;
+    let b = unbounded!(second, open_workspace("shared"))?;
+    assert_eq!(unbounded!(a, read("/owner", 8))?.as_ref(), b"a2");
+    assert_eq!(unbounded!(b, read("/owner", 8))?.as_ref(), b"b");
+    Ok(())
 }

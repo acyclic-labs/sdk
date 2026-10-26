@@ -1,6 +1,7 @@
 use super::*;
 
 fn fence_attempt_key(
+    scope: &[u8],
     authority: AuthorityId,
     expected: Head,
     owner: [u8; 16],
@@ -17,7 +18,7 @@ fn fence_attempt_key(
     work.charge(copying)?;
     // Each admitted actor transition is one fencing attempt. Independent
     // writers cannot reuse another writer's historical successful CAS.
-    work.key(b"fence\0", &[&identity, &owner, &revision.to_le_bytes()])
+    work.key(scope, b"fence\0", &[&identity, &owner, &revision.to_le_bytes()])
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -33,19 +34,19 @@ mod fence_tests {
         let head = Head::genesis(Epoch::GENESIS);
         let first = acyclic_stream::OperationClaims::default();
         let second = acyclic_stream::OperationClaims::default();
-        let key = fence_attempt_key(authority, head, first.owner_identity(), 1, &mut work)?;
+        let key = fence_attempt_key(&[], authority, head, first.owner_identity(), 1, &mut work)?;
         assert_eq!(
             key,
-            fence_attempt_key(authority, head, first.owner_identity(), 1, &mut work)?
+            fence_attempt_key(&[], authority, head, first.owner_identity(), 1, &mut work)?
         );
         assert_ne!(
             key,
-            fence_attempt_key(authority, head, second.owner_identity(), 1, &mut work)?,
+            fence_attempt_key(&[], authority, head, second.owner_identity(), 1, &mut work)?,
             "independent writers shared a historical fence attempt"
         );
         assert_ne!(
             key,
-            fence_attempt_key(authority, head, first.owner_identity(), 2, &mut work)?,
+            fence_attempt_key(&[], authority, head, first.owner_identity(), 2, &mut work)?,
             "distinct admitted actor transitions shared a fence attempt"
         );
         Ok(())
@@ -177,6 +178,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let epochs = work.path(&self.placement, authority, "/epochs", None)?;
         let retirement = work.path(&self.placement, authority, "/retirement", None)?;
         let idempotency_key = fence_attempt_key(
+            self.placement.key_scope(),
             authority,
             expected,
             self.operation_claims().owner_identity(),

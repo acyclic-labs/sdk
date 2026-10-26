@@ -49,6 +49,7 @@ fn request(
         conditions,
         mutations,
         idempotency_key: work.key(
+            placement.key_scope(),
             domain,
             &[
                 &authority.into_bytes(),
@@ -113,7 +114,11 @@ fn verify_release(
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
     if !key_matches(
-        observation.idempotency_key.as_bytes(),
+        observation
+            .idempotency_key
+            .as_bytes()
+            .strip_prefix(placement.key_scope())
+            .unwrap_or_default(),
         b"release-publication\0",
         &[
             &reservation.authority_id.into_bytes(),
@@ -180,7 +185,11 @@ fn qualified(
         return Ok(false);
     };
     if !key_matches(
-        observation.idempotency_key.as_bytes(),
+        observation
+            .idempotency_key
+            .as_bytes()
+            .strip_prefix(placement.key_scope())
+            .unwrap_or_default(),
         b"reserve-publication\0",
         &[
             &authority.into_bytes(),
@@ -256,7 +265,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         AuthorityStoreError,
     > {
         let baseline = work.allocations.live_bytes();
-        let key = work.key(domain, parts)?;
+        let key = work.key(self.placement.key_scope(), domain, parts)?;
         let key_bytes = work
             .allocations
             .live_bytes()

@@ -62,6 +62,7 @@ impl PublicationChanges {
         accounting.check()?;
         let actor = crate::kernel::authority_actor(
             authority.operation_claims(),
+            authority.actor_scope(),
             request.authority_id,
             accounting,
         )?;

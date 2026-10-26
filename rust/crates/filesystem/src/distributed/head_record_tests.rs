@@ -10,6 +10,9 @@ impl AsyncAuthorityStore for Fallback<'_> {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
     }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.0.actor_scope()
+    }
 
     async fn head(
         &self,
@@ -87,6 +90,9 @@ struct FundedReplay<'a>(&'a [u8], acyclic_stream::OperationClaims);
 impl AsyncAuthorityStore for FundedReplay<'_> {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.1
+    }
+    fn actor_scope(&self) -> [u8; 16] {
+        [0; 16]
     }
 
     async fn head(
