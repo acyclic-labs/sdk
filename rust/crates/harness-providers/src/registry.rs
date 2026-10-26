@@ -1,5 +1,5 @@
 use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
-use acyclic_harness_core::{Result, bundle::HarnessBuilder, model::Model};
+use acyclic_harness_core::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
@@ -87,18 +87,6 @@ impl Registry {
         let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
         let catalog = crate::catalog_document::parse(&bytes)?;
         self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
-    }
-
-    /// Selects a registered model for an existing harness composition. Resolution
-    /// retains the registry's credential, capacity and endpoint validation. The
-    /// builder still requires its owner-controlled execution bindings and grants.
-    ///
-    /// # Errors
-    /// Returns the same typed selection failures as `resolve`.
-    pub fn bind(&self, builder: HarnessBuilder, selection: &str) -> Result<HarnessBuilder> {
-        let provider = self.resolve(selection)?;
-        let model = provider.model().clone();
-        Ok(builder.model(model, Arc::new(provider)))
     }
 
     /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
