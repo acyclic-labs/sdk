@@ -111,6 +111,9 @@ pub mod native_settings;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
+/// Cached OIDC verification and admission through the existing workload authority.
+#[cfg(feature = "oidc")]
+pub mod oidc;
 pub mod projection;
 pub mod registry;
 pub mod resource_preparation;

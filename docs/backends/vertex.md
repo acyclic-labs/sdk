@@ -1,3 +1,6 @@
+Qualification: **unqualified** against Google Vertex. The shared Chat adapter
+passes the complete real llama.cpp suite; no Vertex cloud pass is claimed.
+
 Enable `endpoint-presets`, register `endpoints::vertex(project, location)` with
 exact model capacities, and supply a short-lived OAuth access token through
 explicit credentials. Vertex's first-party `endpoints/openapi/chat/completions`

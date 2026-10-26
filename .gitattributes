@@ -30,3 +30,6 @@ scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol
 rust/crates/conformance/fixtures/inference/**/*.body binary
 rust/crates/conformance/fixtures/inference/**/*.headers.txt binary
 rust/crates/conformance/fixtures/inference/**/*.request.json -text
+rust/crates/conformance/fixtures/identity/**/*.body binary
+rust/crates/conformance/fixtures/identity/**/*.headers.txt binary
+rust/crates/conformance/fixtures/identity/**/*.request.txt -text

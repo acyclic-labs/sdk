@@ -1,3 +1,6 @@
+Qualification: **unqualified** against AWS Bedrock. The shared Chat adapter passes
+the complete real llama.cpp suite; no Bedrock cloud pass is claimed.
+
 Enable `endpoint-presets` and register `endpoints::bedrock("us-east-1")` with
 explicit model capacities and a Bedrock bearer API key. This uses AWS's first-party
 OpenAI-compatible Chat route, with the same shared adapter as other Chat servers.
