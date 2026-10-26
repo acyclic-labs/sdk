@@ -68,3 +68,13 @@ test("browser and frontend initialization share the retained WASM ABI", async ()
   await ensureBrowserWasm();
   await ensureClientWasm();
 });
+
+test("client admission requires both Rust JSON directions before dispatch", () => {
+  for (const symbol of ["decodeClientJson", "encodeCanonicalJson"] as const) {
+    for (const actual of [wrappers, raw]) {
+      const missing = { ...actual } as Record<string, unknown>;
+      delete missing[symbol];
+      expect(() => assertClientWasmExports(missing)).toThrow();
+    }
+  }
+});

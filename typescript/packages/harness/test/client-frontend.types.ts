@@ -22,3 +22,9 @@ type _ModelContentUsesOneRustDefinition = Assert<Equal<
   [ModelContent, ModelContentPart, ModelDataPart],
   [RustModelContent, RustModelContentPart, RustModelDataPart]
 >>;
+
+// Public encoding is the existing Rust boundary, not a frontend JSON codec.
+type _CanonicalEncoderIsRust = Assert<Equal<
+  typeof import("../src/index.js").encodeCanonicalJson,
+  typeof import("../generated/wasm/acyclic_harness_wasm.js").encodeCanonicalJson
+>>;

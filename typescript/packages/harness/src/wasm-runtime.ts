@@ -60,7 +60,7 @@ export function assertClientWasmExports(value: unknown): void {
     "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
   ], true);
   const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
-  if (typeof exports.decodeClientJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest) {
+  if (typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest) {
     throw new Error("harness WASM does not provide the required client exports");
   }
 }

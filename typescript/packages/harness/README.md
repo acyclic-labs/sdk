@@ -15,6 +15,9 @@ agents the interface needs.
 pool and credential slot. Prepare a command once and retain its
 `PreparedAgentInvocation` through the exchange. A typed uncertain result retains
 the exact original request; a transport error does not authorize a fresh intent.
+Use the exported Rust `encodeCanonicalJson` to construct command bytes; it accepts
+`BigInt` for exact counters and rejects unsafe integer Numbers. Command schema and
+byte-limit admission remain in `PreparedAgentCommand`.
 Command delivery acknowledges inbox admission, while conversation/status records
 establish settlement. Approval answers use the observed immutable approval binding.
 

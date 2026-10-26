@@ -1,6 +1,7 @@
 /** Shared Rust actor/session views; the runtime owns transport and controls. */
 export {
   decodeClientJson,
+  encodeCanonicalJson,
   WasmAgentCommand as PreparedAgentCommand,
   WasmAgentControls as AgentControls,
   WasmAgentInvocation as PreparedAgentInvocation,
