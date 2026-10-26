@@ -1,0 +1,1 @@
+Captured from rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin at SDK main b7333953cbd5d3b31adc05cf2f0851f049f6c16a. This is the actual predecessor descriptor, retained unchanged for mixed-rollout reader tests.

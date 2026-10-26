@@ -6,6 +6,8 @@ use std::collections::HashSet;
 pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.
 pub const MAX_BINDINGS: usize = 64;
+/// Maximum selected credential-store references per deployment.
+pub const MAX_SECRETS: usize = 64;
 
 fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
@@ -115,6 +117,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
             return Err(ContractError::DuplicateName);
         }
     }
+    validate_secret_selections(&request.secrets, &request.bindings)?;
     Ok(())
 }
 
@@ -142,6 +145,25 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
             return Err(ContractError::InvalidArgument);
         }
         if !names.insert(&item.name) {
+            return Err(ContractError::DuplicateName);
+        }
+    }
+    validate_secret_selections(&request.secrets, &request.bindings)?;
+    Ok(())
+}
+
+fn validate_secret_selections(
+    secrets: &[wire::SecretSelection],
+    bindings: &[wire::Binding],
+) -> Result<(), ContractError> {
+    if secrets.len() > MAX_SECRETS {
+        return Err(ContractError::LimitExceeded);
+    }
+    let mut names: HashSet<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+    for secret in secrets {
+        domain::SecretSelection::try_from(secret.clone())
+            .map_err(|_| ContractError::InvalidArgument)?;
+        if !names.insert(&secret.name) {
             return Err(ContractError::DuplicateName);
         }
     }
@@ -236,10 +258,10 @@ pub use generated::{
     InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
     InvokeActorRequestProto, InvokeActorResponseProto, InvokeWorkerRequestProto,
     RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
-    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
-    SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,
-    UpdateNamespaceRequestProto, UpdateNamespaceResponseProto, WorkerLimitsProto,
-    subscription_start,
+    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, SecretSelectionProto,
+    ServiceErrorProto, SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto,
+    SubscriptionState, UpdateNamespaceRequestProto, UpdateNamespaceResponseProto,
+    WorkerLimitsProto, subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.

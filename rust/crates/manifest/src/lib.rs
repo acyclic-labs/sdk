@@ -193,18 +193,7 @@ impl JsonSchema for SecretReference {
 impl SecretReference {
     /// Admit only bounded secrets:/ identifier paths.
     pub fn new(value: String) -> Result<Self, ManifestError> {
-        let path = value
-            .strip_prefix("secrets:/")
-            .ok_or_else(|| ManifestError::invalid("reference", "secret-reference"))?;
-        if value.len() > 256
-            || path.split('/').any(|segment| {
-                segment.is_empty()
-                    || segment.len() > 63
-                    || !segment
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            })
-        {
+        if !acyclic_actors::domain::SecretSelection::valid_reference(&value) {
             return Err(ManifestError::invalid("reference", "secret-reference"));
         }
         Ok(Self(value))

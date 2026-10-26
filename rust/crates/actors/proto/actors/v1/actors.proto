@@ -123,6 +123,7 @@ message DeploymentRequest {
   string jurisdiction = 9;
   uint64 expected_revision = 10;
   WorkerLimits worker_limits = 11;
+  repeated SecretSelection secrets = 12;
 }
 
 message DeploymentResponse {
@@ -209,6 +210,11 @@ message ResumeSubscriptionResponse {
   ActorObservation actor = 1;
 }
 
+message SecretSelection {
+  string name = 1;
+  string reference = 2;
+}
+
 message SubscriptionObservation {
   string subscription_id = 1;
   string stream_path = 2;
@@ -244,6 +250,7 @@ message UpdateNamespaceRequest {
   uint64 expected_configuration_revision = 5;
   string idempotency_key = 6;
   bytes account_id = 91;
+  repeated SecretSelection secrets = 7;
 }
 
 message UpdateNamespaceResponse {

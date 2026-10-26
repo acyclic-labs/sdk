@@ -72,6 +72,7 @@ mod tests {
     #[test]
     fn subscription_start_is_exactly_one_choice() -> Result<(), ContractError> {
         let mut create = wire::DeploymentRequest {
+            secrets: Vec::new(),
             worker_limits: None,
             name: "example".into(),
             account_id: Vec::new(),

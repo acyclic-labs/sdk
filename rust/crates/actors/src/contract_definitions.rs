@@ -2,6 +2,7 @@
     family = "actors",
     messages(
         BindingProto,
+        SecretSelectionProto,
         ActorLimitsProto,
         WorkerLimitsProto,
         SubscriptionStartProto,

@@ -846,3 +846,70 @@ fn worker_lowering_preserves_request_limits_and_rejects_namespace_entries()
     );
     Ok(())
 }
+
+#[test]
+fn actor_and_worker_lowering_carry_only_explicit_secret_selections()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    add_worker(environment)?;
+    environment.secrets.push(SecretRef {
+        name: "UNLISTED".to_owned(),
+        reference: SecretReference::new("secrets:/private/unlisted".to_owned())?,
+    });
+    for worker in [false, true] {
+        let index = if worker {
+            environment.entries.len() - 1
+        } else {
+            0
+        };
+        environment
+            .entries
+            .get_mut(index)
+            .ok_or_else(missing)?
+            .secrets = vec!["MODEL_KEY".to_owned()];
+        let entry = environment.entries.get(index).ok_or_else(missing)?;
+        let request = if worker {
+            lower_worker(environment, entry, "selected")?
+        } else {
+            lower_actor(environment, entry, "selected")?
+        };
+        let selected = request.secrets();
+        assert_eq!(
+            selected.len(),
+            1,
+            "lowering dropped or inherited secret selections"
+        );
+        let secret = selected.first().ok_or_else(missing)?;
+        assert_eq!(secret.name(), "MODEL_KEY");
+        let declared = environment
+            .secrets
+            .iter()
+            .find(|s| s.name == "MODEL_KEY")
+            .ok_or_else(missing)?;
+        assert_eq!(secret.reference(), declared.reference.as_str());
+        assert!(!selected.iter().any(|s| s.name() == "UNLISTED"));
+        let wire: acyclic_actors::wire::DeploymentRequest = request.clone().into();
+        assert_eq!(
+            acyclic_actors::domain::DeploymentRequest::try_from(wire)?,
+            request
+        );
+        environment
+            .entries
+            .get_mut(index)
+            .ok_or_else(missing)?
+            .secrets
+            .clear();
+        let entry = environment.entries.get(index).ok_or_else(missing)?;
+        let empty = if worker {
+            lower_worker(environment, entry, "empty")?
+        } else {
+            lower_actor(environment, entry, "empty")?
+        };
+        assert!(
+            empty.secrets().is_empty(),
+            "empty selection inherited environment secrets"
+        );
+    }
+    Ok(())
+}

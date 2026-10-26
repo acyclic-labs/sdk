@@ -743,3 +743,6 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
     assert_eq!(deleted.status, wire::MutationStatus::Committed as i32);
     Ok(())
 }
+
+#[path = "status_tests.rs"]
+mod status_tests;

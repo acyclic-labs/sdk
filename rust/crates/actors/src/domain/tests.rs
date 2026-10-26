@@ -281,6 +281,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         resource: "bucket/a".into(),
     };
     let create = wire::DeploymentRequest {
+        secrets: Vec::new(),
         worker_limits: None,
         name: "example".into(),
         account_id: Vec::new(),
@@ -340,6 +341,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     );
 
     let update = wire::UpdateNamespaceRequest {
+        secrets: Vec::new(),
         account_id: Vec::new(),
         namespace_id: "actor-1".into(),
         code_sha256: vec![1; 32],

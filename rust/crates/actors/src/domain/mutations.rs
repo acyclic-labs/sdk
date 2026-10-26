@@ -30,6 +30,8 @@ pub struct DeploymentRequest {
     #[wire(tag = 11, message)]
     #[ts(optional)]
     worker_limits: Option<WorkerLimits>,
+    #[wire(tag = 12, message)]
+    secrets: Vec<SecretSelection>,
 }
 
 impl DeploymentRequest {
@@ -50,6 +52,7 @@ impl DeploymentRequest {
             expected_revision: 0,
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
+            secrets: Vec::new(),
             limits: Some(limits.into()),
             subscriptions: subscriptions.into_iter().map(Into::into).collect(),
             idempotency_key,
@@ -70,6 +73,7 @@ impl DeploymentRequest {
         Self::try_from(wire::DeploymentRequest {
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
+            secrets: Vec::new(),
             limits: None,
             worker_limits: Some(limits.into()),
             subscriptions: vec![],
@@ -125,6 +129,16 @@ impl DeploymentRequest {
     pub fn code_sha256(&self) -> &CodeSha256 {
         &self.code_sha256
     }
+    /// Explicit full replacement; an empty selection inherits nothing.
+    pub fn with_secrets(mut self, secrets: Vec<SecretSelection>) -> Result<Self, DomainError> {
+        self.secrets = secrets;
+        self.validate_from_proto()?;
+        Ok(self)
+    }
+    /// Ordered reference selections, never credential values.
+    pub fn secrets(&self) -> &[SecretSelection] {
+        &self.secrets
+    }
     /// Returns bindings in their request order.
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
@@ -170,6 +184,8 @@ pub struct UpdateNamespaceRequest {
     #[wire(tag = 91, bytes)]
     #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
     pub(super) account_id: Vec<u8>,
+    #[wire(tag = 7, message)]
+    secrets: Vec<SecretSelection>,
 }
 
 impl UpdateNamespaceRequest {
@@ -187,6 +203,7 @@ impl UpdateNamespaceRequest {
             namespace_id: namespace_id.as_str().to_owned(),
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
+            secrets: Vec::new(),
             limits: Some(limits.into()),
             expected_configuration_revision,
             idempotency_key,
@@ -207,6 +224,16 @@ impl UpdateNamespaceRequest {
     /// Returns the code digest.
     pub fn code_sha256(&self) -> &CodeSha256 {
         &self.code_sha256
+    }
+    /// Explicit full replacement; an empty selection inherits nothing.
+    pub fn with_secrets(mut self, secrets: Vec<SecretSelection>) -> Result<Self, DomainError> {
+        self.secrets = secrets;
+        self.validate_from_proto()?;
+        Ok(self)
+    }
+    /// Ordered reference selections, never credential values.
+    pub fn secrets(&self) -> &[SecretSelection] {
+        &self.secrets
     }
     /// Returns bindings in their request order.
     pub fn bindings(&self) -> &[Binding] {

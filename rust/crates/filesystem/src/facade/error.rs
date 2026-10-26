@@ -2,6 +2,7 @@ use super::*;
 
 /// Fail-closed embedded facade errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
+#[cfg_attr(test, derive(strum::EnumCount))]
 pub enum FsError {
     /// A malformed, missing or over-complex access policy cannot authorize work.
     #[error("invalid access policy")]

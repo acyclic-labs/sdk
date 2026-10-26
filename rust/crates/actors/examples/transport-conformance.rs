@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     actors_grpc.deploy_namespace(request.clone()).await?;
     actors_http.deploy_namespace(&request).await?;
     let request = actors::wire::DeploymentRequest {
+        secrets: Vec::new(),
         limits: None,
         worker_limits: Some(actors::wire::WorkerLimits {
             cpu_millis: 1,

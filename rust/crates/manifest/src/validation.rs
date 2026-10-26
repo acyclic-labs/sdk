@@ -67,15 +67,9 @@ pub(crate) fn bound_json(value: &serde_json::Value) -> Result<usize, ManifestErr
     Ok(work)
 }
 fn identifier(value: &str) -> bool {
-    value.len() <= 63
-        && value
-            .bytes()
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    acyclic_actors::domain::valid_environment_name(value)
 }
+
 fn label(value: &str) -> bool {
     acyclic_auth::addressing::validate_dns_label(value.as_bytes()).is_ok()
 }
@@ -464,11 +458,11 @@ fn validate_entries<'a>(
                     *work += 1;
                 }
                 // Shared constructor checks positive ActorLimits, starts, IDs and placement anchors.
-                lower_actor_unchecked(bindings, entry, "manifest-admission")?;
+                lower_actor_unchecked(bindings, secrets, entry, "manifest-admission")?;
                 subscribed.insert(entry.name.as_str(), streams);
             }
             EntryRuntime::Worker { .. } => {
-                lower_worker_unchecked(bindings, entry, "manifest-admission")?;
+                lower_worker_unchecked(bindings, secrets, entry, "manifest-admission")?;
             }
         }
         selected.insert(entry.name.as_str(), selection);
@@ -574,10 +568,16 @@ pub fn lower_actor(
         "undeclared-entry",
     )?;
     let bindings = environment.bindings.iter().map(|b| (b.name(), b)).collect();
-    lower_actor_unchecked(&bindings, entry, idempotency_key)
+    let secrets = environment
+        .secrets
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+    lower_actor_unchecked(&bindings, &secrets, entry, idempotency_key)
 }
 fn lower_actor_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
+    secrets: &HashMap<&str, &SecretRef>,
     entry: &Entry,
     idempotency_key: &str,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
@@ -592,6 +592,7 @@ fn lower_actor_unchecked(
         return Err(ManifestError::invalid("entry", "actor-required"));
     };
     let (digest, selected) = deployment_parts(bindings, entry)?;
+    let selected_secrets = deployment_secrets(secrets, entry)?;
     DeploymentRequest::new(
         acyclic_actors::domain::ActorNamespace::new(entry.name.clone())
             .map_err(|_| ManifestError::invalid("entry.name", "namespace"))?,
@@ -602,6 +603,7 @@ fn lower_actor_unchecked(
         idempotency_key.into(),
     )
     .and_then(|request| request.with_jurisdiction(jurisdiction.clone()))
+    .and_then(|request| request.with_secrets(selected_secrets))
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
 }
 
@@ -771,10 +773,16 @@ pub fn lower_worker(
         "undeclared-entry",
     )?;
     let bindings = environment.bindings.iter().map(|b| (b.name(), b)).collect();
-    lower_worker_unchecked(&bindings, entry, idempotency_key)
+    let secrets = environment
+        .secrets
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+    lower_worker_unchecked(&bindings, &secrets, entry, idempotency_key)
 }
 fn lower_worker_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
+    secrets: &HashMap<&str, &SecretRef>,
     entry: &Entry,
     idempotency_key: &str,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
@@ -785,6 +793,7 @@ fn lower_worker_unchecked(
     acyclic_auth::addressing::validate_dns_label(entry.name.as_bytes())
         .map_err(|_| ManifestError::invalid("entry.name", "worker-label"))?;
     let (digest, selected) = deployment_parts(bindings, entry)?;
+    let selected_secrets = deployment_secrets(secrets, entry)?;
     let limits = WorkerLimits::new(
         limits.cpu_millis,
         limits.memory_bytes,
@@ -799,6 +808,7 @@ fn lower_worker_unchecked(
         limits,
         idempotency_key.into(),
     )
+    .and_then(|request| request.with_secrets(selected_secrets))
     .map_err(|_| ManifestError::invalid("entry.runtime", "workers-admission"))
 }
 fn deployment_parts(
@@ -833,4 +843,24 @@ fn deployment_parts(
             .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?,
         selected,
     ))
+}
+
+fn deployment_secrets(
+    secrets: &HashMap<&str, &SecretRef>,
+    entry: &Entry,
+) -> Result<Vec<acyclic_actors::domain::SecretSelection>, ManifestError> {
+    entry
+        .secrets
+        .iter()
+        .map(|name| {
+            let secret = secrets
+                .get(name.as_str())
+                .ok_or_else(|| ManifestError::invalid("secrets", "unknown-secret"))?;
+            acyclic_actors::domain::SecretSelection::new(
+                secret.name.clone(),
+                secret.reference.as_str().to_owned(),
+            )
+            .map_err(|_| ManifestError::invalid("secrets", "secret-reference"))
+        })
+        .collect()
 }

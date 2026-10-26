@@ -92,8 +92,7 @@ fn status(error: &WorkspaceError) -> Status {
         WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } => {
             Status::resource_exhausted(error.to_string())
         }
-        WorkspaceError::Engine(_) | WorkspaceError::Filesystem(_) => {
-            Status::unavailable(error.to_string())
-        }
+        WorkspaceError::Engine(_) => Status::unavailable(error.to_string()),
+        WorkspaceError::Filesystem(error) => filesystem_status(error),
     }
 }

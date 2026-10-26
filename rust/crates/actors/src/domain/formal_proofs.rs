@@ -291,6 +291,7 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
 fn update_expected_configuration_revision_is_lossless() {
     let revision: u64 = kani::any();
     let value = super::UpdateNamespaceRequest::try_from(crate::wire::UpdateNamespaceRequest {
+        secrets: Vec::new(),
         account_id: Vec::new(),
         namespace_id: "a".into(),
         code_sha256: vec![1; 32].into(),

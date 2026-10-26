@@ -12,8 +12,8 @@
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:84372dd29ee53a9d0fa3820d2289259c8917f43f8c39656204e3ecafc4f21f66",
-      "descriptorDigest": "sha256:5229acc84416978756b73fa078aede05ce8552fbb13e144ca7de35bf46d218da"
+      "schemaDigest": "sha256:585ef1e23b09eaef9b3b1eadcd4b0d949b1a651b249f2f394990772f5840d723",
+      "descriptorDigest": "sha256:d06f19f964c2864838840eca4e8586451034155648dfe415c446becd91ab83e9"
     },
     "harness": {
       "version": "0.2.0",

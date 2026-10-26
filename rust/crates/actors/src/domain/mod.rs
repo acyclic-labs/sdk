@@ -29,3 +29,9 @@ mod tests;
 
 mod worker;
 pub use worker::*;
+
+mod secrets;
+pub use secrets::*;
+
+#[cfg(test)]
+mod secret_tests;

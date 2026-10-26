@@ -142,6 +142,7 @@ pub type AuthorityResult<T> = MeasuredResult<crate::OperationReceipt<T>, Authori
 
 /// Typed authority storage failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]
+#[cfg_attr(test, derive(strum::EnumCount))]
 pub enum AuthorityStoreError {
     /// Operation was cancelled before durable authority work began.
     #[error("authority operation was cancelled")]
