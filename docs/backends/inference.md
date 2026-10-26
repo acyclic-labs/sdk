@@ -42,3 +42,25 @@ bedrock,vertex,local}`. All use `Adapter::Chat`. Register exact model capacities
 in `ProviderSpec.models` and explicit credentials in `Credentials::explicit`.
 Resolution and streaming are available without a counting endpoint; automatic
 context admission/compaction still refuses without a verified token counter.
+
+Model selection is a public harness component. A host composes a `Registry` with
+its protected credential source and `HttpTransport`, registers `ProviderSpec`
+values, then calls `resolve_with_options("provider/model", options)`. The returned
+`ResolvedModel` implements the canonical `ModelProvider`; its `model()` supplies
+the immutable model identity used in prepared requests. Register model names
+exactly, including any slashes in routed model names. Resolution performs no
+network I/O. Hosts must supply already authorized content and credential access;
+selecting a model does not confer filesystem or turn authority.
+
+GraphCoder's `--catalog`, `--model` and settings select these same public
+components. A catalog can set `default_model`; the GraphCoder preset supplies
+defaults and the CLI renders events. Managed Swarm can compose the registry
+directly instead of retaining a private gateway, request interpreter or transport.
+This configuration path does not qualify an untested cloud route.
+
+Provider presets are configuration only: `endpoints.rs` has 74 physical lines
+including comments and whitespace, shared by all four added routes. The existing
+wire decoders are Chat 53, Anthropic 112, Responses 138 and Gemini 97 lines.
+Request projection, retries, deadlines, authentication selection, protocol budgets,
+usage and cancellation remain in the shared provider core. No backend adds its
+own retry, timer, token cache or authentication policy.
