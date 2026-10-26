@@ -729,7 +729,19 @@ impl AuthorityVerifier {
         scope: &Scope,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        workload::verify(self, audience, scope, workload::now(), work).map(|_| ())
+        self.scope_expiry(audience, scope, work).map(|_| ())
+    }
+
+    /// The authenticated half-open bound, including every ancestor and signer.
+    /// Native ownership subscriptions use the same verifier and trusted clock.
+    pub(crate) fn scope_expiry(
+        &self,
+        audience: &Authority,
+        scope: &Scope,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<u64> {
+        workload::verify(self, audience, scope, workload::now(), work)
+            .map(|capability| capability.effective().expires_at_unix_seconds())
     }
 
     pub(in crate::core) fn canonical_digest<T: Serialize>(

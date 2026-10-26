@@ -1,7 +1,70 @@
 use super::*;
-use crate::durable_host::tests::fixture::fixture;
+use crate::durable_host::tests::fixture::{Fixture, fixture};
 use crate::runtime::TaskSpawner as _;
+use acyclic_stream::SystemUnixMillisClock;
 use std::time::Duration;
+
+async fn scope_expiring_fixture() -> Result<(Fixture, u64)> {
+    struct TaskClock;
+    impl UnixMillisClock for TaskClock {
+        fn now_unix_millis(&self) -> u64 {
+            0
+        }
+    }
+    let mut fixture = fixture().await?;
+    let now = SystemUnixMillisClock.now_unix_millis() / 1000;
+    let expiry = now + 2;
+    let host = Arc::get_mut(&mut fixture.host)
+        .ok_or_else(|| Error::Storage("fixture host is shared".into()))?;
+    host.owner_scope = host.owner_scope.clone().with_workload_expiry(
+        expiry,
+        &fixture.issuer.public_workload_trust()?,
+        fixture.issuer.audience(),
+        now,
+    )?;
+    // Authorization uses the trusted system clock, independently of a task's
+    // injected deadline clock. This task has no deadline or cancellation.
+    host.clock = Arc::new(TaskClock);
+    Ok((fixture, expiry * 1000))
+}
+
+#[tokio::test]
+async fn signed_scope_expiry_invalidates_cached_dispatch_before_the_driver_runs() -> Result<()> {
+    let (fixture, expiry) = scope_expiring_fixture().await?;
+    let owner = fixture.running(1).await?;
+    let changes = owner.owner_changes().await?;
+    let signals = changes.signals();
+    owner.verify(false, &mut None).await?;
+    assert!(!signals.needs_verification());
+    // Block this current-thread runtime so the asynchronous driver cannot
+    // rescue a stale cached dispatch check after the signed scope expires.
+    std::thread::sleep(Duration::from_millis(
+        expiry.saturating_sub(SystemUnixMillisClock.now_unix_millis()),
+    ));
+    assert!(
+        signals.needs_verification(),
+        "signed scope expiry left cached dispatch authorized"
+    );
+    assert!(owner.verify(false, &mut None).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn signed_scope_expiry_wakes_a_quiet_owner_without_a_task_deadline() -> Result<()> {
+    let (fixture, expiry) = scope_expiring_fixture().await?;
+    let owner = fixture.running(1).await?;
+    let mut changes = owner.owner_changes().await?;
+    owner.verify(false, &mut None).await?;
+    tokio::time::sleep(Duration::from_millis(
+        expiry.saturating_sub(SystemUnixMillisClock.now_unix_millis()),
+    ))
+    .await;
+    tokio::time::timeout(Duration::from_millis(200), changes.changed())
+        .await
+        .map_err(|_| Error::Storage("signed scope expiry did not wake a quiet owner".into()))??;
+    assert!(owner.verify(false, &mut None).await.is_err());
+    Ok(())
+}
 
 #[tokio::test]
 async fn deadline_clock_jump_wakes_a_quiet_owner() -> Result<()> {
@@ -91,6 +154,8 @@ async fn unrelated_tasks_do_not_wake_a_quiet_owner_and_drop_reclaims_routes() ->
     assert_eq!(locked(&hub.subscribers).by_operation.len(), 1);
     drop(changes);
     assert!(locked(&hub.subscribers).by_operation.is_empty());
+    assert!(locked(&hub.subscribers).deadlines.is_empty());
+    assert!(locked(&hub.subscribers).scope_deadlines.is_empty());
     Ok(())
 }
 

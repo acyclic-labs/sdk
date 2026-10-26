@@ -1,6 +1,7 @@
 //! One coordinator follow routes ownership changes to interested native commands.
 use super::*;
 use crate::scheduler::SchedulerEvent;
+use acyclic_stream::SystemUnixMillisClock;
 use std::sync::{Mutex, MutexGuard};
 use tokio::sync::Notify;
 
@@ -13,6 +14,7 @@ struct Subscribers {
     by_operation: BTreeMap<OperationId, BTreeMap<u64, Arc<Notify>>>,
     failed: Option<String>,
     deadlines: BTreeMap<u64, BTreeMap<u64, Arc<Notify>>>,
+    scope_deadlines: BTreeMap<u64, BTreeMap<u64, Arc<Notify>>>,
     deadline_changed: Arc<Notify>,
 }
 
@@ -39,22 +41,35 @@ impl OwnerChangeHub {
         let deadline_changed = Arc::clone(&locked(&active).deadline_changed);
         let driver = tokio::spawn(async move {
             loop {
-                let first = locked(&active)
-                    .deadlines
-                    .first_key_value()
-                    .map(|(time, _)| *time);
-                let delay = first.map(|first| {
+                let delay = {
+                    let subscribers = locked(&active);
                     let now = clock.now_unix_millis();
-                    locked(&active).notify_deadlines(now);
-                    // Preserve the former 25 ms wall-clock reaction bound with
-                    // one sampler per host, only while deadlines are registered.
-                    // Quiet commands never reauthenticate on this timer.
-                    std::time::Duration::from_millis(if first > now {
-                        (first - now).min(25)
-                    } else {
-                        25
+                    let scope_now = SystemUnixMillisClock.now_unix_millis();
+                    subscribers.notify_deadlines(now, scope_now);
+                    let first = [
+                        subscribers
+                            .deadlines
+                            .first_key_value()
+                            .map(|(time, _)| time.saturating_sub(now)),
+                        subscribers
+                            .scope_deadlines
+                            .first_key_value()
+                            .map(|(time, _)| time.saturating_sub(scope_now)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                    // One shared sampler preserves the former wall-clock jump
+                    // bound. Task and signed-scope clocks are independent;
+                    // quiet commands reauthenticate only when a bound expires.
+                    first.map(|remaining| {
+                        std::time::Duration::from_millis(if remaining == 0 {
+                            25
+                        } else {
+                            remaining.min(25)
+                        })
                     })
-                });
+                };
                 let deadline = async {
                     match delay {
                         Some(delay) => tokio::time::sleep(delay).await,
@@ -88,6 +103,7 @@ impl OwnerChangeHub {
         &self,
         operations: Vec<OperationId>,
         deadline: Option<u64>,
+        scope_deadline: u64,
     ) -> Result<Registration> {
         let ready = Arc::new(Notify::new());
         let mut subscribers = locked(&self.subscribers);
@@ -111,11 +127,18 @@ impl OwnerChangeHub {
                 .insert(id, Arc::clone(&ready));
             subscribers.deadline_changed.notify_one();
         }
+        subscribers
+            .scope_deadlines
+            .entry(scope_deadline)
+            .or_default()
+            .insert(id, Arc::clone(&ready));
+        subscribers.deadline_changed.notify_one();
         Ok(Registration {
             subscribers: Arc::clone(&self.subscribers),
             id,
             operations,
             deadline,
+            scope_deadline,
             ready,
         })
     }
@@ -129,12 +152,13 @@ impl Drop for OwnerChangeHub {
 }
 
 impl Subscribers {
-    fn notify_deadlines(&self, now: u64) {
-        // Keep the route until its owner drops it: verification can race a
-        // backward clock jump, in which case a later expiry must wake it again.
-        for entries in self.deadlines.range(..=now).map(|(_, entries)| entries) {
-            for ready in entries.values() {
-                ready.notify_one();
+    fn notify_deadlines(&self, now: u64, scope_now: u64) {
+        // Keep routes through backward jumps: a later expiry must wake again.
+        for (deadlines, now) in [(&self.deadlines, now), (&self.scope_deadlines, scope_now)] {
+            for entries in deadlines.range(..=now).map(|(_, entries)| entries) {
+                for ready in entries.values() {
+                    ready.notify_one();
+                }
             }
         }
     }
@@ -186,6 +210,7 @@ struct Registration {
     id: u64,
     operations: Vec<OperationId>,
     deadline: Option<u64>,
+    scope_deadline: u64,
     ready: Arc<Notify>,
 }
 
@@ -201,13 +226,22 @@ impl Drop for Registration {
             }
         }
         if let Some(deadline) = self.deadline {
-            if let Some(entries) = subscribers.deadlines.get_mut(&deadline) {
-                entries.remove(&self.id);
-                if entries.is_empty() {
-                    subscribers.deadlines.remove(&deadline);
-                }
-            }
-            subscribers.deadline_changed.notify_one();
+            remove_deadline(&mut subscribers.deadlines, deadline, self.id);
+        }
+        remove_deadline(&mut subscribers.scope_deadlines, self.scope_deadline, self.id);
+        subscribers.deadline_changed.notify_one();
+    }
+}
+
+fn remove_deadline(
+    deadlines: &mut BTreeMap<u64, BTreeMap<u64, Arc<Notify>>>,
+    deadline: u64,
+    id: u64,
+) {
+    if let Some(entries) = deadlines.get_mut(&deadline) {
+        entries.remove(&id);
+        if entries.is_empty() {
+            deadlines.remove(&deadline);
         }
     }
 }
@@ -219,6 +253,7 @@ pub struct OwnerChanges {
     registration: Registration,
     cancellation: Option<acyclic_fs::CancellationToken>,
     deadline: Option<u64>,
+    scope_deadline: u64,
     clock: Arc<dyn UnixMillisClock>,
 }
 
@@ -226,6 +261,7 @@ pub struct OwnerChanges {
 pub(crate) struct OwnerSignals {
     cancellation: Option<acyclic_fs::CancellationToken>,
     deadline: Option<u64>,
+    scope_deadline: u64,
     clock: Arc<dyn UnixMillisClock>,
 }
 
@@ -237,6 +273,7 @@ impl OwnerSignals {
             || self
                 .deadline
                 .is_some_and(|deadline| self.clock.now_unix_millis() >= deadline)
+            || SystemUnixMillisClock.now_unix_millis() >= self.scope_deadline
     }
 }
 
@@ -245,11 +282,12 @@ impl OwnerChanges {
         OwnerSignals {
             cancellation: self.cancellation.clone(),
             deadline: self.deadline,
+            scope_deadline: self.scope_deadline,
             clock: Arc::clone(&self.clock),
         }
     }
 
-    /// Waits for this task, its ancestors, invocation cancellation or deadline.
+    /// Waits for task/ancestor changes, cancellation or either expiry bound.
     pub async fn changed(&mut self) -> Result<()> {
         locked(&self.registration.subscribers).check()?;
         let cancelled = async {
@@ -271,6 +309,12 @@ impl<P: StreamProvider + 'static> TaskJournalOwner<P> {
     /// gap between verifying an owner and starting its native command.
     #[doc(hidden)]
     pub async fn owner_changes(&self) -> Result<OwnerChanges> {
+        let scope_deadline = self
+            .host
+            .verifier
+            .scope_expiry(&self.host.owner, &self.host.owner_scope, &mut None)?
+            .checked_mul(1000)
+            .ok_or_else(|| Error::Invalid("scope expiry exceeds the millisecond clock".into()))?;
         let mut coordinator = self.host.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
         let hub = self
@@ -297,12 +341,16 @@ impl<P: StreamProvider + 'static> TaskJournalOwner<P> {
                 .as_ref()
                 .map(|parent| parent.operation_id);
         }
-        let registration =
-            hub.subscribe(operations, self.admission.run_limits.deadline_epoch_ms)?;
+        let registration = hub.subscribe(
+            operations,
+            self.admission.run_limits.deadline_epoch_ms,
+            scope_deadline,
+        )?;
         Ok(OwnerChanges {
             registration,
             cancellation: self.invocation_cancellation.clone(),
             deadline: self.admission.run_limits.deadline_epoch_ms,
+            scope_deadline,
             clock: Arc::clone(&self.host.clock),
         })
     }
