@@ -4,6 +4,9 @@ use acyclic_harness_core::Error;
 // Only recognized protocol discriminants affect classification. Remote messages,
 // headers and unknown codes never enter the returned diagnostic.
 pub(super) fn classify(adapter: Adapter, event: &Value) -> Error {
+    if context_overflow(event) {
+        return Error::ModelContextOverflow;
+    }
     let error = event
         .get("error")
         .filter(|v| !v.is_null())
@@ -42,6 +45,73 @@ pub(super) fn classify(adapter: Adapter, event: &Value) -> Error {
         Some(status) => crate::http_error(status),
         None => invalid("model provider reported a stream error"),
     }
+}
+
+/// Only protocol discriminants and Anthropic's documented length refusal affect this class.
+fn context_overflow(event: &Value) -> bool {
+    let error = event
+        .get("error")
+        .filter(|error| !error.is_null())
+        .or_else(|| event["response"].get("error"))
+        .unwrap_or(event);
+    is_context_overflow(
+        error["code"].as_str(),
+        error["type"].as_str(),
+        error["message"].as_str(),
+    )
+}
+
+fn is_context_overflow(code: Option<&str>, kind: Option<&str>, message: Option<&str>) -> bool {
+    [code, kind].into_iter().flatten().any(|code| {
+        matches!(
+            code,
+            "context_length_exceeded"
+                | "context_window_exceeded"
+                | "exceed_context_size_error"
+                | "prompt_too_long"
+        )
+    }) || (kind == Some("invalid_request_error")
+        && message.is_some_and(|message| message.starts_with("prompt is too long:")))
+}
+
+/// Borrow only the known refusal fields from the already bounded HTTP prefix.
+/// Building an arbitrary JSON tree here would escape the native diagnostic ledger.
+pub(crate) fn context_overflow_bytes(bytes: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Envelope<'a> {
+        #[serde(borrow)]
+        error: Option<&'a serde_json::value::RawValue>,
+        #[serde(borrow)]
+        response: Option<&'a serde_json::value::RawValue>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Fields<'a> {
+        #[serde(borrow)]
+        code: Option<&'a serde_json::value::RawValue>,
+        #[serde(rename = "type", borrow)]
+        kind: Option<&'a str>,
+        #[serde(borrow)]
+        message: Option<&'a str>,
+    }
+    let Ok(envelope) = serde_json::from_slice::<Envelope<'_>>(bytes) else {
+        return false;
+    };
+    let error = envelope.error.or_else(|| {
+        serde_json::from_str::<Envelope<'_>>(envelope.response?.get())
+            .ok()?
+            .error
+    });
+    let bytes = error.map_or(bytes, |raw| raw.get().as_bytes());
+    let Ok(fields) = serde_json::from_slice::<Fields<'_>>(bytes) else {
+        return false;
+    };
+    let code = fields.code.and_then(|raw| {
+        raw.get()
+            .starts_with('"')
+            .then(|| serde_json::from_str::<&str>(raw.get()).ok())
+            .flatten()
+    });
+    is_context_overflow(code, fields.kind, fields.message)
 }
 
 #[cfg(test)]

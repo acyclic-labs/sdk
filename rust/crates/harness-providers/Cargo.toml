@@ -12,6 +12,7 @@ description = "Streaming model providers for the acyclic harness"
 crate-type = ["rlib", "cdylib"]
 
 [features]
+endpoint-presets = []
 # The browser content reader lives in the facade's wasm bindings.
 browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 fuzzing = []

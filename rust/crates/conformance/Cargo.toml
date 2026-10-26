@@ -10,6 +10,7 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
+inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
@@ -17,6 +18,8 @@ s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum
 
 [dependencies]
 acyclic-agent-host-conformance = { path = "agent-host" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false }
+acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }
@@ -31,6 +34,7 @@ futures.workspace = true
 blake3.workspace = true
 hex.workspace = true
 prost.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -39,6 +43,11 @@ tempfile = { version = "3.27.0", optional = true }
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 notify = { workspace = true, optional = true }
 s3s = { workspace = true, optional = true }
+
+[[bin]]
+name = "inference-qualify"
+path = "src/bin/inference_qualify.rs"
+required-features = ["inference"]
 
 [[bin]]
 name = "qualify"

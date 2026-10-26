@@ -41,6 +41,9 @@ pub mod fuzzing;
 mod http;
 mod input;
 pub use input::validate_input;
+/// Configuration for OpenAI-compatible hosted and local endpoints.
+#[cfg(feature = "endpoint-presets")]
+pub mod endpoints;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(any(all(target_arch = "wasm32", feature = "browser"), all(test, not(loom))))]
@@ -139,7 +142,7 @@ async fn http_failure(response: HttpResponse) -> Error {
     let HttpResponse {
         status, mut body, ..
     } = response;
-    if unavailable(status, &[]).is_none() {
+    if matches!(status, 401 | 403) {
         return http_error(status);
     }
     let mut prefix = Vec::new();
@@ -149,6 +152,9 @@ async fn http_failure(response: HttpResponse) -> Error {
         };
         let room = EXCERPT_BYTES - prefix.len();
         prefix.extend_from_slice(chunk.get(..room).unwrap_or(&chunk));
+    }
+    if stream::context_overflow_bytes(&prefix) {
+        return Error::ModelContextOverflow;
     }
     unavailable(status, &prefix).unwrap_or_else(|| http_error(status))
 }

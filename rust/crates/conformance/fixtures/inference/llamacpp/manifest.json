@@ -1,0 +1,79 @@
+{
+  "captured_at": "2026-10-26T19:26:07.599671+00:00",
+  "source": "bb2 llama.cpp",
+  "model": "conformance-tiny",
+  "adapter": "chat",
+  "captures": {
+    "text": {
+      "status": 200,
+      "file": "text.body",
+      "sha256": "90a94a568d5153009259a0301aae11e3c73c72d84818c40f295798249038af8c"
+    },
+    "tool": {
+      "status": 200,
+      "file": "tool.body",
+      "sha256": "12d120c77ef85d3e941e058792992bc9aefbb5f447a292f813a5703157f6f2be"
+    },
+    "result": {
+      "status": 200,
+      "file": "result.body",
+      "sha256": "8fd2c0664cbe1c06e2d7fed5336e3ca3b18cf3fa29c2c5dca47ac9b842c20f1e",
+      "assertions": {
+        "/messages": [
+          {
+            "role": "user",
+            "content": "Call echo with value 1."
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "ztebHTK7qgcGtDleDmeY6Vvl1bqhFnrN",
+                "type": "function",
+                "function": {
+                  "name": "echo",
+                  "arguments": "{\"value\":1}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "ztebHTK7qgcGtDleDmeY6Vvl1bqhFnrN",
+            "content": "{\"value\":1}"
+          }
+        ]
+      }
+    },
+    "context": {
+      "status": 400,
+      "file": "context.body",
+      "sha256": "6515306c8730bef8473d3afe900e9ac87c7def5a13d86e6ebee325b3b02339ed"
+    },
+    "auth": {
+      "status": 401,
+      "file": "auth.body",
+      "sha256": "9956a1bd32a70211ff9f3c2e1af8a868de778deffa0689020fe5bea61027c713"
+    },
+    "rate": {
+      "status": 429,
+      "file": "rate.body",
+      "sha256": "5079ebc0814dfc64418ab0021da099266c0398395f42756b1756c2b5c6d7f996"
+    }
+  },
+  "options": {
+    "temperature": 0,
+    "seed": 1,
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "usage": {
+    "input": "/usage/prompt_tokens",
+    "input_tokens": 17,
+    "output": "/usage/completion_tokens",
+    "output_tokens": 5
+  },
+  "rate_source": "real nginx limit_req configured at 1 request/minute, limit_req_status 429"
+}
