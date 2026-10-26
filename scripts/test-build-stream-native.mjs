@@ -14,6 +14,15 @@ import { assertBuildInputs, assertBundle, assertExactInventory, assertMatchingBu
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
+async function writeNodeCommand(command, source) {
+  const node = process.execPath.replaceAll("\\", "/");
+  if (process.platform === "win32") await writeFile(command, `@echo off\r\n"${node}" "${source}" %*\r\nexit /b %errorlevel%\r\n`);
+  else {
+    await writeFile(command, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(source)} "$@"\n`);
+    await chmod(command, 0o700);
+  }
+}
+
 test("generator identity hashes the loaded maintained CommonJS entry", async () => {
   const require = createRequire(import.meta.url);
   const resolved = require.resolve("@napi-rs/cli");
@@ -593,7 +602,6 @@ test("native qualification refuses a Darwin host without Apple ld", () => {
 
 test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-edge-test-"));
-  const node = process.execPath.replaceAll("\\", "/");
   const marker = resolve(directory, "args.json").replaceAll("\\", "/");
   const rustcSource = resolve(directory, "rustc.mjs");
   const rustcCommand = resolve(directory, process.platform === "win32" ? "rustc.cmd" : "rustc");
@@ -603,11 +611,7 @@ test("native qualification forwards spaces and shell metacharacters through its 
   const args = [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "--remap-path-prefix=C:/Program Files/SDK=/__source", "-C", "link-arg=C:/a&b/x.dll", "-C", "link-arg=C:/a!b/y.dll"];
   try {
     await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\n`);
-    if (process.platform === "win32") await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource}" %*\r\nexit /b %errorlevel%\r\n`);
-    else {
-      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
-      await chmod(rustcCommand, 0o700);
-    }
+    await writeNodeCommand(rustcCommand, rustcSource);
     const capture = await createRustcInvocationCapture();
     try {
       if (process.platform === "win32") {
@@ -631,7 +635,6 @@ test("native qualification forwards spaces and shell metacharacters through its 
 
 test("native qualification records explicit and implicit rustc linkers through a delegated wrapper", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-test-"));
-  const node = process.execPath.replaceAll("\\", "/");
   const marker = resolve(directory, "delegated.txt").replaceAll("\\", "/");
   const rustcSource = resolve(directory, "rustc.mjs");
   const windows = process.platform === "win32";
@@ -645,17 +648,9 @@ test("native qualification records explicit and implicit rustc linkers through a
     : execFileSync(wrapper, args, { stdio: "inherit" });
   try {
     await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, "rustc\\n");\n`);
-    if (windows) await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
-    else {
-      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
-      await chmod(rustcCommand, 0o700);
-    }
+    await writeNodeCommand(rustcCommand, windows ? rustcSource.replaceAll("\\", "/") : rustcSource);
     await writeFile(delegateSource, `import { spawnSync } from "node:child_process"; import { appendFileSync } from "node:fs"; const args = process.argv.slice(2); appendFileSync(${JSON.stringify(marker)}, "delegate\\n"); const command = args.shift(); const batch = process.platform === "win32" && /\\.(?:cmd|bat)$/iu.test(command); const result = batch ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command, ...args], { stdio: "inherit" }) : spawnSync(command, args, { stdio: "inherit" }); process.exit(result.status ?? 1);\n`);
-    if (windows) await writeFile(delegateCommand, `@echo off\r\n"${node}" "${delegateSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
-    else {
-      await writeFile(delegateCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(delegateSource)} "$@"\n`);
-      await chmod(delegateCommand, 0o700);
-    }
+    await writeNodeCommand(delegateCommand, windows ? delegateSource.replaceAll("\\", "/") : delegateSource);
     process.env.RUSTC_WORKSPACE_WRAPPER = delegateCommand;
     const capture = await createRustcInvocationCapture();
     try {
@@ -689,7 +684,6 @@ test("native qualification records explicit and implicit rustc linkers through a
 
 test("native capture invokes the exact rustc executable when no nested wrapper is configured", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "stream-native-direct-rustc-test-"));
-  const node = process.execPath.replaceAll("\\", "/");
   const rustcSource = resolve(directory, "rustc.mjs");
   const windows = process.platform === "win32";
   const rustcCommand = resolve(directory, windows ? "rustc.cmd" : "rustc");
@@ -699,11 +693,7 @@ test("native capture invokes the exact rustc executable when no nested wrapper i
     : execFileSync(wrapper, args, { stdio: "inherit" });
   try {
     await writeFile(rustcSource, "process.exit(0);\n");
-    if (windows) await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
-    else {
-      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
-      await chmod(rustcCommand, 0o700);
-    }
+    await writeNodeCommand(rustcCommand, windows ? rustcSource.replaceAll("\\", "/") : rustcSource);
     delete process.env.RUSTC_WORKSPACE_WRAPPER;
     const capture = await createRustcInvocationCapture();
     try {
