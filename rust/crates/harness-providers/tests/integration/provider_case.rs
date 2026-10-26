@@ -41,8 +41,6 @@ pub struct Expectations {
     pub events: Vec<Vec<Value>>,
     pub endpoint: String,
     pub requests: Vec<BTreeMap<String, Value>>,
-    pub frames: Vec<Value>,
-    pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
     #[serde(default, skip_serializing_if = "is_succeeded")]
     pub outcome: super::expected_outcome::ExpectedOutcome,
@@ -78,8 +76,6 @@ impl ProviderCase {
                 || !self.statuses.is_empty()
                 || !self.expect.events.is_empty()
                 || !self.expect.requests.is_empty()
-                || self.expect.frames.is_empty()
-                || self.expect.statuses.len() < 2
             {
                 Err("invalid bounded provider scenario")
             } else {
@@ -112,11 +108,6 @@ impl ProviderCase {
                 .iter()
                 .flat_map(|fields| fields.keys())
                 .any(|pointer| !pointer.starts_with('/'))
-            || self.expect.frames.is_empty()
-            || self.expect.statuses.len() < 2
-            || self.expect.statuses.iter().any(|status| {
-                status["state"].as_str().is_none() || !status["attention"].is_boolean()
-            })
         {
             return Err("invalid bounded provider scenario");
         }

@@ -1,2 +1,15 @@
-{"driver":"local","prompt":"Settle a command failure with its cause.","seed":{"plans/a.md":"before\n"},
- "expect":{"text":null,"wire":[],"diffs":null,"results":null,"files":{"plans/a.md":"before\n"}}}
+{
+ "driver": "local",
+ "prompt": "Settle a command failure with its cause.",
+ "seed": {
+  "plans/a.md": "before\n"
+ },
+ "expect": {
+  "text": null,
+  "diffs": null,
+  "results": null,
+  "files": {
+   "plans/a.md": "before\n"
+  }
+ }
+}

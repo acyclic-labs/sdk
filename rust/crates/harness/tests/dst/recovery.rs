@@ -39,7 +39,7 @@ fn local_turn<'a>(
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
         first_turn_write.set(Some(schedule.durable_writes().len()));
-        prompt(&harness, "finish this turn", "done", false).await?;
+        prompt(&harness, "first", "finish this turn", "done").await?;
         Ok(())
     })
 }

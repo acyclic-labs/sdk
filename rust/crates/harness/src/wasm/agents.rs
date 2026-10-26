@@ -490,6 +490,17 @@ impl WasmAgents {
         text: String,
     ) -> std::result::Result<JsValue, JsValue> {
         let path = AgentPath::try_from(agent).map_err(agent_error)?;
+        // An archived agent refuses every message: stage no body for one.
+        match self
+            .agents
+            .provider()
+            .tail(path.closed().map_err(agent_error)?)
+            .await
+        {
+            Err(StreamError::NotFound) => {}
+            Ok(_) => return to_js(&WasmDelivered::Closed),
+            Err(error) => return Err(stream_error(error)),
+        }
         let volume = self.private(&path).await?;
         let body = self.stage(&path, &volume, "message", &intent, &text).await?;
         let record = InboxRecord::Message(Message {

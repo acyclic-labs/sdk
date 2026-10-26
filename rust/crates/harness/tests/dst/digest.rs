@@ -22,8 +22,7 @@ fn canonical(trace: &Trace, out: &mut impl std::io::Write) -> std::io::Result<()
         writes,
         requests,
         dispatches,
-        files,
-        jsonl,
+        records,
         durable,
     } = trace;
     writeln!(out, "dst-trace-v2")?;
@@ -52,8 +51,7 @@ fn canonical(trace: &Trace, out: &mut impl std::io::Write) -> std::io::Result<()
     for (label, value) in [
         ("requests", requests),
         ("dispatches", dispatches),
-        ("files", files),
-        ("jsonl", jsonl),
+        ("records", records),
     ] {
         chunks(out, label, value)?;
     }
@@ -156,8 +154,7 @@ fn canonical_trace_locates_divergence_and_is_the_digest_input() {
         }],
         requests: vec![7; 40],
         dispatches: Vec::new(),
-        files: Vec::new(),
-        jsonl: b"{}\n".to_vec(),
+        records: b"{}\n".to_vec(),
         durable: BTreeMap::from([("a/b".into(), (false, vec![0; 100]))]),
     };
     let lines = |trace: &Trace| {

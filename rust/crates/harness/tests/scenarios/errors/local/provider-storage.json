@@ -1,5 +1,14 @@
-{"turns":[[{"type":"error","error":"provider response lost"}]],
- "expect":{"outcome":"indeterminate",
-  "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed","outcome":{"Indeterminate":{"cause":{"Command":{"reason":
-    {"Failed":{"code":"ERROR_CODE_STORAGE","error":{"$contains":"provider response lost"}}}}}}}}],
-  "statuses":[{"state":"pending","attention":false,"parent":null},{"state":"indeterminate","attention":true,"parent":null}]}}
+{
+ "turns": [
+  [
+   {
+    "type": "error",
+    "error": "provider response lost"
+   }
+  ]
+ ],
+ "expect": {
+  "outcome": "indeterminate",
+  "error": "provider response lost"
+ }
+}

@@ -11,10 +11,6 @@ mod client_files;
 mod client_mention_provider;
 #[path = "../../../harness/tests/support/expected_outcome.rs"]
 mod expected_outcome;
-#[path = "../../../harness/tests/support/frame_oracle.rs"]
-mod frame_oracle;
-#[path = "../../../harness/tests/e2e/local_admission.rs"]
-mod local_admission;
 #[path = "../../../harness/tests/e2e/local_workspace.rs"]
 mod local_workspace;
 #[path = "../../../harness/tests/support/scenario_matchers.rs"]

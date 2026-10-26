@@ -1,3 +1,18 @@
-{"seed":{"plans/a.md":"before\n"},
- "expect":{"wire":[],
-  "files":{"plans/a.md":"before\n"},"results":{"call":{"name":"fs","content":{"kind":"json"}}}}}
+{
+ "seed": {
+  "plans/a.md": "before\n"
+ },
+ "expect": {
+  "files": {
+   "plans/a.md": "before\n"
+  },
+  "results": {
+   "call": {
+    "name": "fs",
+    "content": {
+     "kind": "json"
+    }
+   }
+  }
+ }
+}

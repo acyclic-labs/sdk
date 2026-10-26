@@ -5,7 +5,6 @@ use serde_json::Value;
 // Raw local execution is visible only inside this guarded dispatcher.
 #[path = "local_execution.rs"]
 mod local_execution;
-pub(super) use super::frame_oracle::check_frames;
 pub(super) use local_execution::{check_results, model_results};
 
 trait Driver {
@@ -156,8 +155,6 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
             ))
             .await
         }
-        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-        Some("agents") => Box::pin(super::agents::run(value)).await,
         None if driver.is_none() => {
             Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
         }

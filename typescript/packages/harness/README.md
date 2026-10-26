@@ -67,8 +67,10 @@ Rust agent host the local harness runs, over IndexedDB Streams and Filesystem.
 Initialize WASM with `initializeBrowserRuntime()`, register tools and the model
 on a `BrowserAgentRegistry`, and open `BrowserAgents` with the owner's
 `BrowserAgentAuthority`; opening starts the one runtime that hosts every agent.
-`create`, `send`, `cancel`, `archive` and `pause` are each one agent commit
-with a stable intent, so a retry replays exactly. `list` pages root agents or
+`create`, `send`, `cancel` and `archive` are each one agent commit with a
+stable intent, so a retry replays exactly; `send` to an archived agent returns
+`closed` and stores nothing. `pause(agent, paused)` sets the agent's paused
+state, so the last call wins rather than replaying. `list` pages root agents or
 an agent's children; `read` pages an agent's inbox, conversation and status
 streams, and `readFile` reads a turn's staged output. The model's `generate`
 receives the canonical request bytes and the verified bytes of each file the

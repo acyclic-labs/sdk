@@ -11,11 +11,9 @@ use acyclic_harness::{
         ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider as _, ModelRequest,
         ModelRole, PreparedModelRequest,
     },
-    test_support::{local_harness_config, local_task_stream},
+    test_support::{PromptOutcome, local_harness_config, prompt_settled},
 };
-use acyclic_stream::{StreamPath, StreamProvider as _};
-use futures::{StreamExt as _, TryStreamExt as _};
-use prost::Message as _;
+use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -238,55 +236,18 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
                 .chain(added)
                 .map(echo_tool),
         );
-    let harness = LocalHarness::open(config).await?;
-    let (operation, task_id, status) =
-        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
-    let stream = local_task_stream(&harness);
-    let path = StreamPath::new("harness/v3/coordinator/events")?;
-    let mut frames = stream
-        .follow(path.clone(), 0, acyclic_stream::FollowFilter::default())
-        .await?;
-    let output = harness.resume(task_id).await;
-    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
-    match (case.expect.outcome, output) {
-        (super::expected_outcome::ExpectedOutcome::Succeeded, Ok(output))
+    let harness = Arc::new(LocalHarness::open(config).await?);
+    match (
+        case.expect.outcome,
+        prompt_settled(&harness, "provider", &case.prompt).await?,
+    ) {
+        (super::expected_outcome::ExpectedOutcome::Succeeded, PromptOutcome::Settled(_, output))
             if output.text == case.expect.text
                 && output.steps as usize == completed_steps(case) => {}
-        (
-            super::expected_outcome::ExpectedOutcome::Failed,
-            Err(acyclic_harness::Error::TaskFailed { task, .. }),
-        ) if task == task_id => {}
+        (super::expected_outcome::ExpectedOutcome::Failed, PromptOutcome::Failed(_)) => {}
         (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
     }
-    let cut = stream.tail(path).await?;
-    let mut wire = Vec::new();
-    for sequence in 0..cut {
-        let record = super::stall::waiting("provider task wire replay", frames.next())
-            .await
-            .ok_or("provider task wire ended")??;
-        if record.sequence != sequence {
-            return Err("provider task wire has a gap".into());
-        }
-        let envelope =
-            acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
-        wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
-    }
-    super::frame_oracle::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)?;
-    // Keep other child completions: only the root publication is dropped.
-    let root = serde_json::to_value(operation)?;
-    let terminal = wire
-        .iter()
-        .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
-        .ok_or("missing terminal")?;
-    wire.remove(terminal);
-    if super::frame_oracle::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)
-        .is_ok()
-    {
-        return Err("wire oracle accepted a dropped root completion".into());
-    }
     check_requests(case, transport)?;
-    drop(frames);
-    drop(stream);
     drop(harness);
     drop(reader);
     drop(host);

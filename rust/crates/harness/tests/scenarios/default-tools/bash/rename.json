@@ -1,27 +1,50 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"shell",
-  "arguments":{"command":"mv plans/a.md plans/b.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"files":{"plans/a.md":null,"plans/b.md":"before\n"},
-  "wire":[{"files":[{"key":{"Plan":"b"}}],"removed":[{"Plan":"a"}]}]},
- "platforms":{
-  "windows": {
-    "turns": [
-      [
-        {
-          "type": "event",
-          "kind": "tool_call",
-          "call_id": "call",
-          "name": "shell",
-          "arguments": {
-            "command": "Move-Item -LiteralPath plans/a.md -Destination plans/b.md"
-          }
-        },
-        {
-          "type": "event",
-          "kind": "completed",
-          "metadata": null
-        }
-      ],
-      "done"
-    ]
+{
+ "turns": [
+  [
+   {
+    "type": "event",
+    "kind": "tool_call",
+    "call_id": "call",
+    "name": "shell",
+    "arguments": {
+     "command": "mv plans/a.md plans/b.md"
+    }
+   },
+   {
+    "type": "event",
+    "kind": "completed",
+    "metadata": null
+   }
+  ],
+  "done"
+ ],
+ "expect": {
+  "files": {
+   "plans/a.md": null,
+   "plans/b.md": "before\n"
   }
-}}
+ },
+ "platforms": {
+  "windows": {
+   "turns": [
+    [
+     {
+      "type": "event",
+      "kind": "tool_call",
+      "call_id": "call",
+      "name": "shell",
+      "arguments": {
+       "command": "Move-Item -LiteralPath plans/a.md -Destination plans/b.md"
+      }
+     },
+     {
+      "type": "event",
+      "kind": "completed",
+      "metadata": null
+     }
+    ],
+    "done"
+   ]
+  }
+ }
+}

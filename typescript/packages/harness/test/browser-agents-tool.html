@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<title>Harness agent tool call in the browser</title>
+<title>Harness agent tool reconciliation in the browser</title>
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
 import { agentsFixture, until, turnText } from "./browser-agents-fixture.mjs";
@@ -11,6 +11,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 let fixture;
 let agents;
+let cleanup;
 try {
   const invocations = [];
   fixture = await agentsFixture(crypto.randomUUID(), async function* ({ dispatch, request }) {
@@ -25,31 +26,48 @@ try {
     output_schema: { type: "string" },
     projection_schema: jsonToolProjectionSchema({ type: "object", properties: { observed: { type: "string" } },
       required: ["observed"], additionalProperties: false }) };
+  // The effect is durable before its acknowledgment is lost: the host must
+  // reconcile it from the recorded intent, never execute it again.
+  const effectKey = `harness-agent-tool-effect-${crypto.randomUUID()}`;
+  let reconciliations = 0;
   fixture.registry.registerTool(definition, async invocation => {
     invocations.push(invocation);
-    return { value: invocation.arguments.value };
-  }, async () => { throw new Error("a settled effect was reconciled"); },
-  (_, canonical) => ({ kind: "json", value: { observed: canonical.value } }));
+    assert(localStorage.getItem(effectKey) === null, "an uncertain effect was dispatched again");
+    localStorage.setItem(effectKey, JSON.stringify({ operation_id: invocation.operation_id, arguments: invocation.arguments }));
+    throw new Error("acknowledgment lost after durable effect");
+  }, async invocation => {
+    reconciliations++;
+    const effect = JSON.parse(localStorage.getItem(effectKey));
+    assert(effect.operation_id === invocation.operation_id, "reconciliation substituted the invocation identity");
+    assert(effect.arguments.value === invocation.arguments.value, "reconciliation substituted the arguments");
+    return { value: effect.arguments.value };
+  }, (_, canonical) => ({ kind: "json", value: { observed: canonical.value } }));
+  cleanup = () => localStorage.removeItem(effectKey);
   let rejected = false;
   try { fixture.registry.registerTool({ ...definition, description: "changed" }, () => {}, () => {}, () => {}); }
   catch { rejected = true; }
   assert(rejected, "same tool revision accepted a replacement definition");
   agents = await fixture.open();
-  result.dataset.waiting = "turn calls the host tool and sees its projection";
+  result.dataset.waiting = "the turn dispatches the effect and loses its acknowledgment";
   const agent = await agents.create("tool-agent", "use the tool");
+  await until(() => invocations.length, count => count > 0);
+  agents.free();
+  result.dataset.waiting = "reopen reconciles the recorded effect and settles the turn";
+  agents = await fixture.open();
   const entries = await until(() => agents.read(agent, "conversation", 0n, 4), entries => entries.length === 1);
   const text = await turnText(agents, agent, entries[0]);
   assert(invocations.length === 1 && invocations[0].arguments.value === "committed", describe(invocations));
-  assert(fixture.requests.length === 2 && text.includes("committed"), `tool result did not reach the model: ${text}`);
-  assert(fixture.failures.length === 0, describe(fixture.failures));
+  assert(reconciliations >= 1, "the uncertain effect settled without reconciliation");
+  assert(text.includes("committed"), `the reconciled result did not reach the model: ${text}`);
   result.dataset.status = "passed";
-  result.textContent = "pinned host tool executed once and its projection reached the next model step";
+  result.textContent = "pinned host tool executed once, lost its acknowledgment, and reopen reconciled it into the turn";
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
 } finally {
   agents?.free();
   fixture?.free();
+  cleanup?.();
 }
 </script>
 </html>

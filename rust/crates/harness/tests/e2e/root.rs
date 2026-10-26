@@ -1,6 +1,4 @@
 // Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
-#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-mod agents;
 mod case_workers;
 mod composer;
 mod composer_entry;
@@ -11,8 +9,6 @@ mod execution;
 mod expectations;
 #[path = "../support/expected_outcome.rs"]
 mod expected_outcome;
-#[path = "../support/frame_oracle.rs"]
-mod frame_oracle;
 mod goal_execution;
 mod goal_workers;
 mod goals;
@@ -22,9 +18,6 @@ mod local_admission;
 mod local_case;
 mod local_cloud;
 mod local_tests;
-mod local_tool_files;
-mod local_tool_files_check;
-mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
 mod notification_history;
@@ -374,11 +367,6 @@ fn run_scenarios(started: Instant) -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-    let local_root =
-        acyclic_test_support::source_path("rust/crates/harness").join("tests/local-scenarios");
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-    discover(&local_root, &mut paths)?;
     paths.sort();
     if let Some(filter) = acyclic_harness::test_support::environment("E2E_FILTER")
         .and_then(|value| value.into_string().ok())
@@ -417,12 +405,6 @@ fn run_scenarios(started: Instant) -> TestResult {
             let admitted = admitted.clone();
             let registry = registry.clone();
             let io = io.clone();
-            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-            let root = if path.starts_with(&local_root) {
-                local_root.clone()
-            } else {
-                root
-            };
             async move {
                 let case_path = path.clone();
                 let (running, peak) = &*admitted;
