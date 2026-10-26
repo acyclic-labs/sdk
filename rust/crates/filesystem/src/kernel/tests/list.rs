@@ -387,7 +387,6 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             id: ObjectId,
             bytes: OwnedBytes,
             context: &mut crate::AuthorityWork<'_>,
-            8,
         ) -> Result<(), crate::ObjectStoreError> {
             #[cfg(not(target_arch = "wasm32"))]
             if context.original.is_some() {
