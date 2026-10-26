@@ -10,6 +10,10 @@
 #[path = "support/unbounded.rs"]
 mod unbounded;
 
+#[macro_use]
+#[path = "support/provider_receipt.rs"]
+mod provider_receipt;
+
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
@@ -230,11 +234,7 @@ impl AsyncObjectStore for CancelAfterPut {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-            let receipt = {
-                let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
-                let result = self.inner.put(id, bytes, &mut work).await;
-                work.receipt(result)
-            }?;
+            let receipt = provider_receipt!(self.inner, put(id, bytes), budget, cancellation)?;
             self.after_put(cancellation);
             Ok(receipt)
         }
@@ -254,11 +254,7 @@ impl AsyncObjectStore for CancelAfterPut {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-            let receipt = {
-                let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
-                let result = self.inner.put_many(writes, &mut work).await;
-                work.receipt(result)
-            }?;
+            let receipt = provider_receipt!(self.inner, put_many(writes), budget, cancellation)?;
             self.after_put(cancellation);
             Ok(receipt)
         }
@@ -278,11 +274,7 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
-        let result = {
-            let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
-            let result = self.inner.read(id, maximum_bytes, &mut work).await;
-            work.receipt(result)
-        };
+        let result = provider_receipt!(self.inner, read(id, maximum_bytes), budget, cancellation);
         context.accept(result)
     }
 
@@ -300,15 +292,7 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = {
-            let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
-            let result = self
-                .inner
-                .read_many(requests, &mut work)
-                .await
-                .map(|(values, _allocation)| values);
-            work.receipt(result)
-        };
+        let result = provider_receipt!(self.inner, read_many(requests), budget, cancellation);
         context.accept(result).map(|values| (values, None))
     }
 
@@ -323,11 +307,7 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = {
-            let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
-            let result = self.inner.contains(id, &mut work).await;
-            work.receipt(result)
-        };
+        let result = provider_receipt!(self.inner, contains(id), budget, cancellation);
         context.accept(result)
     }
 }

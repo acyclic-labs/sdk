@@ -27,6 +27,10 @@ macro_rules! provider_receipt {
     (@call $store:expr, read, $args:ident, $work:ident) => {
         $store.read($args.0, $args.1, &mut $work).await
     };
+    (@call $store:expr, read_many, $args:ident, $work:ident) => {
+        $store.read_many($args.0, &mut $work)
+            .await.map(|(values, _allocation)| values)
+    };
     (@call $store:expr, contains, $args:ident, $work:ident) => {
         $store.contains($args.0, &mut $work).await
     };
