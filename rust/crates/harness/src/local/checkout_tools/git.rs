@@ -33,7 +33,7 @@ impl CheckoutTools {
             .fs(
                 parsed,
                 &workspace::git::CommandContext {
-                    task: context.task(),
+                    owner: context.task(),
                     operation: context.operation_id(),
                     scope: context.effective_scope(),
                 },

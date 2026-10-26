@@ -53,7 +53,7 @@ pub struct TurnAuthority {
 }
 
 /// The conversation authority of one agent over its bound volumes.
-pub(super) struct AgentAuthority<'v> {
+pub struct AgentAuthority<'v> {
     /// `issuer`'s custody under the agent's conversation audience.
     pub issuer: AuthorityRoot,
     /// Read and write over every bound volume.
@@ -70,7 +70,7 @@ pub(super) struct AgentAuthority<'v> {
 /// `issuer`'s custody. Each `external` file on a volume the agent does not
 /// bind (a message or result from another agent) is granted alone, by its
 /// exact version.
-pub(super) fn agent_authority<'v>(
+pub fn agent_authority<'v>(
     issuer: &AuthorityRoot,
     path: &AgentPath,
     volumes: &'v [VolumeBinding],

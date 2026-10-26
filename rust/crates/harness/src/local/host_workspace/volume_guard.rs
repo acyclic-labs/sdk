@@ -5,7 +5,7 @@ use acyclic_fs::native_mount::{
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 
 struct Guard {
-    owner: Arc<dyn OwnedTaskMailbox>,
+    owner: Arc<dyn ViewOwner>,
     root: Arc<HeldRoot>,
     writable: bool,
     custody: NativeAllocation,
@@ -13,7 +13,7 @@ struct Guard {
 
 pub(super) fn options(
     options: acyclic_fs::MountOptions,
-    owner: Arc<dyn OwnedTaskMailbox>,
+    owner: Arc<dyn ViewOwner>,
     root: Arc<HeldRoot>,
     read_only: bool,
 ) -> Result<acyclic_fs::MountOptions> {
@@ -51,7 +51,7 @@ impl Guard {
             if (write && !self.writable) || !self.custody.work().shares_allocation_context(work) {
                 return Err(Error::Unauthorized("native volume owner differs".into()));
             }
-            self.owner.verify_owner(None)?.await?;
+            self.owner.verify().await?;
             verify_root(&self.root)
         })
     }

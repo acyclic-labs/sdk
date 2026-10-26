@@ -47,10 +47,11 @@ mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
 mod spawn_volumes;
-pub use spawn_volumes::FilesystemSpawnVolumes;
+pub use spawn_volumes::{FilesystemSpawnVolumes, spawned_volume};
 mod agent_turns;
 pub use agent_turns::{
-    FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
+    AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
+    agent_authority,
 };
 mod fork_preparer;
 #[cfg(not(target_arch = "wasm32"))]

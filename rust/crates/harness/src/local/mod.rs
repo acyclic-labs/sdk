@@ -45,8 +45,6 @@ pub mod host_files;
 pub mod host_owner;
 #[cfg(feature = "native-execution")]
 pub mod host_process;
-#[cfg(any(test, feature = "native-execution"))]
-pub(crate) mod host_task;
 #[cfg(feature = "native-execution")]
 pub mod host_workspace;
 mod inheritance;

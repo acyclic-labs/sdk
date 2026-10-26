@@ -25,6 +25,115 @@ impl LocalWorkspace {
     }
 }
 
+impl LocalWorkspace {
+    /// Retains the current cut of the lazy `source` project for the fork
+    /// `destination` that a spawn commit creates under `operation`: step one
+    /// of the external-creator fork. Call it right before that spawn, after
+    /// capturing `source`, so the commit forks the cut's head.
+    pub(in crate::local) async fn prepare_spawned_project(
+        &self,
+        source: &VolumeRef,
+        destination: &VolumeRef,
+        operation: acyclic_fs::OperationId,
+    ) -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let view = self.project_view(source).await?;
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let cut = view.snapshot(&mut accounting).await.map_err(storage)?;
+        view.prepare_fork_snapshot(
+            &destination.storage_name(&mut None)?,
+            cut,
+            operation,
+            &mut accounting,
+        )
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
+    /// The lazy view of spawned project `project`, first binding its
+    /// prepared fork to the spawn's creating generation (step two) if no
+    /// open has yet; idempotent, and O(1) once bound.
+    pub(in crate::local) async fn spawned_project_view(&self, project: &VolumeRef) -> Result<View> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let name = project.storage_name(&mut None)?;
+        let child = self
+            .filesystem
+            .open_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let state = self
+            .store
+            .load_lazy_workspace(child.id(), &mut accounting)
+            .await
+            .map_err(storage)?
+            .ok_or_else(|| Error::NotFound("spawned project has no prepared fork".into()))?;
+        let Some(origin) = state
+            .fork_origin
+            .filter(|origin| origin.phase == acyclic_fs::LazyForkPhase::Prepared)
+        else {
+            return self
+                .view()
+                .open_related(child, &mut accounting)
+                .await
+                .map_err(storage);
+        };
+        let parent = state
+            .parent_workspace_id
+            .ok_or_else(|| Error::Conflict("spawned project fork has no parent".into()))?;
+        let parent = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                self.filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+            ),
+            parent,
+        )
+        .await
+        .map_err(storage)?;
+        let source = self
+            .view()
+            .open_related(parent, &mut accounting)
+            .await
+            .map_err(storage)?;
+        let original = self
+            .filesystem
+            .workspace_for_creation_operation(
+                &name,
+                child.volume_config(),
+                origin.operation_id,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .ok_or_else(|| Error::Conflict("spawned project has no creating generation".into()))?
+            .id();
+        let (view, _) = source
+            .bind_prepared_fork(
+                origin.snapshot,
+                child,
+                original,
+                origin.operation_id,
+                &mut accounting,
+            )
+            .await
+            .map_err(storage)?;
+        acyclic_fs::WorkspaceGraph::new(self.store.clone())
+            .register_existing_child_at_generation(
+                source.workspace(),
+                view.workspace(),
+                origin.snapshot.authored_generation,
+                original,
+            )
+            .await
+            .map_err(storage)?;
+        Ok(view)
+    }
+}
+
 pub(in crate::local) fn created_project<'a>(
     task: &'a TaskContext,
     scope: &RuntimeScope,

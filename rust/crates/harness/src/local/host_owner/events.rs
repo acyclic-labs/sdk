@@ -1,6 +1,6 @@
 //! Session boundaries only. Native subagents and native tools are unmanaged.
+use super::agents::Event;
 use super::*;
-use crate::task_volume::{Component, FileKey, FileValue, TaskFile};
 
 impl HostWorkspaceOwner {
     pub(super) async fn hook(
@@ -16,29 +16,21 @@ impl HostWorkspaceOwner {
         ) {
             return Ok(json!({}));
         }
-        let (task, managed) = if let Some(task) = input.get("task") {
-            let task = serde_json::from_value(task.clone()).map_err(storage)?;
-            (task, self.require_native(task).await?.is_some())
+        let agent = if let Some(task) = input.get("task") {
+            serde_json::from_value::<AgentPath>(task.clone()).map_err(storage)?
         } else {
             let session = input
                 .get("session_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::Invalid("native session identity absent".into()))?;
-            let operation = context::publication_operation(
-                b"acyclic.native-root/v1\0",
-                &serde_json::to_vec(&(host, session)).map_err(storage)?,
-            );
-            (
-                self.local.admit_host_task(operation, host, session).await?,
-                false,
-            )
+            self.native.open(host, session).await?
         };
         // A managed boundary is an acknowledgement, not view admission or
         // capture. Only its physical process owner can retire and capture it.
-        if managed && matches!(event, "Stop" | "SessionEnd") {
+        if agent.parent().is_some() && matches!(event, "Stop" | "SessionEnd") {
             return Ok(json!({}));
         }
-        self.attach(task).await?;
+        self.attach(&agent).await?;
         if event == "NativeSession" {
             if let Some(session) = input.get("native_session") {
                 let object = session.as_object().ok_or_else(|| {
@@ -63,99 +55,65 @@ impl HostWorkspaceOwner {
                 {
                     return Err(Error::Invalid("invalid native session reference".into()));
                 }
-                self.publish(
-                    task,
-                    FileValue::new(
-                        context_key(task, "session")?,
-                        serde_json::to_vec(session).map_err(storage)?,
-                    ),
-                )
-                .await?;
+                self.native
+                    .request(
+                        &agent,
+                        operation,
+                        &Event::Native {
+                            session: session.clone(),
+                        },
+                    )
+                    .await?;
                 return Ok(session.clone());
             }
-            let snapshot = self
-                .files(task)
+            return self
+                .native
+                .session(&agent)
                 .await?
-                .snapshot(&Query::File(context_key(task, "session")?), 1)
-                .await
-                .map_err(storage)?;
-            return snapshot.files.first().map_or_else(
-                || Err(Error::NotFound("native session reference absent".into())),
-                |file| serde_json::from_slice(&file.bytes).map_err(storage),
-            );
+                .1
+                .native
+                .ok_or_else(|| Error::NotFound("native session reference absent".into()));
         }
         if matches!(event, "Stop" | "SessionEnd") {
-            let attached = self.attached(task)?;
-            attached
-                .workspace
-                .capture(&attached.context, operation)
-                .await?;
+            self.view(&agent)?.capture(operation).await?;
             return Ok(json!({}));
         }
         Ok(
-            json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("Harness task {task}. Use Acyclic spawn/send/wait/archive for isolated sessions and acyclic fs merge agents/<ref> to merge. Native subagents retain their host behavior and are not harness forks.")}}),
+            json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("Harness agent {agent}. Use Acyclic spawn/send/wait/archive for isolated sessions and acyclic fs merge agents/<ref> to merge. Native subagents retain their host behavior and are not harness forks.")}}),
         )
     }
 
     pub(super) async fn locate(&mut self, cwd: &Path) -> Result<Value> {
         let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
         // A native session enters only after its view has been attached. Cwd
-        // discovery observes those held admissions; it must never reconstruct
-        // the task tree or acquire unrelated views as a side effect of a read.
+        // discovery observes those held views; it never reconstructs the
+        // agent tree or acquires unrelated views as a side effect of a read.
         let mut selected = self
             .views
             .iter()
-            .filter(|(_, attached)| cwd.starts_with(attached.workspace.path()))
+            .filter(|(_, view)| cwd.starts_with(view.path()))
             .collect::<Vec<_>>();
-        selected.sort_by_key(|(_, attached)| {
-            std::cmp::Reverse(attached.workspace.path().components().count())
-        });
-        let Some((task, first)) = selected.first() else {
+        selected.sort_by_key(|(_, view)| std::cmp::Reverse(view.path().components().count()));
+        let Some((agent, first)) = selected.first() else {
             return Err(Error::NotFound(
-                "no native task selects this directory".into(),
+                "no native agent selects this directory".into(),
             ));
         };
         if selected
             .get(1)
-            .is_some_and(|(_, second)| second.workspace.path() == first.workspace.path())
+            .is_some_and(|(_, second)| second.path() == first.path())
         {
             return Err(Error::Conflict(
                 "multiple native sessions select this directory; use --task".into(),
             ));
         }
-        if cwd.starts_with(first.workspace.path().join(host_workspace::HOST_VIEW_ROOT)) {
+        if cwd.starts_with(first.path().join(host_workspace::HOST_VIEW_ROOT)) {
             return Err(Error::NotFound(
                 "native cwd selects no held agent view".into(),
             ));
         }
-        first.workspace.verify(&first.context).await?;
-        self.location(**task)
+        first.verify().await?;
+        let agent = (*agent).clone();
+        self.location(&agent)
     }
-
-    pub(super) async fn publish(&self, task: TaskId, file: FileValue) -> Result<()> {
-        let owner = self
-            .attached(task)?
-            .context
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("native owner absent".into()))?;
-        let files = self.files(task).await?;
-        let snapshot = files
-            .snapshot(&Query::File(file.key.clone()), 1)
-            .await
-            .map_err(storage)?;
-        crate::task_volume::publish(&files.inner, snapshot.generation, &file, || async {
-            let (condition, deadline) = owner.file_publication_condition().await?;
-            Ok::<_, Error>((vec![condition], deadline))
-        })
-        .await?;
-        Ok(())
-    }
-}
-
-pub(super) fn context_key(task: TaskId, name: &str) -> Result<FileKey> {
-    Ok(FileKey::Task {
-        task: Component::new(task.to_string()).map_err(storage)?,
-        file: TaskFile::Context(Component::new(format!("native-{name}")).map_err(storage)?),
-    })
 }

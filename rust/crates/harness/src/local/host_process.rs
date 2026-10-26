@@ -4,6 +4,7 @@
 //! takes that same lock and fences orphaned trees before capturing any files.
 //! There is no adapter journal or caller-supplied quiescence assertion.
 use super::*;
+use crate::agent::AgentPath;
 use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTreeStorage};
 
 /// Runs the interactive native root with its inherited console and process
@@ -23,7 +24,7 @@ pub fn run_root_session(
             session: OperationId::new().to_string(),
         },
     )?;
-    let task: TaskId = serde_json::from_value(
+    let task: AgentPath = serde_json::from_value(
         location
             .get("task")
             .cloned()
@@ -46,9 +47,9 @@ pub fn run_root_session(
     Ok(status)
 }
 
-/// Exclusive right to start one task's native session processes.
+/// Exclusive right to start one agent's native session processes.
 pub struct HostProcessLease {
-    task: TaskId,
+    task: AgentPath,
     view: PathBuf,
     custody: Arc<ProcessCustody>,
     _ownership: FileLock,
@@ -66,7 +67,7 @@ impl HostProcessLease {
     /// an execution lease from caller-supplied task/view strings.
     pub fn claim_child(
         cwd: &Path,
-        parent: TaskId,
+        parent: &AgentPath,
         reference: &str,
     ) -> Result<Option<(Self, serde_json::Value)>> {
         use super::host_owner::{HostAction, SessionAction};
@@ -74,7 +75,7 @@ impl HostProcessLease {
             super::host_files::request(
                 cwd,
                 HostAction::Session {
-                    parent,
+                    parent: parent.clone(),
                     reference: reference.into(),
                     action,
                 },
@@ -94,7 +95,7 @@ impl HostProcessLease {
             .ok_or_else(|| Error::Invalid("native child view absent".into()))?;
         let lease = Self::acquire(
             &super::host_files::workspace_root(cwd)?,
-            task,
+            &task,
             Path::new(view),
         )?;
         let turn = request(SessionAction::Next)?;
@@ -112,7 +113,7 @@ impl HostProcessLease {
     /// Acquires the task's workspace-local custody before claiming an input.
     /// A live owner refuses acquisition; a dead owner's trees are fenced using
     /// the runtime's existing cross-platform process containment implementation.
-    pub(super) fn acquire(workspace: &Path, task: TaskId, view: &Path) -> Result<Self> {
+    pub(super) fn acquire(workspace: &Path, task: &AgentPath, view: &Path) -> Result<Self> {
         let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
         let view = std::fs::canonicalize(view).map_err(storage)?;
         if !view.starts_with(&workspace) {
@@ -123,7 +124,7 @@ impl HostProcessLease {
         let root = acyclic_fs::hold_root(&workspace)
             .map_err(storage)?
             .create_directories(
-                &PathBuf::from(".acyclic-sdk/host-processes").join(task.to_string()),
+                &PathBuf::from(".acyclic-sdk/host-processes").join(task.id().as_str()),
             )
             .map_err(storage)?;
         let ownership = FileLock::try_acquire(
@@ -137,7 +138,7 @@ impl HostProcessLease {
         // execution. Another process cannot start while settlement captures.
         let custody = ProcessCustody::acquire(root.path()).map_err(storage)?;
         Ok(Self {
-            task,
+            task: task.clone(),
             view,
             custody,
             _ownership: ownership,
@@ -173,8 +174,8 @@ impl HostProcessLease {
 
 impl QuiescentHostProcess {
     /// Refuses applying one task's physical proof to another view or claim.
-    pub fn verify(&self, task: TaskId, view: &Path) -> Result<()> {
-        if self.0.task != task || self.0.view != view {
+    pub fn verify(&self, task: &AgentPath, view: &Path) -> Result<()> {
+        if self.0.task != *task || self.0.view != view {
             return Err(Error::Conflict(
                 "step=verify native quiescence: task or view differs; recovery: reopen the original task through acyclic host".into(),
             ));
@@ -326,12 +327,18 @@ impl HostSessionProcess {
 mod tests {
     use super::*;
 
+    fn test_agent() -> AgentPath {
+        AgentPath::root(&crate::agent::AgentId::from_bytes(
+            *uuid::Uuid::new_v4().as_bytes(),
+        ))
+    }
+
     #[test]
     fn process_polls_never_spend_the_original_lifetime_allowance() -> Result<()> {
         let root = tempfile::tempdir().map_err(storage)?;
         let view = root.path().canonicalize().map_err(storage)?;
         let work = polling_work()?;
-        let mut process = HostProcessLease::acquire(&view, TaskId::new(), &view)?.process(&work)?;
+        let mut process = HostProcessLease::acquire(&view, &test_agent(), &view)?.process(&work)?;
         let mut command = std::process::Command::new(std::env::current_exe().map_err(storage)?);
         command
             .arg("--list")
@@ -373,26 +380,26 @@ mod tests {
     #[test]
     fn failed_spawn_keeps_physical_custody_until_shared_retirement() -> Result<()> {
         let root = tempfile::tempdir().map_err(storage)?;
-        let task = TaskId::new();
+        let task = test_agent();
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut process = HostProcessLease::acquire(&view, task, &view)?.process(&work)?;
+        let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
         let mut command = std::process::Command::new(view.join("absent-native-program"));
         command.current_dir(&view);
         assert!(process.spawn(&mut command).is_err());
-        assert!(HostProcessLease::acquire(&view, task, &view).is_err());
+        assert!(HostProcessLease::acquire(&view, &task, &view).is_err());
         process.release()?;
         assert!(
             process.spawn(&mut command).is_err(),
             "retired owner cannot spawn again"
         );
-        HostProcessLease::acquire(&view, task, &view)?
+        HostProcessLease::acquire(&view, &task, &view)?
             .quiescent()
-            .verify(task, &view)?;
+            .verify(&task, &view)?;
         Ok(())
     }
 
@@ -400,15 +407,15 @@ mod tests {
     fn native_process_admission_rejects_a_different_view() -> Result<()> {
         let root = tempfile::tempdir().map_err(storage)?;
         let outside = tempfile::tempdir().map_err(storage)?;
-        let task = TaskId::new();
-        assert!(HostProcessLease::acquire(root.path(), task, outside.path()).is_err());
+        let task = test_agent();
+        assert!(HostProcessLease::acquire(root.path(), &task, outside.path()).is_err());
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut process = HostProcessLease::acquire(&view, task, &view)?.process(&work)?;
+        let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
         let mut command = std::process::Command::new("must-not-execute");
         command.current_dir(outside.path());
         let error = process

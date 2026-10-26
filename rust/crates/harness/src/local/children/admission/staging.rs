@@ -24,7 +24,6 @@ pub(super) struct Plan {
     child_agent: AgentId,
     project: VolumeRef,
     private: VolumeRef,
-    native_input: Option<Value>,
 }
 
 impl Plan {
@@ -33,27 +32,16 @@ impl Plan {
         volume: &VolumeRef,
         parent: TaskId,
         reference: &Component,
-        native_host: bool,
-        parent_input: &Value,
     ) -> Result<Self> {
         let operation = child_operation(volume, reference.as_str(), b"child")?;
         let child_agent = AgentId::from_bytes(
             child_operation(volume, reference.as_str(), b"agent")?.into_bytes(),
         );
-        let native_input = if native_host {
-            Some(serde_json::json!({
-                "host":parent_input.get("host").ok_or_else(|| Error::Invalid("native parent host is absent".into()))?,
-                "session":reference.as_str(),
-            }))
-        } else {
-            None
-        };
         Ok(Self {
             parent,
             reference: reference.clone(),
             operation,
             child_agent,
-            native_input,
             preparation: child_operation(volume, reference.as_str(), b"preparation")?,
             fork: child_operation(volume, reference.as_str(), b"fork")?,
             checkpoint: child_operation(volume, reference.as_str(), b"source")?,
@@ -143,7 +131,6 @@ impl Parent {
     async fn preparer(
         &self,
         harness: &LocalHarness,
-        native_host: bool,
     ) -> Result<Arc<FilesystemForkPreparer<LocalAuthorityBackend, LocalObjectBackend>>> {
         let VolumeOwner::Agent(agent) = self.private.owner() else {
             return Err(Error::Unauthorized(
@@ -151,21 +138,10 @@ impl Parent {
             ));
         };
         let task = self.context.owned_task_binding(None)?.0;
-        let signed = if native_host {
-            let definition = harness
-                .runtime
-                .harness()
-                .task::<Value, Value>(super::super::super::host_task::TASK)?;
-            harness
-                .runtime
-                .fork_source_scope_for_task(task, self.fence.clone(), definition.as_ref())
-                .await?
-        } else {
-            harness
-                .runtime
-                .fork_source_scope(task, self.fence.clone())
-                .await?
-        };
+        let signed = harness
+            .runtime
+            .fork_source_scope(task, self.fence.clone())
+            .await?;
         if signed.agent() != Some(*agent) || signed.capabilities() != self.context.scope().grants()
         {
             return Err(Error::Unauthorized(
@@ -228,9 +204,7 @@ impl<'a> Admission<'a> {
             acyclic_fs::performance::work_budget(65_536, harness.limits.file_bytes),
             &cancellation,
         )?;
-        let preparer = parent
-            .preparer(harness, plan.native_input.is_some())
-            .await?;
+        let preparer = parent.preparer(harness).await?;
         let publisher = harness.input_publisher_with_limit(parent.narrowed.limits().file_bytes)?;
         let source_workspace = io.sdk(
             workspace
@@ -371,13 +345,7 @@ impl<'a> Admission<'a> {
                 Some(self.plan.parent),
             )
             .await?;
-        let (input, inputs, kind) = if let Some(input) = &self.plan.native_input {
-            (
-                input.clone(),
-                Vec::new(),
-                super::super::super::host_task::TASK,
-            )
-        } else {
+        let (input, inputs, kind) = {
             let (receive, model, manifest) = self
                 .harness
                 .stage_turn_with_output(

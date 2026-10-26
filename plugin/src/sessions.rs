@@ -1,11 +1,12 @@
 //! MCP coordination shim. Native CLIs own agent loops, tools and policy.
 use super::*;
+use acyclic_harness::local::host_owner::{Control, TurnClaim};
 use acyclic_harness::{
+    agent::AgentPath,
     local::{
         host_owner::SessionAction,
         host_process::{HostProcessLease, HostSessionProcess},
     },
-    task_volume::{ChildTurnClaim, Component, Control},
 };
 use acyclic_native_runtime::{FileLock, FileLockMode};
 use std::{
@@ -17,7 +18,7 @@ use std::{
 
 struct Running {
     process: HostSessionProcess,
-    claim: ChildTurnClaim,
+    claim: TurnClaim,
     failure: Option<String>,
     events: EventLines,
     answer: String,
@@ -52,10 +53,10 @@ impl EventLines {
 struct Sessions {
     host: String,
     cwd: PathBuf,
-    parent: TaskId,
+    parent: AgentPath,
     flags: Vec<String>,
     children: BTreeMap<String, Running>,
-    after: Option<Component>,
+    after: Option<u64>,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
 }
@@ -72,7 +73,7 @@ impl Sessions {
         .canonicalize()?;
         let parent = parse_task(&env::var("ACYCLIC_TASK")?)?;
         let root = acyclic_fs::hold_root(&host_files::workspace_root(&cwd)?)?.create_directories(
-            &PathBuf::from(".acyclic-sdk/host-processes").join(parent.to_string()),
+            &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
         )?;
         let ownership = FileLock::try_acquire(
             root.open_file(Path::new("manager.lock"), true)?,
@@ -93,7 +94,7 @@ impl Sessions {
         Ok(host_files::request(
             &self.cwd,
             HostAction::Session {
-                parent: self.parent,
+                parent: self.parent.clone(),
                 reference: reference.into(),
                 action,
             },
@@ -111,13 +112,14 @@ impl Sessions {
         if observed.pointer("/status/settled").and_then(Value::as_bool) == Some(false) {
             self.recover(reference)?;
         }
-        let Some((lease, turn)) = HostProcessLease::claim_child(&self.cwd, self.parent, reference)?
+        let Some((lease, turn)) =
+            HostProcessLease::claim_child(&self.cwd, &self.parent, reference)?
         else {
             return Ok(());
         };
-        let task: TaskId =
+        let task: AgentPath =
             serde_json::from_value(turn.get("task").cloned().ok_or("child task absent")?)?;
-        let claim: ChildTurnClaim =
+        let claim: TurnClaim =
             serde_json::from_value(turn.get("claim").cloned().ok_or("child claim absent")?)?;
         let cwd = PathBuf::from(
             turn.get("cwd")
@@ -237,22 +239,19 @@ impl Sessions {
     }
     fn refresh(&mut self, waiting: &mut Vec<(Value, String)>) -> Result<bool> {
         let mut progressed = false;
-        let page: Option<Vec<Component>> = serde_json::from_value(host_files::request(
+        let page = host_files::request(
             &self.cwd,
             HostAction::Sessions {
-                parent: self.parent,
-                after: self.after.clone(),
+                parent: self.parent.clone(),
+                after: self.after,
             },
-        )?)?;
+        )?;
         let mut references: BTreeSet<String> = self.children.keys().cloned().collect();
         references.extend(waiting.iter().map(|(_, reference)| reference.clone()));
-        if let Some(page) = page {
-            self.after = page.last().cloned();
-            references.extend(
-                page.into_iter()
-                    .map(|reference| reference.as_str().to_owned()),
-            );
-        }
+        self.after = serde_json::from_value(page.get("after").cloned().unwrap_or_default())?;
+        references.extend(serde_json::from_value::<Vec<String>>(
+            page.get("references").cloned().unwrap_or_default(),
+        )?);
         for reference in references {
             let observed = self.request(&reference, SessionAction::Observe)?;
             let observed = if let Some(mut running) = self.children.remove(&reference) {

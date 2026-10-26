@@ -1,11 +1,11 @@
 //! Workspace coordination for hosts that own their agents and tool execution.
 //!
-//! This facade opens no model provider, executor, service or process. Task
-//! contexts come from the caller's existing shared harness task runtime.
+//! This facade opens no model provider, executor, service or process. Its
+//! agents come from the native host's agent runtime.
 use super::*;
-use crate::runtime::{OwnedTaskMailbox, TaskContext};
-use acyclic_fs::facade::FsWork as _;
-use acyclic_fs::{HeldRoot, LazyWorkspaceStore as _};
+use crate::agent::{AgentPath, VolumeBinding};
+use acyclic_fs::HeldRoot;
+use workspace::owner::{AgentOwner, ViewOwner};
 
 mod volume_guard;
 
@@ -14,31 +14,31 @@ pub(super) mod tests;
 
 pub use super::workspace::HOST_VIEW_ROOT;
 
-/// An admitted task's workspace, with no execution authority of its own.
+/// A native-host agent's workspace, with no execution authority of its own.
 pub struct HostWorkspace {
     workspace: Arc<LocalWorkspace>,
-    task: TaskId,
+    agent: AgentPath,
+    owner: Arc<dyn ViewOwner>,
     mount_root: Arc<HeldRoot>,
     project: VolumeRef,
     signed: Scope,
+    scope: crate::runtime::RuntimeScope,
     _native_volumes: Vec<workspace::projection::Entered>,
     _allocation: Option<Arc<workspace::Mounts>>,
 }
 
 impl HostWorkspace {
-    /// Attaches to the existing shared workspace and its serialization guard.
-    /// The host admits the checkout before entering its sandbox; this API
-    /// cannot add a state directory or another writable sandbox root.
-    pub async fn attach(
+    /// Attaches a root agent to the existing shared checkout and its
+    /// serialization guard. The host admits the checkout before entering its
+    /// sandbox; this API cannot add a state directory or another writable root.
+    pub(super) async fn attach(
         workspace: Arc<LocalWorkspace>,
-        context: &TaskContext,
+        agent: AgentPath,
         signed: &Scope,
         admitted_mount_root: HeldRoot,
     ) -> Result<Self> {
-        let owner = original_owner(context)?;
-        owner.verify_owner(None)?.await?;
-        if owner.admission().0.parent.is_some() {
-            return Err(Error::Unauthorized("host root task has a parent".into()));
+        if agent.parent().is_some() {
+            return Err(Error::Unauthorized("host root agent has a parent".into()));
         }
         let project = workspace.mounts.named(None)?.1.view.volume.clone();
         if project.class() != VolumeClass::Project {
@@ -63,91 +63,54 @@ impl HostWorkspace {
         acyclic_fs::initialize_native_mount_services().map_err(storage)?;
         let mut result = Self {
             workspace,
-            task: owner.task_binding().0,
+            owner: Arc::new(AgentOwner(agent.clone())),
+            agent,
+            scope: crate::runtime::RuntimeScope::new(
+                signed.capabilities().clone(),
+                Default::default(),
+            )?,
             signed: signed.copy(&mut None)?,
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
             _allocation: None,
         };
-        result.verify(context).await?;
-        result.activate_volumes(context).await?;
+        result.verify().await?;
+        result.activate_volumes().await?;
         Ok(result)
     }
-    /// Cwd to give the native host before it starts executing this task.
+
+    /// Cwd to give the native host before it starts executing this agent.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.workspace.path
     }
 
-    /// Shared task identity; no separate plugin task index is created.
+    /// The agent this view belongs to.
     #[must_use]
-    pub const fn task(&self) -> TaskId {
-        self.task
-    }
-
-    /// Registers the native host's child identity in the same git facade as
-    /// `GraphCoder`. Only an authenticated direct child may receive this alias.
-    pub async fn name_child(
-        &self,
-        parent: &TaskContext,
-        child: &TaskContext,
-        child_view: &Self,
-        reference: &str,
-    ) -> Result<()> {
-        let owner = self.verify(parent).await?;
-        let child_owner = child_view.verify(child).await?;
-        if child_owner.admission().0.parent != Some(self.task) {
-            return Err(Error::Unauthorized(
-                "native alias names another parent's child".into(),
-            ));
-        }
-        crate::task_volume::Component::new(reference).map_err(storage)?;
-        let child_selected = child_view.workspace.selected_view().await?.0;
-        let child_selected = child_selected
-            .as_ref()
-            .unwrap_or_else(|| child_view.workspace.view());
-        let _state =
-            crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
-        let selected = self.workspace.selected_view().await?.0;
-        let selected = selected.as_ref().unwrap_or_else(|| self.workspace.view());
-        acyclic_fs::GitCompatRepository::new(
-            selected.workspace().id(),
-            self.workspace.store.clone(),
-        )
-        .register_branch_workspace(
-            format!("agents/{reference}"),
-            child_selected.workspace().id(),
-            None,
-            false,
-        )
-        .await
-        .map_err(storage)?;
-        owner.verify_owner(None)?.await?;
-        child_owner.verify_owner(None)?.await
+    pub const fn agent(&self) -> &AgentPath {
+        &self.agent
     }
 
     /// Records completed native-host writes in the selected shared view.
-    /// The caller must first quiesce native writes for this task. This method
-    /// neither executes a tool nor grants access to another task's files.
-    pub async fn capture(&self, context: &TaskContext, operation: OperationId) -> Result<()> {
+    /// The caller must first quiesce native writes for this agent. This method
+    /// neither executes a tool nor grants access to another agent's files.
+    pub async fn capture(&self, operation: OperationId) -> Result<()> {
         use super::checkout_tools::{capture, reconciliation};
-        let owner = self.verify(context).await?;
+        self.verify().await?;
         verify_root(&self.mount_root)?;
+        let owner = &*self.owner;
         let mut state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
         let (selected, pending) = self.workspace.selected_view().await?;
         let view = selected.as_ref().unwrap_or_else(|| self.workspace.view());
-        let verify = || async { owner.verify_owner(None)?.await };
+        let verify = || owner.verify();
         reconciliation::recover_pending(&self.workspace, view, pending, &verify).await?;
         state.active = selected;
-        let physical = self
-            .workspace
-            .selected_workspace(&mut state, owner.as_ref())
-            .await?;
-        self.capture_volumes(context).await?;
+        let physical = self.workspace.selected_workspace(&mut state, owner).await?;
+        self.capture_volumes().await?;
         if let Some(mount) = &physical.mounted {
-            let owner = Arc::clone(owner);
+            let owner = Arc::clone(&self.owner);
             let root = Arc::clone(&self.mount_root);
             mount
                 .sync_with_permit(
@@ -157,7 +120,7 @@ impl HostWorkspace {
                         let owner = Arc::clone(&owner);
                         let root = Arc::clone(&root);
                         async move {
-                            owner.verify_owner(None)?.await?;
+                            owner.verify().await?;
                             verify_root(&root)
                         }
                     },
@@ -189,20 +152,20 @@ impl HostWorkspace {
             )
             .await?;
         }
-        self.verify(context).await?;
+        self.verify().await?;
         verify_root(&self.mount_root)
     }
 
-    /// Runs the shared filesystem git facade with this task's authority.
+    /// Runs the shared filesystem git facade with this agent's authority.
     /// Native hosts retain their own shell and tool execution.
     pub async fn fs(
         &self,
-        context: &TaskContext,
         operation: OperationId,
         command: &str,
     ) -> Result<acyclic_fs::GitCommandOutput> {
-        let owner = self.verify(context).await?;
+        self.verify().await?;
         verify_root(&self.mount_root)?;
+        let owner = &*self.owner;
         let configuration = super::checkout_tools::capture::configuration(&self.workspace)?;
         let commands = workspace::git::Commands {
             workspace: &self.workspace,
@@ -211,7 +174,7 @@ impl HostWorkspace {
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
         };
-        let parsed = commands.fs_arguments(command, context.scope())?;
+        let parsed = commands.fs_arguments(command, &self.scope)?;
         let mut state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
         let (selected, pending) = self.workspace.selected_view().await?;
@@ -219,28 +182,25 @@ impl HostWorkspace {
             &self.workspace,
             selected.as_ref().unwrap_or_else(|| self.workspace.view()),
             pending,
-            &|| async { owner.verify_owner(None)?.await },
+            &|| owner.verify(),
         )
         .await?;
         state.active = selected;
-        let physical = self
-            .workspace
-            .selected_workspace(&mut state, owner.as_ref())
-            .await?;
-        self.capture_volumes(context).await?;
+        let physical = self.workspace.selected_workspace(&mut state, owner).await?;
+        self.capture_volumes().await?;
         let result = commands
             .fs(
                 parsed,
                 &workspace::git::CommandContext {
-                    task: context,
+                    owner,
                     operation,
-                    scope: context.scope(),
+                    scope: &self.scope,
                 },
                 &mut state,
                 &physical,
             )
             .await?;
-        self.verify(context).await?;
+        self.verify().await?;
         verify_root(&self.mount_root)?;
         match result {
             workspace::git::Outcome::Completed(output) => Ok(*output),
@@ -248,149 +208,129 @@ impl HostWorkspace {
         }
     }
 
-    /// Idempotently forks an authenticated direct child from the selected view.
-    /// Capture the parent's host-authored work before calling this boundary.
-    pub async fn fork(&self, parent: &TaskContext, child: &TaskContext) -> Result<Self> {
-        self.open_child(parent, child, false).await
-    }
-
-    /// Reopens an existing fork; a missing fork is never silently created.
-    pub async fn reopen(&self, parent: &TaskContext, child: &TaskContext) -> Result<Self> {
-        self.open_child(parent, child, true).await
-    }
-
-    async fn open_child(
+    /// Mounts spawned child `child`'s project view, idempotently, and names it
+    /// `agents/<reference>` in this view's git facade. The child's volumes
+    /// already exist, forked in the spawn's own commit, so this binds the
+    /// lazy fork [`Self::prepare_spawn`] retained and mounts them; a reopened
+    /// owner mounts the same fork.
+    pub(super) async fn open_child(
         &self,
-        parent: &TaskContext,
-        child: &TaskContext,
-        existing: bool,
+        child: &AgentPath,
+        volumes: &[VolumeBinding],
+        signed: Scope,
+        reference: &str,
     ) -> Result<Self> {
-        let parent_owner = self.verify(parent).await?;
-        let child_owner = original_owner(child)?;
-        child_owner.verify_owner(None)?.await?;
-        let task = child_owner.task_binding().0;
-        if child_owner.admission().0.parent != Some(self.task) {
+        self.verify().await?;
+        if child.parent().as_ref() != Some(&self.agent) {
             return Err(Error::Unauthorized(
                 "host child belongs to another parent".into(),
             ));
         }
+        let bound = |name: &str| {
+            volumes
+                .iter()
+                .find(|binding| binding.name == name)
+                .map(|binding| binding.volume.clone())
+                .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
+        };
+        let project = bound("project")?;
+        let scratch = bound("scratch")?;
+        if project.class() != VolumeClass::Project {
+            return Err(Error::Invalid(
+                "host child project volume class differs".into(),
+            ));
+        }
         verify_root(&self.mount_root)?;
+        let owner = &*self.owner;
         let mut state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
-        let project = workspace::created_project(child, child.scope())?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            if !child
-                .scope()
-                .grants()
-                .contains(&project.capability(operation, &mut None)?)
-            {
-                return Err(Error::Unauthorized(
-                    "host child project is not granted".into(),
-                ));
-            }
-        }
-        if existing {
-            self.require_retained_fork(project).await?;
-        }
         let (selected, pending) = self.workspace.selected_view().await?;
         let selected = selected.as_ref().unwrap_or_else(|| self.workspace.view());
         super::checkout_tools::reconciliation::recover_pending(
             &self.workspace,
             selected,
             pending,
-            &|| async { parent_owner.verify_owner(None)?.await },
+            &|| owner.verify(),
         )
         .await?;
-        let view = self.workspace.project_view(project).await?;
+        let view = self.workspace.spawned_project_view(&project).await?;
         let key = project.storage_name(&mut None)?;
-        let (mounts, signed) = if let Some(mounts) = state
+        let mounts = if let Some(mounts) = state
             .allocated_mounts
             .get(&key)
             .and_then(std::sync::Weak::upgrade)
         {
-            let authority = self
-                .workspace
-                .mount_authority
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
-            (mounts, authority.created_scope(child, child.scope()).await?)
+            mounts
         } else {
             state
                 .allocated_mounts
                 .retain(|_, mounts| mounts.strong_count() != 0);
-            let (mounts, signed) = self
+            let mounts = self
                 .workspace
-                .created_mounts(project, child, child.scope())
+                .bound_mounts(&project, scratch, &signed)
                 .await?;
             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
-            (mounts, signed)
+            mounts
         };
-        parent_owner.verify_owner(None)?.await?;
+        crate::task_volume::Component::new(reference).map_err(storage)?;
         acyclic_fs::GitCompatRepository::new(
             selected.workspace().id(),
             self.workspace.store.clone(),
         )
-        .register_branch_workspace(format!("agents/{task}"), view.workspace().id(), None, false)
+        .register_branch_workspace(
+            format!("agents/{reference}"),
+            view.workspace().id(),
+            None,
+            false,
+        )
         .await
         .map_err(storage)?;
+        let child_owner: Arc<dyn ViewOwner> = Arc::new(AgentOwner(child.clone()));
         let workspace = self
             .workspace
-            .mount_task_view(view, child_owner, Some(Arc::clone(&mounts)), &signed)
+            .mount_task_view(view, &*child_owner, Some(Arc::clone(&mounts)), &signed)
             .await?;
-        parent_owner.verify_owner(None)?.await?;
-        child_owner.verify_owner(None)?.await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {
             workspace,
-            task,
+            agent: child.clone(),
+            owner: child_owner,
             mount_root: Arc::clone(&self.mount_root),
-            project: project.clone(),
+            project,
+            scope: crate::runtime::RuntimeScope::new(
+                signed.capabilities().clone(),
+                Default::default(),
+            )?,
             signed,
             _native_volumes: Vec::new(),
             _allocation: Some(mounts),
         };
-        result.verify(child).await?;
-        result.activate_volumes(child).await?;
+        result.verify().await?;
+        result.activate_volumes().await?;
         Ok(result)
     }
 
-    async fn require_retained_fork(&self, project: &VolumeRef) -> Result<()> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let name = project.storage_name(&mut None)?;
-        let id = self
-            .workspace
-            .filesystem
-            .workspace_id(&name)
-            .map_err(storage)?;
-        if self
-            .workspace
-            .store
-            .load_lazy_workspace(
-                id,
-                &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
-            )
+    /// Retains this agent's project cut for spawned `child`'s lazy fork.
+    /// Capture this agent's host-authored work first; the spawn commit
+    /// must follow, forking the same head.
+    pub(super) async fn prepare_spawn(&self, child: &AgentPath) -> Result<()> {
+        self.verify().await?;
+        let (destination, operation) = crate::filesystem::spawned_volume(
+            child,
+            &VolumeBinding {
+                name: "project".to_owned(),
+                volume: self.project.clone(),
+            },
+        )
+        .map_err(storage)?;
+        self.workspace
+            .prepare_spawned_project(&self.project, &destination, operation)
             .await
-            .map_err(storage)?
-            .is_none()
-        {
-            return Err(Error::NotFound(
-                "host child workspace has no retained fork".into(),
-            ));
-        }
-        Ok(())
     }
 
-    pub(super) async fn verify<'a>(
-        &self,
-        context: &'a TaskContext,
-    ) -> Result<&'a Arc<dyn OwnedTaskMailbox>> {
-        let owner = original_owner(context)?;
-        if owner.task_binding().0 != self.task {
-            return Err(Error::Unauthorized(
-                "host workspace belongs to another task".into(),
-            ));
-        }
-        owner.verify_owner(None)?.await?;
+    /// Fails once the owner lost the view, its volume grants, or its root.
+    pub(super) async fn verify(&self) -> Result<()> {
+        self.owner.verify().await?;
         for (volume, operation) in std::iter::once(&self.project)
             .chain(
                 self.workspace
@@ -403,9 +343,9 @@ impl HostWorkspace {
                 [VolumeOperation::Read, VolumeOperation::Write].map(|operation| (volume, operation))
             })
         {
-            if !context
-                .scope()
-                .grants()
+            if !self
+                .signed
+                .capabilities()
                 .contains(&volume.capability(operation, &mut None)?)
             {
                 return Err(Error::Unauthorized(
@@ -420,32 +360,31 @@ impl HostWorkspace {
                 "host workspace root was replaced".into(),
             ));
         }
-        Ok(owner)
+        Ok(())
     }
 
-    async fn activate_volumes(&mut self, context: &TaskContext) -> Result<()> {
+    async fn activate_volumes(&mut self) -> Result<()> {
         for (relative, mount) in self.workspace.mounts.mounts() {
             let Some(source) = &mount.view.source else {
                 continue;
             };
-            self.verify(context).await?;
+            self.verify().await?;
             source.prepare_command().await?;
             let root = workspace::volumes::projection_root(&source.destination, relative)?;
             let options = volume_guard::options(
                 source.options.clone(),
-                Arc::clone(self.verify(context).await?),
+                Arc::clone(&self.owner),
                 Arc::clone(&self.mount_root),
                 mount.mode.read_only(),
             )?;
             self._native_volumes
                 .push(source.enter_with_options(root, relative, options).await?);
         }
-        self.verify(context).await?;
-        Ok(())
+        self.verify().await
     }
 
-    async fn capture_volumes(&self, context: &TaskContext) -> Result<()> {
-        self.verify(context).await?;
+    async fn capture_volumes(&self) -> Result<()> {
+        self.verify().await?;
         for (_, mount) in self.workspace.mounts.mounts() {
             let Some(source) = &mount.view.source else {
                 continue;
@@ -460,14 +399,6 @@ impl HostWorkspace {
         }
         Ok(())
     }
-}
-
-fn original_owner(context: &TaskContext) -> Result<&Arc<dyn OwnedTaskMailbox>> {
-    context.owned_task_binding(None)?;
-    context
-        .owned_mailbox
-        .as_ref()
-        .ok_or_else(|| Error::Unauthorized("host task owner is absent".into()))
 }
 
 fn verify_root(root: &HeldRoot) -> Result<()> {

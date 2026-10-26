@@ -1,15 +1,14 @@
-//! Native-host workspace effects over the shared task tree and git facade.
+//! Native-host workspace effects over the native agent runtime and git facade.
 use super::*;
-use crate::{
-    runtime::{TaskContext, TaskStateProvider},
-    task_volume::Query,
-};
+use crate::agent::AgentPath;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+mod agents;
 mod events;
 mod sessions;
+pub use agents::{Control, TurnClaim};
 pub use sessions::SessionAction;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
@@ -22,27 +21,27 @@ pub enum HostAction {
     /// N/2N oracle. It never samples or executes a native child process.
     #[cfg(feature = "test-support")]
     ResourceProbe {
-        /// Task authorizing the query.
-        task: TaskId,
+        /// Agent authorizing the query.
+        task: AgentPath,
         /// Retained child population at this measurement.
         agents: u64,
         /// Prior N snapshot: population, descriptors, threads and mounts.
         previous: Option<[u64; 4]>,
     },
-    /// Discover native children from the shared input index, without histories.
+    /// Discover spawned native children from the parent's conversation.
     Sessions {
-        /// Owning parent task.
-        parent: TaskId,
-        /// Last direct child observed; pages are bounded independently of history.
-        after: Option<crate::task_volume::Component>,
+        /// Owning parent agent.
+        parent: AgentPath,
+        /// Last conversation sequence observed; pages are bounded.
+        after: Option<u64>,
     },
-    /// Native session lifecycle over the ordinary child mailbox files.
+    /// Native session lifecycle as the child agent's inbox records.
     Session {
-        /// Owning parent task.
-        parent: TaskId,
+        /// Owning parent agent.
+        parent: AgentPath,
         /// Parent-local child name.
         reference: String,
-        /// File operation; never executes the host.
+        /// Session operation; never executes the host.
         action: SessionAction,
     },
     /// Translate a native lifecycle event into workspace coordination only.
@@ -54,83 +53,53 @@ pub enum HostAction {
         /// Native event payload, without transcripts or credentials.
         input: Value,
     },
-    /// Resolve an already admitted task by its native working directory.
+    /// Resolve an attached agent by its native working directory.
     Locate {
         /// Native tool working directory.
         cwd: PathBuf,
     },
-    /// Admit or reopen the native root's stable task identity.
+    /// Create or reopen the native root's stable agent.
     Open {
         /// Native host name.
         host: String,
         /// Native root session identity.
         session: String,
     },
-    /// Allocate an isolated native child through shared resource preparation.
-    Fork {
-        /// Authenticated parent task.
-        parent: TaskId,
-        /// Parent-local child reference.
-        reference: String,
-    },
-    /// Reattach an existing native task's lazy view.
+    /// Reattach an existing native agent's lazy view.
     Reopen {
-        /// Existing native task.
-        task: TaskId,
+        /// Existing native agent.
+        task: AgentPath,
     },
     /// Capture completed native writes.
     Capture {
-        /// Quiesced native task.
-        task: TaskId,
+        /// Quiesced native agent.
+        task: AgentPath,
     },
     /// Invoke the shared workspace git facade, including merge.
     Fs {
-        /// Task selecting the workspace and grants.
-        task: TaskId,
+        /// Agent selecting the workspace and grants.
+        task: AgentPath,
         /// Ordinary shared filesystem command.
         command: String,
     },
     /// Publish an interrupt for the plugin that owns the native process tree.
     Cancel {
-        /// Task whose ownership is cancelled.
-        task: TaskId,
+        /// Agent whose session is interrupted.
+        task: AgentPath,
     },
-    /// Read a bounded live snapshot of the selected task's own files.
-    Query {
-        /// Task selecting its private files.
-        task: TaskId,
-        /// Shared bounded file selector.
-        query: Query,
+    /// The agent's open children and their sessions.
+    Agents {
+        /// Parent agent.
+        task: AgentPath,
     },
 }
 
-impl HostAction {
-    pub(super) fn is_observation(&self) -> bool {
-        match self {
-            Self::Sessions { .. }
-            | Self::Locate { .. }
-            | Self::Query { .. }
-            | Self::Session {
-                action: SessionAction::Observe,
-                ..
-            } => true,
-            #[cfg(feature = "test-support")]
-            Self::ResourceProbe { .. } => true,
-            _ => false,
-        }
-    }
-}
-
-struct Attached {
-    context: TaskContext,
-    workspace: host_workspace::HostWorkspace,
-}
-
-/// Disposable view handles. Admissions, lineage, files and history remain in
-/// the existing harness; this contains no durable index or execution registry.
+/// Disposable view handles over the native agent runtime; agents, lineage,
+/// files and history are its commits, so this holds no durable index.
 pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
-    views: BTreeMap<TaskId, Attached>,
+    native: agents::NativeAgents,
+    views: BTreeMap<AgentPath, host_workspace::HostWorkspace>,
     #[cfg(test)]
     retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
 }
@@ -144,6 +113,7 @@ impl HostWorkspaceOwner {
             ));
         }
         Ok(Self {
+            native: agents::NativeAgents::new(&local)?,
             local,
             views: BTreeMap::new(),
             #[cfg(test)]
@@ -164,15 +134,15 @@ impl HostWorkspaceOwner {
             .await
     }
 
-    /// Dispatches a claimed workspace request. Calling this never executes a
-    /// model, a native host, a shell command or another harness tool.
+    /// Dispatches a workspace request. Calling this never executes a model, a
+    /// native host, a shell command or another harness tool.
     pub fn dispatch(
         &mut self,
         operation: OperationId,
         action: HostAction,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<Value>> {
         // Every caller, including read-only observations, crosses the same
-        // erased boundary. A caller's future cannot embed the complete task,
+        // erased boundary. A caller's future cannot embed the complete agent,
         // filesystem and publication state machines in its own layout.
         Box::pin(self.dispatch_action(operation, action))
     }
@@ -188,87 +158,60 @@ impl HostWorkspaceOwner {
                 task,
                 agents,
                 previous,
-            } => self.resource_probe(task, agents, previous).await,
+            } => self.resource_probe(&task, agents, previous).await,
             HostAction::Sessions { parent, after } => {
-                self.attach(parent).await?;
-                let references = self
-                    .files(parent)
-                    .await?
-                    .inner
-                    .child_references_page(after.as_ref(), 32)
-                    .await
-                    .map_err(storage)?;
-                serde_json::to_value(references).map_err(storage)
+                self.attach(&parent).await?;
+                self.sessions(&parent, after).await
             }
             HostAction::Session {
                 parent,
                 reference,
                 action,
-            } => self.session(operation, parent, &reference, action).await,
+            } => self.session(operation, &parent, &reference, action).await,
             HostAction::Hook { host, event, input } => {
                 self.hook(operation, &host, &event, input).await
             }
             HostAction::Locate { cwd } => self.locate(&cwd).await,
             HostAction::Open { host, session } => {
-                let operation = context::publication_operation(
-                    b"acyclic.native-root/v1\0",
-                    &serde_json::to_vec(&(&host, &session)).map_err(storage)?,
-                );
-                let task = self
-                    .local
-                    .admit_host_task(operation, &host, &session)
-                    .await?;
-                self.attach(task).await?;
-                self.location(task)
-            }
-            HostAction::Fork { parent, reference } => {
-                self.attach(parent).await?;
-                let parent = self.attached(parent)?;
-                parent.workspace.capture(&parent.context, operation).await?;
-                let task = self
-                    .local
-                    .admit_host_child(&parent.context, &reference)
-                    .await?;
-                self.attach(task).await?;
-                self.location(task)
+                let agent = self.native.open(&host, &session).await?;
+                self.attach(&agent).await?;
+                self.location(&agent)
             }
             HostAction::Reopen { task } => {
-                self.attach_retained(task, true).await?;
-                self.location(task)
+                self.attach(&task).await?;
+                self.location(&task)
             }
-            HostAction::Capture { task } => self.capture_native(operation, task).await,
-            HostAction::Fs { task, command } => self.native_fs(operation, task, &command).await,
+            HostAction::Capture { task } => self.capture_native(operation, &task).await,
+            HostAction::Fs { task, command } => self.native_fs(operation, &task, &command).await,
             HostAction::Cancel { task } => {
-                self.require_native(task).await?;
-                let admission = self
-                    .local
-                    .runtime
-                    .task_host()
-                    .observe_admission(task)
+                if task.parent().is_none() {
+                    return Err(Error::Unsupported(
+                        "stop the native root through its host".into(),
+                    ));
+                }
+                self.attach(&task).await?;
+                self.native
+                    .request(
+                        &task,
+                        operation,
+                        &agents::Event::Control {
+                            control: Control::Interrupt,
+                        },
+                    )
                     .await?;
-                let parent = admission.parent.ok_or_else(|| {
-                    Error::Unsupported("stop the native root through its host".into())
-                })?;
-                let reference = admission
-                    .input
-                    .get("session")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Error::Invalid("native child reference absent".into()))?;
-                self.session(
-                    operation,
-                    parent,
-                    reference,
-                    SessionAction::Control {
-                        control: crate::task_volume::Control::Interrupt,
-                    },
-                )
-                .await
+                self.session_value(&task).await
             }
-            HostAction::Query { task, query } => {
-                self.attach(task).await?;
-                let files = self.files(task).await?;
-                let snapshot = files.snapshot(&query, 4096).await.map_err(storage)?;
-                serde_json::to_value(snapshot).map_err(storage)
+            HostAction::Agents { task } => {
+                self.attach(&task).await?;
+                let (state, _) = self.native.session(&task).await?;
+                let mut agents = Vec::with_capacity(state.open_children.len());
+                for child in &state.open_children {
+                    let (_, session) = self.native.session(child).await?;
+                    agents.push(json!({"task":child,"reference":session.reference,
+                        "control":session.control,"settled":session.settled,
+                        "running":session.claimed.is_some(),"pending":session.pending.len()}));
+                }
+                Ok(json!({ "agents": agents }))
             }
         }
     }
@@ -276,7 +219,7 @@ impl HostWorkspaceOwner {
     #[cfg(feature = "test-support")]
     async fn resource_probe(
         &mut self,
-        task: TaskId,
+        task: &AgentPath,
         agents: u64,
         previous: Option<[u64; 4]>,
     ) -> Result<Value> {
@@ -308,7 +251,7 @@ impl HostWorkspaceOwner {
     async fn native_fs(
         &mut self,
         operation: OperationId,
-        task: TaskId,
+        task: &AgentPath,
         command: &str,
     ) -> Result<Value> {
         self.attach(task).await?;
@@ -317,100 +260,50 @@ impl HostWorkspaceOwner {
             && name == "merge"
             && let Some(reference) = reference.strip_prefix("agents/")
         {
-            let reference = crate::task_volume::Component::new(reference).map_err(storage)?;
-            let lifecycle = self
-                .files(task)
-                .await?
-                .inner
-                .child_lifecycle(Some(&reference))
-                .await
-                .map_err(storage)?;
-            for file in lifecycle.files {
-                if matches!(
-                    file.key,
-                    crate::task_volume::FileKey::Child {
-                        file: crate::task_volume::ChildFile::Status,
-                        ..
-                    }
-                ) && !crate::task_volume::ChildStatus::parse(&file.bytes)
-                    .map_err(storage)?
-                    .settled
-                {
-                    return Err(Error::Conflict("native session is still running; wait for its captured result before merging".into()));
-                }
+            let (_, session) = self
+                .native
+                .session(&agents::child(task, reference)?)
+                .await?;
+            if session.claimed.is_some() || !session.pending.is_empty() {
+                return Err(Error::Conflict(
+                    "native session is still running; wait for its captured result before merging"
+                        .into(),
+                ));
             }
         }
-        let attached = self.attached(task)?;
-        serde_json::to_value(
-            attached
-                .workspace
-                .fs(&attached.context, operation, command)
-                .await?,
-        )
-        .map_err(storage)
+        serde_json::to_value(self.view(task)?.fs(operation, command).await?).map_err(storage)
     }
 
-    async fn files(
-        &self,
-        task: TaskId,
-    ) -> Result<Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>> {
-        let context = &self.attached(task)?.context;
-        Ok(self
-            .local
-            .task_files
-            .for_created_task(context, context.scope())
-            .await?
-            .map_or_else(|| Arc::clone(&self.local.task_files), Arc::new))
-    }
-
-    fn attached(&self, task: TaskId) -> Result<&Attached> {
+    fn view(&self, agent: &AgentPath) -> Result<&host_workspace::HostWorkspace> {
         self.views
-            .get(&task)
-            .ok_or_else(|| Error::NotFound("native task view".into()))
+            .get(agent)
+            .ok_or_else(|| Error::NotFound("native agent view".into()))
     }
 
-    async fn require_native(&self, task: TaskId) -> Result<Option<TaskId>> {
-        let admission = self
-            .local
-            .runtime
-            .task_host()
-            .observe_admission(task)
-            .await?;
-        if admission.task.name != "acyclic.native_host" || admission.task.version != "1" {
-            return Err(Error::Unauthorized(
-                "workspace request requires a native-host task".into(),
-            ));
-        }
-        Ok(admission.parent)
-    }
-
-    fn attach(&mut self, task: TaskId) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
-        self.attach_retained(task, false)
-    }
-
-    fn attach_retained(
-        &mut self,
-        task: TaskId,
-        retained: bool,
-    ) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+    /// Attaches `agent`'s view, idempotently: a root views the checkout
+    /// itself, a spawned child mounts its forked project under its parent.
+    fn attach<'a>(
+        &'a mut self,
+        agent: &'a AgentPath,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            if let Some(attached) = self.views.get(&task) {
-                attached.workspace.verify(&attached.context).await?;
-                return Ok(());
+            if let Some(view) = self.views.get(agent) {
+                return view.verify().await;
             }
-            let parent = self.require_native(task).await?;
-            let context = self.local.bind_host_task(task).await?;
-            let workspace = if let Some(parent) = parent {
+            let (state, session) = self.native.session(agent).await?;
+            let workspace = if let Some(parent) = &state.parent {
                 self.attach(parent).await?;
-                let attached = self.attached(parent)?;
-                if retained {
-                    attached
-                        .workspace
-                        .reopen(&attached.context, &context)
-                        .await?
-                } else {
-                    attached.workspace.fork(&attached.context, &context).await?
-                }
+                let reference = session.reference.as_deref().ok_or_else(|| {
+                    Error::Invalid("native child has no recorded reference".into())
+                })?;
+                self.view(parent)?
+                    .open_child(
+                        agent,
+                        &state.volumes,
+                        self.native.view_scope(&state)?,
+                        reference,
+                    )
+                    .await?
             } else {
                 let workspace = self
                     .local
@@ -422,50 +315,43 @@ impl HostWorkspaceOwner {
                     .map_err(storage)?;
                 host_workspace::HostWorkspace::attach(
                     Arc::clone(workspace),
-                    &context,
+                    agent.clone(),
                     &self.local.signed,
                     root,
                 )
                 .await?
             };
-            self.views.insert(task, Attached { context, workspace });
+            self.views.insert(agent.clone(), workspace);
             Ok(())
         })
     }
 
-    async fn capture_native(&mut self, operation: OperationId, task: TaskId) -> Result<Value> {
+    async fn capture_native(&mut self, operation: OperationId, task: &AgentPath) -> Result<Value> {
         self.attach(task).await?;
-        let attached = self.attached(task)?;
-        let _quiescence = if self.require_native(task).await?.is_some() {
+        let view = self.view(task)?;
+        let _quiescence = if task.parent().is_some() {
             Some(
                 super::host_process::HostProcessLease::acquire(
                     self.local.workspace_path().ok_or_else(|| {
                         Error::Invalid(
-                            "step=capture native task: workspace absent; recovery: acyclic agents"
+                            "step=capture native agent: workspace absent; recovery: acyclic agents"
                                 .into(),
                         )
                     })?,
                     task,
-                    attached.workspace.path(),
+                    view.path(),
                 )?
                 .quiescent(),
             )
         } else {
             None
         };
-        attached
-            .workspace
-            .capture(&attached.context, operation)
-            .await?;
+        view.capture(operation).await?;
         self.location(task)
     }
 
-    fn location(&self, task: TaskId) -> Result<Value> {
-        let attached = self
-            .views
-            .get(&task)
-            .ok_or_else(|| Error::NotFound("native task view".into()))?;
-        Ok(json!({"task":task,"cwd":attached.workspace.path()}))
+    fn location(&self, task: &AgentPath) -> Result<Value> {
+        Ok(json!({"task":task,"cwd":self.view(task)?.path()}))
     }
 }
 

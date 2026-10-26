@@ -1,10 +1,12 @@
 //! Shared workspace git facade; no tool dispatch or agent execution.
 use super::super::checkout_tools::{State, capture, reconciliation};
+use super::owner::ViewOwner;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+use super::owner::lease_identity;
 use super::*;
-use crate::runtime::TaskContext;
 
 pub(in crate::local) struct CommandContext<'a> {
-    pub(in crate::local) task: &'a TaskContext,
+    pub(in crate::local) owner: &'a dyn ViewOwner,
     pub(in crate::local) operation: OperationId,
     pub(in crate::local) scope: &'a RuntimeScope,
 }
@@ -121,12 +123,8 @@ impl Commands<'_> {
         let view = source
             .as_ref()
             .map_or_else(|| checkout.into(), |source| source.workspace.view());
-        let owner = context
-            .task
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
-        owner.verify_owner(None)?.await?;
+        let owner = context.owner;
+        owner.verify().await?;
         let volume = view.workspace();
         let now = acyclic_stream::UnixMillisClock::now_unix_millis(
             &acyclic_stream::SystemUnixMillisClock,
@@ -138,9 +136,9 @@ impl Commands<'_> {
             && recovered
             && let Some(native) = native
         {
-            owner.verify_owner(None)?.await?;
+            owner.verify().await?;
             native.advance_to_head().await?;
-            owner.verify_owner(None)?.await?;
+            owner.verify().await?;
         }
         let lease = begin_window(workspace, context, volume.id(), parent.id(), now).await?;
         let access = workspace
@@ -188,9 +186,9 @@ impl Commands<'_> {
         // this checkout. Switched actions select their destination mount below.
         let advanced = async {
             if let Some(native) = native {
-                owner.verify_owner(None)?.await?;
+                owner.verify().await?;
                 native.advance_to_head().await?;
-                owner.verify_owner(None)?.await?;
+                owner.verify().await?;
             } else if source.is_none()
                 && !result
                     .as_ref()
@@ -200,16 +198,13 @@ impl Commands<'_> {
                     self.publish_reconciliation(workspace, context, true)
                         .await?;
                 } else {
-                    reconciliation::advance_mount(workspace, &|| async {
-                        owner.verify_owner(None)?.await
-                    })
-                    .await?;
+                    reconciliation::advance_mount(workspace, &|| owner.verify()).await?;
                 }
             }
             Ok::<(), Error>(())
         }
         .await;
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         self.finish_command(workspace, state, context, result, (publication, advanced))
             .await
     }
@@ -269,12 +264,8 @@ impl Commands<'_> {
             watcher,
             access,
         } = invocation;
-        let owner = context
-            .task
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
-        owner.verify_owner(None)?.await?;
+        let owner = context.owner;
+        owner.verify().await?;
         if source.is_none() {
             capture::capture(
                 (self.capture_options, self.capture_policy),
@@ -282,7 +273,7 @@ impl Commands<'_> {
                 watcher,
                 (context.operation, 0),
                 lease.publication_permit(),
-                Some((context.task.ordinary_journal_owner::<LocalStream>()?, false)),
+                context.owner.journal()?.map(|journal| (journal, false)),
             )
             .await?;
         }
@@ -309,7 +300,7 @@ impl Commands<'_> {
                     .unwrap_or(i64::MAX),
             },
             arguments,
-            || async { owner.verify_owner(None)?.await },
+            || owner.verify(),
         )
         .await
     }
@@ -323,11 +314,7 @@ impl Commands<'_> {
         closed: (Result<()>, Result<()>),
     ) -> Result<Outcome> {
         let (publication, advanced) = closed;
-        let owner = context
-            .task
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
+        let owner = context.owner;
         let output = match result {
             Ok(output) => output,
             Err(
@@ -344,7 +331,7 @@ impl Commands<'_> {
         };
         if let Some(switched) = output.switched {
             state.active = Some(switched.into_checkout()?);
-            workspace.selected_workspace(state, owner.as_ref()).await?;
+            workspace.selected_workspace(state, owner).await?;
         }
         // Persist the selected view in memory even when a recovered transition
         // has no command result or closing the old workspace failed.
@@ -383,16 +370,7 @@ impl Commands<'_> {
     ) -> Result<()> {
         let state = workspace.selected_view().await?.0;
         let view = state.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::publish(workspace, view, refresh_mount, &|| async {
-            context
-                .task
-                .owned_mailbox
-                .as_ref()
-                .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?
-                .verify_owner(None)?
-                .await
-        })
-        .await?;
+        reconciliation::publish(workspace, view, refresh_mount, &|| context.owner.verify()).await?;
         Ok(())
     }
 }
@@ -404,12 +382,6 @@ async fn begin_window(
     parent: acyclic_fs::GenerationId,
     now: u64,
 ) -> Result<acyclic_fs::OperationWindowLease> {
-    let owner = context
-        .task
-        .owned_mailbox
-        .as_ref()
-        .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
-    let (task, fence) = owner.task_binding();
     const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
     acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
         .begin_with_lease_id(
@@ -418,7 +390,7 @@ async fn begin_window(
             context.operation.to_string(),
             now,
             now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
-            lease_identity(task, context.operation, fence),
+            context.owner.lease(context.operation),
         )
         .await
         .map_err(storage)
@@ -491,23 +463,6 @@ async fn head(
         .await
         .map(|receipt| receipt.value)
         .map_err(storage)
-}
-
-fn lease_identity(
-    task: TaskId,
-    operation: OperationId,
-    fence: &crate::scheduler::LeaseFence,
-) -> acyclic_fs::OperationLeaseId {
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.git-task-fence/v1");
-    hash.update(&task.into_bytes());
-    hash.update(&operation.into_bytes());
-    for field in [&fence.placement, &fence.reservation_id] {
-        hash.update(&(field.len() as u64).to_le_bytes());
-        hash.update(field.as_bytes());
-    }
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationLeaseId::from_bytes(identity)
 }
 
 #[cfg(test)]

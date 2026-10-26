@@ -1,286 +1,5 @@
 use super::*;
-
-#[tokio::test]
-async fn codex_interrupted_claim_replies_uncertain_without_reexecution() -> Result<()> {
-    interrupted_claim_replies_uncertain("codex").await
-}
-#[tokio::test]
-async fn claude_interrupted_claim_replies_uncertain_without_reexecution() -> Result<()> {
-    interrupted_claim_replies_uncertain("claude-code").await
-}
-#[tokio::test]
-async fn pi_interrupted_claim_replies_uncertain_without_reexecution() -> Result<()> {
-    interrupted_claim_replies_uncertain("pi").await
-}
-
-async fn interrupted_claim_replies_uncertain(host: &str) -> Result<()> {
-    let checkout = tempfile::tempdir().map_err(storage)?;
-    let state = tempfile::tempdir().map_err(storage)?;
-    let local = Arc::new(
-        LocalHarness::open(
-            LocalHarnessConfig::native_host(checkout.path())
-                .state_directory(state.path().join("owner")),
-        )
-        .await?,
-    );
-    let mut owner = HostWorkspaceOwner::new(Arc::clone(&local))?;
-    let root = owner
-        .dispatch(
-            OperationId::new(),
-            HostAction::Open {
-                host: host.into(),
-                session: "interrupted-command".into(),
-            },
-        )
-        .await?;
-    let parent = serde_json::from_value(root["task"].clone()).map_err(storage)?;
-    let session = uuid::Uuid::new_v4();
-    let operation = OperationId::new();
-    let action = HostAction::Fork {
-        parent,
-        reference: "once".into(),
-    };
-    interrupt_claim(&local, &mut owner, session, operation, action.clone()).await?;
-    drop(owner);
-    let directory = checkout.path().join(DIRECTORY);
-    std::fs::create_dir_all(directory.join("results")).map_err(storage)?;
-    for _ in 0..2 {
-        assert_uncertain_restart(
-            &local,
-            &directory,
-            Request {
-                session,
-                operation,
-                action: action.clone(),
-            },
-            parent,
-        )
-        .await?;
-    }
-    Arc::try_unwrap(local)
-        .map_err(|_| Error::Conflict("interrupted fixture retained owner".into()))?
-        .disconnect()
-        .await?;
-    Ok(())
-}
-
-async fn assert_uncertain_restart(
-    local: &Arc<LocalHarness>,
-    directory: &Path,
-    request: Request,
-    parent: TaskId,
-) -> Result<()> {
-    let Request {
-        session,
-        operation,
-        action,
-    } = request;
-    let session_component = Component::new(session.to_string()).map_err(storage)?;
-    let component = Component::new(operation.to_string()).map_err(storage)?;
-    let mut owner = HostWorkspaceOwner::new(Arc::clone(local))?;
-    let mut commands = CommandSession::open_local(local, session, MAXIMUM_BYTES, 4096).await?;
-    let before = local.task_files.inner.head().await.map_err(storage)?;
-    process_request(
-        local,
-        &mut owner,
-        &mut commands,
-        &session_component,
-        directory,
-        Request {
-            session,
-            operation,
-            action: action.clone(),
-        },
-    )
-    .await?;
-    let bytes = regular_bytes(&directory.join("results").join(format!("{operation}.json")))?;
-    let uncertain: Value = serde_json::from_slice(&bytes).map_err(storage)?;
-    assert_eq!(uncertain["completion"], "indeterminate", "{uncertain}");
-    assert_eq!(
-        before,
-        local.task_files.inner.head().await.map_err(storage)?,
-        "replay dispatched the already-claimed effect"
-    );
-    let durable = local
-        .task_files
-        .snapshot(
-            &Query::File(FileKey::Session {
-                session: session_component.clone(),
-                file: TaskFile::ExecutionResult(component.clone()),
-            }),
-            1,
-        )
-        .await
-        .map_err(storage)?;
-    assert!(
-        durable.files.is_empty(),
-        "an uncertain projection settled the canonical claim"
-    );
-    remove_projection(&directory.join("results").join(format!("{operation}.json")))?;
-    let next = OperationId::new();
-    process_request(
-        local,
-        &mut owner,
-        &mut commands,
-        &session_component,
-        directory,
-        Request {
-            session,
-            operation: next,
-            action: HostAction::Sessions {
-                parent,
-                after: None,
-            },
-        },
-    )
-    .await?;
-    let next: Value = serde_json::from_slice(&regular_bytes(
-        &directory.join("results").join(format!("{next}.json")),
-    )?)
-    .map_err(storage)?;
-    assert_eq!(
-        next["ok"],
-        serde_json::json!(["once"]),
-        "owner stopped serving"
-    );
-    Ok(())
-}
-
-async fn interrupt_claim(
-    local: &LocalHarness,
-    owner: &mut HostWorkspaceOwner,
-    session: uuid::Uuid,
-    operation: OperationId,
-    action: HostAction,
-) -> Result<()> {
-    let file = FileValue::new(
-        FileKey::Session {
-            session: Component::new(session.to_string()).map_err(storage)?,
-            file: TaskFile::Request(Component::new(operation.to_string()).map_err(storage)?),
-        },
-        serde_json::to_vec(&CommandResolution::Sdk {
-            command: "workspace".into(),
-            arguments: serde_json::to_string(&action).map_err(storage)?,
-        })
-        .map_err(storage)?,
-    );
-    local
-        .task_files
-        .inner
-        .append(local.task_files.inner.head().await.map_err(storage)?, &file)
-        .await
-        .map_err(storage)?;
-    let mut commands = CommandSession::open_local(local, session, MAXIMUM_BYTES, 4096).await?;
-    let (reached, admitted) = tokio::sync::oneshot::channel();
-    let consuming = commands.consume(&file, |operation, _, _| async move {
-        let effect = owner.dispatch(operation, action).await?;
-        reached.send(effect).map_err(storage)?;
-        std::future::pending::<Result<Value>>().await
-    });
-    tokio::pin!(consuming);
-    tokio::select! {
-        result = &mut consuming => panic!("interrupted effect unexpectedly settled: {result:?}"),
-        effect = admitted => { effect.map_err(storage)?; }
-    }
-    // Drop the actual consumer after the claim and effect, before its durable
-    // result. Reopening must never grant this effect again.
-    Ok(())
-}
-
-#[tokio::test]
-async fn every_host_observes_live_files_without_journaling_queries() -> Result<()> {
-    for host in ["codex", "claude-code", "pi"] {
-        let checkout = tempfile::tempdir().map_err(storage)?;
-        let state = tempfile::tempdir().map_err(storage)?;
-        let local = Arc::new(
-            LocalHarness::open(
-                LocalHarnessConfig::native_host(checkout.path())
-                    .state_directory(state.path().join("owner")),
-            )
-            .await?,
-        );
-        let mut owner = HostWorkspaceOwner::new(Arc::clone(&local))?;
-        let root = owner
-            .dispatch(
-                OperationId::new(),
-                HostAction::Open {
-                    host: host.into(),
-                    session: "live-query-root".into(),
-                },
-            )
-            .await?;
-        let parent = serde_json::from_value(root["task"].clone()).map_err(storage)?;
-        owner
-            .dispatch(
-                OperationId::new(),
-                HostAction::Session {
-                    parent,
-                    reference: "worker".into(),
-                    action: super::super::host_owner::SessionAction::Spawn {
-                        prompt: "input".into(),
-                    },
-                },
-            )
-            .await?;
-        let session = uuid::Uuid::new_v4();
-        let mut commands = CommandSession::open_local(&local, session, MAXIMUM_BYTES, 4096).await?;
-        let directory = checkout.path().join(DIRECTORY);
-        std::fs::create_dir_all(directory.join("results")).map_err(storage)?;
-        let before = local.task_files.inner.head().await.map_err(storage)?;
-        for action in [
-            HostAction::Session {
-                parent,
-                reference: "worker".into(),
-                action: super::super::host_owner::SessionAction::Observe,
-            },
-            HostAction::Sessions {
-                parent,
-                after: None,
-            },
-            HostAction::Locate {
-                cwd: PathBuf::from(root["cwd"].as_str().unwrap()),
-            },
-            HostAction::Query {
-                task: parent,
-                query: Query::File(FileKey::Task {
-                    task: Component::new(parent.to_string()).map_err(storage)?,
-                    file: TaskFile::Context(Component::new("native-session").map_err(storage)?),
-                }),
-            },
-        ] {
-            let operation = OperationId::new();
-            process_request(
-                &local,
-                &mut owner,
-                &mut commands,
-                &Component::new(session.to_string()).map_err(storage)?,
-                &directory,
-                Request {
-                    session,
-                    operation,
-                    action,
-                },
-            )
-            .await?;
-            let result =
-                regular_bytes(&directory.join("results").join(format!("{operation}.json")))?;
-            let result: Value = serde_json::from_slice(&result).map_err(storage)?;
-            assert!(result.get("ok").is_some(), "{host}: {result}");
-            assert_eq!(
-                before,
-                local.task_files.inner.head().await.map_err(storage)?,
-                "{host}: polling published a durable command"
-            );
-        }
-        drop(commands);
-        drop(owner);
-        Arc::try_unwrap(local)
-            .map_err(|_| Error::Conflict("query fixture retained the workspace owner".into()))?
-            .disconnect()
-            .await?;
-    }
-    Ok(())
-}
+use crate::local::host_owner::SessionAction;
 
 #[test]
 fn projection_reads_cannot_wake_either_endpoint() {
@@ -383,30 +102,88 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                 session: "fixture-native-session".into(),
             },
         )?;
-        let child = request(
-            &cwd,
-            HostAction::Fork {
-                parent: serde_json::from_value(result["task"].clone()).map_err(storage)?,
-                reference: "endpoint-boundary".into(),
-            },
-        )?;
-        let child = PathBuf::from(child["cwd"].as_str().unwrap());
+        let parent: crate::agent::AgentPath =
+            serde_json::from_value(result["task"].clone()).map_err(storage)?;
+        let session = |action| {
+            request(
+                &cwd,
+                HostAction::Session {
+                    parent: parent.clone(),
+                    reference: "endpoint-boundary".into(),
+                    action,
+                },
+            )
+        };
+        let spawned = session(SessionAction::Spawn {
+            prompt: "fixture prompt".into(),
+        })?;
+        let child = PathBuf::from(spawned["cwd"].as_str().unwrap());
         assert_eq!(workspace_root(&child)?, cwd);
         assert!(!child.join(DIRECTORY).join("owner.json").exists());
-        let task = serde_json::from_value(result["task"].clone()).map_err(storage)?;
-        // The reference fits a request, but the byte-array query encoding does
-        // not fit a response. The shared command consumer settles it without
-        // stranding the claim or terminating the workspace owner.
+        assert_eq!(spawned["pending"], 1, "the brief is the first input");
+        // Spawning the same reference again names the same child.
+        assert_eq!(
+            session(SessionAction::Spawn {
+                prompt: "fixture prompt".into(),
+            })?["task"],
+            spawned["task"]
+        );
+        let page = request(
+            &cwd,
+            HostAction::Sessions {
+                parent: parent.clone(),
+                after: None,
+            },
+        )?;
+        assert_eq!(page["references"], serde_json::json!(["endpoint-boundary"]));
+        let turn = session(SessionAction::Next)?;
+        assert_eq!(turn["prompt"], "fixture prompt");
+        assert_eq!(turn["task"], spawned["task"]);
+        assert!(
+            session(SessionAction::Next).is_err(),
+            "a claimed input cannot be claimed twice"
+        );
+        assert!(
+            request(
+                &cwd,
+                HostAction::Fs {
+                    task: parent.clone(),
+                    command: "merge agents/endpoint-boundary".into(),
+                },
+            )
+            .is_err(),
+            "a running session cannot merge"
+        );
+        let claim: crate::local::host_owner::TurnClaim =
+            serde_json::from_value(turn["claim"].clone()).map_err(storage)?;
+        let complete = |claim| {
+            session(SessionAction::Complete {
+                claim,
+                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
+                    text: "done".into(),
+                    metadata: Value::Null,
+                    steps: 1,
+                    attachments: Vec::new(),
+                }),
+            })
+        };
+        let settled = complete(claim.clone())?;
+        assert_eq!(settled["status"]["settled"], true);
+        assert_eq!(settled["pending"], 0);
+        assert!(settled["results"][0].to_string().contains("done"));
+        // A replayed completion of the settled turn is idempotent.
+        assert_eq!(complete(claim)?["status"]["turn"], 1);
+        assert!(session(SessionAction::Next)?.is_null());
         request(&cwd, HostAction::Hook {
             host: "pi".into(), event: "NativeSession".into(),
-            input: serde_json::json!({"task":task,"native_session":{"id":"fixture","file":cwd.join("x".repeat(20_000))}}),
+            input: serde_json::json!({"task":parent,"native_session":{"id":"fixture","file":cwd.join("native")}}),
         })?;
-        assert!(request(&cwd, HostAction::Query {
-            task, query: Query::File(FileKey::Task {
-                task: Component::new(task.to_string()).map_err(storage)?,
-                file: TaskFile::Context(Component::new("native-session").map_err(storage)?),
-            }),
-        }).is_err(), "oversized live queries must settle as omitted output");
+        assert_eq!(request(&cwd, HostAction::Hook {
+            host: "pi".into(), event: "NativeSession".into(),
+            input: serde_json::json!({"task":parent}),
+        })?["id"], "fixture");
+        let agents = request(&cwd, HostAction::Agents { task: parent.clone() })?;
+        assert_eq!(agents["agents"][0]["reference"], "endpoint-boundary");
         assert_eq!(request(&cwd, HostAction::Open {
             host: "codex".into(), session: "fixture-native-session".into(),
         })?["task"], result["task"]);

@@ -187,7 +187,7 @@ impl CheckoutTools {
                     Error::Unauthorized("checkout command has no execution owner".into())
                 })?;
                 owner.verify_owner(None)?.await?;
-                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
+                let workspace = self.selected_workspace(&mut state, owner).await?;
                 let view = state
                     .active
                     .as_ref()

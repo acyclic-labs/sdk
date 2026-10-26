@@ -4,6 +4,7 @@ use acyclic_fs::{
     CancellationToken, LazyWorkspaceStore as _, WorkBudget, kernel::KernelAccounting,
 };
 
+#[cfg(test)]
 pub(super) async fn with_mount_owner<T>(
     owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
     mount: impl Future<Output = Result<T>>,
@@ -166,7 +167,7 @@ impl CheckoutTools {
     pub(super) async fn selected_workspace(
         &self,
         state: &mut State,
-        owner: &dyn crate::runtime::OwnedTaskMailbox,
+        owner: &dyn workspace::owner::ViewOwner,
     ) -> Result<Arc<LocalWorkspace>> {
         self.workspace.selected_workspace(state, owner).await
     }

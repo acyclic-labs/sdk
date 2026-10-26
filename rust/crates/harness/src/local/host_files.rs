@@ -4,10 +4,6 @@
 //! this already-running endpoint and write within their admitted workspace.
 use super::host_owner::{HostAction, HostWorkspaceOwner};
 use super::*;
-use crate::{
-    client::{CommandResolution, CommandSession},
-    task_volume::{Component, FileKey, FileValue, Query, TaskFile},
-};
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -97,8 +93,8 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
             .map_err(|_| Error::Indeterminate(operation))?
             .map_err(storage)?;
     };
-    // These are disposable projections. Durable request/claim/result files
-    // remain in TaskFiles, including uncertain outcomes after a killed owner.
+    // These are disposable projections. Every effect is an agent commit keyed
+    // by this request's operation, so the reply is the only state they hold.
     remove_projection(&request_path)?;
     remove_projection(&result_path)?;
     if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
@@ -139,8 +135,8 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
 }
 
 /// Runs only in the trusted `GraphCoder` process, outside host sandboxes.
-/// Mutations use the existing immutable request/claim/result consumer; live
-/// observations never publish another command into the durable journal.
+/// Each request dispatches once into the native agent runtime, whose commits
+/// it keys by the request operation, then publishes its immutable reply.
 pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
     serve_until(local, std::future::pending()).await
 }
@@ -188,7 +184,6 @@ pub async fn serve_until(
     let descriptor = directory.path().join("owner.json");
     immutable(&descriptor, &bytes)?;
     let mut owner = HostWorkspaceOwner::new(Arc::clone(&local))?;
-    let mut commands = CommandSession::open_local(&local, session, MAXIMUM_BYTES, 4096).await?;
     let changed = Arc::new(tokio::sync::Notify::new());
     let wake = Arc::clone(&changed);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -206,20 +201,17 @@ pub async fn serve_until(
         )
         .map_err(storage)?;
     let result = tokio::select! {
-        result = serve_requests(&local, &mut owner, &mut commands, directory.path(), session, &changed) => result,
+        result = serve_requests(&mut owner, directory.path(), session, &changed) => result,
         result = shutdown => result,
     };
     drop(watcher);
-    drop(commands);
     drop(local);
     owner.retire().await?;
     result
 }
 
 async fn serve_requests(
-    local: &LocalHarness,
     owner: &mut HostWorkspaceOwner,
-    commands: &mut CommandSession<dyn acyclic_stream::StreamProvider>,
     directory: &Path,
     session: uuid::Uuid,
     changed: &tokio::sync::Notify,
@@ -254,25 +246,14 @@ async fn serve_requests(
                 let _ = remove_projection(&entry.path());
                 continue;
             };
-            process_request(
-                local,
-                owner,
-                commands,
-                &Component::new(session.to_string()).map_err(storage)?,
-                directory,
-                request,
-            )
-            .await?;
+            process_request(owner, directory, request).await?;
         }
         waiting.await;
     }
 }
 
 async fn process_request(
-    local: &LocalHarness,
     owner: &mut HostWorkspaceOwner,
-    commands: &mut CommandSession<dyn acyclic_stream::StreamProvider>,
-    session: &Component,
     directory: &Path,
     request: Request,
 ) -> Result<()> {
@@ -284,82 +265,9 @@ async fn process_request(
         Err(Error::NotFound(_)) => {}
         Err(error) => return Err(error),
     }
-    if request.action.is_observation() {
-        let outcome = owner.dispatch(request.operation, request.action).await;
-        let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-        return immutable(&result_path, &bytes);
-    }
-    let component = Component::new(request.operation.to_string()).map_err(storage)?;
-    let key = |file| FileKey::Session {
-        session: session.clone(),
-        file,
-    };
-    let resolution = CommandResolution::Sdk {
-        command: "workspace".into(),
-        arguments: serde_json::to_string(&request.action).map_err(storage)?,
-    };
-    let file = FileValue::new(
-        key(TaskFile::Request(component.clone())),
-        serde_json::to_vec(&resolution).map_err(storage)?,
-    );
-    let snapshot = local
-        .task_files
-        .snapshot(&Query::File(file.key.clone()), 1)
-        .await
-        .map_err(storage)?;
-    crate::task_volume::publish(
-        &local.task_files.inner,
-        snapshot.generation,
-        &file,
-        || async { Ok::<_, crate::task_volume::Error>((Vec::new(), None)) },
-    )
-    .await
-    .map_err(storage)?;
-    let outcome = commands
-        .consume(&file, |operation, _, resolution| {
-            let action = match resolution {
-                CommandResolution::Sdk { command, arguments } if command == "workspace" => {
-                    serde_json::from_str(&arguments).map_err(storage)
-                }
-                CommandResolution::Sdk { command, .. } => Err(Error::Unsupported(command)),
-                _ => Err(Error::Invalid(
-                    "native request is not workspace coordination".into(),
-                )),
-            };
-            match action {
-                Ok(action) => owner.dispatch(operation, action),
-                Err(error) => Box::pin(std::future::ready(Err(error))),
-            }
-        })
-        .await;
-    let result = local
-        .task_files
-        .snapshot(&Query::File(key(TaskFile::ExecutionResult(component))), 1)
-        .await
-        .map_err(storage)?;
-    if let Some(result) = result.files.first() {
-        immutable(
-            &directory
-                .join("results")
-                .join(format!("{}.json", request.operation)),
-            &result.bytes,
-        )?;
-    } else {
-        match outcome {
-            Err(error @ (Error::Indeterminate(_) | Error::CommandIndeterminate { .. })) => {
-                // A durable claim is not permission to repeat its effect. Its
-                // uncertainty is a reply, not a reason to poison the endpoint.
-                // Keep the canonical claim unresolved for explicit recovery.
-                let uncertain = Err(error);
-                let bytes = crate::client::encode_command_result(0, &uncertain, MAXIMUM_BYTES)?;
-                immutable(&result_path, &bytes)?;
-            }
-            other => {
-                other?;
-            }
-        }
-    }
-    Ok(())
+    let outcome = owner.dispatch(request.operation, request.action).await;
+    let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+    immutable(&result_path, &bytes)
 }
 
 fn remove_projection(path: &Path) -> Result<()> {

@@ -56,19 +56,19 @@ fn release_certification_uses_the_shared_policy_for_foreign_artifacts() -> Resul
 
 #[test]
 fn native_hook_context_encodes_only_valid_task_ids() -> Result<()> {
-    let identity = "18aa58bb-16c0-440c-9367-fc0230a95dd5";
+    let identity = "harness/agents/18aa58bb16c0440c9367fc0230a95dd5";
     let task = parse_task(identity)?;
     let input = json!({"cwd":"fixture"});
     let encoded = hook_input(input.clone(), Some(std::ffi::OsStr::new(identity)))?;
     let encoded_task = encoded.get("task").cloned().ok_or("hook omitted task")?;
-    assert_eq!(serde_json::from_value::<TaskId>(encoded_task)?, task);
+    assert_eq!(serde_json::from_value::<AgentPath>(encoded_task)?, task);
     assert_eq!(hook_input(input.clone(), None)?, input);
     assert!(hook_input(input, Some(std::ffi::OsStr::new("invalid"))).is_err());
     assert!(hook_input(Value::Null, Some(std::ffi::OsStr::new(identity))).is_err());
     // Negative control: serializing the OS environment value directly is the
     // old hook failure, on both Unix and Windows. It cannot decode as a task.
     let legacy = json!(std::ffi::OsString::from(identity));
-    assert!(serde_json::from_value::<TaskId>(legacy).is_err());
+    assert!(serde_json::from_value::<AgentPath>(legacy).is_err());
     Ok(())
 }
 
@@ -316,12 +316,13 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
 
 #[test]
 fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() -> Result<()> {
-    let task = serde_json::from_value(json!("00000000-0000-0000-0000-000000000001"))?;
+    let task: acyclic_harness::agent::AgentPath =
+        serde_json::from_value(json!("harness/agents/00000000000000000000000000000001"))?;
     let args = ["discard", "agents/child's-view"].map(String::from);
     let HostAction::Fs {
         task: selected,
         command,
-    } = action(task, &args)?
+    } = action(task.clone(), &args)?
     else {
         return Err("discard did not use the shared filesystem facade".into());
     };
@@ -329,7 +330,7 @@ fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() ->
     assert_eq!(command, "'discard' 'agents/child'\"'\"'s-view'");
     let fs = ["fs", "discard", "agents/child's-view"].map(String::from);
     assert!(
-        matches!(action(task, &fs)?, HostAction::Fs { command: explicit, .. } if explicit == command)
+        matches!(action(task.clone(), &fs)?, HostAction::Fs { command: explicit, .. } if explicit == command)
     );
     assert!(action(task, &["cancel".into(), "agents/child".into()]).is_err());
     Ok(())

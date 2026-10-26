@@ -6,7 +6,7 @@ mod sessions;
 mod tests;
 
 use acyclic_harness::{
-    TaskId,
+    agent::AgentPath,
     local::{host_files, host_owner::HostAction},
 };
 use serde_json::{Value, json};
@@ -201,7 +201,7 @@ fn verify_certification(
     })
 }
 
-fn action(task: TaskId, args: &[String]) -> Result<HostAction> {
+fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
     Ok(match args.first().map(String::as_str) {
         Some("fs" | "discard") => HostAction::Fs {
             task,
@@ -212,10 +212,7 @@ fn action(task: TaskId, args: &[String]) -> Result<HostAction> {
                 .collect::<Vec<_>>()
                 .join(" "),
         },
-        Some("agents") => HostAction::Query {
-            task,
-            query: acyclic_harness::task_volume::Query::Agents,
-        },
+        Some("agents") => HostAction::Agents { task },
         Some("log") => HostAction::Fs {
             task,
             command: "log".into(),
@@ -243,7 +240,7 @@ fn help() -> Result<()> {
     Ok(())
 }
 
-fn parse_task(value: &str) -> Result<TaskId> {
+fn parse_task(value: &str) -> Result<AgentPath> {
     Ok(serde_json::from_value(json!(value))?)
 }
 

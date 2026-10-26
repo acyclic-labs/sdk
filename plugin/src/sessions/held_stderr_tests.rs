@@ -52,9 +52,9 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
             session: "held-stderr".into(),
         },
     )?;
-    let parent: TaskId = serde_json::from_value(root["task"].clone())?;
+    let parent: acyclic_harness::agent::AgentPath = serde_json::from_value(root["task"].clone())?;
     let held = acyclic_fs::hold_root(cwd)?.create_directories(
-        &PathBuf::from(".acyclic-sdk/host-processes").join(parent.to_string()),
+        &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
     )?;
     let ownership = FileLock::try_acquire(
         held.open_file(Path::new("fixture.lock"), true)?,
@@ -63,7 +63,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
     let sessions = Sessions {
         host: host.into(),
         cwd: cwd.to_path_buf(),
-        parent,
+        parent: parent.clone(),
         flags: Vec::new(),
         children: BTreeMap::new(),
         after: None,
@@ -77,7 +77,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
         },
     )?;
     let view = PathBuf::from(observed["cwd"].as_str().ok_or("child cwd absent")?);
-    let (lease, claimed) = HostProcessLease::claim_child(cwd, parent, "held")?
+    let (lease, claimed) = HostProcessLease::claim_child(cwd, &parent, "held")?
         .ok_or("fixture child input was not claimed")?;
     let mut running = Running {
         process: lease.funded_process()?,

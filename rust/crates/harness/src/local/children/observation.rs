@@ -31,15 +31,9 @@ impl LocalHarness {
         if crate::filesystem::child_agent::is_child(&admitted) {
             return Ok(Some(task));
         }
-        let parent_record = self.runtime.task_host().observe_admission(parent).await?;
-        let native =
-            parent_record.task.name == "acyclic.native_host" && parent_record.task.version == "1";
-        if !native || admitted.task.name != "acyclic.native_host" || admitted.task.version != "1" {
-            return Err(Error::Conflict(
-                "child request task definition changed".into(),
-            ));
-        }
-        Ok(Some(task))
+        Err(Error::Conflict(
+            "child request task definition changed".into(),
+        ))
     }
 
     /// Reads one already admitted direct child of the authenticated parent.

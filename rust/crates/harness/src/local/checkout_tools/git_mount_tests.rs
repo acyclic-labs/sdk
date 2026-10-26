@@ -34,7 +34,7 @@ async fn mounted_workspace(
 ) -> Result<Arc<LocalWorkspace>> {
     serialized(&tools.state, async |mut state| {
         tools
-            .selected_workspace(&mut state, task.owned_mailbox.as_ref().unwrap().as_ref())
+            .selected_workspace(&mut state, task.owned_mailbox.as_ref().unwrap())
             .await
     })
     .await

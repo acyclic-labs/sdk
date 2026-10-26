@@ -58,18 +58,16 @@ impl HarnessCode {
         let fork = Arc::new(ForkPreparationMachine::new());
         let direct = Arc::new(command_machine::DirectTool::new());
         let mut tasks = TaskRegistry::default();
+        // Native hosts run their sessions as agents; they admit no task.
         #[cfg(all(
             feature = "filesystem-local",
             feature = "native-execution",
             not(target_arch = "wasm32")
         ))]
         if native {
-            let host = crate::local::host_task::NativeHostTask::new();
-            tasks.register(host.definition()?)?;
-            tasks.register(fork.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?)?;
             return Ok(Self {
                 tasks,
-                machines: vec![host, fork],
+                machines: Vec::new(),
             });
         }
         #[cfg(not(all(

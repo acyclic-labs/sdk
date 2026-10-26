@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
     filesystem::PreparationIo,
-    runtime::TaskStateProvider,
     task_volume::{ChildFile, FileKey, FileValue, Query, TaskFiles},
 };
 mod staging;
@@ -51,20 +50,11 @@ impl LocalHarness {
         let parent = file.requester.ok_or_else(|| {
             Error::Unauthorized("child request has no authenticated parent".into())
         })?;
-        let parent_record = self.runtime.task_host().observe_admission(parent).await?;
-        let native_host = parent_record.task.name == "acyclic.native_host";
         if let Some(task) = self.admitted_child(files, reference, parent).await? {
             return Ok(task);
         }
 
-        let plan = staging::Plan::new(
-            self,
-            files.volume(),
-            parent,
-            reference,
-            native_host,
-            &parent_record.input,
-        )?;
+        let plan = staging::Plan::new(self, files.volume(), parent, reference)?;
         staging::Admission::open(self, plan, files)
             .await?
             .finish()

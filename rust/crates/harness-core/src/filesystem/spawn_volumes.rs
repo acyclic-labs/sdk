@@ -44,6 +44,8 @@ impl<P, O> FilesystemSpawnVolumes<P, O> {
 
 /// Name of the brief file in a spawned child's private volume.
 const BRIEF: &str = "brief.md";
+/// The brief's absolute path in the creating generation.
+const BRIEF_PATH: &str = "/brief.md";
 
 /// One child volume: forked from `source`, or created holding `brief` (if
 /// any) without one.
@@ -77,16 +79,15 @@ fn invalid(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
 
-/// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
-fn plan(
+/// The volume `child` binds in place of its parent's non-shared `binding`,
+/// and the creation operation of the spawn commit that creates it. A host
+/// that keeps state beside a forked volume (a lazy checkout's fork cut)
+/// prepares it under this same operation before the spawn.
+pub fn spawned_volume(
     child: &AgentPath,
     binding: &VolumeBinding,
-    brief: Option<&[u8]>,
-) -> Result<(VolumeBinding, Option<Planned>), Error> {
+) -> Result<(VolumeRef, acyclic_fs::OperationId), Error> {
     let source = &binding.volume;
-    if source.class() == VolumeClass::SessionShared {
-        return Ok((binding.clone(), None));
-    }
     let owner = match source.owner() {
         VolumeOwner::Agent(_) => {
             VolumeOwner::Agent(crate::AgentId::from_bytes(child.id().to_bytes()))
@@ -101,6 +102,23 @@ fn plan(
         &mut None,
     )
     .map_err(invalid)?;
+    Ok((
+        destination,
+        acyclic_fs::OperationId::from_bytes(key(child, &binding.name)),
+    ))
+}
+
+/// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
+fn plan(
+    child: &AgentPath,
+    binding: &VolumeBinding,
+    brief: Option<&[u8]>,
+) -> Result<(VolumeBinding, Option<Planned>), Error> {
+    let source = &binding.volume;
+    if source.class() == VolumeClass::SessionShared {
+        return Ok((binding.clone(), None));
+    }
+    let (destination, key) = spawned_volume(child, binding)?;
     let fork = binding.name != super::PRIVATE_VOLUME;
     Ok((
         VolumeBinding {
@@ -110,7 +128,7 @@ fn plan(
         Some(Planned {
             source: fork.then(|| source.clone()),
             destination,
-            key: key(child, &binding.name),
+            key: key.into_bytes(),
             brief: brief
                 .filter(|_| !fork)
                 .map(|brief| OwnedBytes::from(brief.to_vec())),
@@ -213,7 +231,7 @@ where
                 .ok_or(Error::Record("spawned private volume was not created"))?;
             let bytes = match generation
                 .read(
-                    &format!("/{BRIEF}"),
+                    BRIEF_PATH,
                     self.maximum_bytes,
                     WorkBudget::UNBOUNDED,
                     &cancellation,
@@ -299,7 +317,7 @@ where
                 planned
                     .brief
                     .iter()
-                    .map(|brief| (BRIEF, brief.clone()))
+                    .map(|brief| (BRIEF_PATH, brief.clone()))
                     .collect()
             })
             .collect();

@@ -133,7 +133,7 @@ impl CheckoutTools {
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("hook task has no owner".into()))?;
             owner.verify_owner(None)?.await?;
-            let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
+            let workspace = self.selected_workspace(&mut state, owner).await?;
             let view = state
                 .active
                 .as_ref()

@@ -106,14 +106,14 @@ impl LocalWorkspace {
     pub(in crate::local) async fn mount_task_view(
         &self,
         view: workspace::View,
-        owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
+        owner: &dyn super::owner::ViewOwner,
         mounts: Option<Arc<workspace::Mounts>>,
         signed: &Scope,
     ) -> Result<Arc<LocalWorkspace>> {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -158,7 +158,7 @@ impl LocalWorkspace {
             &workspace,
             active.as_ref().unwrap_or_else(|| workspace.view()),
             pending,
-            &|| async { owner.verify_owner(None)?.await },
+            &|| owner.verify(),
         )
         .await?;
         workspace.state = StateArc::new(AsyncMutex::new(State {
@@ -179,7 +179,7 @@ impl LocalWorkspace {
     pub(in crate::local) async fn selected_workspace(
         self: &Arc<Self>,
         state: &mut State,
-        owner: &dyn crate::runtime::OwnedTaskMailbox,
+        owner: &dyn super::owner::ViewOwner,
     ) -> Result<Arc<LocalWorkspace>> {
         if self.mounted.is_none() {
             return Ok(self.clone());
@@ -196,7 +196,7 @@ impl LocalWorkspace {
         {
             return Ok(workspace.clone());
         }
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         let mounted = self.mount_task_source(view).await?;
         let path = mounted.path().to_path_buf();
         let cancellation = CancellationToken::new();
@@ -240,7 +240,7 @@ impl LocalWorkspace {
             store: self.store.clone(),
             mount_authority: self.mount_authority.clone(),
         });
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         state.mounts = mounts;
         state.workspace = Some((id, workspace.clone()));
         Ok(workspace)
