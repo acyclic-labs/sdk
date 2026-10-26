@@ -2,6 +2,10 @@
 use super::*;
 use crate::guest::{Composition, GuestFuture};
 
+fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
+    IdempotencyKey::new(value.as_bytes().to_vec())
+}
+
 #[derive(Default)]
 struct Counts {
     seals: AtomicUsize,

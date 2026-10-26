@@ -64,6 +64,8 @@ struct Slot {
 
 #[derive(Default)]
 struct Inner {
+    /// A removed slot must not begin another publication through an older Arc.
+    released: bool,
     /// Placement this runtime owns; zero until the first claim.
     epoch: u64,
     follows: BTreeMap<String, RecordStream>,
@@ -141,12 +143,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Ok(())
     }
 
-    /// Stop hosting an actor (hibernate). Its durable state is untouched.
-    pub fn release(&self, actor: &ActorReference) {
-        self.actors
+    /// Stop hosting an idle actor (hibernate). Returns false while a delivery
+    /// or an unknown publication still owns participant custody; wake it to
+    /// settle before releasing. Its durable state is untouched.
+    pub fn release(&self, actor: &ActorReference) -> bool {
+        let mut actors = self.actors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(actor);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(slot) = actors.get(actor) else { return true; };
+        let Ok(mut inner) = slot.inner.try_lock() else { return false; };
+        if inner.pending.is_some() {
+            return false;
+        }
+        inner.released = true;
+        drop(inner);
+        actors.remove(actor);
+        true
     }
 
     /// Request a delivery attempt, for example after a transient failure.
@@ -299,6 +311,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Deliver until nothing is ready: one committed transition per input.
     async fn deliver(&self, actor: &ActorReference, slot: &Slot) -> Result<(), Error> {
         let mut inner = slot.inner.lock().await;
+        if inner.released {
+            return Ok(());
+        }
         loop {
             if let Some((snapshot, publication)) = inner.pending.take() {
                 match self.store.submit(publication).await {

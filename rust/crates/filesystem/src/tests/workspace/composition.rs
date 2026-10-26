@@ -211,7 +211,8 @@ async fn lost_acknowledgement_and_rebuilt_composition_replay_exactly() -> Result
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
-    let commit = compose(&fs, &source, true).await?;
+    let mut commit = compose(&fs, &source, true).await?;
+    value!(fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &CancellationToken::new()))?;
     // The caller's own provider committed it, but the acknowledgement was lost.
     let acyclic_stream::CommitOutcome::Committed(original) =
         stream.commit(commit.request().clone()).await?
@@ -429,7 +430,8 @@ async fn a_failed_cache_refresh_keeps_the_committed_receipt() -> Result<(), Box<
         let stream = Arc::new(MemoryStream::default());
         let fs = placed(&stream)?;
         let source = parent(&fs, &stream).await?;
-        let commit = compose(&fs, &source, true).await?;
+        let mut commit = compose(&fs, &source, true).await?;
+        value!(fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &CancellationToken::new()))?;
         let acyclic_stream::CommitOutcome::Committed(envelope) =
             stream.commit(commit.request().clone()).await?
         else {
