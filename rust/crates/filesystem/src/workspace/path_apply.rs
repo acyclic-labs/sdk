@@ -96,7 +96,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             Some(checkout) => checkout
                 .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(WorkspaceError::engine)?
+                .map_err(|failure| WorkspaceError::from(failure.error))?
                 .value
                 .entries
                 .into_iter()
@@ -108,7 +108,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             Some(checkout) => checkout
                 .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(WorkspaceError::engine)?
+                .map_err(|failure| WorkspaceError::from(failure.error))?
                 .value
                 .entries
                 .into_iter()
@@ -129,7 +129,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 .checkout
                 .lookup_batch_no_follow(&changed_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(WorkspaceError::engine)?
+                .map_err(|failure| WorkspaceError::from(failure.error))?
                 .value
                 .entries
                 .into_iter()
@@ -202,7 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .checkout
             .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(WorkspaceError::engine)?;
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
         Ok(
             match transaction
                 .commit(

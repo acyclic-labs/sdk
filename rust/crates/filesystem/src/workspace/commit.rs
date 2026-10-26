@@ -217,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .checkout
             .rebase_head(maximum_conflicts, budget, cancellation)
             .await
-            .map_err(|failure| failure.map_error(WorkspaceError::engine))?;
+            .map_err(|failure| failure.map_error(WorkspaceError::from))?;
         let value = match receipt.value {
             crate::kernel::RebaseDecision::Safe { generation } => {
                 self.requires_rebase = false;

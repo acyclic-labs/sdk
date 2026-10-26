@@ -318,7 +318,7 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 &crate::CancellationToken::new(),
             )
             .await
-            .map_err(WorkspaceError::engine)?
+            .map_err(|failure| WorkspaceError::from(failure.error))?
             .value;
         let spans = match plan {
             Some(plan) => plan

@@ -71,7 +71,6 @@ mod writes;
 pub use commit::{TransactionCommit, TransactionRebase};
 pub(crate) use diff::complete_changed_paths;
 pub use diff::{ChangeSet, ChangedPath};
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use errors::workspace_bounded_error;
 pub use errors::{WorkspaceError, WorkspaceNameError};
 pub use extents::{WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan};
