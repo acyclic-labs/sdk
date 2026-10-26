@@ -15,14 +15,7 @@ pub(super) struct HostIo {
 
 impl HostIo {
     pub(super) fn new(device: Arc<File>) -> io::Result<Self> {
-        // SAFETY: fcntl only reads/updates flags on this retained descriptor.
-        let flags = unsafe { libc::fcntl(device.as_raw_fd(), libc::F_GETFL) };
-        if flags < 0
-            || unsafe { libc::fcntl(device.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
-                < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        super::transport_io::nonblocking(device.as_ref())?;
         // SAFETY: eventfd returns a newly owned descriptor or -1.
         let wake = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if wake < 0 {

@@ -23,6 +23,17 @@ impl<T> FuseOwned<T> {
         }
     }
 
+    pub(super) fn try_map<U, E>(
+        self,
+        map: impl FnOnce(T) -> Result<U, E>,
+    ) -> Result<FuseOwned<U>, E> {
+        let Self { value, custody } = self;
+        // On failure the consumed value is dropped before its funding. On
+        // success the same custody follows the transformed allocation.
+        let value = map(value)?;
+        Ok(FuseOwned { value, custody })
+    }
+
     pub(super) fn claim(
         &mut self,
         bytes: u64,

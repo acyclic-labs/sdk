@@ -151,7 +151,7 @@ rustix = { workspace = true, features = ["fs", "net"] }
 vhost = { version = "0.16.0", features = ["vhost-user-backend"] }
 vmm-sys-util = "0.15.0"
 virtio-queue = "0.17.0"
-vm-memory = { version = "=0.17.1", features = ["backend-mmap", "backend-atomic"] }
+vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
