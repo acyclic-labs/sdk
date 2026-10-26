@@ -1,20 +1,15 @@
-//! Durable native defaults over the public filesystem and task runtime.
+//! Durable native defaults: the local filesystem and its agent host.
 
 use crate::{
-    Admission, AgentId, Capabilities, Error, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, OperationId, Result, TaskId,
     conversation::{
         ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, Scope},
-    filesystem::{
-        FilesystemContentPublisher, FilesystemHost, FilesystemResourceCreationProvider,
-        FilesystemTaskRuntime,
-    },
+    filesystem::{FilesystemContentPublisher, FilesystemHost},
     model::{Model, ModelContent, ModelProvider},
-    runtime::{RuntimeScope, RuntimeTask, TaskRunLimits},
-    scheduler::SessionLimits,
+    runtime::{AgentHarness, RuntimeScope, TaskRunLimits},
     tool::{Tool, ToolRegistry},
-    workflow::WorkflowCommand,
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_stream::LocalStream;
@@ -25,17 +20,10 @@ use std::{
 
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
-mod admission;
 pub mod agent_conversation;
 mod agents;
-pub(crate) mod approvals;
-mod bind;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
-mod children;
-mod command_views;
-mod commands;
-mod compact;
 mod compaction;
 mod config;
 pub(crate) mod context;
@@ -48,20 +36,14 @@ pub mod host_owner;
 pub mod host_process;
 #[cfg(feature = "native-execution")]
 pub mod host_workspace;
-mod inheritance;
-mod input;
 pub(crate) mod open;
-mod orphans;
 mod owner;
 mod owner_record;
-mod routing;
-mod runtime;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
 #[cfg(test)]
 mod tests;
 mod tool_metadata;
-mod turn;
 #[cfg(feature = "search-http")]
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
@@ -74,14 +56,13 @@ pub use workspace::LocalWorkspace;
 
 /// Local durable filesystem host.
 pub type LocalFilesystem<A = LocalAuthorityBackend, O = LocalObjectBackend> = FilesystemHost<A, O>;
-/// Local durable task host and its execution journals.
-pub type LocalTaskRuntime<P = LocalStream, A = LocalAuthorityBackend, O = LocalObjectBackend> =
-    FilesystemTaskRuntime<P, A, O>;
 
-/// A checkout or volume, durable authority, journals and stock executor.
+/// A checkout or volume, durable authority, and the agents hosted on it.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
-    runtime: Arc<LocalTaskRuntime>,
+    /// Tools, scope and content bindings every agent turn's context starts from.
+    harness: Arc<AgentHarness>,
+    tools: ToolRegistry,
     /// The root agent's identity and signing key; its agents start on first
     /// use. An embedded `bind` has no signing custody, so it hosts no agents.
     root: AgentId,
@@ -91,7 +72,6 @@ pub struct LocalHarness {
     /// `bind` has no filesystem of its own, so it hosts no agents.
     agent_stream: Option<Arc<LocalStream>>,
     agents: tokio::sync::OnceCell<agents::Hosted>,
-    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -113,15 +93,6 @@ pub struct LocalHarness {
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
-    goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
-    // Outermost lock: admission -> filesystem/provider locks. Never held during
-    // model/tool execution, and provider callbacks never acquire admission.
-    admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
-    // Leaf lock owned by the one HEAD write in flight. That write outlives a
-    // cancelled publisher, so every HEAD read waits for it first.
-    publication: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
-    // Leaf lock; claims and supersession hold `admission` first.
-    drivers: orphans::Drivers,
     #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(any(test, feature = "native-execution"))]
@@ -146,25 +117,11 @@ impl LocalHarness {
             Error::Unsupported("native hosts own their settings and permissions".into())
         })
     }
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
-        self.runtime.task_host().workflow_stream()
-    }
-
-    /// Opens durable local state and assembles the stock host before admitting work.
+    /// Opens durable local state and assembles the agent host's bindings.
     pub fn open(
         config: LocalHarnessConfig,
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<Self>> {
-        Box::pin(async move {
-            crate::package::harness::HarnessCode::new()?
-                .open_local(config)
-                .await
-        })
-    }
-
-    /// Trusted host's task-file volume; clients render its bounded live queries.
-    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>> {
-        &self.task_files
+        Box::pin(open::open(config))
     }
 
     /// Durable content and project host.
@@ -190,7 +147,7 @@ impl LocalHarness {
     /// Complete enabled tool registry.
     #[must_use]
     pub fn tools(&self) -> &ToolRegistry {
-        self.runtime.tool_registry()
+        &self.tools
     }
 
     /// Optional configured servers that failed startup; required failures reject opening.

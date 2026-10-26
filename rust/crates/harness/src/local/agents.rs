@@ -96,8 +96,7 @@ impl TurnExecutors for Executors {
                 }
             };
             let context = local
-                .runtime
-                .harness()
+                .harness
                 .agent_context(&authority.grants, authority.content.clone())?;
             let reader = authority.content.reader.clone();
             let (model, provider) = local.agent()?;
