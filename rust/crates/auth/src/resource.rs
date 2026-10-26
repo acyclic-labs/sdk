@@ -50,14 +50,18 @@ fn unreserved(b: u8) -> bool {
 /// are escaped; no Unicode normalization or case folding occurs here.
 pub fn encode_component(value: &[u8]) -> String {
     let mut result = String::new();
-    const HEX: &[u8] = b"0123456789ABCDEF";
     for &b in value {
         if unreserved(b) {
             result.push(char::from(b));
         } else {
             result.push('%');
-            result.push(char::from(HEX[usize::from(b >> 4)]));
-            result.push(char::from(HEX[usize::from(b & 15)]));
+            for digit in [b >> 4, b & 15] {
+                result.push(char::from(if digit < 10 {
+                    b'0' + digit
+                } else {
+                    b'A' + digit - 10
+                }));
+            }
         }
     }
     result

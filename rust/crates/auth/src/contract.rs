@@ -73,7 +73,7 @@ pub struct BillingGrant {
     pub spend_micros: Option<u64>,
 }
 
-/// Inclusive port range, shared with Actors SocketHostRule.
+/// Inclusive port range, shared with Actors `SocketHostRule`.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::port)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct SocketPortRange {
@@ -321,7 +321,7 @@ pub struct AdmittedCapability {
     pub admitted_at_unix_seconds: u64,
 }
 
-/// Typed GrantKind cases. Unknown wire cases are rejected.
+/// Typed `GrantKind` cases. Unknown wire cases are rejected.
 #[acyclic_contract_derive::oneof(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub enum GrantKind {
@@ -334,34 +334,34 @@ pub enum GrantKind {
     /// Billing payload.
     #[wire(tag = 3, message)]
     Billing(BillingGrant),
-    /// WebsocketConnect payload.
+    /// `WebsocketConnect` payload.
     #[wire(tag = 4, message)]
     WebsocketConnect(WebsocketConnectGrant),
 }
 
-/// Typed PinValue cases. Unknown wire cases are rejected.
+/// Typed `PinValue` cases. Unknown wire cases are rejected.
 #[acyclic_contract_derive::oneof(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub enum PinValue {
     /// Literal payload.
     #[wire(tag = 2, bytes)]
     Literal(Vec<u8>),
-    /// SubjectId payload.
+    /// `SubjectId` payload.
     #[wire(tag = 3, message)]
     SubjectId(SubjectId),
 }
 
-/// Typed CaveatKind cases. Unknown wire cases are rejected.
+/// Typed `CaveatKind` cases. Unknown wire cases are rejected.
 #[acyclic_contract_derive::oneof(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub enum CaveatKind {
     /// Grants payload.
     #[wire(tag = 1, message)]
     Grants(GrantSet),
-    /// ExpiresAt payload.
+    /// `ExpiresAt` payload.
     #[wire(tag = 2, uint64)]
     ExpiresAtUnixSeconds(u64),
-    /// NotBefore payload.
+    /// `NotBefore` payload.
     #[wire(tag = 3, uint64)]
     NotBeforeUnixSeconds(u64),
     /// Audience payload.
@@ -391,7 +391,7 @@ pub enum CaveatKind {
     Label(String),
 }
 
-/// Typed TipProof cases. Unknown wire cases are rejected.
+/// Typed `TipProof` cases. Unknown wire cases are rejected.
 #[acyclic_contract_derive::oneof(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub enum TipProof {

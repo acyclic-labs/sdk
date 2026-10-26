@@ -47,8 +47,14 @@ fn dns_labels(name: &str) -> Option<&str> {
         .all(|label| {
             !label.is_empty()
                 && label.len() <= 63
-                && label.as_bytes()[0].is_ascii_alphanumeric()
-                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
                 && label
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -103,19 +109,20 @@ fn network_contains(network: IpAddr, prefix: u8, ip: IpAddr) -> bool {
 fn host_matches(rule: Rule<'_>, host: Host<'_>) -> bool {
     match (rule, host) {
         (Rule::Dns(rule), Host::Dns(host)) => host.eq_ignore_ascii_case(rule),
-        (Rule::Suffix(rule), Host::Dns(host)) => {
-            host.len() > rule.len() + 1
-                && host.is_char_boundary(host.len() - rule.len())
-                && host[..host.len() - rule.len()].ends_with('.')
-                && host[host.len() - rule.len()..].eq_ignore_ascii_case(rule)
-        }
+        (Rule::Suffix(rule), Host::Dns(host)) => host
+            .len()
+            .checked_sub(rule.len())
+            .and_then(|split| host.split_at_checked(split))
+            .is_some_and(|(prefix, suffix)| {
+                prefix.len() > 1 && prefix.ends_with('.') && suffix.eq_ignore_ascii_case(rule)
+            }),
         (Rule::Ip(rule), Host::Ip(ip)) => rule == ip,
         (Rule::Network(network, prefix), Host::Ip(ip)) => network_contains(network, prefix, ip),
         _ => false,
     }
 }
 /// Union of valid destination rules; empty ports means 443. Grant sets from
-/// different certificates and caveat blocks are intersected by authority::permits.
+/// different certificates and caveat blocks are intersected by `authority::permits`.
 /// No DNS lookup, allocation, or mutable state occurs during matching.
 pub fn allows(grant: &WebsocketConnectGrant, destination: Destination<'_>) -> bool {
     allows_rules(&grant.rules, destination, dns)

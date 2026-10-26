@@ -107,6 +107,61 @@ pub struct VerifiedCapability {
     expires_at: u64,
 }
 
+fn decode_blocks(envelope: &wire::Envelope) -> Result<Vec<BlockProto>, VerifyError> {
+    if envelope.version != VERSION {
+        return Err(VerifyError::Version(envelope.version));
+    }
+    if envelope.blocks.is_empty() {
+        return Err(VerifyError::Malformed);
+    }
+    envelope
+        .blocks
+        .iter()
+        .map(|signed| {
+            BlockProto::decode(signed.payload.as_slice()).map_err(|_| VerifyError::Malformed)
+        })
+        .collect()
+}
+
+fn admit_blocks(wire: Vec<BlockProto>) -> Result<Vec<Block>, VerifyError> {
+    let blocks = wire
+        .into_iter()
+        .map(Block::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    if !authority::valid_chain(&blocks) {
+        return Err(VerifyError::Malformed);
+    }
+    Ok(blocks)
+}
+
+fn verify_proof(
+    proof: wire::Proof,
+    signer: ed25519_dalek::VerifyingKey,
+    previous: &BlockId,
+    message: &mut Vec<u8>,
+) -> Result<Proof, VerifyError> {
+    match proof {
+        wire::Proof::Secret(secret) => {
+            let seed: &[u8; 32] = secret
+                .as_slice()
+                .try_into()
+                .map_err(|_| VerifyError::Malformed)?;
+            let key = SigningKey::from_bytes(seed);
+            if !authentication_eq(key.verifying_key().as_bytes(), signer.as_bytes()) {
+                return Err(VerifyError::Signature);
+            }
+            Ok(Proof::Append(key))
+        }
+        wire::Proof::Sealed(signature) => {
+            message.clear();
+            message.extend_from_slice(SEAL_DOMAIN);
+            message.extend_from_slice(previous);
+            verify_signature(&signer, message, &signature)?;
+            Ok(Proof::Sealed(signature))
+        }
+    }
+}
+
 /// Verify signatures before semantic certificate subset admission. The returned
 /// authority must still be checked against current trust/time at each admission.
 pub fn verify(
@@ -115,20 +170,10 @@ pub fn verify(
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
     let envelope = wire::decode(bytes)?;
-    if envelope.version != VERSION {
-        return Err(VerifyError::Version(envelope.version));
-    }
-    if envelope.blocks.is_empty() {
-        return Err(VerifyError::Malformed);
-    }
-    let wire = envelope
-        .blocks
-        .iter()
-        .map(|signed| {
-            BlockProto::decode(signed.payload.as_slice()).map_err(|_| VerifyError::Malformed)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let certificates = wire[0]
+    let wire = decode_blocks(&envelope)?;
+    let certificates = wire
+        .first()
+        .ok_or(VerifyError::Malformed)?
         .certificates
         .as_ref()
         .ok_or(VerifyError::Malformed)?;
@@ -194,34 +239,9 @@ pub fn verify(
             return Err(VerifyError::Malformed);
         }
     }
-    let proof = match envelope.proof {
-        wire::Proof::Secret(secret) => {
-            let seed: &[u8; 32] = secret
-                .as_slice()
-                .try_into()
-                .map_err(|_| VerifyError::Malformed)?;
-            let key = SigningKey::from_bytes(seed);
-            if !authentication_eq(key.verifying_key().as_bytes(), signer.as_bytes()) {
-                return Err(VerifyError::Signature);
-            }
-            Proof::Append(key)
-        }
-        wire::Proof::Sealed(signature) => {
-            message.clear();
-            message.extend_from_slice(SEAL_DOMAIN);
-            message.extend_from_slice(&previous);
-            verify_signature(&signer, &message, &signature)?;
-            Proof::Sealed(signature)
-        }
-    };
+    let proof = verify_proof(envelope.proof, signer, &previous, &mut message)?;
     // No expensive claims/subset conversion happens until every signature is valid.
-    let blocks = wire
-        .into_iter()
-        .map(Block::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-    if !authority::valid_chain(&blocks) {
-        return Err(VerifyError::Malformed);
-    }
+    let blocks = admit_blocks(wire)?;
     let mut verified = VerifiedCapability {
         blocks,
         signed: envelope.blocks,

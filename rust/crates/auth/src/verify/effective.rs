@@ -69,9 +69,11 @@ impl<'a> Effective<'a> {
     }
     /// Every returned union is a ceiling; all unions must allow the request.
     pub fn grants(&self) -> impl Iterator<Item = &'a GrantSet> {
-        self.capability.blocks[0]
-            .certificates
-            .iter()
+        self.capability
+            .blocks
+            .first()
+            .and_then(|block| block.certificates.as_ref())
+            .into_iter()
             .flat_map(|certificates| &certificates.keys)
             .map(|cert| &cert.key.grants)
             .chain(
@@ -86,9 +88,11 @@ impl<'a> Effective<'a> {
             )
     }
     fn scoped_caveats(&self) -> impl Iterator<Item = (usize, &'a Caveat, usize)> {
-        let mut visible_lineage = self.capability.blocks[0]
-            .certificates
-            .as_ref()
+        let mut visible_lineage = self
+            .capability
+            .blocks
+            .first()
+            .and_then(|block| block.certificates.as_ref())
             .and_then(|certificates| certificates.keys.last())
             .map_or(0, |certificate| certificate.key.principal.lineage.len());
         self.capability
@@ -197,7 +201,11 @@ impl VerifiedCapability {
         self.limits = unbounded_limits();
         self.not_before = 0;
         self.expires_at = u64::MAX;
-        if let Some(certificates) = &self.blocks[0].certificates {
+        if let Some(certificates) = self
+            .blocks
+            .first()
+            .and_then(|block| block.certificates.as_ref())
+        {
             self.not_before = certificates.birth.birth.issued_at_unix_seconds;
             if let Some(leaf) = certificates.keys.last() {
                 self.principal = leaf.key.principal.clone();
@@ -215,13 +223,13 @@ impl VerifiedCapability {
             for caveat in &block.caveats {
                 match &caveat.kind {
                     CaveatKind::LineageAppend(lineage) => {
-                        self.principal.lineage.extend(lineage.ids.iter().cloned())
+                        self.principal.lineage.extend(lineage.ids.iter().cloned());
                     }
                     CaveatKind::NotBeforeUnixSeconds(time) => {
-                        self.not_before = self.not_before.max(*time)
+                        self.not_before = self.not_before.max(*time);
                     }
                     CaveatKind::ExpiresAtUnixSeconds(time) => {
-                        self.expires_at = self.expires_at.min(*time)
+                        self.expires_at = self.expires_at.min(*time);
                     }
                     CaveatKind::Limits(limits) => intersect(&mut self.limits, limits),
                     _ => (),
