@@ -17,6 +17,7 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
     for failed in [
         PublicationStage::Created,
         PublicationStage::Synced,
+        PublicationStage::Installed,
         PublicationStage::Published,
     ] {
         let root = tempfile::tempdir()?;
@@ -37,7 +38,10 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
         );
         assert!(result.is_err());
         assert!(!temporary.exists());
-        if failed == PublicationStage::Published {
+        if matches!(
+            failed,
+            PublicationStage::Installed | PublicationStage::Published
+        ) {
             assert_eq!(fs::read(&path)?, b"complete");
             assert!(is_private(&open(&path, false)?)?);
         } else {

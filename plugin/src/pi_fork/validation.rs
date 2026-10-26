@@ -8,7 +8,8 @@ impl<'a> PiForkCoordinator<'a> {
     pub(super) fn validate_plan(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
         let key = plan
             .published
-            .map(|published| self.owner.validated_plan_key(&published, caller));
+            .map(|published| self.owner.validated_plan_key(&published, caller))
+            .transpose()?;
         self.resources
             .validated_fork_plans
             .validate_once(key, || self.validate_plan_contents(plan, caller))

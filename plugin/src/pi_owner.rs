@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use acyclic_native_runtime::{owner_record, private_file};
+use acyclic_native_runtime::{owner_record, private_file, signing_key::SigningKeyReference};
 
 // Keep native denial custody intact while the shared codec supplies I/O failures.
 enum OwnerIo {
@@ -117,17 +117,24 @@ impl PiOwnerPolicy {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerConfig {
     version: u32,
-    key: [u8; 32],
+    #[serde(default, skip_serializing)]
+    key: Option<[u8; 32]>,
+    #[serde(default)]
+    key_ref: Option<SigningKeyReference>,
     policy: PiOwnerPolicy,
     native_runtime: Option<super::pi_native::PiNativeHostRuntime>,
     #[serde(skip)]
     _native_custody: Option<NativeAllocation>,
+    #[serde(skip)]
+    _signing_key: Option<acyclic_native_runtime::signing_key::ProvisionalSigningKey>,
 }
 
 impl PartialEq for PiOwnerConfig {
     fn eq(&self, other: &Self) -> bool {
         self.version == other.version
-            && acyclic_auth::crypto::authentication_eq(&self.key, &other.key)
+            && self.key_ref == other.key_ref
+            && self.key.is_none()
+            && other.key.is_none()
             && self.policy == other.policy
             && self.native_runtime == other.native_runtime
     }
@@ -136,7 +143,9 @@ impl Eq for PiOwnerConfig {}
 
 impl Drop for PiOwnerConfig {
     fn drop(&mut self) {
-        acyclic_native_runtime::owner_record::clear_secret(&mut self.key);
+        if let Some(key) = &mut self.key {
+            owner_record::clear_secret(key);
+        }
     }
 }
 
@@ -153,14 +162,27 @@ impl PiOwnerConfig {
         &self,
         published: &blake3::Hash,
         caller: TaskId,
-    ) -> super::pi_fork::ValidatedPlanKey {
-        let mut mac = blake3::Hasher::new_keyed(&self.key);
-        mac.update(b"acyclic.pi-fork-plan.validated.v1");
-        mac.update(published.as_bytes());
-        mac.update(&caller.into_bytes());
-        mac.update(&self.policy.root_task.into_bytes());
-        mac.update(&self.policy.maximum_payload_bytes.to_le_bytes());
-        super::pi_fork::ValidatedPlanKey(*mac.finalize().as_bytes())
+    ) -> Result<super::pi_fork::ValidatedPlanKey> {
+        self.signing_key()?
+            .with_seed(|key| {
+                let mut mac = blake3::Hasher::new_keyed(key);
+                mac.update(b"acyclic.pi-fork-plan.validated.v1");
+                mac.update(published.as_bytes());
+                mac.update(&caller.into_bytes());
+                mac.update(&self.policy.root_task.into_bytes());
+                mac.update(&self.policy.maximum_payload_bytes.to_le_bytes());
+                super::pi_fork::ValidatedPlanKey(*mac.finalize().as_bytes())
+            })
+            .map_err(native_owner_io)
+    }
+
+    fn signing_key(&self) -> Result<SigningKeyReference> {
+        match (self.key_ref, self.key.is_none()) {
+            (Some(reference), true) => Ok(reference),
+            _ => Err(native_invalid(
+                "Pi owner signing custody is ambiguous or absent",
+            )),
+        }
     }
 
     /// Initial owner creation borrows admitted configuration sources and copies only through their genuine original-ledger producers.
@@ -178,19 +200,20 @@ impl PiOwnerConfig {
         let runtime = runtime
             .map(|runtime| runtime.clone_with_native_work(work))
             .transpose()?;
-        let mut key = owner_record::new_key().map_err(native_owner_io)?;
+        let key_ref = SigningKeyReference::create().map_err(native_owner_io)?;
         let (runtime, runtime_custody) = match runtime {
             Some((runtime, custody)) => (Some(runtime), Some(custody)),
             None => (None, None),
         };
         let owner = Self {
             version: 1,
-            key,
+            key: None,
+            key_ref: Some(key_ref.reference()),
             policy: policy.0,
             native_runtime: runtime,
             _native_custody: None,
+            _signing_key: Some(key_ref),
         };
-        acyclic_native_runtime::owner_record::clear_secret(&mut key);
         // Data drops before its original custody on a failed transfer.
         let mut owned = (owner, custody, policy.1, runtime_custody);
         owned.1.absorb(&mut owned.2)?;
@@ -233,7 +256,7 @@ impl PiOwnerConfig {
     /// Issues authority on the caller's original ledger.
     pub(crate) fn authority(&self, work: &NativeMaterializationWork) -> Result<PiRuntimeAuthority> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
-        if self.version != 1 || self.key == [0; 32] || self.policy.agent.into_bytes() == [0; 16] {
+        if self.version != 1 || self.policy.agent.into_bytes() == [0; 16] {
             return Err(native_invalid("invalid Pi owner configuration"));
         }
         let storage = {
@@ -307,18 +330,22 @@ impl PiOwnerConfig {
         let audience = work.display(&task)?;
         let id = work.display(ISSUER)?;
         work.charge(acyclic_fs::WorkCounters {
-            bytes_copied: self.key.len() as u64,
+            bytes_copied: 32,
             ..acyclic_fs::WorkCounters::UNCHARGED
         })?;
         combine_native_metadata((
-            AuthorityRoot::new(
-                id.0,
-                self.key,
-                Authority {
-                    kind,
-                    id: audience.0,
-                },
-            ),
+            self.signing_key()?
+                .with_seed(|key| {
+                    AuthorityRoot::new(
+                        id.0,
+                        *key,
+                        Authority {
+                            kind,
+                            id: audience.0,
+                        },
+                    )
+                })
+                .map_err(native_owner_io)?,
             audience.1,
             [id.1],
         ))
@@ -439,6 +466,21 @@ impl PiOwnerConfig {
         session: &Path,
         work: &NativeMaterializationWork,
     ) -> Result<bool> {
+        self.publish(
+            root,
+            session,
+            work,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        )
+    }
+
+    fn publish(
+        &self,
+        root: &Path,
+        session: &Path,
+        work: &NativeMaterializationWork,
+        mode: acyclic_native_runtime::RenameMode,
+    ) -> Result<bool> {
         let session = work.path(root, Some(session))?;
         let plain = super::pi_root_provider::guarded_pi_bytes(self, MAXIMUM_OWNER_BYTES, work)?;
         let plain = NativeOwnerPlaintext {
@@ -482,12 +524,22 @@ impl PiOwnerConfig {
         ))?;
         let temporary = work.path(&session.0, Some(Path::new(&leaf.0)))?;
         let destination = work.path(&session.0, Some(Path::new(OWNER_FILE)))?;
-        private_file::publish_new(
-            &destination.0,
-            &temporary.0,
-            |file| file.write_all(&protected.bytes),
-            |_| Ok(()),
-        )
+        let write = |file: &mut std::fs::File| file.write_all(&protected.bytes);
+        let observe = |stage| {
+            if let Some(key) = &self._signing_key {
+                key.observe_publication(stage);
+            }
+            Ok(())
+        };
+        match mode {
+            acyclic_native_runtime::RenameMode::NoReplace => {
+                private_file::publish_new(&destination.0, &temporary.0, write, observe)
+            }
+            acyclic_native_runtime::RenameMode::Replace => {
+                private_file::publish(&destination.0, &temporary.0, mode, write, observe)
+                    .map(|()| true)
+            }
+        }
         .map_err(|error| Error::from(work.runtime_error(error)))
     }
 
@@ -498,20 +550,21 @@ impl PiOwnerConfig {
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
-        let session = work.path(root, Some(session))?;
-        let path = work.path(&session.0, Some(Path::new(OWNER_FILE)))?;
-        let bytes = private_file::read_with(&path.0, MAXIMUM_OWNER_BYTES, |file, length| {
-            let custody = work.claim(length + 1, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
-            let mut bytes =
-                Vec::with_capacity(usize::try_from(length + 1).map_err(io::Error::other)?);
-            file.read_to_end(&mut bytes)
-                .map_err(|error| Error::from(work.runtime_error(error)))?;
-            Ok::<_, OwnerIo>(NativeOwnerPlaintext {
-                bytes,
-                _custody: custody,
+        let directory = work.path(root, Some(session))?;
+        let path = work.path(&directory.0, Some(Path::new(OWNER_FILE)))?;
+        let bytes =
+            private_file::read_for_upgrade_with(&path.0, MAXIMUM_OWNER_BYTES, |file, length| {
+                let custody = work.claim(length + 1, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+                let mut bytes =
+                    Vec::with_capacity(usize::try_from(length + 1).map_err(io::Error::other)?);
+                file.read_to_end(&mut bytes)
+                    .map_err(|error| Error::from(work.runtime_error(error)))?;
+                Ok::<_, OwnerIo>(NativeOwnerPlaintext {
+                    bytes,
+                    _custody: custody,
+                })
             })
-        })
-        .map_err(|error| error.into_native(work))?;
+            .map_err(|error| error.into_native(work))?;
         let meter = work.runtime_meter();
         let plain =
             owner_record::decode_with(&bytes.bytes, MAXIMUM_OWNER_BYTES, Some(&meter), |plain| {
@@ -533,8 +586,30 @@ impl PiOwnerConfig {
         drop(plain);
         let (mut owner, custody) = owner?;
         owner._native_custody = Some(custody);
+        let migrated = match (owner.key_ref, owner.key.as_mut()) {
+            (None, Some(seed)) => {
+                owner.key_ref = Some(SigningKeyReference::retain(seed).map_err(native_owner_io)?);
+                owner_record::clear_secret(seed);
+                owner.key = None;
+                true
+            }
+            (Some(_), None) => false,
+            _ => {
+                return Err(native_invalid(
+                    "Pi owner signing custody is ambiguous or absent",
+                ));
+            }
+        };
         let authority = owner.authority(work)?;
         drop(authority);
+        if migrated {
+            owner.publish(
+                root,
+                session,
+                work,
+                acyclic_native_runtime::RenameMode::Replace,
+            )?;
+        }
         Ok(owner)
     }
 }
@@ -553,7 +628,8 @@ impl super::pi_runtime::PiTaskRuntime {
             reason: "Pi owner differs from the original runtime credentials or policy",
         };
         if owner.version != 1
-            || owner.key == [0; 32]
+            || owner.key.is_some()
+            || owner.key_ref.is_none()
             || policy.agent.into_bytes() == [0; 16]
             || &policy.grants != current.scope.grants()
             || policy.limits != current.scope.limits()

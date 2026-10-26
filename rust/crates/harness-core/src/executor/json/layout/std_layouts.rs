@@ -42,6 +42,10 @@ scalars!(
 impl HeapLayout for str {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Scalar;
 }
+#[cfg(not(target_arch = "wasm32"))]
+impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
+    const LAYOUT: &'static JsonLayout = <[u8; 32]>::LAYOUT;
+}
 /// A borrowed record is laid out as the record it borrows.
 impl<T: HeapLayout + ?Sized> HeapLayout for &T {
     const LAYOUT: &'static JsonLayout = T::LAYOUT;

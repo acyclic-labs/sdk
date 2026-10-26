@@ -155,6 +155,9 @@ pub enum PublicationStage {
     Created,
     /// The complete payload has reached durable file storage.
     Synced,
+    /// The atomic rename installed the complete record. A subsequent directory
+    /// sync or acknowledgement can still fail; published credentials must survive.
+    Installed,
     /// The complete private destination has been durably published.
     Published,
 }
@@ -252,9 +255,14 @@ impl StagedFile {
         }
         crate::flush_file_all(&self.file)?;
         observe(PublicationStage::Synced)?;
+        let mut installed_error = None;
         crate::namespace::durable_rename_observed(&self.path, path, mode, None, || {
             self.cleanup = false;
+            installed_error = observe(PublicationStage::Installed).err();
         })?;
+        if let Some(error) = installed_error {
+            return Err(error);
+        }
         observe(PublicationStage::Published)
     }
 }

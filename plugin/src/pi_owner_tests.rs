@@ -282,6 +282,78 @@ fn concurrent_initialization_publishes_one_owner() {
 }
 
 #[test]
+fn legacy_pi_seed_moves_to_shared_custody_without_changing_authority() {
+    let (directory, owner) = credential_fixture(&policy());
+    let original = owner.authority(&work()).unwrap();
+    let seed = owner
+        .signing_key()
+        .unwrap()
+        .with_seed(|seed| *seed)
+        .unwrap();
+    // Actual former writer: its framed private record contains the seed as JSON.
+    let mut legacy = serde_json::to_value(&owner).unwrap();
+    legacy.as_object_mut().unwrap().remove("key_ref");
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .insert("key".into(), json!(seed));
+    let plain = serde_json::to_vec(&legacy).unwrap();
+    let bytes = owner_record::encode_with(&plain, MAXIMUM_OWNER_BYTES, None, |parts| {
+        Ok::<_, std::io::Error>(parts.concat())
+    })
+    .unwrap();
+    let path = directory.path().join(OWNER_FILE);
+    fs::write(&path, bytes).unwrap();
+    let reopened = PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap();
+    reopened
+        .authority(&work())
+        .unwrap()
+        .verifier
+        .verify(&original.signed, &mut None)
+        .unwrap();
+    assert_eq!(
+        reopened.signing_key().unwrap(),
+        owner.signing_key().unwrap()
+    );
+    let record = fs::read(&path).unwrap();
+    let value = owner_record::decode_with(&record, MAXIMUM_OWNER_BYTES, None, |plain| {
+        serde_json::from_slice::<serde_json::Value>(plain).map_err(std::io::Error::other)
+    })
+    .unwrap();
+    assert!(legacy.get("key").is_some());
+    assert!(value.get("key").is_none());
+    assert_eq!(
+        value.get("key_ref"),
+        serde_json::to_value(&owner).unwrap().get("key_ref")
+    );
+    assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).unwrap() == reopened);
+}
+
+#[test]
+fn pi_refuses_missing_or_ambiguous_signing_custody_before_bootstrap() {
+    let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
+    let value = serde_json::to_value(&owner).unwrap();
+    for ambiguous in [false, true] {
+        let mut invalid = value.clone();
+        if ambiguous {
+            invalid
+                .as_object_mut()
+                .unwrap()
+                .insert("key".into(), json!(vec![9u8; 32]));
+        } else {
+            *invalid.get_mut("key_ref").unwrap() = json!(vec![0u8; 32]);
+        }
+        let invalid: PiOwnerConfig = serde_json::from_value(invalid).unwrap();
+        assert!(invalid.authority(&work()).is_err());
+        assert!(
+            invalid
+                .validated_plan_key(&blake3::hash(b"plan"), TaskId::from_bytes([1; 16]))
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn missing_or_corrupt_credentials_are_never_regenerated() {
     let directory = tempfile::tempdir().unwrap();
     assert!(PiOwnerConfig::load(directory.path(), Path::new(""), &work()).is_err());
@@ -323,7 +395,7 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
             0..=2 => {
                 *value.pointer_mut("/version").unwrap() = json!([0, 4, 5].get(mutation).unwrap())
             }
-            3 => *value.pointer_mut("/key").unwrap() = json!(vec![0u8; 32]),
+            3 => *value.pointer_mut("/key_ref").unwrap() = json!(vec![0u8; 32]),
             4 => *value.pointer_mut("/policy/concurrency").unwrap() = json!(0),
             5 => *value.pointer_mut("/policy/maximum_payload_bytes").unwrap() = json!(65_537),
             6 => {
@@ -431,12 +503,17 @@ fn validated_plan_records_never_cross_publications_callers_or_owners() {
     let plan = blake3::hash(b"published fork plan");
     let changed = blake3::hash(b"published fork plan, changed");
     let caller = TaskId::from_bytes([7; 16]);
-    let record = owner.validated_plan_key(&plan, caller);
-    assert_eq!(record, owner.validated_plan_key(&plan, caller));
-    assert_ne!(record, owner.validated_plan_key(&changed, caller));
+    let record = owner.validated_plan_key(&plan, caller).unwrap();
+    assert_eq!(record, owner.validated_plan_key(&plan, caller).unwrap());
+    assert_ne!(record, owner.validated_plan_key(&changed, caller).unwrap());
     assert_ne!(
         record,
-        owner.validated_plan_key(&plan, TaskId::from_bytes([8; 16]))
+        owner
+            .validated_plan_key(&plan, TaskId::from_bytes([8; 16]))
+            .unwrap()
     );
-    assert_ne!(record, other_owner.validated_plan_key(&plan, caller));
+    assert_ne!(
+        record,
+        other_owner.validated_plan_key(&plan, caller).unwrap()
+    );
 }
