@@ -16,12 +16,12 @@
 //! indexed headers. Reading never rewrites either format or its retry identity.
 use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamError, wire};
 
+#[cfg(test)]
+mod golden;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod golden;
 
 /// Borrowed path-local facts used by a provider's funded change producer.
 pub struct ChangeEntryRef<'a> {
@@ -52,15 +52,17 @@ fn marks(name: &str, value: &OwnedBytes) -> bool {
 }
 
 fn compact(headers: &RecordHeaders) -> bool {
-    headers.attributes().iter().any(|attribute| {
-        attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT
-    })
+    headers
+        .attributes()
+        .iter()
+        .any(|attribute| attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT)
 }
 
 pub(crate) fn unknown(headers: &RecordHeaders) -> bool {
-    headers.attributes().iter().any(|attribute| {
-        attribute.name == ATTRIBUTE && !marks(attribute.name, attribute.value)
-    })
+    headers
+        .attributes()
+        .iter()
+        .any(|attribute| attribute.name == ATTRIBUTE && !marks(attribute.name, attribute.value))
 }
 
 pub(crate) fn marked(headers: &RecordHeaders) -> bool {
@@ -78,7 +80,11 @@ pub fn is_changes(headers: &RecordHeaders) -> bool {
 /// V2 derives its index from the compact value. V1 retains its original wire
 /// keys, so reading and retrying old records never changes their identity.
 pub(crate) fn wire_keys(headers: &RecordHeaders) -> &[OwnedBytes] {
-    if compact(headers) { &[] } else { headers.keys() }
+    if compact(headers) {
+        &[]
+    } else {
+        headers.keys()
+    }
 }
 
 fn varint_len(value: usize) -> usize {
@@ -253,9 +259,11 @@ fn parse_v1<'a>(
         let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
         let metadata = entry.field(26)?.unwrap_or_default();
         count += 1;
-        if count > crate::MAX_RECORD_KEYS || key.len() > crate::MAX_RECORD_KEY_BYTES
+        if count > crate::MAX_RECORD_KEYS
+            || key.len() > crate::MAX_RECORD_KEY_BYTES
             || previous.is_some_and(|previous| previous >= key)
-            || operation.chars().any(char::is_control) || !entry.0.is_empty()
+            || operation.chars().any(char::is_control)
+            || !entry.0.is_empty()
         {
             return Err(StreamError::InvalidArgument);
         }
@@ -273,7 +281,11 @@ fn parse_record<'a>(
     headers: &RecordHeaders,
     visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
-    if compact(headers) { parse(bytes, visit) } else { parse_v1(bytes, visit) }
+    if compact(headers) {
+        parse(bytes, visit)
+    } else {
+        parse_v1(bytes, visit)
+    }
 }
 
 /// Visits each entry of a canonical value with its full key, rejecting every
@@ -366,7 +378,10 @@ pub(crate) fn decode(
         });
         Ok(())
     })?;
-    Ok(wire::ChangeRecord { context: bytes::Bytes::copy_from_slice(context), entries })
+    Ok(wire::ChangeRecord {
+        context: bytes::Bytes::copy_from_slice(context),
+        entries,
+    })
 }
 
 /// Rejects a change value whose keys differ from its in-memory headers, and
@@ -500,8 +515,16 @@ impl AppendRecord {
         if !compact(&self.headers) {
             use prost::Message;
             let headers = RecordHeaders::new(
-                changes.entries.iter().map(|entry| entry.key.clone().into()).collect(),
-                self.headers.attributes().iter().map(crate::RecordAttribute::to_owned).collect(),
+                changes
+                    .entries
+                    .iter()
+                    .map(|entry| entry.key.clone().into())
+                    .collect(),
+                self.headers
+                    .attributes()
+                    .iter()
+                    .map(crate::RecordAttribute::to_owned)
+                    .collect(),
             )?;
             let value: OwnedBytes = changes.encode_to_vec().into();
             validate(&value, &headers)?;
