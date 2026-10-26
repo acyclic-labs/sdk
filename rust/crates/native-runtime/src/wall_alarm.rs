@@ -9,10 +9,6 @@
 //! absolute waitable timer, which follows system time changes, on Windows.
 //! Each wake re-reads the clock and fires every elapsed registration, so a
 //! clock change is observed without polling.
-#![allow(
-    unsafe_code,
-    reason = "the wall-clock timers and their wake handles are platform OS calls"
-)]
 
 use std::collections::BTreeMap;
 use std::io;
@@ -157,6 +153,10 @@ fn now_unix_ms() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "the wall-clock timer and its wake handles are platform OS calls"
+)]
 mod platform {
     use std::io;
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -287,6 +287,10 @@ mod platform {
 }
 
 #[cfg(target_vendor = "apple")]
+#[allow(
+    unsafe_code,
+    reason = "the wall-clock timer and its wake handles are platform OS calls"
+)]
 mod platform {
     use std::io;
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -464,6 +468,10 @@ mod platform {
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "the wall-clock timer and its wake handles are platform OS calls"
+)]
 mod platform {
     use std::io;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
