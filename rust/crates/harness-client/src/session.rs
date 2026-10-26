@@ -395,10 +395,22 @@ impl WireSession {
     }
 
     /// Release one filesystem follow and its view; dropping the subscription
-    /// returns its interest through the pool's cancellation guard.
-    pub fn release_resource(&mut self, resource: &str) -> bool {
+    /// returns its interest through the pool's cancellation guard. Removing a
+    /// view advances the session revision so composed renderer caches refresh.
+    ///
+    /// # Errors
+    /// Refuses before any removal when the session revision would overflow.
+    pub fn release_resource(&mut self, resource: &str) -> Result<bool, WireSessionError> {
+        if !self.resource_views.contains_key(resource) && !self.resources.contains_key(resource) {
+            return Ok(false);
+        }
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
         self.resource_views.remove(resource);
-        self.resources.remove(resource).is_some()
+        self.resources.remove(resource);
+        Ok(true)
     }
 
     fn admit_one(&self) -> Result<(), WireSessionError> {
