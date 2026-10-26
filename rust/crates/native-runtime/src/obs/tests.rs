@@ -447,12 +447,10 @@ fn observation_oracle() -> Oracle<Case, Fault, Seen> {
     Oracle::declare(|input, fault, see| match input {
         Case::Idle => unobserved_bypass(matches!(fault, Some(Fault::InstalledIdleDispatcher)), see),
         Case::Root(mode) => root_context_case(*mode, fault, see),
-        Case::Registry(foreign) => {
-            see.see(causal_registry_case(
-                *foreign,
-                matches!(fault, Some(Fault::ForeignRegistry)),
-            ))
-        }
+        Case::Registry(foreign) => see.see(causal_registry_case(
+            *foreign,
+            matches!(fault, Some(Fault::ForeignRegistry)),
+        )),
     })
     .invariant("idle", |event| match event {
         Seen::Idle {
