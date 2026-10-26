@@ -300,7 +300,6 @@ fn path_string(path: &Path) -> String {
 
 fn mode_name(mode: ScenarioMode) -> &'static str {
     match mode {
-        ScenarioMode::Compile => "compile",
         ScenarioMode::ExecuteLocal => "executeLocal",
         ScenarioMode::ExecuteWithEndpoint => "executeWithEndpoint",
     }

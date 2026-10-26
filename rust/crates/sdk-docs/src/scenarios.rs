@@ -15,9 +15,6 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScenarioMode {
-    /// Compile the Rust example with the pinned, locked toolchain.
-    #[allow(dead_code)]
-    Compile,
     /// Execute against the local, self-contained fixture.
     ExecuteLocal,
     /// Execute against a declared qualification endpoint during release or a
