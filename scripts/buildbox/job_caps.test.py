@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import _thread
 import threading
 import time
 import unittest
@@ -39,12 +40,18 @@ def worker(mode, signals):
         for _ in range(32): subprocess.run(['true'], check=True)
         return 0
     run = lease_root()
-    stop = threading.Event(); threads = []; refused = None; fork_errno = None
-    while len(threads) < BOUND:
-        thread = threading.Thread(target=stop.wait, daemon=True)
-        try: thread.start()
+    # Raw threads with the smallest stacks, parked on one held lock: reaching a
+    # 16384-task ceiling costs one clone() each, with no per-thread start
+    # handshake (threading.Thread.start waits for every thread to run).
+    threading.stack_size(32 << 10)
+    gate = _thread.allocate_lock(); gate.acquire()
+    def park():
+        gate.acquire(); gate.release()
+    started = 0; refused = None; fork_errno = None
+    while started < BOUND:
+        try: _thread.start_new_thread(park, ())
         except RuntimeError: refused = 'thread'; break
-        threads.append(thread)
+        started += 1
     if refused:
         try:
             pid = os.fork()
@@ -52,11 +59,11 @@ def worker(mode, signals):
             os.waitpid(pid, 0)
         except BlockingIOError as error: fork_errno = error.errno
     caps = {name: (run/name).read_text().strip() for name in ('pids.max', 'memory.max')}
-    (signals/'saturated.json').write_text(json.dumps({'tasks': len(threads)+1, 'refused': refused, 'fork_errno': fork_errno, 'caps': caps}))
+    (signals/'saturated.json').write_text(json.dumps({'tasks': started+1, 'refused': refused, 'fork_errno': fork_errno, 'caps': caps}))
     deadline = time.monotonic()+8
     while not (signals/'release').exists() and time.monotonic() < deadline: time.sleep(0.02)
-    stop.set()
-    for thread in threads: thread.join()
+    gate.release()
+    while _thread._count(): time.sleep(0.005)
     # Memory: a delegated child below the lease shares the same refusal path.
     probe = run/'work'/'memory-probe'; probe.mkdir()
     try:
