@@ -239,31 +239,61 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
-        // Construction returns before polling this concrete publication graph.
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            let bytes = input.as_ref();
-            grant.require(volume, VolumeOperation::Write, io)?;
-            if let Some(grants) = ceiling
-                && !crate::executor::with_history_io(io, |work| {
-                    crate::core::volume_write_granted_with_work(grants, volume, work)
-                })?
+        // Refuse invalid or unauthorized input before admitting an allocated future.
+        let bytes = input.as_ref();
+        grant.require(volume, VolumeOperation::Write, io)?;
+        if let Some(grants) = ceiling
+            && !crate::executor::with_history_io(io, |work| {
+                crate::core::volume_write_granted_with_work(grants, volume, work)
+            })?
+        {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "content caller lacks a filesystem write grant",
+            ));
+        }
+        if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "content provider or size limit mismatch",
+            ));
+        }
+        crate::executor::with_history_io(io, |work| {
+            crate::conversation::validate_content_path(path, work)
+        })?;
+        match internal_class {
+            Some(class)
+                if volume.class() == VolumeClass::AgentPrivate
+                    && path.starts_with(class.prefix()) => {}
+            Some(_) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if io.and_then(PreparationIo::original_native_work).is_some() {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "journal path or volume is not assigned to this host",
+                    });
+                }
+                return Err(Error::Unauthorized(
+                    "journal path or volume is not assigned to this host".into(),
+                ));
+            }
+            None if path == ".system"
+                || path.starts_with(".system/")
+                || path == "turns/.canonical"
+                || path.starts_with("turns/.canonical/") =>
             {
                 return Err(stock_boundary(
                     io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "content caller lacks a filesystem write grant",
-                ));
-            }
-            if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
-                return Err(stock_boundary(
-                    io,
                     crate::wire::ErrorCode::Invalid,
-                    "content provider or size limit mismatch",
+                    "internal storage paths are reserved",
                 ));
             }
-            crate::executor::with_history_io(io, |work| {
-                crate::conversation::validate_content_path(path, work)
-            })?;
+            None => {}
+        }
+        // Construction returns before polling this concrete publication graph.
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             let descriptor = crate::executor::with_history_io(io, |work| {
                 FileDescriptor::from_bytes(bytes, media_type, work)
             })?;
@@ -282,35 +312,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     work,
                 )
             })?;
-            match internal_class {
-                Some(class)
-                    if volume.class() == VolumeClass::AgentPrivate
-                        && provisional.path().starts_with(class.prefix()) => {}
-                Some(_) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.and_then(PreparationIo::original_native_work).is_some() {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unauthorized,
-                            reason: "journal path or volume is not assigned to this host",
-                        });
-                    }
-                    return Err(Error::Unauthorized(
-                        "journal path or volume is not assigned to this host".into(),
-                    ));
-                }
-                None if provisional.path() == ".system"
-                    || provisional.path().starts_with(".system/")
-                    || provisional.path() == "turns/.canonical"
-                    || provisional.path().starts_with("turns/.canonical/") =>
-                {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "internal storage paths are reserved",
-                    ));
-                }
-                None => {}
-            }
             let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
             let receipt_identity = if internal_class.is_some() {
                 provisional.path()

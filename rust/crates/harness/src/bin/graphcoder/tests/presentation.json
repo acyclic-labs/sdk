@@ -79,14 +79,16 @@
     "row": "Streaming markdown wraps at the composed transcript width",
     "reasoning": false,
     "width": 12,
-    "expected": ["Visible answ", "er"],
+    "transcript_width": 11,
+    "expected": ["Visible ans", "wer"],
     "absent": ["Visible answer", "**Visible answer**"]
   },
   {
     "row": "Reasoning and answer share the same Unicode width projection",
     "reasoning": true,
     "width": 12,
-    "expected": ["Private reas", "oning", "Visible answ", "er"],
+    "transcript_width": 11,
+    "expected": ["Private rea", "soning", "Visible ans", "wer"],
     "absent": ["Private reasoning", "Visible answer"]
   },
   {

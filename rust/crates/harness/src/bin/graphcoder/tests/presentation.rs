@@ -105,6 +105,14 @@ async fn followed_presentation_rows_are_declarative_and_live() {
             .layout(&files, &PromptInput::default(), width, height)
             .unwrap();
         let screen = renderer.screen_for(&files).unwrap();
+        if let Some(expected) = row["transcript_width"].as_u64() {
+            let areas = screen.areas(
+                acyclic_harness::tui::ratatui::layout::Rect::new(0, 0, width, height),
+                &PromptInput::default(),
+            );
+            assert_eq!(u64::from(areas.transcript.width), expected, "{}", row["row"]);
+            assert!(screen.transcript.iter().all(|line| line.width() <= usize::from(areas.transcript.width)));
+        }
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {

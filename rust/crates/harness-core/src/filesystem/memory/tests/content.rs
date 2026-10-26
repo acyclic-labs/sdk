@@ -461,30 +461,32 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let path_io = crate::filesystem::PreparationIo::from_native_work(&path_work)?;
     let path_prefix = path_work.receipt();
-    assert!(matches!(
-        storage
-            .host
-            .put_content(
-                &storage.volume,
-                &write,
-                "../outside",
-                b"never",
-                "text/plain",
-                "never",
-                1024,
-                &key,
-                None,
-                crate::conversation::ContentAccess {
-                    ceiling: None,
-                    io: Some(&path_io)
-                }
-            )
-            .await,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        })
-    ));
+    for path in ["../outside", ".system/private", "turns/.canonical/private"] {
+        assert!(matches!(
+            storage
+                .host
+                .put_content(
+                    &storage.volume,
+                    &write,
+                    path,
+                    b"never",
+                    "text/plain",
+                    "never",
+                    1024,
+                    &key,
+                    None,
+                    crate::conversation::ContentAccess {
+                        ceiling: None,
+                        io: Some(&path_io)
+                    }
+                )
+                .await,
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            })
+        ));
+    }
     assert!(matches!(
         storage
             .host
