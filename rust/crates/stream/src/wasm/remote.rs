@@ -8,6 +8,7 @@ pub(super) struct Remote {
     operation_claims: crate::OperationClaims,
     endpoint: socket::Endpoint,
     sessions: crate::session::Client,
+    response_limits: tonic_web_wasm_client::limits::UnaryResponseLimits,
 }
 impl Remote {
     pub(super) fn session(&self) -> crate::session::Client {
@@ -17,11 +18,15 @@ impl Remote {
         self.sessions.connections()
     }
     pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
+        let response_limits =
+            tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
+                .ok_or(StreamError::InvalidArgument)?;
         let endpoint = socket::Endpoint::new(url, credential)?;
         let sessions = socket::sessions(endpoint.clone());
         Ok(Self {
             endpoint,
             sessions,
+            response_limits,
             operation_claims: crate::OperationClaims::default(),
         })
     }
@@ -46,10 +51,7 @@ impl Remote {
         Service::new(tonic_web_wasm_client::Client::new_with_options(
             self.endpoint.url.clone(),
             options
-                .response_limits(
-                    tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
-                        .expect("fixed positive command bound"),
-                )
+                .response_limits(self.response_limits)
                 .redirect(Redirect::Error),
         ))
         .max_decoding_message_size(MAX_COMMAND_BYTES)

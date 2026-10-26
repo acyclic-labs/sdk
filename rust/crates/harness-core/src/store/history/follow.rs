@@ -2,7 +2,7 @@ use super::*;
 use acyclic_stream::{BoxProviderStream, StreamError};
 use futures::{StreamExt, stream};
 
-impl<P: StreamProvider> HistoryReader<P> {
+impl<P: StreamProvider + ?Sized> HistoryReader<P> {
     /// Pushes each verified owner append after a revision without batching or polling.
     pub async fn follow(
         self,

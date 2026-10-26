@@ -12,7 +12,7 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use std::sync::Arc;
 
 /// The effects of one agent turn.
-pub(in crate::filesystem) struct FilesystemTurnEffects<P, A: 'static, O: 'static> {
+pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O: 'static> {
     files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
     agent: AgentPath,
@@ -20,7 +20,7 @@ pub(in crate::filesystem) struct FilesystemTurnEffects<P, A: 'static, O: 'static
     maximum_bytes: u64,
 }
 
-impl<P, A, O> FilesystemTurnEffects<P, A, O> {
+impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
     pub(in crate::filesystem) fn new(
         files: Arc<AgentInternalFiles<A, O>>,
         stream: Arc<P>,
@@ -45,7 +45,7 @@ fn decode(bytes: &[u8]) -> Result<TurnEffect> {
 
 impl<P, A, O> TurnEffects for FilesystemTurnEffects<P, A, O>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

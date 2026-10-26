@@ -80,7 +80,7 @@ pub(crate) fn guarded_boundary(
 }
 
 /// One authoritative reducer whose canonical history is stored directly in Stream.
-pub struct StreamAggregate<P> {
+pub struct StreamAggregate<P: ?Sized> {
     client: std::sync::Arc<P>,
     path: StreamPath,
     reducer: Reducer,

@@ -13,7 +13,7 @@ fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
     Error::Indeterminate(operation)
 }
 
-impl<P: StreamProvider> StreamAggregate<P> {
+impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
     pub(crate) async fn publish(
         &mut self,
         command: Command,

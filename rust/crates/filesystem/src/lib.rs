@@ -419,3 +419,7 @@ pub use workspace_context::{
 
 #[cfg(feature = "browser")]
 pub mod browser;
+#[cfg(all(feature = "wasm-object-store", target_arch = "wasm32"))]
+mod injected;
+#[cfg(all(feature = "wasm-object-store", target_arch = "wasm32"))]
+pub use injected::InjectedObjectStore;

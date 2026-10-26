@@ -21,6 +21,25 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
 }
 
 impl Command {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
+        match &mut self {
+            Self::Append(request) => {
+                crate::request::validate_records(&request.records)?;
+                crate::request::validate_append_size(request)?;
+            }
+            Self::Fork(request) => crate::request::validate_fork_size(request)?,
+            Self::Commit(request) => {
+                crate::request::normalize_commit(request)?;
+                crate::request::validate_commit_shape(request)?;
+            }
+        }
+        if self.encoded_len() > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(self)
+    }
+
     pub(crate) fn encoded_len(&self) -> usize {
         use wire_codec::requests::*;
         block_len(match self {

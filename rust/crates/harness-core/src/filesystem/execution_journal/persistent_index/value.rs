@@ -86,7 +86,7 @@ fn read_link(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Option<NodeRef>
     }
 }
 
-impl<P: StreamProvider> Writer<'_, P> {
+impl<P: StreamProvider + ?Sized> Writer<'_, P> {
     pub(in crate::filesystem::execution_journal) async fn set_value(
         &mut self,
         root: Option<NodeRef>,
@@ -135,7 +135,7 @@ impl<P: StreamProvider> Writer<'_, P> {
     }
 }
 
-impl<'a, P: StreamProvider> Reader<'a, P> {
+impl<'a, P: StreamProvider + ?Sized> Reader<'a, P> {
     pub(in crate::filesystem::execution_journal) async fn value(
         &self,
         read: ReadNode<'a>,

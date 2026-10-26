@@ -1,0 +1,8 @@
+{
+  "name": "acyclic-cloudflare-conformance",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "miniflare": "4.20260730.0"
+  }
+}

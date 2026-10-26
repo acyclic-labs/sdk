@@ -50,7 +50,7 @@ pub(super) struct LoadedProjection {
     pub(super) consumed_events: u32,
 }
 
-async fn projection_cut<P: StreamProvider>(
+async fn projection_cut<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
     original_revision: Option<u64>,
@@ -90,7 +90,7 @@ pub(in crate::store) fn charge(
     Ok(())
 }
 
-pub(super) async fn supplied<P: StreamProvider>(
+pub(super) async fn supplied<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
     snapshot: Snapshot,
@@ -117,7 +117,7 @@ pub(super) async fn supplied<P: StreamProvider>(
     })
 }
 
-pub(super) async fn load_with_work<P: StreamProvider>(
+pub(super) async fn load_with_work<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -219,7 +219,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     })
 }
 
-async fn load_chunks<P: StreamProvider>(
+async fn load_chunks<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
     location: &ProjectionLocation,
@@ -384,7 +384,7 @@ fn validate_projection_bounds(
     Ok(revision)
 }
 
-async fn verify_projection_anchor<P: StreamProvider>(
+async fn verify_projection_anchor<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,

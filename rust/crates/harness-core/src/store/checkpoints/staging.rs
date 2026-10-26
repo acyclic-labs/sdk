@@ -1,7 +1,7 @@
 use super::*;
 
 /// Stages one immutable record using the caller's retained encoder buffer.
-pub(in crate::store) async fn stage_immutable<P: StreamProvider>(
+pub(in crate::store) async fn stage_immutable<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     stream: (StreamPath, u64),
     encoded: Result<Vec<u8>>,
@@ -98,7 +98,7 @@ pub(in crate::store) async fn stage_immutable<P: StreamProvider>(
     result
 }
 
-pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
+pub(in crate::store) async fn publication_with_work<P: StreamProvider + ?Sized>(
     client: &std::sync::Arc<P>,
     reducer: &Reducer,
     event: &Event,
