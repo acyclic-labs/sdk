@@ -64,7 +64,7 @@ def check_evidence(receipt):
     require(expected and all(isinstance(witness["occurrences"], int) and witness["occurrences"] > 0 for witness in expected), "missing or invalid expected semantic witnesses")
     require(len({(witness["case"], witness["step"], witness["invariant"]) for witness in expected}) == len(expected), "duplicate expected semantic witness")
     counts = {(witness["case"], witness["step"], witness["invariant"]): witness["occurrences"] for witness in expected}
-    require(True, "mutation control bypasses one production check")
+    require(Counter(witnesses) == counts, "captured semantic witnesses differ from exact expected multiset")
     for reference in receipt["executed_oracle_sources"]:
         require(sha256(source_path(reference["repo_path"])) == reference["sha256"], "executed oracle capture changed")
 
@@ -89,59 +89,6 @@ def check_source_review(reference):
     require(f"test {suite['failing_test']} ... FAILED" in output and f"Error: {suite['failure']}" in output, "missing exact rejected-case witness")
     require(f"test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in {suite['runtime_seconds']:.2f}s" in output, "wrong rejected-case runtime or selection")
     require(not run["mutation_executed"] and '"stage": "negative"' not in output, "rejected positive run cannot claim mutation execution")
-
-
-def check_observations(reference):
-    path = source_path(reference["repo_receipt"])
-    require(sha256(path) == reference["sha256"], "owner-observation receipt changed")
-    receipt = json.loads(path.read_text(encoding="utf-8"))
-    require(receipt["kind"] == "owner_observations_not_wave1_qualification", "unsupported owner observations")
-    require(receipt["positive_proofs"] == receipt["negative_controls_detected"] == 0, "owner observations cannot qualify redesigned proofs or controls")
-    captures = receipt["captures"]
-    require(captures and len({capture["repo_path"] for capture in captures}) == len(captures), "empty or duplicate owner captures")
-    for capture in captures:
-        source = source_path(capture["repo_path"])
-        require(sha256(source) == capture["sha256"] and source.stat().st_size == capture["bytes"], "owner capture hash/length changed")
-        require(capture["origin"], "owner capture lacks real-output provenance")
-    base = path.parent
-    def load(relative):
-        target = base / relative
-        require(target.relative_to(ROOT).as_posix() in {capture["repo_path"] for capture in captures}, "observation uses uncaptured receipt")
-        return json.loads(target.read_text(encoding="utf-8"))
-    observations = {item["id"]: item for item in receipt["observations"]}
-    require(len(observations) == len(receipt["observations"]) == 5, "wrong owner observation selection")
-    fs = observations["fs339-memory-append"]
-    admission = load("fs339/admission.json")
-    run = admission["checks"][0]
-    require(fs["selected"] == fs["passed"] == 6 and 0 < fs["runtime_seconds"] < 10 and run["exit"] == 0, "wrong observed append selection/runtime")
-    require(fs["archive_sha256"] == admission["archive_sha256"] and fs["executable_sha256"] == run["executable_sha256"] and fs["source_manifest_sha256"] == run["compiled_source_manifest_sha256"], "append observed artifact differs")
-    output = (base / "fs339/append-segments.out").read_text(encoding="utf-8")
-    require("running 6 tests" in output and "6 passed; 0 failed; 0 ignored;" in output, "append observation lacks actual six-case pass")
-    for name, expected in admission["archive_members"].items():
-        captured = base / "fs339" / name.removeprefix(".bb-fs-segments-records/")
-        if captured.is_file():
-            require(sha256(captured) == expected, "append archive member changed")
-    client = observations["client-node-existing-wasm"]
-    qualification = load("client/qualification.json")
-    mac = load("client/macos/current-wasm-mac-receipt.json")
-    artifacts = {name.removeprefix(".bb-client-current-wasm-runtime/"): item["sha256"] for name, item in qualification["admitted_runtime"].items()}
-    require(client["same_artifacts"] == mac["artifacts"] == artifacts, "Node same-artifact identity differs")
-    require(client["head"] == qualification["head"] and client["archive_sha256"] == qualification["archive_sha256"], "Node source/archive identity differs")
-    require(client["linux_node_cases"] == client["macos_node_cases"] == qualification["node"]["cases"] == json.loads(mac["output"])["cases"] == 1, "Node observed selection differs")
-    require(client["bun_cases"] == qualification["bun_cases"] == 8 and mac["rc"] == 0 and 0 < mac["seconds"] < 10 and all(run["rc"] == 0 and 0 < run["seconds"] < 10 for run in qualification["results"]), "WASM observed result/runtime differs")
-    require((base / "client/macos/source-qualification.sha256").read_text().strip() == sha256(base / "client/qualification.json"), "macOS source qualification link differs")
-    for kind, count in (("bounded", 2), ("queue", 5)):
-        old = base / f"client/before/{kind}/.bb-client-{kind}-before-records"
-        output = (old / "negative.log").read_text(encoding="utf-8")
-        require(f" 0 pass\n {count} fail" in output and f"Ran {count} tests" in output, "old TS control selection differs")
-        if kind == "bounded":
-            metrics = load("client/before/bounded/.bb-client-bounded-before-records/pagination-metrics.json")
-            require(sha256(base / "client/before/bounded/typescript/packages/harness/src/pagination.ts") == metrics["source_sha256"], "old PageWindow source differs from executed metrics")
-            require([row["count"] for row in metrics["rows"]] == [100, 1000, 10000] and all(row["arrays"] == row["reads"] == 100 for row in metrics["rows"]), "old PageWindow copy observations differ")
-        else:
-            metrics = load("client/before/queue/.bb-client-queue-before-records/metrics.json")
-            require([row["count"] for row in metrics["rows"]] == [1000, 10000, 100000] and all(row["capacity"] == 1 and row["pending"] == row["count"] for row in metrics["rows"]), "old queue producer observations differ")
-    require(observations["rbfs-session-transport"]["status"] == "owner_reported_no_raw_receipt", "Cloud report cannot claim raw execution admission")
 
 
 def check(require_qualified):
@@ -169,8 +116,6 @@ def check(require_qualified):
         check_evidence(receipt)
     for reference in inventory.get("source_reviews", {}).values():
         check_source_review(reference)
-    for reference in inventory.get("owner_observations", {}).values():
-        check_observations(reference)
     cleanliness = inventory["cleanliness"]
     capture = source_path(cleanliness["repo_capture"])
     require(sha256(capture) == cleanliness["capture_sha256"], "captured Clippy diagnostics changed")

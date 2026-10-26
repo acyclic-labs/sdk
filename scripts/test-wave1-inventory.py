@@ -6,6 +6,7 @@ copies of those real observations; no provider/tool-output fixture is invented.
 This tests the integrity policy, not the Rust implementation or runtime proof.
 """
 import copy
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -23,6 +24,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EvidencePolicy(unittest.TestCase):
+    def test_historical_checker_controls_reconstruct_exact_executed_bytes(self):
+        captures = ROOT / "scripts/tests/fixtures/proof-policy"
+        controls = 0
+        for baseline in sorted(captures.glob("policy-*/checker.py")):
+            source = baseline.read_bytes()
+            positive = hashlib.sha256(source).hexdigest()
+            receipt = json.loads(baseline.with_name("receipt.json").read_bytes())
+            runs = {run["checker_sha256"]: run for run in receipt["runs"]}
+            self.assertEqual(runs[positive]["exit"], 0)
+            mutations = sorted(baseline.parent.glob("*mutation.json"))
+            self.assertEqual(len(mutations), len(receipt["runs"]) - 1)
+            for path in mutations:
+                with self.subTest(capture=baseline.parent.name, mutation=path.name):
+                    mutation = json.loads(path.read_bytes())
+                    self.assertEqual(positive, mutation["positive_sha256"])
+                    before, after = mutation["before"].encode(), mutation["after"].encode()
+                    self.assertEqual(source.count(before), 1)
+                    mutant = hashlib.sha256(source.replace(before, after)).hexdigest()
+                    self.assertEqual(mutant, mutation["mutant_sha256"])
+                    self.assertEqual(runs[mutant]["exit"], 1)
+                    controls += 1
+        self.assertEqual(controls, 24)
+
     def test_qualification_gate_refuses_the_real_open_inventory(self):
         with self.assertRaisesRegex(ValueError, "unqualified obligations:"):
             POLICY.check(True)
