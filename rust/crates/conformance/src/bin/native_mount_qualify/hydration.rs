@@ -30,14 +30,12 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
     for index in 0..RENAME_REPETITIONS {
         let renamed = format!("/after-{index}.txt");
         let replacement = format!("/replacement-{index}.txt");
-        if unbounded!(workspace, read(&renamed, 64))?
-            .as_ref()
+        if unbounded!(workspace, read(&renamed, 64))?.as_ref()
             != format!("renamed-before-hydration-{index}").as_bytes()
         {
             return Err(format!("renamed content {index} was not published").into());
         }
-        if unbounded!(workspace, read(&replacement, 64))?
-            .as_ref()
+        if unbounded!(workspace, read(&replacement, 64))?.as_ref()
             != format!("replacement-content-{index}").as_bytes()
         {
             return Err(format!("replacement content {index} was not published").into());
@@ -81,12 +79,12 @@ async fn prepare_rename_fixture(root: &Path) -> Result<LocalWorkspace, Failure> 
     let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
     let workspace = unbounded!(
         engine,
-        create_workspace_with_config(
-            "rename-hydration",
-            VolumeConfig::native(Lifecycle::Durable),
-        )
+        create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable),)
     )?;
-    let mut fixture = unbounded!(workspace, begin_transaction(acyclic_fs::IdempotencyKey::new()))?;
+    let mut fixture = unbounded!(
+        workspace,
+        begin_transaction(acyclic_fs::IdempotencyKey::new())
+    )?;
     for index in 0..RENAME_REPETITIONS {
         unbounded!(
             fixture,

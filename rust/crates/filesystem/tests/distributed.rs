@@ -387,9 +387,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
         workspace.delete(key).await?,
         WorkspaceDelete::AlreadyDeleted
     );
-    assert!(
-        unbounded!(fs, open_workspace("history")).is_err()
-    );
+    assert!(unbounded!(fs, open_workspace("history")).is_err());
     assert!(!authority_store.authorities(16).await?.contains(&authority));
 
     let after = streams.tail(records.clone()).await?;
@@ -629,12 +627,8 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .map_err(|failure| failure.error)?;
     assert_eq!(retry.id(), child.id());
     child.write_text("/child-only", "child").await?;
-    assert!(
-        unbounded!(child, read("/source-only", 16)).is_err()
-    );
-    assert!(
-        unbounded!(source, read("/child-only", 16)).is_err()
-    );
+    assert!(unbounded!(child, read("/source-only", 16)).is_err());
+    assert!(unbounded!(source, read("/child-only", 16)).is_err());
     Ok(())
 }
 

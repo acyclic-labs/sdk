@@ -82,10 +82,7 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
         assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
         assert_eq!(*failure.work, WorkCounters::default());
     }
-    assert_eq!(
-        unbounded!(workspace, head())?.id(),
-        current
-    );
+    assert_eq!(unbounded!(workspace, head())?.id(), current);
     Ok(())
 }
 
@@ -141,9 +138,7 @@ async fn cancelled_creation_spends_nothing_and_does_not_publish()
     let failure = failed.err().ok_or("pre-cancelled creation succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
-    assert!(
-        unbounded!(fs, open_workspace("cancelled-create")).is_err()
-    );
+    assert!(unbounded!(fs, open_workspace("cancelled-create")).is_err());
     Ok(())
 }
 
@@ -264,10 +259,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
         .await?;
     assert!(absent.value.is_none());
     absent.work.verify(budget)?;
-    assert_eq!(
-        unbounded!(workspace, head())?.id(),
-        head
-    );
+    assert_eq!(unbounded!(workspace, head())?.id(), head);
     assert_eq!(
         unbounded!(workspace, operation_generation(key))?
             .ok_or("convenience lost original")?

@@ -27,12 +27,12 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     let engine = Fs::local(LocalOptions::new(&store)).await?;
     let workspace = unbounded!(
         engine,
-        create_workspace_with_config(
-            "native-matrix",
-            VolumeConfig::native(Lifecycle::Durable),
-        )
+        create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable),)
     )?;
-    let mut transaction = unbounded!(workspace, begin_transaction(acyclic_fs::IdempotencyKey::new()))?;
+    let mut transaction = unbounded!(
+        workspace,
+        begin_transaction(acyclic_fs::IdempotencyKey::new())
+    )?;
     unbounded!(transaction, create_dir_all("/seed/nested"))?;
     unbounded!(
         transaction,
@@ -117,8 +117,8 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         _ => return Err("fixture transaction was not committed".into()),
     }
     #[cfg(windows)]
-    let default_read_metadata = unbounded!(workspace, stat("/seed/nested/default-read.txt"))?
-        .metadata;
+    let default_read_metadata =
+        unbounded!(workspace, stat("/seed/nested/default-read.txt"))?.metadata;
 
     let (watch_tx, watch_rx) = mpsc::channel();
     let mut watcher = if kind == "macos-nfs" {
@@ -174,8 +174,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     )?;
     parallel?;
     verify_published_mutations(&workspace, root.path()).await?;
-    let metadata = unbounded!(workspace, stat("/nested/metadata.txt"))?
-        .metadata;
+    let metadata = unbounded!(workspace, stat("/nested/metadata.txt"))?.metadata;
     #[cfg(windows)]
     {
         if metadata
@@ -184,8 +183,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         {
             return Err("Windows read-only metadata was not published".into());
         }
-        let timestamps = unbounded!(workspace, stat("/nested/timestamps.txt"))?
-            .metadata;
+        let timestamps = unbounded!(workspace, stat("/nested/timestamps.txt"))?.metadata;
         if timestamps.modified_ns != Some(QUALIFICATION_MODIFIED_NS) {
             return Err(format!(
                 "modified timestamp was not published: {:?}",
@@ -193,8 +191,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             )
             .into());
         }
-        let defaulted = unbounded!(workspace, stat("/seed/nested/default-metadata.txt"))?
-            .metadata;
+        let defaulted = unbounded!(workspace, stat("/seed/nested/default-metadata.txt"))?.metadata;
         if defaulted
             .windows_attributes
             .is_none_or(|attributes| attributes & 1 == 0)
@@ -205,8 +202,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             )
             .into());
         }
-        let observed = unbounded!(workspace, stat("/seed/nested/default-read.txt"))?
-            .metadata;
+        let observed = unbounded!(workspace, stat("/seed/nested/default-read.txt"))?.metadata;
         if observed != default_read_metadata {
             return Err(format!(
                 "plain read published metadata for a default-metadata projection: before {default_read_metadata:?}, after {observed:?}"
@@ -246,16 +242,11 @@ async fn verify_published_mutations(
             "rename was not published",
         ),
     ] {
-        if unbounded!(workspace, read(path, 64))?
-            .as_ref()
-            != expected
-        {
+        if unbounded!(workspace, read(path, 64))?.as_ref() != expected {
             return Err(failure.into());
         }
     }
-    if unbounded!(workspace, stat("/nested/delete-me.txt"))
-        .is_ok()
-    {
+    if unbounded!(workspace, stat("/nested/delete-me.txt")).is_ok() {
         return Err("delete was not published".into());
     }
     let original = unbounded!(workspace, stat("/nested/hard-source.txt"))?;
@@ -370,9 +361,7 @@ async fn verify_mount_isolation(workspace: &LocalWorkspace, root: &Path) -> Resu
     if fs::read(&escaped)? != b"host-only" {
         return Err("traversal mutation did not remain in the temporary host parent".into());
     }
-    if unbounded!(workspace, stat("/escape-attempt.txt"))
-        .is_ok()
-    {
+    if unbounded!(workspace, stat("/escape-attempt.txt")).is_ok() {
         return Err("traversal mutation escaped into workspace state".into());
     }
     fs::remove_file(escaped)?;

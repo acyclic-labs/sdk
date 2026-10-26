@@ -41,7 +41,9 @@ impl HttpTransport for Backend {
             Ok(HttpResponse {
                 retry_after: None,
                 status,
-                body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(body.as_bytes()))])),
+                body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(
+                    body.as_bytes(),
+                ))])),
             })
         })
     }
@@ -198,13 +200,19 @@ async fn stock(broken: bool) -> Result<()> {
     if broken {
         // The public counter's refusal is the provider's: the turn fails without generating.
         assert!(
-            matches!(&result, crate::tests::native_tests::stock::StockTurn::Failed(_)),
+            matches!(
+                &result,
+                crate::tests::native_tests::stock::StockTurn::Failed(_)
+            ),
             "{result:?}"
         );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 1);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 0);
     } else {
-        assert_eq!(result, crate::tests::native_tests::stock::StockTurn::Settled);
+        assert_eq!(
+            result,
+            crate::tests::native_tests::stock::StockTurn::Settled
+        );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 0);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 1);
     }

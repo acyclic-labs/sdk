@@ -110,7 +110,9 @@ impl AgentTool {
                     "spawn:{}",
                     input.name.as_deref().unwrap_or(&operation)
                 )) else {
-                    return Ok(rejected("name must be short printable ASCII without spaces"));
+                    return Ok(rejected(
+                        "name must be short printable ASCII without spaces",
+                    ));
                 };
                 TurnEffect::Spawn {
                     intent,

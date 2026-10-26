@@ -24,10 +24,7 @@ async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation
         .await?
         .value;
     base_tx.write_text("/base.txt", "base").await?;
-    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx)
-        .await?
-        .value
-    else {
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await?.value else {
         return Err("base commit did not publish".into());
     };
     let child = parent
@@ -55,9 +52,7 @@ async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation
         .await?
         .value;
     child_tx.write_text("/child.txt", "child").await?;
-    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx)
-        .await?
-        .value
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await?.value
     else {
         return Err("child commit did not publish".into());
     };
@@ -70,9 +65,7 @@ async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation
         .await?
         .value;
     parent_tx.write_text("/parent.txt", "parent").await?;
-    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx)
-        .await?
-        .value
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await?.value
     else {
         return Err("parent commit did not publish".into());
     };
@@ -183,10 +176,7 @@ async fn automatic_text_markers_are_reported_not_published()
         .await?
         .value;
     base_tx.write_text("/conflicted.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx)
-        .await?
-        .value
-    else {
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await?.value else {
         return Err("base commit did not publish".into());
     };
     let child = parent
@@ -214,9 +204,7 @@ async fn automatic_text_markers_are_reported_not_published()
         .await?
         .value;
     child_tx.write_text("/conflicted.txt", "child\n").await?;
-    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx)
-        .await?
-        .value
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await?.value
     else {
         return Err("child commit did not publish".into());
     };
@@ -229,9 +217,7 @@ async fn automatic_text_markers_are_reported_not_published()
         .await?
         .value;
     parent_tx.write_text("/conflicted.txt", "parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx)
-        .await?
-        .value
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await?.value
     else {
         return Err("parent commit did not publish".into());
     };
@@ -460,9 +446,7 @@ async fn independent_same_name_directory_creations_merge_by_path()
     child_tx
         .write_text("/sub/nested/deep.tmp", "nested child")
         .await?;
-    fixtures::commit(&mut child_tx)
-        .await?
-        .value;
+    fixtures::commit(&mut child_tx).await?.value;
     let mut parent_tx = parent
         .begin_transaction(
             IdempotencyKey::new(),
@@ -477,9 +461,7 @@ async fn independent_same_name_directory_creations_merge_by_path()
         .value;
     parent_tx.write_text("/scratch.tmp", "parent").await?;
     parent_tx.write_text("/sub/cache.tmp", "parent").await?;
-    fixtures::commit(&mut parent_tx)
-        .await?
-        .value;
+    fixtures::commit(&mut parent_tx).await?.value;
     let resolver = Resolver {
         workspaces: Mutex::new(BTreeMap::from([
             (parent.id(), parent.clone()),

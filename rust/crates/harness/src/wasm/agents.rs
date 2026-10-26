@@ -18,8 +18,8 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
-        FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
+        FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
+        PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
     },
     model::{Model, ModelContent, ModelProvider as _},
     resources::ProviderRef,
@@ -323,7 +323,9 @@ impl WasmAgents {
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmReducer,
         registry: &WasmAgentRegistry,
-        #[wasm_bindgen(unchecked_param_type = "((actor: string, error: string) => void) | undefined")]
+        #[wasm_bindgen(
+            unchecked_param_type = "((actor: string, error: string) => void) | undefined"
+        )]
         report: Option<Function>,
     ) -> std::result::Result<WasmAgents, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
@@ -491,7 +493,9 @@ impl WasmAgents {
     ) -> std::result::Result<JsValue, JsValue> {
         let path = AgentPath::try_from(agent).map_err(agent_error)?;
         let volume = self.private(&path).await?;
-        let body = self.stage(&path, &volume, "message", &intent, &text).await?;
+        let body = self
+            .stage(&path, &volume, "message", &intent, &text)
+            .await?;
         let record = InboxRecord::Message(Message {
             from: self.sender.clone(),
             id: IntentId::try_from(intent).map_err(agent_error)?,
@@ -618,7 +622,10 @@ impl WasmAgents {
             .read(ReadRequest { path, from, limit })
             .await
         {
-            Ok(records) => records.try_collect::<Vec<_>>().await.map_err(stream_error)?,
+            Ok(records) => records
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(stream_error)?,
             Err(StreamError::NotFound) => Vec::new(),
             Err(error) => return Err(stream_error(error)),
         };
@@ -627,8 +634,9 @@ impl WasmAgents {
             .map(|record| {
                 Ok(WasmAgentRecord {
                     sequence: record.sequence,
-                    value: serde_json::from_slice(&record.value)
-                        .map_err(|_| js_error(Error::Invalid("agent record is malformed".into())))?,
+                    value: serde_json::from_slice(&record.value).map_err(|_| {
+                        js_error(Error::Invalid("agent record is malformed".into()))
+                    })?,
                 })
             })
             .collect::<std::result::Result<Vec<_>, JsValue>>()?;
@@ -721,7 +729,11 @@ impl WasmAgents {
     ) -> std::result::Result<FileRef, JsValue> {
         let operation = OperationId::from_bytes(digest16(
             "acyclic.browser.agent.input.v1",
-            &[agent.as_str().as_bytes(), kind.as_bytes(), intent.as_bytes()],
+            &[
+                agent.as_str().as_bytes(),
+                kind.as_bytes(),
+                intent.as_bytes(),
+            ],
         ));
         let (issuer, scope) = self.authority(agent, std::iter::once(volume))?;
         let publisher = FilesystemContentPublisher::new(

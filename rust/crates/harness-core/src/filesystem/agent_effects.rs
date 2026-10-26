@@ -60,7 +60,9 @@ where
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             {
-                return Err(Error::Invalid("agent effect call key is not a file name".into()));
+                return Err(Error::Invalid(
+                    "agent effect call key is not a file name".into(),
+                ));
             }
             // Calls run one at a time, so the number of effects already
             // recorded is this call's position in the turn; a retried call

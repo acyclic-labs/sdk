@@ -514,13 +514,10 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
-        unbounded!(target, read("/source-before-plan", 16))?
-            .as_ref(),
+        unbounded!(target, read("/source-before-plan", 16))?.as_ref(),
         &b"one"[..]
     );
-    assert!(
-        unbounded!(target, read("/source-after-plan", 16)).is_err()
-    );
+    assert!(unbounded!(target, read("/source-after-plan", 16)).is_err());
 
     let stale_plan = source
         .join_into(&target)
@@ -545,9 +542,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .await?,
         JoinOutcome::StaleTarget(_)
     ));
-    assert!(
-        unbounded!(target, read("/source-after-plan", 16)).is_err()
-    );
+    assert!(unbounded!(target, read("/source-after-plan", 16)).is_err());
 
     let current_plan = source
         .join_into(&target)
@@ -583,8 +578,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         JoinOutcome::AlreadyApplied(_)
     ));
     assert_eq!(
-        unbounded!(target, read("/source-after-plan", 16))?
-            .as_ref(),
+        unbounded!(target, read("/source-after-plan", 16))?.as_ref(),
         &b"two"[..]
     );
     Ok(())
@@ -677,8 +671,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
         Err(DrivenJoinError::StaleCandidate)
     ));
     assert_eq!(
-        unbounded!(target, read("/shared", 16))?
-            .as_ref(),
+        unbounded!(target, read("/shared", 16))?.as_ref(),
         &b"target"[..]
     );
     Ok(())
@@ -800,15 +793,12 @@ async fn join_base_refines_only_to_a_descendant_of_the_common_ancestor()
     let fs = Fs::memory();
     let workspace = |name: &'static str| {
         let fs = fs.clone();
-        async move {
-            unbounded!(fs, create_workspace(name))
-        }
+        async move { unbounded!(fs, create_workspace(name)) }
     };
     let target = workspace("refine-target").await?;
     target.write_text("/early", "early").await?;
-    let head = |workspace: acyclic_fs::Workspace<_, _>| async move {
-        unbounded!(workspace, head())
-    };
+    let head =
+        |workspace: acyclic_fs::Workspace<_, _>| async move { unbounded!(workspace, head()) };
     let early = head(target.clone()).await?;
     target.write_text("/base", "base").await?;
     let base = head(target.clone()).await?;

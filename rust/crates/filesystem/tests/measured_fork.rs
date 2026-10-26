@@ -65,13 +65,8 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         )
         .await;
     assert!(exhausted.is_err());
-    assert!(
-        unbounded!(fs, open_workspace("measured-child")).is_err()
-    );
-    assert_eq!(
-        unbounded!(parent, head())?.id(),
-        pinned.id()
-    );
+    assert!(unbounded!(fs, open_workspace("measured-child")).is_err());
+    assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     let budget = finite_budget()?;
     let created = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
@@ -108,18 +103,12 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await?;
     retried.work.verify(budget)?;
     assert_eq!(retried.value.id(), created.value.id());
-    assert_eq!(
-        unbounded!(retried.value, head())?.id(),
-        generation
-    );
+    assert_eq!(unbounded!(retried.value, head())?.id(), generation);
     assert_eq!(
         unbounded!(retried.value, read("/kept.txt", 32))?,
         OwnedBytes::from_static(b"original")
     );
-    assert_eq!(
-        unbounded!(parent, head())?.id(),
-        pinned.id()
-    );
+    assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     assert!(
         parent
             .fork::<_, _, acyclic_fs::WorkspaceError>(
@@ -169,21 +158,13 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     };
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*cancelled.work, WorkCounters::default());
-    assert!(
-        unbounded!(fs, open_workspace("cancel-child")).is_err()
-    );
-    assert_eq!(
-        unbounded!(parent, head())?.id(),
-        pinned.id()
-    );
+    assert!(unbounded!(fs, open_workspace("cancel-child")).is_err());
+    assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     let other = unbounded!(fs, create_workspace("foreign-source"))?;
     let foreign = match parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "foreign-child",
-            ForkOptions::from_generation(
-                unbounded!(other, head())?,
-                IdempotencyKey::new(),
-            ),
+            ForkOptions::from_generation(unbounded!(other, head())?, IdempotencyKey::new()),
             acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
@@ -351,13 +332,8 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     );
     assert!(observed.load(Ordering::SeqCst));
     assert!(cancellation.is_cancelled());
-    assert!(
-        unbounded!(fs, open_workspace("inflight-child")).is_err()
-    );
-    assert_eq!(
-        unbounded!(parent, head())?.id(),
-        pinned.id()
-    );
+    assert!(unbounded!(fs, open_workspace("inflight-child")).is_err());
+    assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     let created = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "inflight-child",
@@ -389,10 +365,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             },
         )
         .await?;
-    assert_eq!(
-        unbounded!(retried.value, head())?.id(),
-        initial
-    );
+    assert_eq!(unbounded!(retried.value, head())?.id(), initial);
     assert_eq!(
         unbounded!(retried.value, read("/kept.txt", 32))?,
         OwnedBytes::from_static(b"pinned")

@@ -158,10 +158,7 @@ async fn put(
                 |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
                 |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
             )?),
-            &mut crate::AuthorityWork::new(
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            ),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )
         .await?;
     Ok(id)
@@ -245,10 +242,7 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
         .read(
             receipt.value,
             u64::MAX,
-            &mut crate::AuthorityWork::new(
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            ),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )
         .await?;
     let TreePage::Internal(children) =
@@ -322,10 +316,7 @@ async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn
         .read(
             receipt.value,
             u64::MAX,
-            &mut crate::AuthorityWork::new(
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            ),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )
         .await?;
     assert!(matches!(
@@ -694,10 +685,7 @@ async fn flatten_tree(
         .read(
             root,
             u64::MAX,
-            &mut crate::AuthorityWork::new(
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            ),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )
         .await?;
     Ok(

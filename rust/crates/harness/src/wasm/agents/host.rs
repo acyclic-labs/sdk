@@ -6,8 +6,7 @@ use crate::{
     context::{ModelContextCapacity, ModelTokenCount},
     conversation::{ContentResidencyVerifier, verified_content_bytes},
     model::{
-        FileProjectionPolicy, Model, ModelDispatch, ModelEvent, ModelProvider,
-        PreparedModelRequest,
+        FileProjectionPolicy, Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest,
     },
     tool::{ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
@@ -161,7 +160,8 @@ impl HostModel {
         let arguments = js_sys::Array::new();
         arguments.push(&js_sys::Uint8Array::from(request.bytes()));
         arguments.push(
-            &to_js(&dispatch).map_err(|_| Error::Invalid("model dispatch encoding failed".into()))?,
+            &to_js(&dispatch)
+                .map_err(|_| Error::Invalid("model dispatch encoding failed".into()))?,
         );
         arguments.push(&signal);
         arguments.push(&files);

@@ -698,7 +698,9 @@ pub(super) async fn worker_restart_with_options(
                 .tail()
                 .await?;
                 assert!(matches!(
-                    runtime.run_operation(&worker, task, &NoCommands, 0, None).await,
+                    runtime
+                        .run_operation(&worker, task, &NoCommands, 0, None)
+                        .await,
                     Err(Error::Invalid(_))
                 ));
                 assert_eq!(

@@ -29,10 +29,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     base_tx.write_text("/file.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx)
-        .await?
-        .value
-    else {
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await?.value else {
         return Err("base did not commit".into());
     };
     let child = parent
@@ -60,9 +57,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     child_tx.write_text("/file.txt", "child\n").await?;
-    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx)
-        .await?
-        .value
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await?.value
     else {
         return Err("child did not commit".into());
     };
@@ -75,9 +70,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     parent_tx.write_text("/file.txt", "parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx)
-        .await?
-        .value
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await?.value
     else {
         return Err("parent did not commit".into());
     };
@@ -164,9 +157,7 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
         .await?
         .value;
     resolution.write_text("/file.txt", "resolved\n").await?;
-    fixtures::commit(&mut resolution)
-        .await?
-        .value;
+    fixtures::commit(&mut resolution).await?.value;
     coordinator
         .declare_conflicted_paths(
             operation_id,

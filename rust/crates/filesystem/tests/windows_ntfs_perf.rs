@@ -327,11 +327,17 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let workspace = unbounded!(
         fs,
-        create_workspace_with_config("ntfs-link-capture", VolumeConfig::native(Lifecycle::Durable))
+        create_workspace_with_config(
+            "ntfs-link-capture",
+            VolumeConfig::native(Lifecycle::Durable)
+        )
     )?;
     let mut checkout = unbounded!(
         workspace,
-        checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction())
+        checkout(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction()
+        )
     )?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),

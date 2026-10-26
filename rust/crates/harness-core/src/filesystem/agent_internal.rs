@@ -90,7 +90,11 @@ where
             Ok(receipt) => Ok(Some(receipt.value.to_vec())),
             Err(failure) => {
                 let error = super::map_error(failure.error);
-                if missing(&error) { Ok(None) } else { Err(error) }
+                if missing(&error) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
             }
         }
     }
@@ -126,11 +130,9 @@ where
             .await;
         match written {
             Ok(_) => Ok(None),
-            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => self
-                .read(path, maximum_bytes)
-                .await?
-                .map(Some)
-                .ok_or(error),
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
+                self.read(path, maximum_bytes).await?.map(Some).ok_or(error)
+            }
             Err(error) => Err(error),
         }
     }
@@ -157,13 +159,18 @@ where
                 Ok(receipt) => receipt.value.0,
                 Err(failure) => {
                     let error = super::map_error(failure.error);
-                    return if missing(&error) { Ok(names) } else { Err(error) };
+                    return if missing(&error) {
+                        Ok(names)
+                    } else {
+                        Err(error)
+                    };
                 }
             };
             for entry in &page.entries {
                 names.push(
-                    String::from_utf8(entry.name.as_bytes().to_vec())
-                        .map_err(|_| crate::Error::Storage("internal file name is not UTF-8".into()))?,
+                    String::from_utf8(entry.name.as_bytes().to_vec()).map_err(|_| {
+                        crate::Error::Storage("internal file name is not UTF-8".into())
+                    })?,
                 );
             }
             if !page.has_more || page.entries.is_empty() {
@@ -194,10 +201,12 @@ where
         maximum_bytes: u64,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
-            Ok(match Self::create(self, path, &bytes, maximum_bytes).await? {
-                Some(existing) => ApprovalCreate::Existing(existing),
-                None => ApprovalCreate::Created,
-            })
+            Ok(
+                match Self::create(self, path, &bytes, maximum_bytes).await? {
+                    Some(existing) => ApprovalCreate::Existing(existing),
+                    None => ApprovalCreate::Created,
+                },
+            )
         })
     }
 }

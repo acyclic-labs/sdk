@@ -76,12 +76,12 @@ pub(crate) mod swarm;
 mod task_views;
 mod wire;
 
+#[cfg(feature = "browser")]
+mod agents;
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
 mod history;
 mod mcp;
-#[cfg(feature = "browser")]
-mod agents;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

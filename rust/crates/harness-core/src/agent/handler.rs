@@ -255,8 +255,14 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
         // A spawned child names the brief its private volume was created with.
-        if let (None, Some(volumes), Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) =
-            (&saved, &self.volumes, &mut wake)
+        if let (
+            None,
+            Some(volumes),
+            Wake::Inbox {
+                record: InboxRecord::ForkAdopted(adopted),
+                ..
+            },
+        ) = (&saved, &self.volumes, &mut wake)
             && adopted.parent.is_some()
             && adopted.brief.is_none()
         {

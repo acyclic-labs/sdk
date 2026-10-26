@@ -162,14 +162,9 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
     let mut invalid = write(b"data");
     invalid.bytes = OwnedBytes::from_static(b"bad");
     assert!(matches!(
-        provider_receipt!(
-            store,
-            put_many(&[invalid]),
-            WorkBudget::UNBOUNDED,
-            &cancel
-        )
-        .err()
-        .map(|failure| failure.error),
+        provider_receipt!(store, put_many(&[invalid]), WorkBudget::UNBOUNDED, &cancel)
+            .err()
+            .map(|failure| failure.error),
         Some(ObjectStoreError::DigestMismatch)
     ));
     cancel.cancel();

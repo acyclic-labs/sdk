@@ -157,10 +157,7 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
         let workspace = unbounded!(
             engine,
-            create_workspace_with_config(
-                "crash-owner",
-                VolumeConfig::native(Lifecycle::Durable),
-            )
+            create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable),)
         )?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace
@@ -186,10 +183,7 @@ async fn verify_remounted_workspace(crash_root: &Path, mount: &Path) -> Result<(
     eprintln!("qualification phase: reopening durable crash workspace");
     let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
     let workspace = unbounded!(engine, open_workspace("crash-owner"))?;
-    if unbounded!(workspace, read("/alive.txt", 16))?
-        .as_ref()
-        != b"alive"
-    {
+    if unbounded!(workspace, read("/alive.txt", 16))?.as_ref() != b"alive" {
         return Err::<(), Failure>("durable workspace lost crash fixture".into());
     }
     eprintln!("qualification phase: remounting the original ProjFS destination");

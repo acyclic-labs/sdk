@@ -70,10 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|failure| failure.error)?;
     let started = Instant::now();
     if batch {
-        let mut transaction = boxed(async {
-            unbounded!(workspace, begin_transaction(IdempotencyKey::new()))
-        })
-        .await?;
+        let mut transaction =
+            boxed(async { unbounded!(workspace, begin_transaction(IdempotencyKey::new())) })
+                .await?;
         for index in 0..writes {
             boxed(transaction.write(
                 &format!("/entry-{index:04}"),
@@ -116,10 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = started.elapsed();
     let read_started = Instant::now();
     for index in 0..writes {
-        let value = boxed(async {
-            unbounded!(workspace, read(&format!("/entry-{index:04}"), 64))
-        })
-        .await?;
+        let value =
+            boxed(async { unbounded!(workspace, read(&format!("/entry-{index:04}"), 64)) }).await?;
         let expected = format!("value-{index}");
         if value.as_ref() != expected.as_bytes() {
             return Err(format!("entry {index} differs from the model").into());
@@ -140,10 +137,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|failure| failure.error)?;
     let cold_started = Instant::now();
     for index in 0..writes {
-        let value = boxed(async {
-            unbounded!(workspace, read(&format!("/entry-{index:04}"), 64))
-        })
-        .await?;
+        let value =
+            boxed(async { unbounded!(workspace, read(&format!("/entry-{index:04}"), 64)) }).await?;
         if value.as_ref() != format!("value-{index}").as_bytes() {
             return Err(format!("entry {index} differs after reopen").into());
         }
