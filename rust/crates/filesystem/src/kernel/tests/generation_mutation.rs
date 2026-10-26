@@ -10,7 +10,7 @@ use crate::kernel::{
 use crate::memory::MemoryObjectStore;
 use crate::model::Lifecycle;
 use crate::storage::{ObjectId, ObjectKind};
-use crate::tests::support::{put_file_metadata, put_file_table_page, put_tree_page};
+use crate::test_support::{put_file_metadata, put_file_table_page, put_tree_page};
 use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -442,9 +442,15 @@ async fn assert_generation_matches_model(
     Ok(())
 }
 
+#[path = "generation_mutation/construction.rs"]
 mod construction;
+#[path = "generation_mutation/histories.rs"]
 mod histories;
+#[path = "generation_mutation/identity.rs"]
 mod identity;
+#[path = "generation_mutation/mutations.rs"]
 mod mutations;
+#[path = "generation_mutation/native_and_rename.rs"]
 mod native_and_rename;
+#[path = "generation_mutation/preconditions.rs"]
 mod preconditions;
