@@ -66,19 +66,6 @@ pub struct EffectAttestation {
     pub(in crate::core) proof: Vec<u8>,
 }
 
-impl EffectAttestation {
-    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        CodecQuota::produce(work, |quota| {
-            copy(self, quota, |value: &EffectAttestation, work| {
-                if let EffectStatus::Succeeded { result } = &value.status {
-                    result.validate(work)?;
-                }
-                value.owned_heap_bytes()
-            })
-        })
-    }
-}
-
 /// Complete durable projection of one external effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct EffectState {

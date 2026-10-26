@@ -141,34 +141,6 @@ where
         })
     }
 
-    #[cfg(test)]
-    pub(super) async fn execution_tail(
-        &self,
-        operation: OperationId,
-        io: Option<&PreparationIo>,
-    ) -> Result<u64> {
-        let hold;
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::distributed::execution_path(operation, work)
-        })?;
-        hold = io
-            .map(|io| io.guard_owned(path.as_str().len() as u64))
-            .transpose()?;
-        let mut history = io.map(PreparationIo::history_io);
-        let result = crate::store::operations::tail_optional_with_work(
-            &self.stream,
-            &path,
-            &mut history
-                .as_mut()
-                .map(|io| io as &mut dyn crate::store::HistoryIo),
-        )
-        .await
-        .map(|tail| tail.unwrap_or(0));
-        drop(path);
-        drop(hold);
-        result
-    }
-
     pub(super) async fn authenticated_metadata(
         &self,
         operation: OperationId,

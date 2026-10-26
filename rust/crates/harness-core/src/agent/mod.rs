@@ -29,6 +29,7 @@ pub use driver::{
     ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
     turn_id,
 };
+#[cfg(feature = "filesystem")]
 pub(crate) use handler::checkpoint_state;
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};

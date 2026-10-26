@@ -518,7 +518,6 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
 
 #[tokio::test]
 async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
-    use acyclic_harness_core::tool::ToolExecutor as _;
     let path = AgentPath::root(&id(9));
     let (_, binding) = private(&path).await?;
     let mut state = AgentState::adopted(path.clone(), &adopted(id(9)));

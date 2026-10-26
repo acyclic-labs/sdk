@@ -175,7 +175,6 @@ pub use json_literal::deserialize as deserialize_json_value;
 pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
-#[cfg(feature = "filesystem")]
 mod process_error;
 pub use process_error::ProcessError;
 

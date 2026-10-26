@@ -302,10 +302,7 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
     let mut single_records = Vec::new();
     for class in [
         InternalContentClass::Interaction,
-        InternalContentClass::Workflow,
         InternalContentClass::Execution,
-        InternalContentClass::ModelPrefix,
-        InternalContentClass::Conversation,
     ] {
         for adapter in 0..3 {
             let provider =

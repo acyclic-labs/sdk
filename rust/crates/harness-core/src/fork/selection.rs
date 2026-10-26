@@ -1,7 +1,5 @@
 //! Selected provider revisions and fork preparation.
 use super::*;
-#[cfg(feature = "filesystem")]
-use crate::core::OwnedBytes;
 /// One exact retained resource revision selected for a child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", content = "reference", rename_all = "snake_case")]
