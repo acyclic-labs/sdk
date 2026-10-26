@@ -52,6 +52,7 @@ pub struct AgentHandler<P: StreamProvider + ?Sized, D> {
     store: Store<P>,
     driver: D,
     manifest: Manifest,
+    volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
 }
 
 impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
@@ -68,7 +69,16 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                 bindings: Vec::new(),
                 limits,
             },
+            volumes: None,
         })
+    }
+
+    /// Creates spawned children's volumes through `volumes`, in each spawn's
+    /// commit; without it a child binds no volumes.
+    #[must_use]
+    pub fn with_spawn_volumes(mut self, volumes: std::sync::Arc<dyn super::SpawnVolumes>) -> Self {
+        self.volumes = Some(volumes);
+        self
     }
 
     /// The effects that create `agent`'s actor, first consuming inbox record `cursor`.
@@ -212,7 +222,11 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                 state.refill(records, end);
             }
         }
-        let step = step(&self.driver, &path, state, cursor, wake).await?;
+        let mut step = step(&self.driver, &path, state, cursor, wake).await?;
+        let composition = match &self.volumes {
+            Some(volumes) => volumes.bind(&step.state, &mut step.outs)?,
+            None => None,
+        };
         let request = lower(&step, cursor, delivery_key(&step.state, &trigger)?)?;
         let mut effects = effects(request);
         let spawned: BTreeSet<_> = step
@@ -232,7 +246,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             cursor,
         };
         Ok(Transition {
-            composition: None,
+            composition,
             checkpoint: Checkpoint {
                 codec: codec(),
                 bytes: serde_json::to_vec(&saved)

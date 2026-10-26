@@ -15,6 +15,8 @@ mod machine;
 mod layout;
 mod lower;
 mod records;
+mod volumes;
+pub use volumes::SpawnVolumes;
 
 pub use commit::{Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit};
 pub use machine::{

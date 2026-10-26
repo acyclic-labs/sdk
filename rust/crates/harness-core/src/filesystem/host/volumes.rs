@@ -250,6 +250,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(VolumeImportPlan::new(plan, source_grant, destination_grant))
     }
 
+    /// Configuration and initial access policy of every harness volume.
+    pub(in crate::filesystem) fn volume_initialization(&self) -> acyclic_fs::VolumeInitialization<'static> {
+        acyclic_fs::VolumeInitialization {
+            config: acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
+                acyclic_fs::Lifecycle::Durable
+            } else {
+                acyclic_fs::Lifecycle::Ephemeral
+            }),
+            access_policy: Some(access::INITIAL_POLICY),
+        }
+    }
+
     /// Creates the unique physical workspace for a logical volume.
     pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
         volume.validate(&mut None)?;
@@ -266,16 +278,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         self.filesystem
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 &name,
-                acyclic_fs::VolumeInitialization {
-                    config: acyclic_fs::VolumeConfig::portable(
-                        if self.filesystem.capabilities().durable {
-                            acyclic_fs::Lifecycle::Durable
-                        } else {
-                            acyclic_fs::Lifecycle::Ephemeral
-                        },
-                    ),
-                    access_policy: Some(access::INITIAL_POLICY),
-                },
+                self.volume_initialization(),
                 acyclic_fs::OperationId::from_bytes(operation),
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
