@@ -7,8 +7,9 @@
 //
 // The key hashes every top-level entry of the HEAD tree except documentation
 // and repository chrome (EXCLUDED), plus rustc's identity, the WASM profile and
-// the package, so any build input (manifests, buf.gen.yaml, compatibility
-// families, scripts, sources) changes it. A dirty input tree bypasses the cache.
+// the package and the exact HEAD commit, so any build input (manifests,
+// buf.gen.yaml, compatibility families, scripts, sources) changes it. A dirty
+// input tree, or any compiler/flag/bindgen override, bypasses the cache.
 // A hit restores every file the build generated (all ignored outputs under the
 // package closure and the Rust generated sources), verifying each sha256 as it
 // copies; any missing or corrupt entry falls back to building. A miss runs
@@ -39,13 +40,22 @@ const inputs = () => capture("git", ["ls-tree", "HEAD"]).split("\n").filter(Bool
   .map(line => ({ line, name: line.slice(line.indexOf("\t") + 1) }))
   .filter(({ name }) => !EXCLUDED.has(name) && !name.endsWith(".md"));
 
+// Selections that change what build-wasm.mjs would produce or admit beyond the
+// key. Any of them bypasses the cache: the build's own producer admission and
+// receipt checks stay the single provenance authority.
+const OVERRIDES = /^(RUSTC|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_TARGET|CARGO_PROFILE_\w+|CARGO_TARGET_WASM32_\w+|ACYCLIC_CARGO_BIN|ACYCLIC_WASM_BINDGEN_BIN|ACYCLIC_WASM_GROUPS_PREPARED)$/;
+export const overrides = (environment = process.env) => Object.keys(environment).filter(name => OVERRIDES.test(name) && environment[name] !== "").sort();
+
 export function cacheKey(name) {
+  if (overrides().length) return null;
   const entries = inputs();
   // Untracked files at the root (job scripts) are outside every listed path.
   const status = capture("git", ["status", "--porcelain=v1", "--untracked-files=normal", "--", ...entries.map(e => `:(literal)${e.name}`)]);
   if (status.trim() !== "") return null;
+  // The exact commit, not only its tree: family producer receipts record
+  // source_commit, so a hit restores what build-wasm.mjs writes for this HEAD.
   return createHash("sha256").update(JSON.stringify({
-    schema: SCHEMA, package: name, tree: entries.map(e => e.line),
+    schema: SCHEMA, package: name, commit: capture("git", ["rev-parse", "HEAD"]).trim(), tree: entries.map(e => e.line),
     rustc: capture("rustc", ["-vV"]).trim(), profile: process.env.ACYCLIC_WASM_PROFILE || "wasm-release",
   })).digest("hex");
 }
@@ -132,7 +142,8 @@ export function fetchOrBuild(name, cache) {
     return;
   }
   console.log(!cache ? `WASM_CACHE_NONE package=${name}`
-    : key ? `WASM_CACHE_MISS package=${name} key=${key}` : `WASM_CACHE_BYPASS package=${name}: input tree is not clean`);
+    : key ? `WASM_CACHE_MISS package=${name} key=${key}`
+    : `WASM_CACHE_BYPASS package=${name}: ${overrides().length ? `build overrides ${overrides().join(",")}` : "input tree is not clean"}`);
   const result = spawnSync(process.execPath, [join(root, "scripts/build-wasm.mjs"), name], { cwd: root, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
