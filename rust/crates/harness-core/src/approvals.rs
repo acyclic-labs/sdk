@@ -41,6 +41,28 @@ pub struct ApprovalPolicy {
     pub approvers: Vec<Approver>,
 }
 
+impl ApprovalPolicy {
+    /// One rules approver, `principal`, that accepts every action.
+    #[must_use]
+    pub fn accept_all(principal: impl Into<String>) -> Self {
+        Self {
+            approvers: vec![Approver::Rules {
+                principal: principal.into(),
+                rules: Vec::new(),
+                fallback: RuleVerdict::Allow,
+            }],
+        }
+    }
+
+    /// The model selection of every LLM approver, in chain order.
+    pub fn models(&self) -> impl Iterator<Item = &str> {
+        self.approvers.iter().filter_map(|approver| match approver {
+            Approver::Llm { model, .. } => Some(model.as_str()),
+            _ => None,
+        })
+    }
+}
+
 /// One independently identified approver in the chain.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

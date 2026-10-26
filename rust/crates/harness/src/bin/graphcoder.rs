@@ -1,10 +1,10 @@
-//! Argv and the local harness: the conversation is the harness's root agent,
-//! driven headless (`-p`, JSONL) or through the terminal view.
+//! `GraphCoder`: the harness's `GraphCoder` preset on the local harness, from
+//! argv and config files, driven headless (`-p`, JSONL) or through the
+//! terminal view. Every behaviour is a harness component; this binary only
+//! picks defaults and renders.
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
-#[path = "graphcoder/agent.rs"]
-mod agent;
 #[path = "graphcoder/args.rs"]
 mod args;
 #[path = "graphcoder/headless.rs"]
@@ -14,7 +14,8 @@ mod view;
 
 use acyclic_harness::{
     OperationId,
-    local::{LocalHarness, LocalHarnessConfig},
+    local::{LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
+    preset::Preset,
 };
 use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, InputFormat};
@@ -57,9 +58,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// The local owner exactly as the shipping binary composes it from argv and
-/// resolved credentials: the provider registry, its catalog and the
-/// workspace's native settings.
+/// The `GraphCoder` preset with argv's overrides on the local harness, its
+/// models resolved by the provider registry and its catalog, under the
+/// workspace's native settings and search.
 async fn open(
     args: &Args,
     credentials: Credentials,
@@ -78,8 +79,13 @@ async fn open(
     if args.settings_root.is_some() {
         settings = settings.codex_home(home.join(".codex"));
     }
-    let selection = match &args.model {
-        Some(selection) => selection.clone(),
+    let mut preset = Preset::graphcoder();
+    if let Some(path) = &args.approval_policy {
+        preset.approval_policy = serde_json::from_slice(&std::fs::read(path)?)?;
+    }
+    preset.approval_policy.bind()?;
+    let selection = match args.model.clone().or(preset.model.clone()) {
+        Some(selection) => selection,
         None => settings
             .configured_model()?
             .unwrap_or_else(|| registry.default_model().into()),
@@ -99,22 +105,11 @@ async fn open(
     if let Some(provider) = search.provider()? {
         config = config.search_provider(provider);
     }
-    let policy_bytes = match &args.approval_policy {
-        Some(path) => std::fs::read(path)?,
-        None => include_bytes!("graphcoder/approval-policy.json").to_vec(),
-    };
-    let policy: acyclic_harness::approvals::ApprovalPolicy = serde_json::from_slice(&policy_bytes)?;
-    policy.bind()?;
-    for approver in &policy.approvers {
-        if let acyclic_harness::approvals::Approver::Llm { model, .. } = approver {
-            let provider = Arc::new(registry.resolve(model)?);
-            config = config.approval_model(model, (provider.model().clone(), provider));
-        }
+    for model in preset.approval_policy.models() {
+        let provider = Arc::new(registry.resolve(model)?);
+        config = config.approval_model(model, (provider.model().clone(), provider));
     }
-    config = config
-        .settings(settings)
-        .web_tools()
-        .approval_policy(policy);
+    config = config.settings(settings).preset(&preset);
     Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
 }
 
@@ -153,7 +148,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
-    let conversation = phase(|| agent::Conversation::open(local)).await?;
+    let conversation = phase(|| Conversation::open(local)).await?;
     let operation = args
         .operation
         .clone()

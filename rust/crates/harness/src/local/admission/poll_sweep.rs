@@ -201,9 +201,7 @@ impl Fixture {
                 id: "approval-fixture".into(),
             },
         );
-        let approval_policy =
-            serde_json::from_slice(include_bytes!("../../bin/graphcoder/approval-policy.json"))
-                .map_err(storage)?;
+        let approval_policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
         let code = crate::package::harness::HarnessCode::new()?;
         let (runtime, signed, task_files) = runtime::open(
             &code,

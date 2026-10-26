@@ -1,6 +1,6 @@
 //! Headless conversations: one `-p` prompt, or JSONL requests on stdin.
-use crate::agent::{Conversation, Event, ended};
 use acyclic_harness::agent::{IntentId, Phase};
+use acyclic_harness::local::agent_conversation::{Conversation, Event, ended};
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, sync::Arc};

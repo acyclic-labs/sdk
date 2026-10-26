@@ -26,6 +26,7 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 mod admission;
+pub mod agent_conversation;
 mod agents;
 pub(crate) mod approvals;
 mod bind;

@@ -1,8 +1,9 @@
-//! The GraphCoder conversation: the local harness's root agent, which fans
+//! A typed client for the local harness's root agent conversation, which fans
 //! out through its spawn, send and archive tools. Prompts, cancels and
 //! approval decisions are inbox commits; observation follows the agent's
-//! status stream and reads its settled conversation entries.
-use acyclic_harness::{
+//! status stream and reads its settled conversation entries. Frontends render
+//! its events; it holds no frontend state.
+use crate::{
     Error, LocalHarness, Result,
     agent::{
         AgentPath, AgentRecord as _, Control, ConversationEntry, Delivered, InboxRecord, IntentId,
@@ -35,7 +36,9 @@ pub enum Event {
     Status(StatusRecord),
     /// One settled turn: its message's inbox sequence, if a message started it.
     Turn {
+        /// Inbox sequence of the message that started the turn.
         inbox: Option<u64>,
+        /// The settled conversation entry.
         entry: ConversationEntry,
     },
     /// The runtime failed the agent's delivery; it stays queued for a retry
@@ -43,6 +46,7 @@ pub enum Event {
     Failed(String),
 }
 
+/// One local agent's conversation, observed and driven as its local user.
 pub struct Conversation {
     local: Arc<LocalHarness>,
     agent: AgentPath,
@@ -53,6 +57,9 @@ pub struct Conversation {
 
 impl Conversation {
     /// The root agent of `local`, created on first use and reopened after.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn open(local: Arc<LocalHarness>) -> Result<Arc<Self>> {
         let (agents, agent) = local.agents().await?;
         let agent = agent.clone();
@@ -82,6 +89,9 @@ impl Conversation {
 
     /// Send `prompt` as message `id`; returns its inbox sequence. The same id
     /// and prompt replay exactly.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
         match self
             .local
@@ -98,12 +108,15 @@ impl Conversation {
     }
 
     /// Stop the running turn; the conversation stays open.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn cancel(&self) -> Result<()> {
         let (agents, _) = self.local.agents().await?;
         let by = Sender::User {
             principal: USER.into(),
         };
-        let id = intent(&acyclic_harness::OperationId::new().to_string())?;
+        let id = intent(&crate::OperationId::new().to_string())?;
         agents
             .send(
                 &self.agent,
@@ -117,6 +130,9 @@ impl Conversation {
 
     /// Answer the agent's pending approval request as the local user, who
     /// holds every human stage of the policy: the active stage accepts one.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn decide(&self, request: &IntentId, approved: bool) -> Result<()> {
         let mut refused = None;
         for human in &self.humans {
@@ -132,7 +148,7 @@ impl Conversation {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(acyclic_harness::agent::Error::Turn(error))
+                Err(crate::agent::Error::Turn(error))
                     if matches!(*error, Error::Unauthorized(_)) =>
                 {
                     refused = Some(error);
@@ -147,12 +163,18 @@ impl Conversation {
     }
 
     /// The text of a staged prompt or turn output.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn text(&self, file: &FileRef) -> Result<String> {
         let bytes = self.reader.read(file, MAXIMUM_TEXT, None, None)?.await?;
         String::from_utf8(bytes.to_vec()).map_err(failed)
     }
 
     /// The prompt and answer text of a settled turn.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn turn(&self, entry: &ConversationEntry) -> Result<(Option<String>, String)> {
         let prompt = match &entry.input {
             TurnInput::Message { body, .. } => Some(self.text(body).await?),
@@ -167,6 +189,9 @@ impl Conversation {
     /// dropped without a turn (cancelled): it is neither queued, unread nor in
     /// a running turn. Returns the conversation tail that holds every turn
     /// settled by then, so an entry for it below that tail still answers it.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn dropped(&self, inbox: u64) -> Result<Option<u64>> {
         let (agents, _) = self.local.agents().await?;
         let state = agents.state(&self.agent).await.map_err(failed)?;
@@ -180,6 +205,9 @@ impl Conversation {
     }
 
     /// Number of settled turns.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn settled(&self) -> Result<u64> {
         let (agents, _) = self.local.agents().await?;
         let conversation = self.agent.conversation().map_err(failed)?;
@@ -193,6 +221,9 @@ impl Conversation {
     /// Every settled turn from conversation sequence `from`, and the agent's
     /// phase from its latest status on. A status records only a phase change;
     /// a settled turn is its conversation entry.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
     pub async fn events(
         self: &Arc<Self>,
         from: u64,
@@ -284,6 +315,7 @@ impl Conversation {
 
 /// Whether `status` ends the wait for a turn without its output: the agent
 /// finished.
+#[must_use]
 pub fn ended(status: &StatusRecord) -> Option<String> {
     match &status.phase {
         Phase::Done { outcome } => Some(format!("conversation ended: {outcome:?}")),

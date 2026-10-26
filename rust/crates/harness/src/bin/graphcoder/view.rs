@@ -1,6 +1,6 @@
 //! The interactive terminal: one conversation's settled turns, its pending
 //! prompts and its phase, over the shared prompt editor and screen widgets.
-use crate::agent::{Conversation, Event};
+use acyclic_harness::local::agent_conversation::{Conversation, Event};
 use acyclic_harness::{
     agent::{IntentId, Phase},
     tui::{

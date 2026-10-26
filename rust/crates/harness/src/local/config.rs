@@ -277,6 +277,19 @@ impl LocalHarnessConfig {
         self.approval_models.insert(selection.into(), model);
         self
     }
+    /// Applies `preset`'s tool selection and approval policy. Its model is
+    /// resolved by the caller's provider registry and bound with [`Self::new`].
+    /// Web tools need the `search-http` feature.
+    #[must_use]
+    pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
+        self.default_tools = preset.default_tools;
+        #[cfg(feature = "search-http")]
+        {
+            self.web_tools = preset.web_tools || self.search_provider.is_some();
+        }
+        self.approval_policy = preset.approval_policy.clone();
+        self
+    }
     /// Disables the default set, retaining every custom tool.
     #[must_use]
     pub fn without_default_tools(mut self) -> Self {
