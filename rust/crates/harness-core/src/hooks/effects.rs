@@ -19,3 +19,44 @@ pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::Componen
         digest: manifest,
     }
 }
+
+/// Runs one event's hooks at most once per call operation. The outcome is
+/// staged on the agent's private volume at `hooks/{turn}/{operation}.json`
+/// before it is used, so a rebuilt turn reads it back and never runs the hooks
+/// again. A reconciling turn that finds no outcome returns `None`.
+pub async fn run_once<F, Fut>(
+    context: &crate::runtime::ToolContext,
+    event: HookEvent,
+    reconcile_only: bool,
+    run: F,
+) -> crate::Result<Option<HookOutput>>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = crate::Result<HookOutput>>,
+{
+    let operation = phase_operation(context.operation_id(), event);
+    if let (Some(file), _) = context.observe_staged_file_once(operation, None).await? {
+        let bytes = context.task().read_file(&file, None).await?;
+        return serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")));
+    }
+    if reconcile_only {
+        return Ok(None);
+    }
+    let output = run().await?;
+    let bytes = serde_json::to_vec(&output)
+        .map_err(|error| crate::Error::Invalid(format!("hook outcome: {error}")))?;
+    let path = format!("hooks/{}/{operation}.json", context.turn_id());
+    context
+        .stage_file_once(
+            operation,
+            &path,
+            &bytes,
+            "application/json",
+            event.name(),
+            None,
+        )
+        .await?;
+    Ok(Some(output))
+}

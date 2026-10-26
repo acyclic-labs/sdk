@@ -74,6 +74,8 @@ pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::ToolFailureText;
 pub use tool_failure::{TOOL_FAILURE_MESSAGE_BYTES, ToolErrorClass, ToolFailureCause};
 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+mod agent_hooks;
+#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_hooks;
 
 /// Restores the defect where a resumed driver settled nothing it could not
@@ -526,6 +528,9 @@ pub struct StockExecutor {
     tools: ToolRegistry,
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
+    /// A prompt hook's block: the turn fails with it before any model request.
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    prompt_block: Option<String>,
     limits: Limits,
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,

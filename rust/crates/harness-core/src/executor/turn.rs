@@ -24,6 +24,10 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(reason) = &self.stock.prompt_block {
+            return Err(Error::Invalid(reason.clone()));
+        }
         self.ensure_started(journal, input).await?;
         self.begin_working_history().await;
         self.begin_request_continuation().await;

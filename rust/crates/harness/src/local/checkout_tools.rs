@@ -11,6 +11,8 @@ use acyclic_stream::BoxProviderFuture;
 pub(super) mod access;
 pub(super) mod capture;
 mod git;
+#[cfg(any(test, feature = "hooks"))]
+mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
@@ -273,6 +275,26 @@ impl ToolExecutor for CheckoutTools {
     // tree is reaped, and the next call reconciles from the durable capture.
     fn cancellable_on_drop(&self) -> bool {
         true
+    }
+
+    #[cfg(any(test, feature = "hooks"))]
+    fn run_hooks<'a>(
+        &'a self,
+        configuration: (&'a crate::hooks::Hooks, [u8; 32]),
+        event: crate::hooks::HookEvent,
+        input: crate::hooks::HookInput<'a>,
+        registry: &'a ToolRegistry,
+        context: ToolContext,
+        reconcile_only: bool,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::hooks::HookOutput>>> {
+        Box::pin(self.configured_hooks(
+            configuration.0,
+            event,
+            input,
+            registry,
+            context,
+            reconcile_only,
+        ))
     }
 
     fn authorize(

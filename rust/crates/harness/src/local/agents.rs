@@ -127,6 +127,11 @@ impl TurnExecutors for Executors {
             .await?
             .with_tool_authority(context.scope().clone(), authority.approval.clone())?
             .with_task_context(&context, turn)?;
+            // The agent's first turn is the one before its first conversation entry.
+            #[cfg(any(test, feature = "hooks"))]
+            let executor = executor
+                .with_agent_hooks(&context, turn, input, agent.conversation_tail == 0)
+                .await?;
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
     }

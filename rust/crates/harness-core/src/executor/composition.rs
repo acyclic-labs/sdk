@@ -17,6 +17,8 @@ impl StockExecutor {
             tools,
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             hooks: None,
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            prompt_block: None,
             limits: Limits::default(),
             tool_scope: RuntimeScope::default(),
             policy: None,

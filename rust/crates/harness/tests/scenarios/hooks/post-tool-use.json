@@ -1,0 +1,87 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "PostToolUse": [
+     {
+      "matcher": "shell",
+      "hooks": [
+       {
+        "type": "command",
+        "shell": "sh",
+        "command": "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"HOOK-POST-HERON\"}}'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "expect": {
+  "results": {
+   "call": {
+    "name": "shell",
+    "content": {
+     "kind": "json",
+     "value": {
+      "success": true,
+      "exit_code": 0,
+      "stdout": "visible",
+      "stderr": "",
+      "stop": null
+     }
+    }
+   }
+  },
+  "requests": [
+   {
+    "messages": [
+     {
+      "content": {
+       "kind": "file",
+       "file": {
+        "display_name": "prompt"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "messages": [
+     {
+      "$contains": "HOOK-POST-HERON"
+     }
+    ]
+   }
+  ]
+ },
+ "platforms": {
+  "windows": {
+   "home": {
+    ".claude/settings.json": {
+     "hooks": {
+      "PostToolUse": [
+       {
+        "matcher": "shell",
+        "hooks": [
+         {
+          "type": "command",
+          "shell": "powershell",
+          "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"HOOK-POST-HERON\"}}')"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "expect": {
+    "results": {
+     "call": {
+      "name": "shell"
+     }
+    }
+   }
+  }
+ }
+}
