@@ -25,6 +25,9 @@ pub struct Workspace<'a> {
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.
     pub authored_at_seconds: i64,
+    /// The request this command runs as: a state-changing command saves its
+    /// result with its effect, and a replay returns that result.
+    pub request: Option<acyclic_fs::OperationId>,
 }
 
 /// A facade result and any branch view selected by checkout.
@@ -143,8 +146,12 @@ async fn execute<E: GitFilesystemExecutor<Error = Error>>(
     patch: Option<&[u8]>,
     executor: &E,
 ) -> crate::Result<Option<GitCommandOutput>> {
+    let repository = GitCompatRepository::new(workspace.repository, workspace.store.clone());
     run_git_command(
-        &GitCompatRepository::new(workspace.repository, workspace.store.clone()),
+        &match workspace.request {
+            Some(request) => repository.for_request(request),
+            None => repository,
+        },
         args,
         tree,
         patch,

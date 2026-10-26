@@ -67,12 +67,16 @@ impl HostWorkspaceOwner {
             prompt_bound(prompt)?;
             host_workspace::child_reference(reference)?;
             let (state, _) = self.native.session(parent).await?;
-            if !state.open_children.contains(&child) {
-                // Host-authored parent work is the child's starting point;
-                // the spawn commit forks the cut retained here.
-                let view = self.view(parent)?;
-                view.capture(operation).await?;
-                view.prepare_spawn(&child).await?;
+            if state.open_children.contains(&child) {
+                // Replaying a spawn is idempotent only for its own prompt.
+                if self.native.brief(&child).await?.prompt != *prompt {
+                    return Err(Error::Conflict(format!(
+                        "session {reference} was already spawned with a different prompt"
+                    )));
+                }
+            } else {
+                // Host-authored parent work is the child's starting point.
+                self.view(parent)?.capture(operation).await?;
                 self.native
                     .request(
                         parent,

@@ -55,7 +55,18 @@ pub struct GitCompatState {
     pub write_capture: Option<(OperationId, GitGenerationRef)>,
     /// Active first-parent bisection, if any.
     pub bisect: Option<GitBisectState>,
+    /// The results of the latest state-changing requests, oldest first and
+    /// at most `REQUEST_RESULTS`, each keyed by its request operation and
+    /// committed with the request's own effect, so a replayed request
+    /// returns its saved result instead of running again. Records written
+    /// before it existed hold none.
+    #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]
+    pub requests: std::collections::VecDeque<(OperationId, GitCommandOutput)>,
 }
+
+/// Request results one repository retains for replay: enough for every
+/// request one owner can have outstanding.
+pub(crate) const REQUEST_RESULTS: usize = 16;
 
 impl GitCompatState {
     /// Creates an unborn branch for one SDK workspace.
@@ -87,7 +98,34 @@ impl GitCompatState {
             checkout_reconciliation: None,
             write_capture: None,
             bisect: None,
+            requests: std::collections::VecDeque::new(),
         }
+    }
+
+    /// The saved result of request `operation`.
+    #[must_use]
+    pub fn request(&self, operation: OperationId) -> Option<&GitCommandOutput> {
+        self.requests
+            .iter()
+            .find(|(request, _)| *request == operation)
+            .map(|(_, output)| output)
+    }
+
+    /// Saves `output` as request `operation`'s result, in the commit that
+    /// carries its effect.
+    pub(super) fn record_request(
+        &mut self,
+        operation: Option<OperationId>,
+        output: &GitCommandOutput,
+    ) {
+        let Some(operation) = operation else {
+            return;
+        };
+        self.requests.retain(|(request, _)| *request != operation);
+        if self.requests.len() == REQUEST_RESULTS {
+            self.requests.pop_front();
+        }
+        self.requests.push_back((operation, output.clone()));
     }
 
     pub(super) fn current(&self) -> Result<&GitBranch, ()> {

@@ -36,6 +36,22 @@ pub struct FilesystemSpawnVolumes<P: 'static, O: 'static> {
     issuer: AuthorityRoot,
     admission: super::TurnAdmission,
     maximum_bytes: u64,
+    cuts: Option<Arc<dyn ForkCuts>>,
+}
+
+/// The generation a spawn forks each source volume at. A host that keeps
+/// state beside a volume (a lazy checkout's fork cut) retains that cut for
+/// `destination` under the spawn's creation `operation`, reusing a cut a
+/// stopped attempt retained, and returns its generation; `None` forks the
+/// source's head.
+pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
+    /// The generation of `source` that `destination` forks.
+    fn cut<'a>(
+        &'a self,
+        source: &'a VolumeRef,
+        destination: &'a VolumeRef,
+        operation: acyclic_fs::OperationId,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<acyclic_fs::GenerationId>>>;
 }
 
 impl<P, O> FilesystemSpawnVolumes<P, O> {
@@ -55,7 +71,15 @@ impl<P, O> FilesystemSpawnVolumes<P, O> {
             issuer,
             admission,
             maximum_bytes,
+            cuts: None,
         }
+    }
+
+    /// Forks each source at the generation `cuts` chooses.
+    #[must_use]
+    pub fn with_fork_cuts(mut self, cuts: Arc<dyn ForkCuts>) -> Self {
+        self.cuts = Some(cuts);
+        self
     }
 }
 
@@ -98,9 +122,8 @@ fn invalid(error: crate::Error) -> Error {
 
 /// The volume `child` binds in place of its parent's non-shared `binding`,
 /// and the creation operation of the spawn commit that creates it. A host
-/// that keeps state beside a forked volume (a lazy checkout's fork cut)
-/// prepares it under this same operation before the spawn.
-pub fn spawned_volume(
+/// that keeps state beside a forked volume prepares it through [`ForkCuts`].
+fn spawned_volume(
     child: &AgentPath,
     binding: &VolumeBinding,
 ) -> Result<(VolumeRef, acyclic_fs::OperationId), Error> {
@@ -392,6 +415,7 @@ where
         }
         Ok(Box::new(SpawnFork {
             host: Arc::clone(&self.host),
+            cuts: self.cuts.clone(),
             planned,
             commit: None,
         }))
@@ -401,6 +425,7 @@ where
 /// The participant forking and creating one step's child volumes.
 struct SpawnFork<P: 'static, O: 'static> {
     host: Arc<Host<P, O>>,
+    cuts: Option<Arc<dyn ForkCuts>>,
     planned: Vec<Planned>,
     commit: Option<FilesystemCommit>,
 }
@@ -431,12 +456,34 @@ where
                     .await
                     .map_err(|failure| guest(failure.error))?
                     .value;
-                let head = workspace
-                    .head(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(|failure| guest(failure.error))?
-                    .value;
-                heads.push(head);
+                let cut = match &self.cuts {
+                    Some(cuts) => cuts
+                        .cut(
+                            source,
+                            &planned.destination,
+                            acyclic_fs::OperationId::from_bytes(planned.key),
+                        )
+                        .await
+                        .map_err(guest)?,
+                    None => None,
+                };
+                let generation = match cut {
+                    Some(cut) => {
+                        workspace
+                            .generation(cut, WorkBudget::UNBOUNDED, &cancellation)
+                            .await
+                            .map_err(|failure| guest(failure.error))?
+                            .value
+                    }
+                    None => {
+                        workspace
+                            .head(WorkBudget::UNBOUNDED, &cancellation)
+                            .await
+                            .map_err(|failure| guest(failure.error))?
+                            .value
+                    }
+                };
+                heads.push(generation);
             }
         }
         let mut forks = Vec::with_capacity(heads.len());

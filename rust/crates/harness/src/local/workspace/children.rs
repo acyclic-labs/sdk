@@ -25,29 +25,54 @@ impl LocalWorkspace {
 }
 
 impl LocalWorkspace {
-    /// Retains the current cut of the lazy `source` project for the fork
-    /// `destination` that a spawn commit creates under `operation`: step one
-    /// of the external-creator fork. Call it right before that spawn, after
-    /// capturing `source`, so the commit forks the cut's head.
-    pub(in crate::local) async fn prepare_spawned_project(
+    /// The cut of lazy `source` that spawned fork `destination` forks under
+    /// creation `operation` (step one of the external-creator fork): the cut
+    /// a previous attempt retained, else `source`'s current cut, retained
+    /// now. `None` when `source` keeps no lazy state.
+    async fn spawned_fork_cut(
         &self,
         source: &VolumeRef,
         destination: &VolumeRef,
         operation: acyclic_fs::OperationId,
-    ) -> Result<()> {
+    ) -> Result<Option<acyclic_fs::GenerationId>> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let view = self.project_view(source).await?;
         let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let destination = destination.storage_name(&mut None)?;
+        let retained = self
+            .store
+            .load_lazy_workspace(
+                self.filesystem
+                    .workspace_id(&destination)
+                    .map_err(storage)?,
+                &mut accounting,
+            )
+            .await
+            .map_err(storage)?
+            .and_then(|state| state.fork_origin)
+            .filter(|origin| origin.operation_id == operation);
+        if let Some(origin) = retained {
+            return Ok(Some(origin.snapshot.authored_generation));
+        }
+        let lazy = self
+            .store
+            .load_lazy_workspace(
+                self.filesystem
+                    .workspace_id(&source.storage_name(&mut None)?)
+                    .map_err(storage)?,
+                &mut accounting,
+            )
+            .await
+            .map_err(storage)?
+            .is_some();
+        if !lazy {
+            return Ok(None);
+        }
+        let view = self.project_view(source).await?;
         let cut = view.snapshot(&mut accounting).await.map_err(storage)?;
-        view.prepare_fork_snapshot(
-            &destination.storage_name(&mut None)?,
-            cut,
-            operation,
-            &mut accounting,
-        )
-        .await
-        .map_err(storage)?;
-        Ok(())
+        view.prepare_fork_snapshot(&destination, cut, operation, &mut accounting)
+            .await
+            .map_err(storage)?;
+        Ok(Some(cut.authored_generation))
     }
 
     /// The lazy view of spawned project `project`, first binding its
@@ -134,5 +159,19 @@ impl LocalWorkspace {
             .await
             .map_err(storage)?;
         Ok(view)
+    }
+}
+
+/// Spawned forks of this checkout's lazy volumes fork their retained cut.
+pub(in crate::local) struct LazyForkCuts(pub(in crate::local) Arc<LocalWorkspace>);
+
+impl crate::filesystem::ForkCuts for LazyForkCuts {
+    fn cut<'a>(
+        &'a self,
+        source: &'a VolumeRef,
+        destination: &'a VolumeRef,
+        operation: acyclic_fs::OperationId,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<acyclic_fs::GenerationId>>> {
+        Box::pin(self.0.spawned_fork_cut(source, destination, operation))
     }
 }

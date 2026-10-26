@@ -43,6 +43,13 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
+    if let Some(output) = repository
+        .request_result()
+        .await
+        .map_err(super::errors::compat_error)?
+    {
+        return Ok(Some(output));
+    }
     if !git_transition_command(argv)
         && repository
             .resume(executor)

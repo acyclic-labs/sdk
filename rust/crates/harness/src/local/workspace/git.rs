@@ -295,6 +295,9 @@ impl Commands<'_> {
                 author: "LocalHarness",
                 authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),
+                request: Some(acyclic_fs::OperationId::from_bytes(
+                    context.operation.into_bytes(),
+                )),
             },
             arguments,
             || owner.verify(),

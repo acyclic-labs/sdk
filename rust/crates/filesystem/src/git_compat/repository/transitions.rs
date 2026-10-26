@@ -48,6 +48,18 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         transition: GitTransitionId,
         result: &GitFilesystemResult,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
+        self.settle(transition, result, false).await
+    }
+
+    /// Settles `transition` and saves the request's result with it: the
+    /// filesystem result itself, for a transition that settles to no state
+    /// change, when `filesystem` is set.
+    pub(super) async fn settle(
+        &self,
+        transition: GitTransitionId,
+        result: &GitFilesystemResult,
+        filesystem: bool,
+    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         self.update(|state| {
             let pending = state
                 .pending
@@ -55,11 +67,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .filter(|pending| pending.id == transition)
                 .ok_or(GitCompatError::StaleTransition)?;
             validate_completion_result(state, &pending, result)?;
-            match complete_pending(state, pending.mutation, result) {
-                Ok(output) => Ok(Some(output)),
-                Err(GitCompatError::NothingToCommit) => Ok(None),
-                Err(error) => Err(error),
-            }
+            let output = match complete_pending(state, pending.mutation, result) {
+                Ok(GitCommandOutput::NoOp) if filesystem => {
+                    GitCommandOutput::Filesystem(result.clone())
+                }
+                Ok(output) => output,
+                Err(GitCompatError::NothingToCommit) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            state.record_request(self.request, &output);
+            Ok(Some(output))
         })
         .await?
         .ok_or(GitCompatError::NothingToCommit)

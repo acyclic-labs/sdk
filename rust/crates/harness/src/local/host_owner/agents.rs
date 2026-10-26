@@ -519,6 +519,7 @@ impl TurnDriver for Shared {
 pub(super) struct NativeAgents {
     host: AgentHost<LocalStream>,
     driver: Arc<HostDriver>,
+    volumes: Arc<dyn crate::agent::SpawnVolumes>,
     files: Arc<LocalFilesystem>,
     issuer: AuthorityRoot,
     bindings: [VolumeBinding; 2],
@@ -538,18 +539,27 @@ impl NativeAgents {
             issuer: issuer.clone(),
         });
         let within = ActorReference::new(b"local", b"native", b"hosts").map_err(storage)?;
+        let volumes: Arc<dyn crate::agent::SpawnVolumes> =
+            Arc::new(
+                FilesystemSpawnVolumes::new(
+                    local.files.clone(),
+                    issuer.clone(),
+                    TurnAdmission::LocalRoot,
+                    MAXIMUM_BYTES,
+                )
+                .with_fork_cuts(Arc::new(crate::local::workspace::LazyForkCuts(
+                    Arc::clone(local.workspace().ok_or_else(|| {
+                        Error::Unsupported("native hosts require a checkout".into())
+                    })?),
+                ))),
+            );
         let host = AgentHost::with_spawn_volumes(
             stream,
             Shared(Arc::clone(&driver)),
             within,
             ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(storage)?,
             Arc::new(SystemClock),
-            Arc::new(FilesystemSpawnVolumes::new(
-                local.files.clone(),
-                issuer.clone(),
-                TurnAdmission::LocalRoot,
-                MAXIMUM_BYTES,
-            )),
+            Arc::clone(&volumes),
         )
         .map_err(storage)?;
         let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
@@ -559,6 +569,7 @@ impl NativeAgents {
         Ok(Self {
             host,
             driver,
+            volumes,
             files: local.files.clone(),
             issuer,
             bindings: [
@@ -615,6 +626,19 @@ impl NativeAgents {
     /// The committed state of `agent`.
     pub(super) async fn state(&self, agent: &AgentPath) -> Result<AgentState> {
         self.host.state(agent).await.map_err(storage)
+    }
+
+    /// The brief spawned `child` was created with.
+    pub(super) async fn brief(&self, child: &AgentPath) -> Result<Brief> {
+        let state = self.state(child).await?;
+        let file = self
+            .volumes
+            .brief(child, &state.volumes)
+            .await
+            .map_err(storage)?
+            .ok_or_else(|| Error::NotFound("spawned session has no brief".into()))?;
+        let bytes = self.driver.read(&state, &file).await?;
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
     }
 
     /// `agent`'s session after its last turn.

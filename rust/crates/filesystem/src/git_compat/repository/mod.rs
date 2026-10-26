@@ -8,6 +8,7 @@ mod transitions;
 pub struct GitCompatRepository<S> {
     pub(super) workspace_id: WorkspaceId,
     pub(super) store: S,
+    pub(super) request: Option<OperationId>,
 }
 
 /// Compatibility history record produced by one distributed publication.
@@ -37,7 +38,17 @@ impl<S> GitCompatRepository<S> {
         Self {
             workspace_id,
             store,
+            request: None,
         }
+    }
+
+    /// Runs commands as request `operation`: each state-changing command
+    /// saves its result with its effect, and [`Self::request_result`]
+    /// returns it on replay.
+    #[must_use]
+    pub const fn for_request(mut self, operation: OperationId) -> Self {
+        self.request = Some(operation);
+        self
     }
 
     /// Returns the repository's workspace identity.
@@ -47,6 +58,16 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// The saved result of this repository's request, if it already ran.
+    pub async fn request_result(
+        &self,
+    ) -> Result<Option<GitCommandOutput>, GitCompatError<S::Error>> {
+        let Some(operation) = self.request else {
+            return Ok(None);
+        };
+        Ok(self.load().await?.request(operation).cloned())
+    }
+
     /// Reads the selected workspace and its pending native publication at one durable cut.
     pub async fn checkout_selection(
         &self,
