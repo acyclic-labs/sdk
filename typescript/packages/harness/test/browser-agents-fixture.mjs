@@ -1,9 +1,9 @@
-import init, { AgentGuest, WasmAgentRegistry, WasmAgents, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 
 // Test composition only: the real Rust agent host over IndexedDB providers.
 // The model is a scripted host callback; scheduling and recovery stay in Rust.
-export async function agentsFixture(id, reply) {
-  await init();
+export async function agentsFixture(id, reply, initialize = init) {
+  await initialize();
   const owner = new WasmReducer({ kind: "task", id }, "browser-agents", new Uint8Array(32).fill(23), []);
   const registry = new WasmAgentRegistry();
   const requests = [];
@@ -27,10 +27,12 @@ export async function agentsFixture(id, reply) {
   const failures = [];
   return { owner, registry, requests, failures,
     open: () => WasmAgents.open(options, owner, registry, (actor, error) => failures.push({ actor, error })),
-    // The guest artifact's entry, and a host whose turns run only through it.
-    guest: () => AgentGuest.open(options, owner, registry),
-    hosting: guest => WasmAgents.openHosting(options, owner, guest.manifest(), (delivery, signal) => guest.onRecord(delivery, signal),
-      (actor, error) => failures.push({ actor, error })),
+    // Host-injected storage, the guest artifact's entry over it, and a host
+    // over the same storage whose turns run only through the guest.
+    providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),
+    guest: providers => AgentGuest.open(providers, options, owner, registry),
+    hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
+      (delivery, signal) => guest.onRecord(delivery, signal), (actor, error) => failures.push({ actor, error })),
     free: () => { registry.free(); owner.free(); } };
 }
 

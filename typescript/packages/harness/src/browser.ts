@@ -3,6 +3,7 @@ export {
   WasmReducer as BrowserAgentAuthority,
   WasmAgentRegistry as BrowserAgentRegistry,
   WasmAgents as BrowserAgents,
+  WasmAgentProviders as BrowserAgentProviders,
   AgentGuest,
   type WasmBrowserAgentOptions as BrowserAgentOptions,
   type WasmDelivered as BrowserDelivered,

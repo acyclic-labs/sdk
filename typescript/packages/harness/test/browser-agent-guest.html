@@ -10,21 +10,23 @@ const phase = text => { result.dataset.waiting = text; };
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 let fixture;
+let providers;
 let guest;
 let agents;
 try {
   fixture = await agentsFixture(crypto.randomUUID(), async function* ({ texts }) {
     yield { kind: "content", delta: `guest:${texts.at(-1)}` };
   });
-  phase("load the guest artifact's canonical entry");
-  guest = await fixture.guest();
+  phase("load the guest artifact's canonical entry over host-injected storage");
+  providers = await fixture.providers("indexedDb");
+  guest = fixture.guest(providers);
   const { AgentGuest } = await import("../generated/wasm/acyclic_harness_wasm.js");
   assert(AgentGuest.abiVersion() === 1, "guest ABI version differs");
   const manifest = guest.manifest();
   assert(manifest instanceof Uint8Array && manifest.byteLength > 32, "guest manifest is empty");
   let deliveries = 0;
   const counted = { manifest: () => manifest, onRecord: (delivery, signal) => { deliveries += 1; return guest.onRecord(delivery, signal); } };
-  agents = await fixture.hosting(counted);
+  agents = fixture.hosting(providers, counted);
   phase("one agent turn runs in the guest; the host publishes it");
   const a = await agents.create("agent-guest", "hello");
   const entries = await until(() => agents.read(a, "conversation", 0n, 16), entries => entries.length === 1);
@@ -40,6 +42,7 @@ try {
 } finally {
   agents?.free();
   guest?.free();
+  providers?.free();
   fixture?.free();
 }
 </script>

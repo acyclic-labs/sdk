@@ -7,8 +7,8 @@
 
 use super::host::Cancel;
 use super::{
-    BrowserHandler, Providers, WasmAgentRegistry, WasmBrowserAgentOptions, WasmReducer, from_js,
-    js_error,
+    BrowserHandler, WasmAgentProviders, WasmAgentRegistry, WasmBrowserAgentOptions, WasmReducer,
+    from_js, js_error,
 };
 use crate::Error;
 use acyclic_actors::guest::{GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, wire};
@@ -28,17 +28,18 @@ fn guest_error(error: GuestError) -> JsValue {
 
 #[wasm_bindgen]
 impl AgentGuest {
-    /// Opens the guest over the providers `options` names; `owner` holds the
+    /// Opens the guest over the storage its host injects: the guest owns
+    /// none. `options` carries the provider identity and limits, `owner` the
     /// agents' signing custody and `registry` the turns' model and tools.
-    pub async fn open(
+    pub fn open(
+        providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmReducer,
         registry: &WasmAgentRegistry,
     ) -> Result<AgentGuest, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        let providers = Providers::open(&options).await?;
         Ok(Self {
-            handler: providers.handler(&options, owner, registry)?,
+            handler: providers.providers.handler(&options, owner, registry)?,
         })
     }
 

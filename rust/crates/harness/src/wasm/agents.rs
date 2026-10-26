@@ -8,7 +8,7 @@ use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{
         AGENTS, AgentHandler, AgentHost, AgentId, AgentPath, Control, Delivered, ExecutorDriver,
-        ForkAdopted, InboxRecord, IntentId, Message, Sender, VolumeBinding, actor_store,
+        ForkAdopted, InboxRecord, IntentId, Message, Sender, VolumeBinding,
     },
     context::{CompactionPolicy, ContextPipeline},
     conversation::{
@@ -19,20 +19,18 @@ use crate::{
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
-        PRIVATE_VOLUME, TurnAdmission, TurnAuthority, TurnExecutors, TurnLimits,
+        PRIVATE_VOLUME, TurnAuthority, TurnExecutors,
     },
     model::{Model, ModelContent, ModelProvider as _},
     resources::ProviderRef,
     runtime::RuntimeScope,
     tool::{Tool, ToolDefinition, ToolRegistry},
 };
-use acyclic_actors::{
-    addressing::ActorReference, domain::ActorLimits, guest::Handler, local::SystemClock,
-};
-use acyclic_fs::{EmbeddedCapabilities, Fs, StreamAuthorityStore, browser::IndexedDbObjectStore};
+use acyclic_actors::{addressing::ActorReference, guest::Handler, local::SystemClock};
+use acyclic_fs::StreamAuthorityStore;
 use acyclic_stream::{
-    BoxProviderFuture, BrowserStream, BrowserStreamLimits, ChildrenPageRequest, CommitId,
-    MemoryLimits, ReadRequest, StreamError, StreamPath, StreamProvider,
+    BoxProviderFuture, ChildrenPageRequest, CommitId, ReadRequest, StreamError, StreamPath,
+    StreamProvider,
 };
 use futures::{TryStreamExt as _, future::AbortHandle};
 use js_sys::Function;
@@ -43,12 +41,14 @@ use wasm_bindgen::prelude::*;
 
 mod guest;
 mod host;
+mod providers;
 use host::{HostModel, HostTool};
+use providers::{Objects, Providers, Streams, WasmAgentProviders};
 
 type Authorities = StreamAuthorityStore<dyn StreamProvider>;
-type BrowserTurns = FilesystemTurnHost<BrowserStream, Authorities, IndexedDbObjectStore>;
-type BrowserAgents = AgentHost<BrowserStream>;
-type BrowserHandler = AgentHandler<BrowserStream, ExecutorDriver<Arc<BrowserTurns>>>;
+type BrowserTurns = FilesystemTurnHost<Streams, Authorities, Objects>;
+type BrowserAgents = AgentHost<Streams>;
+type BrowserHandler = AgentHandler<Streams, ExecutorDriver<Arc<BrowserTurns>>>;
 
 /// Settled turns of history in each turn's model context, as in the local host.
 const HISTORY_TURNS: u32 = 64;
@@ -300,11 +300,12 @@ impl TurnExecutors for Executors {
 
 /// Every agent of one browser profile. Opening starts the one runtime that
 /// hosts them all; freeing the handle stops it. Durable state is the
-/// IndexedDB databases; reopening resumes every agent's pending input.
+/// storage its host injected (`IndexedDB` by default); reopening resumes
+/// every agent's pending input.
 #[wasm_bindgen]
 pub struct WasmAgents {
     agents: Arc<BrowserAgents>,
-    filesystem: Arc<FilesystemHost<Authorities, IndexedDbObjectStore>>,
+    filesystem: Arc<FilesystemHost<Authorities, Objects>>,
     provider: ProviderRef,
     issuer: AuthorityRoot,
     sender: Sender,
@@ -315,99 +316,6 @@ pub struct WasmAgents {
 impl Drop for WasmAgents {
     fn drop(&mut self) {
         self.run.abort();
-    }
-}
-
-/// One browser profile's agent streams and volumes.
-struct Providers {
-    stream: Arc<BrowserStream>,
-    filesystem: Arc<FilesystemHost<Authorities, IndexedDbObjectStore>>,
-}
-
-impl Providers {
-    /// Opens the profile's `IndexedDB` providers named by `options`.
-    async fn open(options: &WasmBrowserAgentOptions) -> std::result::Result<Self, JsValue> {
-        options.limits.validate(&mut None).map_err(js_error)?;
-        let storage = |error: StreamError| stream_error(error);
-        let authority = acyclic_fs::browser::open_authority(
-            &options.filesystem_database,
-            BrowserStreamLimits::default(),
-        )
-        .await
-        .map_err(storage)?;
-        let objects =
-            IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
-                .await
-                .map_err(|error| js_error(Error::Storage(error.to_string())))?;
-        let filesystem = FilesystemHost::new(
-            Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
-            &options.filesystem_provider,
-            None,
-        )
-        .map_err(js_error)?;
-        let limits = &options.stream_limits;
-        let stream = Arc::new(
-            BrowserStream::open(
-                &options.stream_database,
-                BrowserStreamLimits {
-                    commands: limits.commands,
-                    journal_bytes: limits.journal_bytes,
-                    memory: MemoryLimits {
-                        paths: limits.paths as usize,
-                        path_bytes: limits.path_bytes as usize,
-                        records: limits.records as usize,
-                        payload_bytes: limits.payload_bytes as usize,
-                        commits: limits.commits as usize,
-                        idempotency_results: limits.idempotency_results as usize,
-                    },
-                },
-            )
-            .await
-            .map_err(storage)?,
-        );
-        Ok(Self { stream, filesystem })
-    }
-
-    /// The one agent handler package over these providers: the handler the
-    /// in-process host runs and the guest artifact exports.
-    fn handler(
-        &self,
-        options: &WasmBrowserAgentOptions,
-        owner: &WasmReducer,
-        registry: &WasmAgentRegistry,
-    ) -> std::result::Result<BrowserHandler, JsValue> {
-        let (model, provider, compaction) = registry
-            .model
-            .clone()
-            .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
-        let turn_limits = TurnLimits {
-            maximum_bytes: options.limits.file_bytes,
-            max_steps: u32::try_from(options.limits.model_steps)
-                .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
-            history_turns: HISTORY_TURNS,
-        };
-        let turns = Arc::new(FilesystemTurnHost::new(
-            Arc::clone(&self.stream),
-            Arc::clone(&self.filesystem),
-            owner.issuer.clone(),
-            TurnAdmission::LocalRoot,
-            Arc::new(Executors {
-                model,
-                provider,
-                compaction,
-                tools: registry.tools.clone(),
-                grants: registry.grants.clone(),
-                limits: options.limits,
-            }),
-            turn_limits,
-        ));
-        AgentHandler::new(
-            actor_store(&self.stream).map_err(agent_error)?,
-            ExecutorDriver::new(turns),
-            ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16)
-                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
-        )
-        .map_err(|error| js_error(Error::Invalid(error.to_string())))
     }
 }
 
@@ -432,17 +340,18 @@ impl WasmAgents {
         report: Option<Function>,
     ) -> std::result::Result<WasmAgents, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        let providers = Providers::open(&options).await?;
+        let providers = Providers::indexed_db(&options).await?;
         let handler = providers.handler(&options, owner, registry)?;
         Self::host(options, owner, providers, Arc::new(handler), report)
     }
 
-    /// Opens the providers and hosts every agent whose turns run in an agent
+    /// Hosts every agent of `providers` (shared with the guest) whose turns run in an agent
     /// guest artifact ([`guest::AgentGuest`]): `manifest` is the guest's
     /// canonical manifest and `onRecord` its entry. This host keeps
     /// scheduling, controls and publication.
     #[wasm_bindgen(js_name = openHosting)]
-    pub async fn open_hosting(
+    pub fn open_hosting(
+        providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmReducer,
         manifest: &[u8],
@@ -458,9 +367,14 @@ impl WasmAgents {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let manifest = acyclic_actors::guest::wire::decode_manifest(manifest)
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
-        let providers = Providers::open(&options).await?;
         let handler = acyclic_actors::guest::wire::Remote::new(manifest, guest::call(on_record));
-        Self::host(options, owner, providers, Arc::new(handler), report)
+        Self::host(
+            options,
+            owner,
+            providers.providers.clone(),
+            Arc::new(handler),
+            report,
+        )
     }
 }
 
