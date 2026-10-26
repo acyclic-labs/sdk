@@ -80,7 +80,67 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let reopened = PostgresStream::connect(database, &namespace).await?;
     assert_eq!(reopened.tail(path).await?, 4);
     println!("Cross-session replay, exact CAS, LISTEN/NOTIFY and reopen checks passed");
+    subscription_lifetime(database).await?;
     listener_failure(database).await?;
+    Ok(())
+}
+
+async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error::Error>> {
+    for kind in ["follow", "follow_checked", "follow_updates"] {
+        let namespace = uuid::Uuid::new_v4().to_string();
+        let provider = PostgresStream::connect(database, &namespace).await?;
+        let path = StreamPath::new("subscription-owner")?;
+        let AppendOutcome::Committed(receipt) = provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![OwnedBytes::from_static(b"anchor").into()],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?
+        else {
+            return Err("initial append unexpectedly conflicted".into());
+        };
+        let mut subscription: FollowStream = match kind {
+            "follow" => provider
+                .follow(path.clone(), 1, FollowFilter::default())
+                .await?
+                .map(|record| record.map(FollowUpdate::Record))
+                .boxed(),
+            "follow_checked" => provider
+                .follow_checked(path.clone(), 1, receipt.commit_id, FollowFilter::default())
+                .await?
+                .map(|record| record.map(FollowUpdate::Record))
+                .boxed(),
+            _ => provider
+                .follow_updates(
+                    path.clone(),
+                    1,
+                    Some(receipt.commit_id),
+                    FollowFilter::default(),
+                )
+                .await?,
+        };
+        drop(provider);
+        // A distinct provider must wake this subscription through LISTEN after
+        // its creator's last handle is gone, including after a previous yield.
+        let publisher = PostgresStream::connect(database, &namespace).await?;
+        for sequence in 1..=2 {
+            publisher
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![OwnedBytes::from_static(b"still-following").into()],
+                    if_tail: Some(sequence),
+                    idempotency_key: None,
+                })
+                .await?;
+            let update = tokio::time::timeout(Duration::from_secs(1), subscription.next())
+                .await?
+                .ok_or("subscription closed after dropping provider")??;
+            assert!(matches!(update, FollowUpdate::Record(record) if record.sequence == sequence));
+        }
+        println!("{kind} retains shared connections after its provider handle is dropped");
+    }
     Ok(())
 }
 

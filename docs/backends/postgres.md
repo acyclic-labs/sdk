@@ -29,6 +29,8 @@ task. Clones share them. Streams and follows add no connection, OS thread or
 dedicated background task. LISTEN is active before initial catch-up; notifications
 trigger journal reads and the core's indexed subscription delivery. There is no
 timer or polling fallback. Listener loss fails record and progress follows closed.
+Returned record and progress subscriptions retain the shared provider until they
+are dropped, even after the caller drops its last provider handle.
 
 Limits: command recovery uses bounded SQL pages; public pages retain the unchanged
 core bounds. Namespace writes serialize, and recovery replays retained history into
@@ -44,9 +46,14 @@ the SQL journal itself has no compaction yet.
 Run only on bb2:
 
 ```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/compile-storage.sh
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh
+$storageBase = (git merge-base HEAD origin/main).Trim()
+$storageInputs = 'BUILD_SLOT_INPUTS_JSON=' + (@{ version = 1; complete = $true; base_sha = $storageBase; inputs = @() } | ConvertTo-Json -Compress)
+pwsh -NoProfile -File Q:/lanes/bs.ps1 --env $storageInputs bash scripts/backends/compile-storage.sh
+pwsh -NoProfile -File Q:/lanes/bs.ps1 --env $storageInputs bash scripts/backends/storage-conformance.sh
 ```
+
+The declaration has no comparison receipts or borrowed proof artifacts; these
+jobs qualify the uploaded source and create fresh emulator fixtures.
 
 The second command creates PostgreSQL and MinIO containers with disposable data
 under `/mnt/bb`. It invokes the unchanged Stream suite, then checks independent
@@ -76,11 +83,12 @@ against the target PostgreSQL deployment through its intended TLS/socket boundar
 verify synchronous commit and failover durability settings, then run:
 
 ```sh
-cargo run --locked -p acyclic-stream --features postgres --example postgres-conformance
-cargo run --locked -p acyclic-stream --features postgres --example postgres-conformance -- --scale
+cargo run --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
+cargo run --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance -- --scale
 ```
 
-The first command terminates its own disposable LISTEN connection. Repeat resource
-measurements with representative nonempty histories and active-agent concurrency.
+The first command also checks all three follow APIs after their creator's last
+provider handle is dropped and terminates its own disposable LISTEN connection.
+Repeat resource measurements with representative nonempty histories and active-agent concurrency.
 Native work-meter entry points retain their explicit Unsupported default; this
 adapter currently qualifies the ordinary public provider contract.
