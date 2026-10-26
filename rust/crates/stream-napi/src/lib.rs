@@ -489,9 +489,9 @@ impl NativeStreamClient {
 
     /// Uses a request-local credential while retaining the existing TLS channel.
     #[napi(js_name = "withCredential")]
-    pub fn with_credential(&self, token: String) -> Result<Self> {
+    pub fn with_credential(&self, token: &str) -> Result<Self> {
         self.provider
-            .with_credential(&token)
+            .with_credential(token)
             .map(Self::from_client)
             .map_err(|error| napi_error(&connect_error(&error)))
     }
@@ -669,8 +669,6 @@ impl NativeStreamClient {
         let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
         env.spawn_future(work)
     }
-
-    /// Opens live child discovery using the client's shared Streams session.
 
     /// Executes a canonical children-page request.
     #[napi(js_name = "childrenPageResult")]

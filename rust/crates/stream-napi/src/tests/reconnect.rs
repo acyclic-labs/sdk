@@ -368,8 +368,9 @@ async fn record(cursor: &NativeStreamFollow, sequence: u64, value: u8) -> TestRe
     let bytes = next.value.ok_or("follow ended instead of recovering")?;
     let records = wire_codec::read_response_records(wire::ReadResponse::decode(bytes.as_ref())?)?;
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].sequence, sequence);
-    assert_eq!(records[0].value.as_ref(), &[value]);
+    let record = records.first().ok_or("follow returned no record")?;
+    assert_eq!(record.sequence, sequence);
+    assert_eq!(record.value.as_ref(), &[value]);
     Ok(())
 }
 async fn end(cursor: &NativeStreamFollow) -> TestResult {
