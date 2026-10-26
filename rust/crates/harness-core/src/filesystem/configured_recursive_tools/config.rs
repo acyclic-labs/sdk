@@ -172,7 +172,7 @@ mod tests {
         binding.validate_volumes(&provider, &project, &private, None)?;
         let foreign = AuthorityIssuer::new("configured", [73; 32], authority);
         let forged = ConfiguredRecursiveAuthorityBinding {
-            issuer: binding.issuer.clone(),
+            issuer: binding.issuer,
             scope: foreign.issue(
                 "owner",
                 &Capabilities::default(),
