@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Run only through bs.ps1 on bb2. Every provider is a disposable local emulator.
+# Caller input admission declares no comparison receipts or borrowed artifacts;
+# the uploaded source creates fresh fixtures against ordinary emulator images.
 set -euo pipefail
 step=setup
 root=
@@ -86,11 +88,11 @@ cargo build --locked -p acyclic-conformance --features storage-backends --bin st
 step=canonical-suites
 timeout 60 cargo run --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
 step=compile-postgres-checks
-cargo build --locked -p acyclic-stream --features postgres --example postgres-conformance
+cargo build --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
 step=postgres-cross-session
-timeout 60 cargo run --locked -p acyclic-stream --features postgres --example postgres-conformance
+timeout 60 cargo run --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
 step=postgres-scale
-timeout 60 cargo run --locked -p acyclic-stream --features postgres --example postgres-conformance -- --scale
+timeout 60 cargo run --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance -- --scale
 step=compile-shared-objects-regressions
 cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run
 step=shared-objects-regressions

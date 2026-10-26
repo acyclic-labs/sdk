@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Caller input admission declares no comparison receipts or borrowed artifacts:
+# this job qualifies only the uploaded source and locked packages.
 set -euo pipefail
 step=format
 trap 'rc=$?; echo "step=$step failed (exit $rc); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/compile-storage.sh" >&2; exit "$rc"' ERR
@@ -20,6 +22,7 @@ rustfmt --edition 2024 --config skip_children=true \
     rust/crates/stream/src/postgres.rs \
     rust/crates/stream/src/lib.rs \
     rust/crates/stream/src/wire_codec/requests.rs \
+    rust/crates/stream/src/wire_codec/conversion_0.rs \
     rust/crates/stream/examples/postgres-conformance.rs \
     rust/crates/stream/examples/postgres_conformance/checks.rs \
     rust/crates/stream/examples/postgres_conformance/scale.rs \
@@ -30,6 +33,6 @@ rustfmt --edition 2024 --config skip_children=true \
 step=compile-storage-conformance
 cargo check --locked -p acyclic-conformance --features storage-backends,acyclic-objects/local --bin storage-conformance
 step=compile-postgres-checks
-cargo check --locked -p acyclic-stream --features postgres --example postgres-conformance
+cargo check --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
 step=compile-shared-objects-regressions
 cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run

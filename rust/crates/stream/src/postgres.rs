@@ -352,18 +352,22 @@ impl PostgresStream {
         records: BoxProviderStream<'static, Result<T, StreamError>>,
     ) -> BoxProviderStream<'static, Result<T, StreamError>> {
         let failure = self.inner.failure.subscribe();
+        // The returned subscription owns the shared connections until dropped.
         Box::pin(futures::stream::unfold(
-            (records, failure, false),
-            |(mut records, mut failure, ended)| async move {
+            (records, failure, false, self.clone()),
+            |(mut records, mut failure, ended, owner)| async move {
                 if ended {
                     return None;
                 }
                 if *failure.borrow() {
-                    return Some((Err(StreamError::Unavailable), (records, failure, true)));
+                    return Some((
+                        Err(StreamError::Unavailable),
+                        (records, failure, true, owner),
+                    ));
                 }
                 tokio::select! {
-                    value = records.next() => value.map(|value| (value, (records, failure, false))),
-                    _ = failure.changed() => Some((Err(StreamError::Unavailable), (records, failure, true))),
+                    value = records.next() => value.map(|value| (value, (records, failure, false, owner))),
+                    _ = failure.changed() => Some((Err(StreamError::Unavailable), (records, failure, true, owner))),
                 }
             },
         ))
