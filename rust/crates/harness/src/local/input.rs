@@ -161,7 +161,6 @@ impl LocalHarness {
             .await
     }
 
-
     fn composer_input(&self) -> Result<ComposerInput> {
         Ok(ComposerInput {
             files: Arc::clone(&self.files),

@@ -450,7 +450,6 @@ impl Owner {
         }
     }
 
-
     fn publish_as(
         &self,
         directory: &Path,

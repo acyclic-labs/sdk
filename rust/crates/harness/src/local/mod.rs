@@ -134,7 +134,6 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
-
     fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {
             Error::Unsupported("native hosts own their agent loop and tool execution".into())

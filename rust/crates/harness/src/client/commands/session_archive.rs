@@ -345,4 +345,3 @@ pub(in crate::client::commands) fn output_bytes(
     }
     Ok(output.bytes)
 }
-

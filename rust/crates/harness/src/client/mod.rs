@@ -168,4 +168,3 @@ type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
 pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;
-

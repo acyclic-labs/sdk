@@ -250,7 +250,11 @@ impl Conversation {
                         record = statuses.try_next() => Err(record.map_err(failed)?.ok_or_else(ended)?),
                         record = records.try_next() => Ok(record.map_err(failed)?.ok_or_else(ended)?),
                     },
-                    None => Err(statuses.try_next().await.map_err(failed)?.ok_or_else(ended)?),
+                    None => Err(statuses
+                        .try_next()
+                        .await
+                        .map_err(failed)?
+                        .ok_or_else(ended)?),
                 };
                 let (event, next) = match event {
                     Err(record) => {
@@ -268,7 +272,10 @@ impl Conversation {
                         (Event::Turn { inbox, entry }, record.sequence + 1)
                     }
                 };
-                Ok(Some((event, (provider, path, statuses, next, turns, retry))))
+                Ok(Some((
+                    event,
+                    (provider, path, statuses, next, turns, retry),
+                )))
             },
         );
         Ok(futures::stream::select(observed.boxed_local(), failures.boxed_local()).boxed_local())

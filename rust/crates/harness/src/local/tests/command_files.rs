@@ -223,4 +223,3 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
     reopened.close().await?;
     Ok(())
 }
-

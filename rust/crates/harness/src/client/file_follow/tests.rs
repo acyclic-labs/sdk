@@ -1,7 +1,5 @@
 use super::*;
-use crate::{
-    task_volume::{FileKey, FileValue, Observation, TaskVolume},
-};
+use crate::task_volume::{FileKey, FileValue, Observation, TaskVolume};
 use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamPath};
 use futures::FutureExt as _;
 use std::sync::{

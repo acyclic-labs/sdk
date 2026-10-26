@@ -66,7 +66,6 @@ use acyclic_harness::{Error, Result};
 #[path = "cases/client_mention_attachments.rs"]
 mod client_mention_attachments;
 
-
 #[cfg(feature = "test-support")]
 #[path = "cases/decoder_properties.rs"]
 mod decoder_properties;
