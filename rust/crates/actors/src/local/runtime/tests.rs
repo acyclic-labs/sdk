@@ -545,8 +545,9 @@ async fn two_runtimes_claiming_one_cut_cannot_share_an_epoch() -> TestResult {
     };
     let (first, second) = (host()?, host()?);
     let cut = store.load(&address).await?;
-    let attempt =
-        |runtime: &Runtime<MemoryStream>| super::key(&cut, &format!("claim-1-{}", runtime.instance));
+    let attempt = |runtime: &Runtime<MemoryStream>| {
+        super::key(&cut, &format!("claim-1-{}", runtime.instance))
+    };
     store.claim(&cut, 1, attempt(&first)?).await?;
     // A retry of the same attempt replays its own success.
     store.claim(&cut, 1, attempt(&first)?).await?;

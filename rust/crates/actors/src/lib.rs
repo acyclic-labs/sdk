@@ -14,13 +14,13 @@ pub mod client;
 /// Rust-owned Actors contract declarations and schema renderer.
 pub mod contract;
 
+/// One conformance suite for local and hosted Actors runtimes.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod conformance;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
-/// One conformance suite for local and hosted Actors runtimes.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod conformance;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
 pub mod namespace;
 /// Shared durable timer records, derived from the harness timer stream format.
