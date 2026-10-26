@@ -1,8 +1,6 @@
 use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
-use crate::model::{
-    CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
-};
+use crate::model::{CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy};
 use crate::storage::{
     CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite, object_digest,
 };
@@ -10,17 +8,7 @@ use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn config() -> VolumeConfig {
-    VolumeConfig {
-        profile: FilesystemProfile::Portable,
-        concurrency: ConcurrencyMode::Optimistic,
-        lifecycle: Lifecycle::Ephemeral,
-        case_sensitivity: CaseSensitivity::Sensitive,
-        unicode: UnicodePolicy::Preserve,
-        symbolic_links: true,
-        hard_links: true,
-        sparse_files: true,
-        limits: VolumeLimits::default(),
-    }
+    VolumeConfig::portable(Lifecycle::Ephemeral)
 }
 
 fn serialized_config() -> VolumeConfig {
