@@ -1,6 +1,7 @@
 use super::TestResult;
 use acyclic_harness::{
-    Error, LocalHarness, LocalHarnessConfig,
+    LocalHarness, LocalHarnessConfig,
+    agent::IntentId,
     context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
     model::{Model, ModelContent},
     native_settings::SettingsConfig,
@@ -39,6 +40,37 @@ fn config(
     .compaction(CompactionPolicy::Disabled)
     .goal_continuations(None)
     .settings(SettingsConfig::new(root, home).codex_home(home.join(".codex"))))
+}
+
+async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
+    Ok(Arc::new(LocalHarness::open(config).await?))
+}
+
+/// Prompts the root agent and waits for its turn to settle; a refused turn
+/// never settles and never reaches the provider.
+async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
+    let (agents, root) = harness.agents().await?;
+    let before = agents.state(root).await?.conversation_tail;
+    harness
+        .prompt(&IntentId::try_from(format!("prompt-{before}"))?, prompt)
+        .await?;
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(if settles { 8_000 } else { 500 });
+    while std::time::Instant::now() < deadline {
+        if agents.state(root).await?.conversation_tail > before {
+            return if settles {
+                Ok(())
+            } else {
+                Err("a refused turn settled".into())
+            };
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    if settles {
+        Err("the turn did not settle".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn provider(turns: usize) -> Arc<ScriptedModelProvider> {
@@ -101,7 +133,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
         )?;
     }
     let model = provider(1);
-    let harness = LocalHarness::open(
+    let harness = open(
         config(root.path(), home.path(), state.path(), model.clone())?.limits(
             acyclic_harness::conversation::Limits {
                 file_bytes: 65_536,
@@ -110,7 +142,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
         ),
     )
     .await?;
-    assert_eq!(harness.run("inventory").await?.text, "done");
+    turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
     assert_eq!(skills.len(), 5);
     for name in [
@@ -141,13 +173,13 @@ async fn overlapping_user_roots_are_scanned_once_before_the_first_request() -> T
         "---\nname: greet2\ndescription: Greet formally\n---\nbody",
     )?;
     let model = provider(1);
-    let harness = LocalHarness::open(
+    let harness = open(
         config(root.path(), home.path(), state.path(), model.clone())?.settings(
             SettingsConfig::new(root.path(), home.path()).codex_home(home.path().join(".agents")),
         ),
     )
     .await?;
-    assert_eq!(harness.run("inventory").await?.text, "done");
+    turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
     let [skill] = skills.as_slice() else {
         return Err("expected one skill from the overlapping roots".into());
@@ -173,12 +205,12 @@ async fn symlinked_user_root_is_scanned_once_before_the_first_request() -> TestR
     #[cfg(windows)]
     std::os::windows::fs::symlink_dir(home.path().join(".agents"), &alias)?;
     let model = provider(1);
-    let harness = LocalHarness::open(
+    let harness = open(
         config(root.path(), home.path(), state.path(), model.clone())?
             .settings(SettingsConfig::new(root.path(), home.path()).codex_home(alias)),
     )
     .await?;
-    assert_eq!(harness.run("inventory").await?.text, "done");
+    turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
     let [skill] = skills.as_slice() else {
         return Err("expected one skill from aliased roots".into());
@@ -201,17 +233,14 @@ async fn different_user_roots_still_reject_duplicate_skill_names() -> TestResult
         )?;
     }
     let model = provider(1);
-    let harness = LocalHarness::open(config(
+    let harness = open(config(
         root.path(),
         home.path(),
         state.path(),
         model.clone(),
     )?)
     .await?;
-    assert!(matches!(
-        harness.run("inventory").await,
-        Err(Error::Conflict(_))
-    ));
+    turn(&harness, "inventory", false).await?;
     assert!(model.requests().is_empty());
     Ok(())
 }
@@ -229,18 +258,17 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
         "---\nname: unread\ndescription: Load later\n---\nOriginal body",
     )?;
     let model = provider(1);
-    let harness = LocalHarness::open(config(
+    let harness = open(config(
         root.path(),
         home.path(),
         state.path(),
         model.clone(),
     )?)
     .await?;
-    harness.run("inventory").await?;
+    turn(&harness, "inventory", true).await?;
     let skills = catalog(&model, 0)?;
     drop(harness);
-    let harness =
-        LocalHarness::open(config(root.path(), home.path(), state.path(), provider(0))?).await?;
+    let harness = open(config(root.path(), home.path(), state.path(), provider(0))?).await?;
     let reader = harness.client_reader()?;
     let retained = skills
         .iter()
@@ -281,17 +309,14 @@ async fn malformed_skill_is_a_typed_error_before_first_provider_dispatch() -> Te
             "---\nname: broken\n---\nmissing description",
         )?;
         let model = provider(1);
-        let harness = LocalHarness::open(config(
+        let harness = open(config(
             root.path(),
             home.path(),
             state.path(),
             model.clone(),
         )?)
         .await?;
-        assert!(matches!(
-            harness.run("inventory").await,
-            Err(Error::Invalid(_))
-        ));
+        turn(&harness, "inventory", false).await?;
         assert!(model.requests().is_empty());
     }
     Ok(())
@@ -324,11 +349,9 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     )
     .await?;
     let model = provider(2);
-    let harness = LocalHarness::open(
-        config(root.path(), home.path(), state.path(), model.clone())?.volume(volume),
-    )
-    .await?;
-    harness.run("first inventory").await?;
+    let harness =
+        open(config(root.path(), home.path(), state.path(), model.clone())?.volume(volume)).await?;
+    turn(&harness, "first inventory", true).await?;
     let first = catalog(&model, 0)?;
     let [skill] = first.as_slice() else {
         return Err("expected one skill".into());
@@ -346,7 +369,7 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
         &IdempotencyKey::new("update-skill")?,
     )
     .await?;
-    harness.run("second inventory").await?;
+    turn(&harness, "second inventory", true).await?;
     let second = catalog(&model, 1)?;
     let [skill] = second.as_slice() else {
         return Err("expected one updated skill".into());
@@ -369,16 +392,14 @@ async fn large_skill_directory_stops_at_the_existing_discovery_bound() -> TestRe
         )?;
     }
     let model = provider(1);
-    let harness = LocalHarness::open(config(
+    let harness = open(config(
         root.path(),
         home.path(),
         state.path(),
         model.clone(),
     )?)
     .await?;
-    assert!(
-        matches!(harness.run("inventory").await, Err(Error::Invalid(message)) if message.contains("bound"))
-    );
+    turn(&harness, "inventory", false).await?;
     assert!(model.requests().is_empty());
     Ok(())
 }

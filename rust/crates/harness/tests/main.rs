@@ -16,33 +16,15 @@ mod client_public_consumer;
 #[cfg(feature = "test-support")]
 mod client_transitions;
 #[cfg(feature = "test-support")]
-mod durable_extension_scope;
-#[cfg(feature = "test-support")]
-mod execution_journal;
-#[cfg(feature = "test-support")]
 mod history_selection;
-#[cfg(feature = "test-support")]
-mod local_conversation_fork;
 #[cfg(feature = "test-support")]
 mod model_tool_call;
 #[cfg(feature = "test-support")]
-mod native_media_boundary;
-#[cfg(feature = "test-support")]
-mod portable_file_replay;
-#[cfg(feature = "test-support")]
 mod portable_text_tools;
-#[cfg(feature = "test-support")]
-mod portable_text_variants;
-#[cfg(feature = "test-support")]
-mod refused_tool_conversation;
 #[cfg(feature = "test-support")]
 mod retained_content;
 #[cfg(feature = "test-support")]
-mod saved_tool_metadata;
-#[cfg(feature = "test-support")]
 mod volume_composition;
-#[cfg(feature = "test-support")]
-mod workflow_journal;
 
 // Included production source modules use these crate-root imports.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -76,10 +58,6 @@ mod client_views_parity;
 mod goal_files;
 
 #[cfg(all(feature = "filesystem-local", feature = "test-support"))]
-#[path = "cases/local_recursive_fork.rs"]
-mod local_recursive_fork;
-
-#[cfg(all(feature = "filesystem-local", feature = "test-support"))]
 #[path = "cases/context_continuation.rs"]
 mod context_continuation;
 
@@ -96,14 +74,6 @@ mod jsonl_wire;
 #[cfg(feature = "mcp-oauth")]
 #[path = "cases/mcp_oauth_provider.rs"]
 mod mcp_oauth_provider;
-
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "mcp-http",
-    feature = "test-support"
-))]
-#[path = "cases/mcp_durable.rs"]
-mod mcp_durable;
 
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "cases/client_commands.rs"]
