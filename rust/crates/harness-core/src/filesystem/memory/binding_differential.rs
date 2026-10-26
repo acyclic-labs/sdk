@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_native_runtime::testing::{Boundary, Schedule};
 use acyclic_test_support::differential;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
@@ -12,6 +13,23 @@ type Output = (
     acyclic_test_support::AllocationInfo,
 );
 const KEY: &str = "00000000-0000-0000-0000-000000000021";
+
+fn scoped<F: std::future::Future>(
+    runtime: &tokio::runtime::Runtime,
+    schedule: &Schedule,
+    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<Boundary>,
+    future: F,
+) -> F::Output {
+    runtime.block_on(async {
+        let mut future = std::pin::pin!(schedule.scope(future));
+        loop {
+            tokio::select! {
+                result = &mut future => break result,
+                boundary = boundaries.recv() => boundary.unwrap().release(),
+            }
+        }
+    })
+}
 
 async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> State {
     let agent = AgentId::from_bytes([7; 16]);
@@ -127,23 +145,41 @@ fn paired(
     }
     // Separate threads also isolate lazy thread-local instrumentation. Neither
     // side inherits allocations or warmed state from the other's first write.
-    std::thread::scope(|scope| {
+    let [(old, old_inputs), (new, new_inputs)] = std::thread::scope(|scope| {
         [true, false].map(|old| {
             scope
                 .spawn(move || {
                     let _reset = Reset;
                     let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_time()
+                        .start_paused(true)
                         .build()
                         .unwrap();
+                    let (schedule, mut boundaries) = Schedule::seeded(71);
                     crate::executor::json::baseline::LEGACY.set(old && !reference);
-                    differential::observe::<_, _, (&'static str, u64)>(
-                        || runtime.block_on(initialize(old, denied, unbound, old && reference)),
+                    // Both independent filesystems receive the same entropy and
+                    // clock before any tree shape or serialized timestamp exists.
+                    let (state, inputs) = scoped(&runtime, &schedule, &mut boundaries, async {
+                        let state = initialize(old, denied, unbound, old && reference).await;
+                        let mut next_input = [0; 32];
+                        assert!(acyclic_native_runtime::testing::fill_seeded(&mut next_input));
+                        let clock = acyclic_native_runtime::testing::unix_millis();
+                        assert_eq!(clock, Some(1_700_000_000_000));
+                        (state, (next_input, clock))
+                    });
+                    let observed = differential::observe::<_, _, (&'static str, u64)>(
+                        || state,
                         |(publisher, verifier)| {
                             let mut result = None;
                             let allocations = acyclic_test_support::measure(|| {
                                 if let Ok(publisher) = &publisher {
                                     result = Some(
-                                        runtime.block_on(exercise(publisher, &verifier, bytes)),
+                                        scoped(
+                                            &runtime,
+                                            &schedule,
+                                            &mut boundaries,
+                                            exercise(publisher, &verifier, bytes),
+                                        ),
                                     );
                                 }
                             });
@@ -156,12 +192,21 @@ fn paired(
                             };
                             (result, allocations)
                         },
-                    )
+                    );
+                    runtime.block_on(schedule.drained());
+                    (observed, inputs)
                 })
                 .join()
                 .unwrap()
         })
-    })
+    });
+    if reference {
+        assert_eq!(
+            old_inputs, new_inputs,
+            "independent binding fixtures consumed different clock or entropy inputs"
+        );
+    }
+    [old, new]
 }
 
 fn check(bytes: &[Vec<u8>; 2], denied: bool) -> TestCaseResult {

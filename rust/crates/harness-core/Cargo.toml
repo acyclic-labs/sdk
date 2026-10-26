@@ -138,6 +138,7 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support"] }
 rcgen = "0.14.10"
 tonic.workspace = true

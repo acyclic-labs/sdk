@@ -57,9 +57,11 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
-    let key = crate::identity::fresh_uuid().to_string();
+    let random_key = || crate::identity::fresh_uuid().to_string();
     #[cfg(test)]
-    let key = MEMORY_VOLUME_KEY.get().map_or(key, str::to_owned);
+    let key = MEMORY_VOLUME_KEY.get().map_or_else(random_key, str::to_owned);
+    #[cfg(not(test))]
+    let key = random_key();
     let volume = VolumeRef::new(
         provider,
         key,
