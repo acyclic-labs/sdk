@@ -24,10 +24,10 @@ pub async fn prompt(
     let mut events = conversation.events(0).await?;
     let inbox = conversation.send(operation, prompt).await?;
     let mut answers = stdin_lines();
-    // Entries observed, and the conversation tail once the agent consumed the
+    // Entries observed, and the conversation tail once the agent dropped the
     // message: no entry for it by then means it was cancelled.
     let mut seen = 0_u64;
-    let mut consumed = None;
+    let mut dropped = None;
     while let Some(event) = events.next().await {
         match event? {
             Event::Turn {
@@ -48,8 +48,8 @@ pub async fn prompt(
                     eprintln!("graphcoder: {reason}");
                     return Ok(1);
                 }
-                if status.phase == Phase::Idle && status.cursor > inbox {
-                    consumed = Some(conversation.settled().await?);
+                if status.cursor > inbox && dropped.is_none() {
+                    dropped = conversation.dropped(inbox).await?;
                 }
                 if let Phase::WaitingApproval { id } = status.phase {
                     eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
@@ -59,7 +59,7 @@ pub async fn prompt(
                 }
             }
         }
-        if consumed.is_some_and(|tail| seen >= tail) {
+        if dropped.is_some_and(|tail| seen >= tail) {
             eprintln!("graphcoder: the prompt was cancelled");
             return Ok(1);
         }
@@ -86,18 +86,17 @@ pub async fn jsonl(
     // message, so a repeated or replayed prompt finds its earlier turn.
     let mut pending = BTreeMap::new();
     let mut settled = BTreeMap::new();
-    // Conversation entries observed; a message the agent consumed (its
-    // cursor passed it) with no entry by the conversation tail as of that
-    // status was cancelled.
+    // Conversation entries observed, and the conversation tail by which each
+    // dropped message (see `Conversation::dropped`) would have settled.
     let mut seen = 0_u64;
-    let mut consumed = None;
+    let mut dropped = BTreeMap::new();
     let mut failure = None;
     let mut status = None;
     let mut announced = None;
     loop {
         // Settle every pending prompt the observed turns and status answer.
         for (inbox, id) in std::mem::take(&mut pending) {
-            let cancelled = consumed.is_some_and(|(cursor, tail)| inbox < cursor && seen >= tail);
+            let cancelled = dropped.get(&inbox).is_some_and(|tail| seen >= *tail);
             let line = if let Some(entry) = settled.get(&inbox) {
                 let (_, text) = conversation.turn(entry).await?;
                 json!({"id": id, "inbox": inbox, "text": text})
@@ -161,8 +160,13 @@ pub async fn jsonl(
                 }
                 Event::Failed(error) => failure = Some(error),
                 Event::Status(observed) => {
-                    if matches!(observed.phase, Phase::Idle | Phase::Done { .. }) {
-                        consumed = Some((observed.cursor, conversation.settled().await?));
+                    for inbox in pending.keys().copied().filter(|inbox| *inbox < observed.cursor) {
+                        if !settled.contains_key(&inbox)
+                            && !dropped.contains_key(&inbox)
+                            && let Some(tail) = conversation.dropped(inbox).await?
+                        {
+                            dropped.insert(inbox, tail);
+                        }
                     }
                     if let Phase::WaitingApproval { id } = &observed.phase
                         && announced.as_ref() != Some(id)

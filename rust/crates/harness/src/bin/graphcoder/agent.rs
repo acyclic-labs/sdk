@@ -140,7 +140,10 @@ impl Conversation {
                 Err(error) => return Err(failed(error)),
             }
         }
-        Err(refused.map_or_else(|| Error::Conflict("no human approver".into()), |error| *error))
+        Err(refused.map_or_else(
+            || Error::Conflict("no human approver".into()),
+            |error| *error,
+        ))
     }
 
     /// The text of a staged prompt or turn output.
@@ -158,6 +161,22 @@ impl Conversation {
         let output = self.text(&entry.output).await?;
         let output: TurnOutput = serde_json::from_str(&output).map_err(failed)?;
         Ok((prompt, output.text))
+    }
+
+    /// Whether message `inbox`, which a status cursor already passed, was
+    /// dropped without a turn (cancelled): it is neither queued, unread nor in
+    /// a running turn. Returns the conversation tail that holds every turn
+    /// settled by then, so an entry for it below that tail still answers it.
+    pub async fn dropped(&self, inbox: u64) -> Result<Option<u64>> {
+        let (agents, _) = self.local.agents().await?;
+        let state = agents.state(&self.agent).await.map_err(failed)?;
+        let queued = state.queued.iter().any(
+            |input| matches!(input, TurnInput::Message { inbox: queued, .. } if *queued == inbox),
+        );
+        let unread = state
+            .overflow
+            .is_some_and(|first| inbox >= first && !state.taken.contains(&inbox));
+        Ok((!queued && !unread && state.turn.is_none()).then_some(state.conversation_tail))
     }
 
     /// Number of settled turns.
