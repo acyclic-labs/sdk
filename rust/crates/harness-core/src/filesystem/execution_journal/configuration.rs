@@ -248,6 +248,7 @@ where
             maximum_payload_bytes,
             input_verifier: None,
             bound_selection: None,
+            stop: None,
             interactions,
             owner: None,
             execution: None,
@@ -337,6 +338,13 @@ where
     pub fn with_bound_selection(mut self, selected: crate::projection::SelectedModelContext) -> Self {
         self.bound_selection = Some(selected);
         self.invalidate_execution_caches();
+        self
+    }
+
+    /// Cancels the turn's model calls and tools once `stop` fires.
+    #[must_use]
+    pub fn with_stop(mut self, stop: Arc<crate::agent::TurnStop>) -> Self {
+        self.stop = Some(stop);
         self
     }
 

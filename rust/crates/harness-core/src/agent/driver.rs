@@ -7,8 +7,8 @@
 //! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentRecord, AgentState, Error, IntentId, Out, TurnDriver, TurnFuture,
-    TurnInput, TurnStep, Wait,
+    AgentOutcome, AgentPath, AgentRecord, AgentState, Error, InboxRecord, IntentId, Out,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
     OperationId,
@@ -16,9 +16,13 @@ use crate::{
     executor::{ExecutionJournal, ExecutionProgress, Executor, TurnInput as ExecutorInput},
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
+use acyclic_stream::{BoxProviderFuture as BoxFuture, FollowFilter, StreamProvider};
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// One opened turn: the executor and journal bound to the agent.
 pub struct OpenTurn {
@@ -44,7 +48,59 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
         agent: &'a AgentState,
         turn: OperationId,
         input: &'a ModelContent,
+        stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
+}
+
+/// The stop signal of one running turn: a `Cancel` or `Archive` in the agent's
+/// inbox at or after the turn's cursor. The turn's journal follows it as the
+/// executor's cancellation, so a control interrupts the turn's model calls and
+/// tools instead of waiting for the turn to end; the journal keeps every intent.
+pub struct TurnStop {
+    agent: AgentPath,
+    from: u64,
+    fired: AtomicBool,
+}
+
+impl TurnStop {
+    /// The stop of `agent`'s turn that consumed its inbox before `from`.
+    #[must_use]
+    pub fn new(agent: AgentPath, from: u64) -> Arc<Self> {
+        Arc::new(Self {
+            agent,
+            from,
+            fired: AtomicBool::new(false),
+        })
+    }
+
+    /// Resolves once the inbox holds a `Cancel` or `Archive` at or after `from`.
+    pub async fn follow<P: StreamProvider + ?Sized>(&self, provider: &P) -> Result<(), Error> {
+        let mut records = match provider
+            .follow(self.agent.inbox()?, self.from, FollowFilter::default())
+            .await
+        {
+            Ok(records) => records,
+            // A turn driven outside an agent subtree has no inbox to stop it.
+            Err(acyclic_stream::StreamError::NotFound) => return std::future::pending().await,
+            Err(error) => return Err(Error::Stream(error)),
+        };
+        while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+            if matches!(
+                InboxRecord::decode(&record.value)?,
+                InboxRecord::Cancel(_) | InboxRecord::Archive(_)
+            ) {
+                self.fired.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
+        Err(Error::Record("agent inbox follow ended"))
+    }
+
+    /// Whether a control has stopped the turn.
+    #[must_use]
+    pub fn fired(&self) -> bool {
+        self.fired.load(Ordering::Acquire)
+    }
 }
 
 /// One conversation record: a settled turn.
@@ -127,14 +183,19 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     fn step<'a>(
         &'a self,
         agent: &'a AgentState,
-        _cursor: u64,
+        cursor: u64,
         input: Option<TurnInput>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let input = starting(agent, input)?;
             let turn = turn_id(agent, &input)?;
             let content = model_input(&input)?;
-            let open = self.host.open(agent, turn, &content).await.map_err(host_error)?;
+            let stop = TurnStop::new(agent.path.clone(), cursor);
+            let open = self
+                .host
+                .open(agent, turn, &content, Arc::clone(&stop))
+                .await
+                .map_err(host_error)?;
             let progress = open
                 .executor
                 .execute_progress(
@@ -146,8 +207,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     },
                     &*open.journal,
                 )
-                .await
-                .map_err(host_error)?;
+                .await;
+            if stop.fired() && !matches!(progress, Ok(ExecutionProgress::Ready(_))) {
+                // A pending cancel or archive drops this turn when admitted;
+                // until then the agent takes no further step of it.
+                return Ok(TurnStep {
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: Wait::Input,
+                });
+            }
+            let progress = progress.map_err(host_error)?;
             let failed = |message: &str| TurnStep {
                 checkpoint: None,
                 outs: Vec::new(),

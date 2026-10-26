@@ -10,6 +10,12 @@ where
     O: AsyncObjectStore + 'static,
 {
     pub(super) async fn follow_cancellation(&self) -> Result<()> {
+        if let Some(stop) = &self.stop {
+            return stop
+                .follow(&*self.stream)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()));
+        }
         let (Some(files), Some((owner, _))) = (&self.task_files, &self.owner) else {
             return std::future::pending().await;
         };

@@ -136,6 +136,7 @@ impl TurnHost for Host {
         _: &'a AgentState,
         _: OperationId,
         _: &'a acyclic_harness_core::model::ModelContent,
+        _: Arc<acyclic_harness_core::agent::TurnStop>,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
         let open = OpenTurn {
             executor: self.0.clone(),

@@ -174,7 +174,9 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption);
-    let first = step(&driver, &path, Some(state), 1, requested("r1", &path)).await?;
+    // Settling the conversation creates the subtree; its inbox stays empty, so
+    // each turn's cursor (where its stop follow starts) is 0.
+    let first = step(&driver, &path, Some(state), 0, requested("r1", &path)).await?;
     // Settle the first turn's conversation record as its step commit would.
     let records = first
         .outs
@@ -197,7 +199,7 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
         })
         .await?;
     assert_eq!(first.state.conversation_tail, 1);
-    step(&driver, &path, Some(first.state), 2, requested("r2", &path)).await?;
+    step(&driver, &path, Some(first.state), 0, requested("r2", &path)).await?;
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     let roles = |index: usize| -> Vec<ModelRole> {

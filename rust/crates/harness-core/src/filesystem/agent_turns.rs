@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     Capabilities, Error, OperationId, Result,
-    agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost},
+    agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, TurnStop},
     conversation::{ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot, SchemaRegistry, Scope},
     executor::{ExecutionJournal, Executor, TurnOutput},
@@ -272,9 +272,11 @@ where
         agent: &'a AgentState,
         turn: OperationId,
         input: &'a ModelContent,
+        stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
             let (journal, authority) = self.journal(agent)?;
+            let journal = journal.with_stop(stop);
             let history = self.history(agent).await?;
             let selected = select(agent, &journal, history, turn, input).await?;
             let journal = match &selected {

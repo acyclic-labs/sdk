@@ -93,6 +93,8 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     /// The one model context an agent turn may dispatch, built by its turn host
     /// from the agent's own conversation stream; any other selection is refused.
     bound_selection: Option<crate::projection::SelectedModelContext>,
+    /// An agent turn's stop signal, followed as the executor's cancellation.
+    stop: Option<Arc<crate::agent::TurnStop>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,

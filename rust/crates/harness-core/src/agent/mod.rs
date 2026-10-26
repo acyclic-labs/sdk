@@ -29,7 +29,8 @@ pub use handler::{AgentHandler, INBOX};
 #[cfg(not(target_arch = "wasm32"))]
 pub use host::{AgentHost, Delivered};
 pub use driver::{
-    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, model_input, turn_id,
+    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
+    turn_id,
 };
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
