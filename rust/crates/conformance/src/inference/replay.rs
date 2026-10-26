@@ -6,8 +6,8 @@ use acyclic_harness_core::{
     model::{ModelRequest, ModelRole},
 };
 use acyclic_harness_providers::{
-    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
-    ModelSpec, ProviderSpec, Registry, RetrySpec, TimeoutSpec,
+    Adapter, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures, ModelSpec,
+    ProviderSpec, Registry,
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use bytes::Bytes;
@@ -56,11 +56,9 @@ pub struct Manifest {
     /// Wire dialect of the actual captured response.
     pub adapter: Adapter,
     /// Registry identity used when the endpoint was captured.
-    #[serde(default = "provider_id")]
     pub provider_id: String,
     /// Original public endpoint configuration, excluding credentials.
-    #[serde(default)]
-    pub endpoint: Option<ProviderSpec>,
+    pub endpoint: ProviderSpec,
     /// Selected model name.
     pub model: String,
     /// Exact model options used for the captures, excluding credentials.
@@ -73,14 +71,9 @@ pub struct Manifest {
 fn options() -> Value {
     json!({})
 }
-fn provider_id() -> String {
-    "conformance".into()
-}
-
 struct Replay {
     responses: Mutex<VecDeque<Capture>>,
     active: Arc<AtomicUsize>,
-    sent: Mutex<Vec<Value>>,
 }
 struct Body {
     bytes: Bytes,
@@ -145,10 +138,6 @@ impl HttpTransport for Replay {
         Box::pin(async move {
             let body: Value = serde_json::from_slice(&request.body)
                 .map_err(|_| Error::Invalid("replay request JSON".into()))?;
-            self.sent
-                .lock()
-                .map_err(|_| Error::Storage("replay request lock".into()))?
-                .push(body.clone());
             let mut responses = self
                 .responses
                 .lock()
@@ -265,7 +254,6 @@ fn provider(
     let transport = Arc::new(Replay {
         responses: Mutex::new(captures.into()),
         active: Arc::new(AtomicUsize::new(0)),
-        sent: Mutex::new(Vec::new()),
     });
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([(
@@ -274,33 +262,7 @@ fn provider(
         )])),
         transport.clone(),
     );
-    let mut config = manifest.endpoint.clone().unwrap_or_else(|| ProviderSpec {
-        adapter: manifest.adapter,
-        authentication: Authentication::Optional,
-        base_url: "http://127.0.0.1:1/v1".into(),
-        headers: BTreeMap::new(),
-        models: BTreeMap::from([(
-            manifest.model.clone(),
-            ModelSpec {
-                max_context_tokens: None,
-                capacity: ModelContextCapacity {
-                    context_tokens: 2048,
-                    output_tokens: Some(128),
-                },
-                features: ModelFeatures {
-                    tools: true,
-                    images: false,
-                },
-            },
-        )]),
-        token_counter: None,
-        max_event_bytes: 1024 * 1024,
-        retry: RetrySpec {
-            attempts: 0,
-            ..RetrySpec::DEFAULT
-        },
-        timeouts: TimeoutSpec::DEFAULT,
-    });
+    let mut config = manifest.endpoint.clone();
     require(
         config.adapter == manifest.adapter,
         "capture endpoint dialect mismatch",
@@ -339,6 +301,12 @@ fn load(path: &Path) -> Result<Captured> {
     for name in ["text", "tool", "result", "rate", "context", "auth"] {
         require(captures.contains_key(name), "missing required real capture")?;
     }
+    require(
+        captures
+            .get("result")
+            .is_some_and(|capture| !capture.assertions.is_empty()),
+        "paired-result capture must assert its original request",
+    )?;
     Ok(Captured { manifest, captures })
 }
 
