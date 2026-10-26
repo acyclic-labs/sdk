@@ -78,6 +78,7 @@ fn terminal_worker_retires_destination(
             ..crate::WorkCounters::UNCHARGED
         })?,
         failure: crate::native_mount::retirement::TerminalFailures::default(),
+        shared: None,
         _allocation: work.claim(
             std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
             1,
@@ -174,6 +175,7 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
         }),
         cleanup: work.reserve_work(crate::WorkCounters::UNCHARGED)?,
         failure: crate::native_mount::retirement::TerminalFailures::default(),
+        shared: None,
         _allocation: work.claim(
             std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
             1,

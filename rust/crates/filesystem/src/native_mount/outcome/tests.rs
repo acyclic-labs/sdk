@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::{MountSourceError, NativeMountError};
 
 fn check_callback(error: &NativeMountError, expected: NativeFailure) {
     assert_eq!(callback_failure(error), expected, "{error:?}");
