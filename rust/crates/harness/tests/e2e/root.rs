@@ -25,7 +25,6 @@ mod notifications;
 mod notifications_tests;
 #[path = "../support/ordered_matcher.rs"]
 mod ordered_matcher;
-mod plan_query;
 mod plans;
 #[path = "../support/progress_guard_tests.rs"]
 mod progress_guard_tests;

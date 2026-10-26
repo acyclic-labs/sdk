@@ -1,9 +1,0 @@
-{
-  "swarm_id": "restored",
-  "limits": {
-    "width": 16,
-    "depth": 3,
-    "running": 64,
-    "web_calls": 200
-  }
-}

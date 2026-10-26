@@ -19,6 +19,7 @@ members = [
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
+  "rust/crates/harness-client",
   "rust/crates/harness-core",
   "rust/crates/host-platform",
   "rust/crates/harness-search",

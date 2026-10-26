@@ -125,11 +125,13 @@ impl TurnStop {
 
 /// One conversation record: a settled turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ConversationEntry {
     /// Input that started the turn.
     pub input: TurnInput,
     /// The executor's complete output, staged on the agent's private volume.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
     pub output: FileRef,
 }
 

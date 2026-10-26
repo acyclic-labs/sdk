@@ -346,6 +346,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-search",
  "acyclic-harness-tui",
@@ -413,6 +414,16 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "which",
+]
+
+[[package]]
+name = "acyclic-harness-client"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "proptest",
 ]
 
 [[package]]

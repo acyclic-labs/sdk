@@ -91,15 +91,3 @@ pub async fn local_ui(
     files.bind_local_approvals(local)?;
     Ok(files)
 }
-
-/// Follow the active local agent's goal/plans through its authorized file binding.
-pub async fn local_documents(
-    local: &LocalHarness,
-    views: &mut super::ClientViews,
-) -> Result<super::DocumentFiles> {
-    // TODO(#495): obtain document count/content/work bounds from followed settings.
-    let files = local
-        .scratch_files(acyclic_fs::performance::BOUNDARY_BUDGET)
-        .await?;
-    super::document_files(&files, views, 4096, 65_536).await
-}

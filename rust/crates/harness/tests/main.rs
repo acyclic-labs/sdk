@@ -97,10 +97,6 @@ mod task_view;
 #[path = "cases/task_volume.rs"]
 mod task_volume;
 
-#[cfg(feature = "filesystem")]
-#[path = "cases/file_query.rs"]
-mod file_query;
-
 #[path = "cases/client_model_views.rs"]
 mod client_model_views;
 

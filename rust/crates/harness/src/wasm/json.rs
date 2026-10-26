@@ -268,12 +268,25 @@ pub(super) fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<
 }
 
 pub(super) fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    serialize_js(value, false)
+}
+
+fn serialize_js<T: serde::Serialize>(value: &T, object_maps: bool) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
+        .serialize_maps_as_objects(object_maps)
         .serialize_large_number_types_as_bigints(true)
         .serialize_missing_as_null(true);
     value
         .serialize(&serializer)
         .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Generic page entries keep JSON object property access while using the same
+/// exact-integer and descriptor projection as typed contract outputs.
+pub(super) fn to_js_page_value(value: &serde_json::Value) -> Result<JsValue, JsValue> {
+    let js = serialize_js(value, true)?;
+    normalize_descriptor_lengths(&js, value)?;
+    Ok(js)
 }
 
 // Durable JSON keeps integral literals. Only admitted, ref-only contract

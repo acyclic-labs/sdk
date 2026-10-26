@@ -49,7 +49,6 @@ export const representativeExports = {
   "@acyclic-labs/pi": "piProvider",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
-  "@acyclic-labs/swarm": "SwarmClient",
   "@acyclic-labs/workers": "WorkersDeploymentClient",
 };
 const expectedExports = assembledDirectory
@@ -145,25 +144,6 @@ const checks = {
     const provider = new m.MemoryStreamProvider();
     const appended = await provider.append("tarball/smoke", [new Uint8Array([7])]);
     return appended.ok && appended.tail === 1n && await provider.tail("tarball/smoke") === 1n;
-  },
-  "@acyclic-labs/swarm": async (m) => {
-    if (typeof m.SwarmHttpError !== "function") return false;
-    const client = new m.SwarmClient({
-      endpoint: "https://swarms.example.test", token: "tarball-smoke",
-      fetch: async (input, init) => {
-        if (String(input) !== "https://swarms.example.test/health" || init.method !== "GET"
-          || new Headers(init.headers).get("authorization") !== "Bearer tarball-smoke") {
-          throw new Error("Swarm tarball request differs from the public contract");
-        }
-        return new Response(JSON.stringify({ ok: true, version: "tarball-smoke" }), {
-          headers: { "content-type": "application/json" },
-        });
-      },
-    });
-    const health = await client.health();
-    return health.ok === true && health.version === "tarball-smoke"
-      && typeof client.watch === "function" && typeof client.upload === "function"
-      && new m.SwarmHttpError(503, { error: "unavailable" }, null).status === 503;
   },
 };
 for (const [name, check] of Object.entries(checks)) {

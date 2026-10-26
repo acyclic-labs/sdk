@@ -1,30 +1,54 @@
 import { expect, test } from "bun:test";
-import { SwarmClient, WasmStream, initializeClientQueries, swarmStatusKey } from "../src/client-query.js";
-import { exerciseSwarm, limits, viewLimits } from "./swarm-client.scenario.js";
+import { AgentClient, WasmStream, initializeClientQueries } from "../src/client.js";
+import { exerciseAgents, root } from "./swarm-client.scenario.js";
 import { bindLocalSession } from "./session-authority.js";
+import { appendRecord, conversation, receiveUntil, statusPath } from "./actor-records.fixture.js";
 
-test("memory volumes use the production swarm pool and file fold through WASM", async () => {
+test("native and browser agent views use the same bounded Rust session", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
   await bindLocalSession(stream);
-  try { expect(await exerciseSwarm(stream)).toEqual({ agents: 2, snapshots: 2, textDeltas: 1, recovered: false }); }
+  try { expect(await exerciseAgents(stream)).toEqual({ selected: 2, liveRecords: 2, recovered: false }); }
   finally { stream.free(); }
 });
-for (const mutation of [{ agents: 0n }, { selected: 3n }, { snapshot_files: 0n }, { config_files: 0n }, { layout_bytes: 0n }, { extra: true }]) {
-  test(`Rust rejects invalid swarm admission before following: ${Object.keys(mutation)}`, async () => {
-    await initializeClientQueries();
-    expect(() => Reflect.construct(SwarmClient, ["swarm", { ...limits, ...mutation }, viewLimits])).toThrow();
-  });
-}
 
+test("agent view admission refuses oversized and malformed input atomically", async () => {
+  await initializeClientQueries();
+  const stream = new WasmStream();
+  await bindLocalSession(stream);
+  const client = new AgentClient(stream, root, 0n, 0n, 0);
+  try {
+    for (const agents of [[], Array(9).fill(root), ["outside/agent"]]) {
+      expect(() => client.setView(agents, new BigUint64Array(agents.length), new BigUint64Array(agents.length))).toThrow();
+      expect(client.selectedAgents()).toEqual([root]);
+    }
+    expect(() => client.setView([root], new BigUint64Array(0), new BigUint64Array(1))).toThrow();
+    expect(client.selectedAgents()).toEqual([root]);
+  } finally { client.close(); client.free(); stream.free(); }
+});
 
-test("shared status keys preserve opaque bytes and separate agent namespaces", () => {
-  const opaque = new Uint8Array([0, 255, 1]);
-  expect(swarmStatusKey("swarm/α", opaque)).toEqual(new Uint8Array([...new TextEncoder().encode("swarm/α"), 0, ...opaque]));
-  const separate = (a: Uint8Array, b: Uint8Array) => expect(a).not.toEqual(b);
-  separate(swarmStatusKey("swarm/a", opaque), swarmStatusKey("swarm/b", opaque));
-  // The old unscoped key fails the same separation contract.
-  expect(() => separate(opaque, opaque.slice())).toThrow();
-  for (const agent of ["", "swarm/a\0b"]) expect(() => swarmStatusKey(agent, opaque)).toThrow();
-  expect(() => swarmStatusKey("swarm/a", new Uint8Array())).toThrow();
+test("failed selected streams report once while healthy agents keep delivering", async () => {
+  await initializeClientQueries();
+  const stream = new WasmStream();
+  await bindLocalSession(stream);
+  await appendRecord(stream, `${root}/conversation`, conversation("before", 0n));
+  await appendRecord(stream, statusPath, '{"phase":"idle","cursor":1}');
+  const absent = `harness/agents/${"03".repeat(16)}`;
+  const client = new AgentClient(stream, absent, 0n, 0n, 0);
+  try {
+    client.setView([absent, root], new BigUint64Array(2), new BigUint64Array(2));
+    let refusals = 0;
+    while (refusals < 2 || client.agentWindow(root).recordCount !== 1n || client.agentStatus(root) === null) {
+      try { await client.next(); }
+      catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).name).not.toBe("not_open");
+        refusals++;
+      }
+    }
+    expect(refusals).toBe(2);
+    await appendRecord(stream, `${root}/conversation`, conversation("after", 1n));
+    await receiveUntil(client, () => client.agentWindow(root).recordCount === 2n);
+    expect(client.agentWindow(root).nextSequence).toBe(2n);
+  } finally { client.close(); client.free(); stream.free(); }
 });

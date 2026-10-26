@@ -6,9 +6,6 @@ let initialization: Promise<void> | undefined;
 const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateContract", "validateWorkflowAdmission", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
-  "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
-  "validateWireResume", "validateWireObserve", "validateWireCancel",
-  "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult", "validateToolProjection", "jsonToolProjectionSchema", "modelContentInventory",
   "validateMcpCatalog", "searchMcpCatalog", "mcpModelDefinitions", "validateMcpStdioRequest",
   "validateMcpCallbackRequest", "mcpCallbackOperation",
@@ -36,7 +33,6 @@ const REQUIRED_WASM_CONTENT_EXPORTS = [
 ] as const;
 
 const HYPOTHESIS_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
-const CLIENT_VIEW_METHODS = ["notifications", "outcomes", "task", "models", "goals", "plans", "agents", "layout", "status", "cursor", "files", "segments", "free"] as const;
 
 function hasClass(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[], constructed = false): boolean {
   return typeof exports[name] === "function"
@@ -54,19 +50,29 @@ export function assertHarnessWasmExports(value: unknown): void {
   const contentStore = typeof exports.WasmContentStore === "function"
     ? true
     : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
-  const clientViews = hasClass(exports, "WasmClientViews", "wasmclientviews", CLIENT_VIEW_METHODS);
   const stream = hasClass(exports, "WasmStream", "wasmstream", [], true);
   const hypotheses = hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", HYPOTHESIS_METHODS, true);
-  const swarm = hasClass(exports, "WasmSwarmClient", "wasmswarmclient", ["views", "follow", "free"], true);
+  const session = hasClass(exports, "WasmWireSession", "wasmwiresession", [
+    "setView", "registerCredential", "openStream", "next", "close", "followedAgents",
+    "viewRevision", "firstSequence", "recordCount", "record", "free",
+  ], true);
+  const agents = hasClass(exports, "WasmAgentClient", "wasmagentclient", [
+    "setView", "selectedAgents", "agentWindow", "agentRecord", "agentStatus",
+    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
+  ], true);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
+  const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
+    "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
+  ], true);
+  const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
   const providers = typeof exports.WasmProviderRegistry === "function"
     || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !clientViews || !stream || !hypotheses || !swarm || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !stream || !hypotheses || !session || !agents || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }
 
-/** Initializes the one WASM instance shared by the reducer and wire transports. */
+/** Initializes the one WASM instance shared by the reducer and actor/session views. */
 export async function ensureHarnessWasm(): Promise<void> {
   if (initialization !== undefined) return initialization;
   let moduleLoaded = false;

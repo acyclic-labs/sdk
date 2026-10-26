@@ -100,19 +100,6 @@ try {
 }
 ```
 
-## Swarm
-
-Agent orchestration, spend and progress over the public Swarm HTTP/SSE API. This example lists swarms visible to the caller. Swarm is a standalone package; the umbrella SDK does not export it.
-
-```ts
-import { SwarmClient } from "@acyclic-labs/swarm";
-
-const swarms = new SwarmClient({
-  endpoint: process.env.SWARM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
-});
-console.log(await swarms.list());
-```
-
 ## Customer CLI
 
 - [CLI installation and commands](plugin/README.md): Install the native executable as the `acyclic-plugin` command with `npm install -g @acyclic-labs/plugin`, or as `acyclic` with `cargo install --locked acyclic-plugin`; Cargo users link it as `acyclic-plugin` before using the commands below.

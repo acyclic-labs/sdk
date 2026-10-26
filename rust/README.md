@@ -120,27 +120,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 ```
-
-## Swarm
-
-List visible swarms with the canonical `GET /v1/swarms` route.
-
-```rust,no_run
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let endpoint = reqwest::Url::parse(&std::env::var("SWARM_ENDPOINT")?)?;
-    if endpoint.scheme() != "https" {
-        return Err("SWARM_ENDPOINT must use HTTPS".into());
-    }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-    let swarms = client.get(endpoint.join("/v1/swarms")?)
-        .bearer_auth(std::env::var("ACYCLIC_API_KEY")?)
-        .send().await?.error_for_status()?
-        .json::<serde_json::Value>().await?;
-    println!("{swarms}");
-    Ok(())
-}
-```

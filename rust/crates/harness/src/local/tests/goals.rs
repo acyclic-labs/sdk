@@ -26,8 +26,6 @@ struct Case {
     private_mount: Option<bool>,
 }
 
-#[cfg(feature = "tui")]
-mod rendering;
 
 #[tokio::test]
 async fn local_goal_scenarios_follow_ordinary_frames_and_files() -> Result<()> {

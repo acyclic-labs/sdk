@@ -8,7 +8,6 @@ const root = resolve(import.meta.dirname, "..");
 const checker = readFileSync(join(root, "scripts/check-boundaries.mjs"));
 const fixtures = [
   "typescript/packages/machines/test/fixtures/server-key.pem",
-  "typescript/packages/swarm/test/http.test.mjs",
   "typescript/packages/harness/test/client.test.ts",
   "typescript/packages/inference/test/client.test.ts",
   "typescript/packages/inference/test/idle-kv.test.ts",
@@ -35,7 +34,7 @@ test("tracked public types and recorded fake-server fixtures pass on LF and CRLF
   for (const newline of ["\n", "\r\n"]) {
     const files = Object.fromEntries(fixtures.map(path =>
       [path, readFileSync(join(root, path), "utf8").replaceAll("\r\n", "\n").replaceAll("\n", newline)]));
-    files["typescript/packages/swarm/src/protocol.ts"] = "export interface Input { github_" + "token: string; }";
+    files["typescript/packages/stream/src/public-input.ts"] = "export interface Input { github_" + "token: string; }";
     const result = scan(t, files);
     assert.equal(result.status, 0, result.stderr);
   }

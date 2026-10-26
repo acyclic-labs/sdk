@@ -59,13 +59,6 @@ impl Driver for super::plans::Plans {
     }
 }
 
-impl Driver for super::plan_query::PlanQuery {
-    type Case = Self;
-    async fn execute(case: Self) -> TestResult {
-        case.run().await
-    }
-}
-
 impl Driver for TaskQueryCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -194,12 +187,6 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
             Box::pin(super::plans::Plans::execute(super::plans::Plans::parse(
                 value,
             )?))
-            .await
-        }
-        Some("plan-query") => {
-            Box::pin(super::plan_query::PlanQuery::execute(
-                super::plan_query::PlanQuery::parse(value)?,
-            ))
             .await
         }
         _ => Err("unknown scenario driver".into()),

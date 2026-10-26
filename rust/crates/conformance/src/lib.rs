@@ -4,6 +4,9 @@
 pub mod filesystem;
 /// Machine-readable cross-language conformance reports and qualification receipts.
 pub mod runner;
+/// Production actor-client cases shared by local and hosted session adapters.
+#[cfg(all(feature = "client-session", not(target_arch = "wasm32")))]
+pub mod client;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{

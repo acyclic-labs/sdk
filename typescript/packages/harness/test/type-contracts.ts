@@ -7,7 +7,7 @@ import type {
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
-import type { HarnessClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
+import type { AgentClient, AgentEvent, AgentWindow, StatusRecord } from "../src/client.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
   ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
@@ -22,10 +22,15 @@ type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false;
 type AssertNever<Value extends never> = Value;
 
-type _FileClientPreservesExactBounds = Assert<Equal<FileClientLimits["commands"] | FileClientLimits["bytes"], bigint>>;
-type _FileClientUsesCanonicalRequestKeys = Assert<Equal<Parameters<HarnessClient["enqueue"]>[0], FileKey>>;
-type _FileClientReturnsTheSharedCursor = Assert<Equal<ReturnType<HarnessClient["cursor"]>, Cursor>>;
-type _QueryPublishesCanonicalChanges = Assert<Equal<Parameters<Parameters<ClientQuery["follow"]>[0]>[0], QueryDelivery>>;
+type _AgentViewCursorsStayExact = Assert<Equal<Parameters<AgentClient["setView"]>[1], BigUint64Array>>;
+type _AgentWindowUsesTheRustContract = Assert<Equal<ReturnType<AgentClient["agentWindow"]>, AgentWindow>>;
+type _AgentWindowCountersStayExact = Assert<Equal<AgentWindow[keyof AgentWindow], bigint>>;
+
+type _AgentEventsUseTheRustContract = Assert<Equal<Awaited<ReturnType<AgentClient["next"]>>, AgentEvent>>;
+
+type _AgentRecordsExposeAbsence = Assert<Equal<ReturnType<AgentClient["agentRecord"]>, AgentEvent | null>>;
+
+type _ApprovalStatusesUseTheRustContract = Assert<Equal<ReturnType<AgentClient["agentStatus"]>, StatusRecord | null>>;
 
 type _SummaryLimitsUseExistingNativeWire = Assert<Equal<RustSummaryForkSelection["limits"], WasmNativeLimitsWire>>;
 type _SummaryLimitsPreserveEveryBigint = Assert<Equal<

@@ -27,7 +27,7 @@ use crate::{
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
-    MemoryObjectBackend, StreamAuthorityStore,
+    MemoryObjectBackend,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -589,18 +589,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
         self.content_verifier.authority.verifier().clone()
-    }
-}
-
-impl<P: StreamProvider, S: StreamProvider, O: AsyncObjectStore + 'static>
-    MemoryHarnessStorage<P, StreamAuthorityStore<S>, O>
-{
-    /// Queries the same private files written by the ordinary tools.
-    pub async fn file_query(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-    ) -> Result<super::FilesystemFileQuery<S, O>> {
-        self.content_verifier.file_query(&self.volume, budget).await
     }
 }
 

@@ -64,6 +64,25 @@ mod plan_panel;
 #[cfg(feature = "tui")]
 pub use plan_panel::PlanPanel;
 mod interests;
+pub use acyclic_harness_client::{
+    DemandError, DemandPolicy, PageDirection, PageRequest, PageWindow, PageWindowError,
+    PageWindowPolicy, ViewDemand, WindowPage,
+};
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use acyclic_harness_client::{StreamView, StreamViewPolicy, WireSession, WireSessionError};
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+mod agents;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;
@@ -105,8 +124,6 @@ pub mod query_verification {
 }
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use crate::wasm::swarm::WasmClientViews;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::WasmHypothesisClient;
 
@@ -155,7 +172,7 @@ pub use mailbox::verify_mailbox;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, disconnect_local, local_documents, local_prompt};
+pub use local::{connect_local, disconnect_local, local_prompt};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",
@@ -201,20 +218,6 @@ mod local_headless;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};
 
-#[cfg(all(
-    feature = "tui",
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
-mod local_diff;
-#[cfg(all(
-    feature = "tui",
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
-pub use local_diff::local_diff;
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local_identity;

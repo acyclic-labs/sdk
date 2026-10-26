@@ -26,28 +26,6 @@ async fn direct_swarm_dispatch_rejects_a_permanently_pending_reopen() -> TestRes
 }
 
 #[tokio::test]
-async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    for name in [
-        "lifecycle",
-        "multiple-raw-and-code",
-        "filenames-and-paragraphs",
-        "empty-stem",
-    ] {
-        let mut baseline =
-            crate::scenario::load_value(&root, &root.join(format!("plan-query/{name}.json")))?;
-        baseline
-            .as_object_mut()
-            .ok_or("missing scenario")?
-            .remove("driver");
-        super::super::plan_query::PlanQuery::parse(baseline)?
-            .negative_oracles()
-            .await?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     for name in ["lifecycle", "multiple-files", "malformed-raw"] {

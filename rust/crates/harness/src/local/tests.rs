@@ -830,10 +830,6 @@ mod mcp;
 #[path = "tests/command_files.rs"]
 mod command_files;
 
-#[cfg(all(feature = "tui", feature = "terminal"))]
-#[path = "tests/documents.rs"]
-mod documents;
-
 #[path = "tests/headless.rs"]
 mod headless;
 

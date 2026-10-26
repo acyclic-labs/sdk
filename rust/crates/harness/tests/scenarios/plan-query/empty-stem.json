@@ -1,4 +1,0 @@
-{"writes":[
-  {"path":"plans/main.md","text":"- [ ] Keep\n","files":{"plans/main.md":"- [ ] Keep\n"},"panel":["plans/main.md","[ ] Keep"]},
-  {"path":"plans/.md","text":"- [~] Work\n","files":{"plans/main.md":"- [ ] Keep\n"},"panel":["plans/main.md","[ ] Keep"]}
-]}

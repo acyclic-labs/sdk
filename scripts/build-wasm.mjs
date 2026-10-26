@@ -9,11 +9,12 @@ import { packageClosure } from "./package-closure.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Manual caller-array copies must stay behind the admitted byte snapshot.
 const assertByteSnapshotBoundary = (file, source) => {
-  // These existing expressions copy Rust-owned digests/requests, never JS arrays.
+  // Rust slice accessors return Rust-owned bytes, never a caller's JS array.
+  // Their spelling/formatting must not turn an output copy into an input refusal.
   const rustOwned = source
     .replaceAll("cursor.commit.to_vec()", "")
     .replaceAll("prepared.bytes().to_vec()", "")
-    .replaceAll(".as_bytes()\n        .to_vec()", "")
+    .replace(/\.(?:as_bytes|as_slice)\(\)\s*\.to_vec\(\)/g, "")
     .replaceAll(".map(|digest| digest.to_vec())", "")
     .replace(/(canonical_json_digest\([^;]+?)\.to_vec\(\)/g, "$1");
   if (/\.\s*(?:to_vec|copy_to|copy_to_uninit|raw_copy_to_ptr)\s*\(|Uint8Array::new\s*\(/.test(rustOwned)) {

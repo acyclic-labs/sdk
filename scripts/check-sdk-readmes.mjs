@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const services = ["Objects", "Streams", "Actors", "Workers", "fs", "Swarm"];
+export const services = ["Objects", "Streams", "Actors", "Workers", "fs"];
 
 export function examples(source, language) {
   source = source.replaceAll("\r\n", "\n");
@@ -42,7 +42,6 @@ function checkReadmes() {
     "@acyclic-labs/actors": ["typescript/packages/actors/src/index.ts"],
     "@acyclic-labs/workers": ["typescript/packages/workers/src/index.ts"],
     "@acyclic-labs/fs/grpc": ["typescript/packages/filesystem/src/grpc.ts"],
-    "@acyclic-labs/swarm": ["typescript/packages/swarm/src/index.ts"],
   };
   // Fail if a documentation import no longer names a public package export.
   for (const specifier of Object.keys(paths)) {

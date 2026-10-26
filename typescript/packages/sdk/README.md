@@ -3,7 +3,7 @@
 The umbrella SDK exports Objects, Streams, Actors, Workers and filesystem namespaces, alongside Harness, Machines and Inference. The examples below use standalone public package imports; Swarm is installed separately.
 
 ```sh
-npm install @acyclic-labs/objects @acyclic-labs/stream @acyclic-labs/actors @acyclic-labs/workers @acyclic-labs/fs @acyclic-labs/swarm @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node
+npm install @acyclic-labs/objects @acyclic-labs/stream @acyclic-labs/actors @acyclic-labs/workers @acyclic-labs/fs @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node
 npm install --save-dev typescript @types/node
 ```
 
@@ -102,17 +102,4 @@ try {
 } finally {
   client.close();
 }
-```
-
-## Swarm
-
-Agent orchestration, spend and progress over the public Swarm HTTP/SSE API. This example lists swarms visible to the caller. Swarm is a standalone package; the umbrella SDK does not export it.
-
-```ts
-import { SwarmClient } from "@acyclic-labs/swarm";
-
-const swarms = new SwarmClient({
-  endpoint: process.env.SWARM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
-});
-console.log(await swarms.list());
 ```

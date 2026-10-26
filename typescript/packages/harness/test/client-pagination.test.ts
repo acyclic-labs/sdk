@@ -1,6 +1,18 @@
 import { expect, test } from "bun:test";
-import { HydrationCache, PageWindow, type Page } from "../src/index.js";
+import { HydrationCache, initializeClientQueries, PageWindow, type Page } from "../src/index.js";
 
+await initializeClientQueries();
+
+type Item = { id: string };
+const encode = (page: Page): Uint8Array => new TextEncoder().encode(JSON.stringify(page));
+const page = (ids: readonly string[], before: string, after: string,
+  hasMoreBefore = true, hasMoreAfter = true, generation = "one"): Uint8Array => encode({
+    generation, items: ids.map(id => ({ key: id, value: { id } })),
+    before, after, hasMoreBefore, hasMoreAfter,
+  });
+const ids = (window: PageWindow): string[] => (window.items() as readonly Item[]).map(item => item.id);
+
+// Existing unrelated hydration oracle remains intact.
 test("hydration cache obeys entry and byte bounds", () => {
   const cache = new HydrationCache<string, string>(2, 5);
   cache.set("a", "aa", 2);
@@ -12,112 +24,101 @@ test("hydration cache obeys entry and byte bounds", () => {
   expect(cache.size).toBe(2);
 });
 
-test("page window coalesces same-direction loads and deduplicates items", async () => {
-  let calls = 0;
-  const window = new PageWindow(
-    (item: { id: string }) => item.id,
-    async () => {
-      calls += 1;
-      await Promise.resolve();
-      return {
-        generation: "one",
-        items: [{ id: "a" }, { id: "a" }, { id: "b" }],
-        hasMoreBefore: false,
-        hasMoreAfter: false,
-      };
-    },
-    10,
-  );
-  await Promise.all([window.load("before"), window.load("before")]);
-  expect(calls).toBe(1);
-  expect(window.items.map(item => item.id)).toEqual(["a", "b"]);
+test("one physical fetch owns both page directions until settlement", () => {
+  using window = new PageWindow(2, 4, 4096);
+  using request = window.begin("after")!;
+  expect(request.cursor()).toBeUndefined();
+  expect(() => window.begin("after")).toThrow();
+  expect(() => window.begin("before")).toThrow();
+  window.finish(request, page(["a", "b"], "start", "end", false, false));
+  expect(ids(window)).toEqual(["a", "b"]);
+  expect(window.begin("before")).toBeUndefined();
+  expect(window.begin("after")).toBeUndefined();
 });
 
-test("page reset fences an older in-flight response", async () => {
-  let release: ((page: Page<{ id: string }, unknown>) => void) | undefined;
-  const window = new PageWindow(
-    (item: { id: string }) => item.id,
-    () => new Promise<Page<{ id: string }, unknown>>(resolve => { release = resolve; }),
-    10,
-  );
-  const stale = window.load("before");
-  window.reset({
-    generation: "two",
-    items: [{ id: "fresh" }],
-    hasMoreBefore: false,
-    hasMoreAfter: false,
-  });
-  release?.({
-    generation: "one",
-    items: [{ id: "stale" }],
-    hasMoreBefore: false,
-    hasMoreAfter: false,
-  });
-  expect(await stale).toEqual([]);
-  expect(window.items.map(item => item.id)).toEqual(["fresh"]);
+test("exclusive provider pages refuse duplicate identities atomically", () => {
+  using window = new PageWindow(2, 4, 4096);
+  window.reset(page(["a"], "start", "a"));
+  const retained = window.items();
+  using request = window.begin("after")!;
+  // The old Map silently admitted this nonexclusive provider response.
+  expect(() => window.finish(request, page(["a", "b"], "a", "b")))
+    .toThrow("duplicate key");
+  expect(window.items()).toBe(retained);
+  expect(ids(window)).toEqual(["a"]);
+  using next = window.begin("after")!;
+  expect(next.cursor()).toBe("a");
+  window.finish(next, undefined);
 });
 
-test("page window evicts the opposite edge at maxItems after loads and oversized reset", async () => {
-  type Item = { id: string; value: number };
-  const pages: Page<Item, string>[] = [
-    { generation: "one", items: [{ id: "c", value: 2 }, { id: "d", value: 1 }], after: "d", hasMoreBefore: true, hasMoreAfter: true },
-    { generation: "one", items: [{ id: "e", value: 1 }, { id: "f", value: 1 }, { id: "g", value: 1 }], after: "g", hasMoreBefore: true, hasMoreAfter: true },
-    { generation: "one", items: [{ id: "b", value: 2 }, { id: "c", value: 3 }], before: "b", hasMoreBefore: false, hasMoreAfter: true },
-  ];
-  const requests: [string, string | undefined][] = [];
-  const window = new PageWindow<Item, string>(item => item.id, async (direction, cursor) => {
-    requests.push([direction, cursor]);
-    const page = pages.shift();
-    if (page === undefined) throw new Error("unexpected page request");
-    return page;
-  }, 2);
-  window.reset({ generation: "one", items: [{ id: "b", value: 1 }, { id: "c", value: 1 }], before: "b", after: "c", hasMoreBefore: true, hasMoreAfter: true });
-  expect(window.items).toEqual([{ id: "b", value: 1 }, { id: "c", value: 1 }]);
-  expect(await window.load("after")).toEqual([{ id: "d", value: 1 }]);
-  expect(window.items).toEqual([{ id: "c", value: 2 }, { id: "d", value: 1 }]);
-  expect(await window.load("after")).toEqual([{ id: "f", value: 1 }, { id: "g", value: 1 }]);
-  expect(window.items).toEqual([{ id: "f", value: 1 }, { id: "g", value: 1 }]);
-  expect(await window.load("before")).toEqual([{ id: "b", value: 2 }, { id: "c", value: 3 }]);
-  expect(window.items).toEqual([{ id: "b", value: 2 }, { id: "c", value: 3 }]);
-  expect(requests).toEqual([["after", "c"], ["after", "d"], ["before", "b"]]);
-  expect(await window.load("before")).toEqual([]);
-  expect(requests).toHaveLength(3);
-
-  window.reset({ generation: "two", items: [{ id: "x", value: 1 }, { id: "y", value: 1 }, { id: "z", value: 1 }, { id: "w", value: 1 }], hasMoreBefore: false, hasMoreAfter: false });
-  expect(window.items).toEqual([{ id: "z", value: 1 }, { id: "w", value: 1 }]);
-  expect(window.hasMoreBefore).toBe(false);
-  expect(window.hasMoreAfter).toBe(false);
+test("reset fences the response but retains physical fetch custody", () => {
+  using window = new PageWindow(2, 4, 4096);
+  window.reset(page(["old"], "old-before", "old-after"));
+  using stale = window.begin("before")!;
+  window.reset(page(["fresh"], "new-before", "new-after", true, true, "two"));
+  expect(() => window.begin("before")).toThrow("not settled");
+  expect(() => window.finish(stale, page(["stale"], "x", "y")))
+    .toThrow("predates the reset");
+  expect(ids(window)).toEqual(["fresh"]);
+  using fresh = window.begin("before")!;
+  expect(fresh.cursor()).toBe("new-before");
+  window.finish(fresh, undefined);
 });
 
-test("a new page generation fences both stale page directions without clearing a fresh in-flight load", async () => {
-  type Item = { id: string };
-  const requests: { direction: string; cursor: string | undefined; resolve: (page: Page<Item, string>) => void }[] = [];
-  const window = new PageWindow<Item, string>(item => item.id, (direction, cursor) =>
-    new Promise(resolve => { requests.push({ direction, cursor, resolve }); }), 2);
-  window.reset({ generation: "old", items: [{ id: "old" }], before: "old-before", after: "old-after", hasMoreBefore: true, hasMoreAfter: true });
-  const staleBefore = window.load("before");
-  const staleAfter = window.load("after");
-  {
-    window.reset({ generation: "new", items: [{ id: "fresh-a" }, { id: "fresh-b" }, { id: "fresh-c" }], before: "new-before", after: "new-after", hasMoreBefore: true, hasMoreAfter: true });
-  }
-  expect(window.items).toEqual([{ id: "fresh-b" }, { id: "fresh-c" }]);
-  const freshBefore = window.load("before");
-  expect(requests.map(({ direction, cursor }) => [direction, cursor])).toEqual([
-    ["before", "old-before"], ["after", "old-after"], ["before", "new-before"],
-  ]);
-  for (const request of requests.slice(0, 2)) {
-    request.resolve({ generation: "old", items: [{ id: "stale" }], before: "stale-before", after: "stale-after", hasMoreBefore: false, hasMoreAfter: false });
-  }
-  expect(await staleBefore).toEqual([]);
-  expect(await staleAfter).toEqual([]);
-  expect(window.items).toEqual([{ id: "fresh-b" }, { id: "fresh-c" }]);
-  expect(window.hasMoreBefore).toBe(true);
-  expect(window.hasMoreAfter).toBe(true);
-  expect(window.load("before")).toBe(freshBefore);
-  expect(requests).toHaveLength(3);
-  requests[2]?.resolve({ generation: "new", items: [{ id: "fresh-a" }], before: "new-start", hasMoreBefore: false, hasMoreAfter: true });
-  expect(await freshBefore).toEqual([{ id: "fresh-a" }]);
-  expect(window.items).toEqual([{ id: "fresh-a" }, { id: "fresh-b" }]);
-  expect(window.hasMoreBefore).toBe(false);
-  expect(window.hasMoreAfter).toBe(true);
+test("whole-page eviction moves both opaque exclusive edges without holes", () => {
+  using window = new PageWindow(2, 4, 4096);
+  window.reset(page(["a", "b"], "opaque-0", "opaque-2", false, true));
+  using first = window.begin("after")!;
+  expect(first.cursor()).toBe("opaque-2");
+  window.finish(first, page(["c", "d"], "opaque-2", "opaque-4"));
+  using second = window.begin("after")!;
+  expect(second.cursor()).toBe("opaque-4");
+  window.finish(second, page(["e", "f"], "opaque-4", "opaque-6", true, false));
+  expect(ids(window)).toEqual(["c", "d", "e", "f"]);
+  expect(window.pageCount()).toBe(2);
+  expect(window.hasMore("before")).toBe(true);
+  using backfill = window.begin("before")!;
+  // The previous TS implementation left this at the evicted opaque-0 edge.
+  expect(backfill.cursor()).toBe("opaque-2");
+  window.finish(backfill, page(["a", "b"], "opaque-0", "opaque-2", false, true));
+  expect(ids(window)).toEqual(["a", "b", "c", "d"]);
+  expect(window.hasMore("after")).toBe(true);
+  using forward = window.begin("after")!;
+  expect(forward.cursor()).toBe("opaque-4");
+  window.finish(forward, undefined);
+});
+
+test("oversized and changed-cut pages refuse without truncating provider custody", () => {
+  using window = new PageWindow(2, 2, 4096);
+  window.reset(page(["a"], "0", "1"));
+  const retained = window.items();
+  expect(() => window.reset(page(["x", "y", "z"], "0", "3"))).toThrow("capacity");
+  expect(window.items()).toBe(retained);
+  using request = window.begin("after")!;
+  expect(() => window.finish(request, page(["b"], "1", "2", true, true, "two")))
+    .toThrow("generation changed");
+  expect(window.items()).toBe(retained);
+  using invalid = window.begin("after")!;
+  expect(() => window.finish(invalid, new TextEncoder().encode("broken"))).toThrow();
+  using next = window.begin("after")!;
+  expect(next.cursor()).toBe("1");
+  window.finish(next, undefined);
+});
+
+test("unchanged reads reuse the exported immutable array", () => {
+  using window = new PageWindow(2, 2, 4096);
+  window.reset(page(["a"], "0", "1"));
+  const retained = window.items();
+  expect(Object.isFrozen(retained)).toBe(true);
+  for (let read = 0; read < 100; read++) expect(window.items()).toBe(retained);
+  expect(window.retainedBytes()).toBeGreaterThan(0n);
+  expect(window.retainedBytes()).toBeLessThanOrEqual(4096n);
+});
+
+test("page values retain exact integers and ordinary object property access", () => {
+  using window = new PageWindow(1, 1, 4096);
+  window.reset(new TextEncoder().encode('{"generation":"one","items":[{"key":"a","value":{"id":"a","inbox":9007199254740993}}],"before":"0","after":"1","hasMoreBefore":false,"hasMoreAfter":false}'));
+  const values = window.items() as readonly { id: string; inbox: bigint }[];
+  expect(values[0]?.id).toBe("a");
+  expect(values[0]?.inbox).toBe(9007199254740993n);
 });

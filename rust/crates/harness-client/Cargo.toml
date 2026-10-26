@@ -1,0 +1,24 @@
+[package]
+name = "acyclic-harness-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Bounded client state shared by native and WASM harness adapters"
+
+[features]
+grpc = ["acyclic-stream/grpc"]
+wasm = ["acyclic-stream/wasm"]
+
+[dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+bytes.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

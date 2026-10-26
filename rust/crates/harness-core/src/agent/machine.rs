@@ -22,11 +22,14 @@ pub const MAX_QUEUED: usize = 32;
 
 /// Input queued for the turn, in inbox order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnInput {
     /// The adoption brief.
     Brief {
         /// Brief file.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         brief: Box<FileRef>,
     },
     /// A message.
@@ -34,8 +37,10 @@ pub enum TurnInput {
         /// Sender.
         from: Sender,
         /// Message identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
         /// Body.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         body: Box<FileRef>,
         /// Inbox sequence of the message record, as returned
         /// by `Delivered::Committed`; it correlates a settled turn with
@@ -50,13 +55,16 @@ pub enum TurnInput {
     /// A child delegated an approval request.
     ApprovalRequested {
         /// The child.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         child: AgentPath,
         /// Request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
     /// A response file exists for this agent's approval request.
     Approval {
         /// Request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
     /// A host hook event.
@@ -64,8 +72,10 @@ pub enum TurnInput {
         /// Host.
         host: String,
         /// Hook identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
         /// Event file.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         event: Box<FileRef>,
     },
 }

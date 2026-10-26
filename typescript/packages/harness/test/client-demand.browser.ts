@@ -1,4 +1,4 @@
-import { DemandLoader, RequestScheduler, Harness, HarnessClient, ClientQuery, TaskVolume, WasmStream,
+import { DemandLoader, RequestScheduler, Harness,
   initializeClientQueries, PageWindow, HydrationCache, type FileRef } from "@acyclic-labs/harness";
 const result = document.querySelector<HTMLElement>("#result")!;
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
@@ -33,12 +33,19 @@ try {
     },
   };
   const demand = new DemandLoader(source, scheduler, 4, 2, 4096);
-  const window = new PageWindow<{ id: string; content: FileRef }, number>(item => item.id,
-    async () => ({ generation: "pinned-1", items: refs.map((content, i) => ({ id: String(i), content })), hasMoreBefore: false, hasMoreAfter: false }), 4);
+  await initializeClientQueries();
+  const window = new PageWindow(2, 4, 8192);
   assert(reads === 0, "construction started IO");
-  await window.load("after");
-  assert(reads === 0 && window.items.length === 4, "reference pages loaded bodies");
-  const selected = window.items[1]!.content;
+  const pageRequest = window.begin("after")!;
+  window.finish(pageRequest, new TextEncoder().encode(JSON.stringify({
+    generation: "pinned-1", before: "start", after: "end",
+    items: refs.map((content, i) => ({ key: String(i), value: { id: String(i), content } })),
+    hasMoreBefore: false, hasMoreAfter: false,
+  })));
+  pageRequest.free();
+  assert(reads === 0 && window.items().length === 4, "reference pages loaded bodies");
+  const selected = harness.contracts.validate("file_ref", window.items()[1]!.content);
+  window.free();
   const coldStart = performance.now();
   const [first, duplicate] = await Promise.all([demand.read(selected), demand.read(selected)]);
   const coldMs = performance.now() - coldStart;
@@ -121,45 +128,10 @@ try {
   const disposedResult = await boundary.read(selected).catch(error => error);
   assert(disposedResult.name === "AbortError" && boundary.residency.demand === 0, "completed provider published a disposed browser result");
   boundaryScheduler.dispose();
-  await initializeClientQueries();
-  const restartKey = "harness-file-client-restart";
-  const previous = sessionStorage.getItem(restartKey);
-  const databaseName = previous ?? `harness-file-client-${crypto.randomUUID()}`;
-  const streams = await WasmStream.openBrowser(databaseName, 64, 65536n);
-  const outbox = await TaskVolume.create(streams, "client/files");
-  const target = await TaskVolume.create(streams, "agent/files");
-  const client = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
-  const key = { Task: { task: "task", file: { Request: "offline.json" } } } as const;
-  if (previous === null) {
-    await client.enqueue(key, new TextEncoder().encode(JSON.stringify({ operationId: "offline", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} })));
-    assert(client.pending() === 1, "request did not reach the volume outbox");
-    sessionStorage.setItem(restartKey, databaseName);
-    client.free(); outbox.free(); target.free(); streams.free();
-    location.reload();
-    await new Promise<never>(() => {});
-  }
-  assert(client.pending() === 1, "document restart lost pending intent");
-  const readerStreams = await WasmStream.openBrowser(databaseName, 64, 65536n);
-  const readerVolume = await TaskVolume.open(readerStreams, "agent/files");
-  const query = await ClientQuery.open(readerVolume, "Tasks", null, { files: 2n, segments: 2n, bytes: 8192n });
-  const views = query.views();
-  const stop = Promise.withResolvers<void>();
-  let received = 0;
-  const follow = query.follow(delivery => { if (delivery.file) received++; }, () => stop.resolve(), stop.promise);
-  assert(await client.flush() === 1, "request was not admitted exactly once");
-  await follow;
-  assert(received === 1 && client.pending() === 0, "live publication or acknowledgement lost");
-  assert(JSON.parse(new TextDecoder().decode(views.segments(key)![0])).operationId === "offline", "live view differs from persisted request");
-  const cursor = client.cursor();
-  views.free(); query.free(); readerVolume.free(); readerStreams.free(); client.free();
-  const restored = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
-  assert(restored.pending() === 0 && restored.cursor().position === cursor.position, "acknowledged request replayed on reopen");
-  restored.free(); outbox.free(); target.free(); streams.free();
-  sessionStorage.removeItem(restartKey);
   demand.dispose(); baselineCache.clear(); scheduler.dispose(); harness.free();
   assert(scheduler.residency.requests === 0 && demand.residency.bytes === 0, "disposed residency");
   result.dataset.status = "passed";
-  result.textContent = JSON.stringify({ coldReads: 1, coldMs, nonSpeculativeColdMs, coldAllocatedBytes, coldMainThreadMs, nonSpeculativeMainThreadMs, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2, documentRestarts: 1, recoveredRequests: received, cursorPosition: String(cursor.position) });
+  result.textContent = JSON.stringify({ coldReads: 1, coldMs, nonSpeculativeColdMs, coldAllocatedBytes, coldMainThreadMs, nonSpeculativeMainThreadMs, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2 });
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = error instanceof Error ? error.stack ?? error.message : String(error);

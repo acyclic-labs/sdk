@@ -1,8 +1,8 @@
 import { beforeAll, expect, test } from "bun:test";
 import "fake-indexeddb/auto";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { TailRequestSchema, TailResponseSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
-import { TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { AppendRequestSchema, AppendResponseSchema, TailRequestSchema, TailResponseSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import { WasmStream, initializeClientQueries } from "../src/client.js";
 
 beforeAll(initializeClientQueries);
 
@@ -15,11 +15,16 @@ for (const persistent of [false, true]) {
     const stream = persistent
       ? await WasmStream.openBrowser(`watermarks-${crypto.randomUUID()}`, 64, 65536n)
       : new WasmStream();
-    const files = await TaskVolume.create(stream, "client/files");
-    await files.write(await files.head(), "Goal", new TextEncoder().encode("one"), null);
-    const tail = (await files.head()).position;
+    const path = "client/watermarks";
+    const appended = fromBinary(AppendResponseSchema, await stream.dispatch("append",
+      toBinary(AppendRequestSchema, create(AppendRequestSchema, {
+        path, ifTail: 0n, records: [{ value: new TextEncoder().encode("one") }],
+      }))));
+    if (appended.outcome.case !== "committed") throw new Error("initial append did not commit");
+    const tail = appended.outcome.value.tail;
+    expect(tail).toBe(1n);
     const durable = persistent ? tail : 0n;
-    const input = (accepted: boolean) => toBinary(TailRequestSchema, create(TailRequestSchema, { path: "client/files", accepted }));
+    const input = (accepted: boolean) => toBinary(TailRequestSchema, create(TailRequestSchema, { path, accepted }));
     const observed = fromBinary(TailResponseSchema, await stream.dispatch("tail", input(true)));
     expect(exactWatermarks(observed, tail, durable)).toBe(true);
     expect(exactWatermarks({ tail }, tail, durable)).toBe(false);
@@ -27,6 +32,6 @@ for (const persistent of [false, true]) {
     const ordinary = fromBinary(TailResponseSchema, await stream.dispatch("tail", input(false)));
     expect(ordinary.tail).toBe(tail);
     expect(ordinary.durable).toBeUndefined();
-    files.free(); stream.free();
+    stream.free();
   });
 }
