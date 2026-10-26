@@ -140,16 +140,9 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
     let cancellation = CancellationToken::new();
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies.iter().cloned()) {
         (async {
-            let __object_args = (object_id, body, WorkBudget::UNBOUNDED, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = AsyncObjectStore::put(
-                &source,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
+            let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let result = AsyncObjectStore::put(&source, object_id, body, &mut work).await;
+            work.receipt(result)
         })
         .await?;
     }

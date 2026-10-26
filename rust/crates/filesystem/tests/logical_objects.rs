@@ -30,10 +30,9 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
     let writes = [write(b"first"), write(b"second"), write(b"first")];
     let cancel = CancellationToken::new();
     let result = {
-        let __object_args = (&writes, WorkBudget::UNBOUNDED, &cancel);
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        let result = store.put_many(&writes, &mut work).await;
+        work.receipt(result)
     }
     .map_err(|failure| failure.error)?;
     assert_eq!(result.work.backend_write_operations, 1);
@@ -45,32 +44,29 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
         })
         .collect::<Vec<_>>();
     let result = {
-        let __object_args = (&reads, WorkBudget::UNBOUNDED, &cancel);
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
+        let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        let result = store
+            .read_many(&reads, &mut work)
             .await
             .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+        work.receipt(result)
     }
     .map_err(|failure| failure.error)?;
     assert_eq!(result.work.backend_read_operations, 1);
     assert_eq!(result.work.object_probes, 3);
     let denied = {
-        let __object_args = (
-            &reads,
+        let mut work = acyclic_fs::AuthorityWork::new(
             WorkBudget {
                 backend_read_operations: 0,
                 ..WorkBudget::UNBOUNDED
             },
             &cancel,
         );
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
+        let result = store
+            .read_many(&reads, &mut work)
             .await
             .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+        work.receipt(result)
     }
     .err()
     .ok_or("zero backend budget admitted a batch")?;
@@ -106,10 +102,9 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
         (1, 5, 5)
     );
     let replay = {
-        let __object_args = (&writes, WorkBudget::UNBOUNDED, &cancel);
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        let result = store.put_many(&writes, &mut work).await;
+        work.receipt(result)
     }
     .map_err(|failure| failure.error)?;
     assert_eq!(
@@ -190,13 +185,9 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
     let valid = write(b"data");
     assert!(matches!(
         {
-            let __object_args = (valid.object_id, valid.bytes, WorkBudget::UNBOUNDED, &cancel);
-            let mut __object_work =
-                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
+            let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+            let result = store.put(valid.object_id, valid.bytes, &mut work).await;
+            work.receipt(result)
         }
         .err()
         .map(|failure| failure.error),
@@ -271,11 +262,9 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
     ));
     assert!(matches!(
         {
-            let __object_args = (wanted.object_id, WorkBudget::UNBOUNDED, &cancel);
-            let mut __object_work =
-                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
-            __object_work.receipt(__object_result)
+            let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+            let result = store.contains(wanted.object_id, &mut work).await;
+            work.receipt(result)
         }
         .err()
         .map(|failure| failure.error),

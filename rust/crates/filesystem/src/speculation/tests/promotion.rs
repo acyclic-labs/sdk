@@ -31,21 +31,11 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = {
+            let mut work = crate::AuthorityWork::new(budget, cancellation);
+            let result = AsyncObjectStore::put(&self.inner, object_id, bytes, &mut work).await;
+            work.receipt(result)
+        };
         context.accept(result)
     }
 
@@ -63,16 +53,10 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
         let cancellation = context.cancellation;
         let result = async {
             let mut receipt = {
-                let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
+                let mut work = crate::AuthorityWork::new(budget, cancellation);
+                let result =
+                    AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, &mut work).await;
+                work.receipt(result)
             }?;
             receipt.value.retention = ObjectReadRetention::Owned { logical_bytes: 65 };
             Ok(receipt)
@@ -92,18 +76,13 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
-                        .await
-                        .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = {
+            let mut work = crate::AuthorityWork::new(budget, cancellation);
+            let result = AsyncObjectStore::read_many(&self.inner, requests, &mut work)
+                .await
+                .map(|(values, _allocation)| values);
+            work.receipt(result)
+        };
         context.accept(result).map(|values| (values, None))
     }
 
@@ -118,17 +97,11 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = {
+            let mut work = crate::AuthorityWork::new(budget, cancellation);
+            let result = AsyncObjectStore::contains(&self.inner, object_id, &mut work).await;
+            work.receipt(result)
+        };
         context.accept(result)
     }
 }

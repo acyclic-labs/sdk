@@ -328,14 +328,9 @@ impl AsyncObjectStore for CancelAfterPut {
         let cancellation = context.cancellation;
         let result = async {
             let receipt = {
-                let __object_args = (id, bytes, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = self
-                    .inner
-                    .put(__object_args.0, __object_args.1, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
+                let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
+                let result = self.inner.put(id, bytes, &mut work).await;
+                work.receipt(result)
             }?;
             self.after_put(cancellation);
             Ok(receipt)
@@ -357,14 +352,9 @@ impl AsyncObjectStore for CancelAfterPut {
         let cancellation = context.cancellation;
         let result = async {
             let receipt = {
-                let __object_args = (writes, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = self
-                    .inner
-                    .put_many(__object_args.0, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
+                let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
+                let result = self.inner.put_many(writes, &mut work).await;
+                work.receipt(result)
             }?;
             self.after_put(cancellation);
             Ok(receipt)
@@ -385,19 +375,11 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, maximum_bytes, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = self
-                    .inner
-                    .read(__object_args.0, __object_args.1, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = {
+            let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
+            let result = self.inner.read(id, maximum_bytes, &mut work).await;
+            work.receipt(result)
+        };
         context.accept(result)
     }
 
@@ -415,20 +397,15 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = self
-                    .inner
-                    .read_many(__object_args.0, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = {
+            let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
+            let result = self
+                .inner
+                .read_many(requests, &mut work)
+                .await
+                .map(|(values, _allocation)| values);
+            work.receipt(result)
+        };
         context.accept(result).map(|values| (values, None))
     }
 
@@ -443,19 +420,11 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = self
-                    .inner
-                    .contains(__object_args.0, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = {
+            let mut work = acyclic_fs::AuthorityWork::new(budget, cancellation);
+            let result = self.inner.contains(id, &mut work).await;
+            work.receipt(result)
+        };
         context.accept(result)
     }
 }
