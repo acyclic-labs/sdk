@@ -58,11 +58,13 @@ export STORAGE_S3_SECRET_KEY=storage-local-secret
 export STORAGE_S3_ALLOW_HTTP=1
 
 step=postgres-ready
+# The image's temporary bootstrap server accepts Unix sockets only. Probe TCP
+# so readiness cannot pass before that server shuts down and the final one starts.
 for _ in {1..40}; do
-    if docker exec "$pg" pg_isready -U postgres -d storage >/dev/null; then break; fi
+    if docker exec "$pg" pg_isready -h 127.0.0.1 -U postgres -d storage >/dev/null; then break; fi
     sleep 0.25
 done
-docker exec "$pg" pg_isready -U postgres -d storage
+docker exec "$pg" pg_isready -h 127.0.0.1 -U postgres -d storage
 step=postgres-isolation-fixture
 # Exercise a nondefault server setting: publication must choose its own fresh
 # statement snapshots after waiting for the namespace advisory lock.
@@ -87,4 +89,8 @@ step=postgres-cross-session
 timeout 60 cargo run --locked -p acyclic-stream --features postgres --example postgres-conformance
 step=postgres-scale
 timeout 60 cargo run --locked -p acyclic-stream --features postgres --example postgres-conformance -- --scale
+step=compile-shared-objects-regressions
+cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run
+step=shared-objects-regressions
+timeout 60 cargo test --locked -p acyclic-objects --features local,s3 --lib
 step=complete

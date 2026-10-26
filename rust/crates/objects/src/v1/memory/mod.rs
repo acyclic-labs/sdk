@@ -7,9 +7,11 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::Guarded;
-use super::{Error, Object, ObjectsProvider, request, wire};
+#[cfg(all(any(feature = "local", feature = "s3"), not(target_arch = "wasm32")))]
+use super::NativeObjectsCause;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-use super::{NativeObjectsCause, NativeObjectsSharedFailure};
+use super::NativeObjectsSharedFailure;
+use super::{Error, Object, ObjectsProvider, request, wire};
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
     NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
@@ -26,8 +28,12 @@ use wire::ErrorCode::{
     AlreadyExists, IdempotencyMismatch, InvalidArgument, NotFound, NotModified, PreconditionFailed,
     QuotaExceeded, Unavailable,
 };
+#[cfg(all(any(feature = "local", feature = "s3"), not(target_arch = "wasm32")))]
+mod durable;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) mod persistence;
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub(super) mod remote;
 
 fn fill_entropy(bytes: &mut [u8]) -> Result<(), getrandom::Error> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -88,7 +94,10 @@ impl MemoryObjects {
 
     #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
     pub(super) fn replay_cursor_key(&self, key: [u8; 32]) -> Result<(), Error> {
-        *self.token_key.lock().map_err(|_| Error::from(Unavailable))? = Some(key);
+        *self
+            .token_key
+            .lock()
+            .map_err(|_| Error::from(Unavailable))? = Some(key);
         Ok(())
     }
 

@@ -197,6 +197,8 @@ impl Journal {
                 composite_publication(output, *length, publication)
             }
             StoredBody::Local { .. } => Ok(body.clone()),
+            #[cfg(feature = "s3")]
+            StoredBody::Remote(_) => Err(Error::from(Unavailable).into()),
         }
     }
     pub(super) fn write(

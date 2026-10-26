@@ -5,7 +5,15 @@ use acyclic_objects::{
 };
 use acyclic_stream::OwnedBytes;
 use object_store::{ObjectStore, path::Path};
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
+#[path = "observed_store.rs"]
+mod observed_store;
 
 pub async fn verify(
     store: Arc<dyn ObjectStore>,
@@ -59,7 +67,7 @@ pub async fn verify(
         ..Default::default()
     };
     let info = left.put(request.clone(), body.clone()).await?;
-    let reopened = S3Objects::open(store, prefix, capabilities).await?;
+    let reopened = S3Objects::open(store.clone(), prefix.clone(), capabilities).await?;
     assert_eq!(reopened.put(request, body.clone()).await?, info);
     let mut query = wire::GetObjectRequest {
         bucket: Some(bucket.clone()),
@@ -96,6 +104,7 @@ pub async fn verify(
         "S3 independent clients: create/update CAS races, immediate create/update/delete visibility, physical multipart, ranges and exact reopen replay: {:?}",
         start.elapsed()
     );
+    cold_ranges(store, prefix.clone().join("cold-range"), capabilities).await?;
     Ok(())
 }
 
@@ -107,4 +116,79 @@ fn one_winner(
         (Ok(info),Err(error)) | (Err(error),Ok(info)) if error.code == wire::ErrorCode::PreconditionFailed => Ok(info),
         _ => Err("step=s3-independent-cas: expected exactly one winner; recovery: inspect MinIO conditional PUT support and rerun storage-conformance".into()),
     }
+}
+
+async fn cold_ranges(
+    store: Arc<dyn ObjectStore>,
+    prefix: Path,
+    capabilities: Capabilities,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let observed = Arc::new(observed_store::ObservedStore {
+        inner: store,
+        body_bytes: AtomicUsize::new(0),
+        body_gets: AtomicUsize::new(0),
+        metadata_bytes: AtomicUsize::new(0),
+    });
+    let provider = S3Objects::open(observed.clone(), prefix.clone(), capabilities).await?;
+    let bucket = provider
+        .create_bucket(wire::CreateBucketRequest {
+            name: "cold-range".into(),
+            mutation: None,
+        })
+        .await?
+        .bucket
+        .ok_or("cold-range bucket identity missing")?;
+    for generation in 1..=8u8 {
+        provider
+            .put(
+                wire::PutObjectHeader {
+                    bucket: Some(bucket.clone()),
+                    object_key: "overwritten".into(),
+                    ..Default::default()
+                },
+                vec![generation; 1024 * 1024].into(),
+            )
+            .await?;
+        if generation != 1 && generation != 8 {
+            continue;
+        }
+        observed.body_bytes.store(0, Ordering::Relaxed);
+        observed.body_gets.store(0, Ordering::Relaxed);
+        observed.metadata_bytes.store(0, Ordering::Relaxed);
+        let fresh = S3Objects::open(observed.clone(), prefix.clone(), capabilities).await?;
+        assert_eq!(
+            observed.body_gets.load(Ordering::Relaxed),
+            0,
+            "cold open fetched body history"
+        );
+        let response = fresh
+            .get(
+                wire::GetObjectRequest {
+                    bucket: Some(bucket.clone()),
+                    object_key: "overwritten".into(),
+                    range: Some(wire::ByteRange {
+                        selection: Some(wire::byte_range::Selection::SuffixLength(1)),
+                    }),
+                    ..Default::default()
+                },
+                1,
+            )
+            .await?;
+        assert_eq!(response.body().as_ref(), &[generation]);
+        assert_eq!(
+            observed.body_bytes.load(Ordering::Relaxed),
+            1,
+            "cold range fetched superseded bodies or unselected bytes"
+        );
+        assert_eq!(observed.body_gets.load(Ordering::Relaxed), 1);
+        let metadata = observed.metadata_bytes.load(Ordering::Relaxed);
+        assert!(
+            metadata < 4096,
+            "one retained object required unbounded metadata: {metadata}"
+        );
+        println!(
+            "MinIO cold suffix after {generation} x 1 MiB overwrite: body GETs=1, received body bytes=1, received current metadata bytes={metadata}"
+        );
+    }
+    Ok(())
 }

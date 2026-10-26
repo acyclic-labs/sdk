@@ -32,7 +32,7 @@ timer or polling fallback. Listener loss fails record and progress follows close
 
 Limits: command recovery uses bounded SQL pages; public pages retain the unchanged
 core bounds. Namespace writes serialize, and recovery replays retained history into
-one process-wide core. Default core capacity is 100,000 paths (including implicit
+one shared core per opened provider. Default core capacity is 100,000 paths (including implicit
 parents), one million records/commits/retry identities and 256 MiB of payloads.
 The local resource check opens 100,000 flat paths and 100,000 subscriptions with
 unchanged defaults. This measures idle control overhead, not an active-agent
@@ -52,28 +52,22 @@ The second command creates PostgreSQL and MinIO containers with disposable data
 under `/mnt/bb`. It invokes the unchanged Stream suite, then checks independent
 sessions for exact replay, a concurrent CAS winner, notification delivery within
 one second, reopening, expired-deadline retry precedence, and terminated LISTEN
-connections. On bb2, 2026-10-26, the unchanged Stream suite passed in 125 ms;
-independent-session checks passed. Creating 100,000 paths took 661 ms; opening
-their subscriptions completed in 15.612 s total with two provider connections,
-four total runtime tasks (including the test observer), one OS thread and
-321,296 KiB RSS. Connection/task/thread counts did not increase with streams.
-The unchanged filesystem smoke passed over Postgres + MinIO in 103 ms; an
-additional 256 KiB chunked-file check read exact content after independent provider
-reopen in 240 ms.
+connections. On bb2, 2026-10-26, the unchanged Stream suite passed in 121 ms;
+independent-session checks passed with REPEATABLE READ as the database default.
+Creating 100,000 paths took 872 ms; opening their subscriptions completed in
+15.531 s total with two provider connections, four total runtime tasks (including
+the test observer), one OS thread and 321,232 KiB RSS. Connection/task/thread
+counts did not increase with streams. The unchanged filesystem smoke passed over
+Postgres + MinIO in 194 ms; a 256 KiB chunked-file check read exact content after
+independent provider reopen in 257 ms.
 
-Evidence: buildbox job `1793044899146-83693-10371b11`, output log
-`/home/var/log/buildbox/1793044855233-83693-95d2b243.log`, PostgreSQL 17 Alpine,
+Evidence: buildbox job `1793048750090-108901-0c54a923`, output log
+`/home/var/log/buildbox/1793048734046-108901-7d4d6f66.log`, PostgreSQL 17 Alpine,
 MinIO built from the pinned source release in the runner. The filesystem check
 uses the canonical public smoke export, which main explicitly distinguishes from
 full filesystem qualification; its full workload corpus has no executable runner.
 The conformance README labels the provider suites v2; its unchanged Stream export
 currently invokes the v1-protocol `acyclic_stream::conformance::verify`.
-
-The runner also passed with REPEATABLE READ as the database default, proving that
-publication does not inherit that setting: job `1793045764125-91178-f115db47`, log
-`/home/var/log/buildbox/1793045746441-91178-9785d9f7.log`. Concurrent CAS,
-notifications, reopen and listener-loss checks passed; 100,000 streams plus
-subscriptions took 16.274 s with the same connection/task/thread counts.
 
 ## Live steps
 

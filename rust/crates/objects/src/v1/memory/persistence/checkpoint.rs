@@ -1,15 +1,16 @@
 //! Atomic private checkpoints retain logical state and retry outcomes, not history.
 use super::*;
 
-const PACK_LIMIT: usize = 64 * 1024;
+#[cfg(test)]
+use super::super::durable::PACK_LIMIT;
 const TEMPORARY: &str = ".v1-checkpoint.tmp";
 
 mod packing;
 mod snapshot;
 #[cfg(test)]
 mod tests;
-use packing::Pending;
-use snapshot::Change;
+use super::super::durable::packing::Pending;
+use super::super::durable::snapshot::Change;
 
 impl Journal {
     pub(super) fn compact(

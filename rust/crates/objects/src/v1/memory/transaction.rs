@@ -83,8 +83,11 @@ impl MemoryObjects {
                             .downcast_ref::<wire::ObjectInfo>()
                             .cloned()
                             .map(Into::into),
-                        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-                        kind: persistence::response_kind::<R>()?,
+                        #[cfg(all(
+                            any(feature = "local", feature = "s3"),
+                            not(target_arch = "wasm32")
+                        ))]
+                        kind: durable::response_kind::<R>()?,
                     },
                 ))
             },
@@ -149,20 +152,7 @@ impl MemoryObjects {
         if let Some(identity) = identity {
             next.receipt = Some(receipt(&response, identity)?);
         }
-        let mut count = next.buckets.len()
-            + next.uploads.len()
-            + next.receipts.len()
-            + usize::from(next.receipt.is_some())
-            + next
-                .buckets
-                .values()
-                .map(|bucket| bucket.objects.len())
-                .sum::<usize>()
-            + next
-                .uploads
-                .values()
-                .map(|upload| upload.parts.len())
-                .sum::<usize>();
+        let mut count = next.entry_count() + usize::from(next.receipt.is_some());
         let mut bytes = stored_bytes(guard, &mut next.state).ok_or(Error::from(QuotaExceeded))?;
         if let Some(change) = &next.object {
             let bucket = next
@@ -332,8 +322,11 @@ impl MemoryObjects {
                         digest,
                         response: encoded,
                         put_info: Some(response.1.clone()),
-                        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-                        kind: persistence::response_kind::<wire::ObjectInfo>()?,
+                        #[cfg(all(
+                            any(feature = "local", feature = "s3"),
+                            not(target_arch = "wasm32")
+                        ))]
+                        kind: durable::response_kind::<wire::ObjectInfo>()?,
                     },
                 ))
             },

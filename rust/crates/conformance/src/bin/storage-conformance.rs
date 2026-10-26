@@ -21,6 +21,9 @@ fn required(name: &str) -> Result<String, String> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    rustls::crypto::ring::default_provider().install_default().map_err(|_| {
+        "step=tls-provider: a provider was already installed; recovery: run storage-conformance in a fresh process"
+    })?;
     let start = Instant::now();
     let database = required("STORAGE_POSTGRES_URL")?;
     let namespace = uuid::Uuid::new_v4().to_string();
