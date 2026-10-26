@@ -15,30 +15,19 @@ pub(super) fn package_for_crate<'a>(
     metadata: &'a Metadata,
     crate_name: &str,
 ) -> Result<&'a Package, CliError> {
-    let matches = metadata
+    metadata
         .packages
         .iter()
-        .filter(|package| {
+        .find(|package| {
             package.targets.iter().any(|target| {
-                target.kind.iter().any(|kind| {
-                    matches!(
-                        kind,
-                        TargetKind::ProcMacro
-                            | TargetKind::Lib
-                            | TargetKind::RLib
-                            | TargetKind::CDyLib
-                            | TargetKind::StaticLib
-                            | TargetKind::DyLib
-                    )
-                }) && target.name.replace('-', "_") == crate_name
+                is_library_target(target) && target.name.replace('-', "_") == crate_name
             })
         })
-        .collect::<Vec<_>>();
-    matches.into_iter().next().ok_or_else(|| {
-        CliError(format!(
-            "Rustdoc crate `{crate_name}` has no matching Cargo package target"
-        ))
-    })
+        .ok_or_else(|| {
+            CliError(format!(
+                "Rustdoc crate `{crate_name}` has no matching Cargo package target"
+            ))
+        })
 }
 
 pub(super) fn published_packages(root: &Path) -> Result<Vec<String>, CliError> {

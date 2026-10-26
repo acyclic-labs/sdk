@@ -1,4 +1,8 @@
 //! Public named-creation work bounds and failure receipts.
+#[macro_use]
+#[path = "../../tests/support/unbounded.rs"]
+mod unbounded;
+
 use crate as acyclic_fs;
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
@@ -19,37 +23,13 @@ fn finite_budget() -> Result<WorkBudget, serde_json::Error> {
 async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "measured-pinning",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = unbounded!(fs, create_workspace("measured-pinning"))?;
     workspace
         .write_text("/original.txt", "original generation")
         .await?;
-    let original = workspace
-        .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id();
+    let original = unbounded!(workspace, head())?.id();
     workspace.write_text("/later.txt", "later head").await?;
-    let current = workspace
-        .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id();
+    let current = unbounded!(workspace, head())?.id();
     assert_ne!(original, current);
     let budget = finite_budget()?;
     for select_head in [false, true] {
@@ -103,15 +83,7 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
         assert_eq!(*failure.work, WorkCounters::default());
     }
     assert_eq!(
-        workspace
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(workspace, head())?.id(),
         current
     );
     Ok(())
@@ -131,27 +103,11 @@ async fn named_creation_retains_finite_success_and_spent_exhaustion()
     assert!(created.work.authority_records_read > 0);
     assert!(created.work.object_bytes_written > 0);
     assert_eq!(
-        fs.open_workspace(
-            "measured-create",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id(),
+        unbounded!(fs, open_workspace("measured-create"))?.id(),
         created.value.id()
     );
     assert_eq!(
-        fs.create_workspace(
-            "measured-create",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id(),
+        unbounded!(fs, create_workspace("measured-create"))?.id(),
         created.value.id()
     );
 
@@ -186,15 +142,7 @@ async fn cancelled_creation_spends_nothing_and_does_not_publish()
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     assert!(
-        fs.open_workspace(
-            "cancelled-create",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        unbounded!(fs, open_workspace("cancelled-create")).is_err()
     );
     Ok(())
 }
@@ -203,15 +151,7 @@ async fn cancelled_creation_spends_nothing_and_does_not_publish()
 async fn named_open_retains_cumulative_work_and_original_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let created = fs
-        .create_workspace(
-            "measured-open",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let created = unbounded!(fs, create_workspace("measured-open"))?;
     let budget = finite_budget()?;
     let opened = fs
         .open_workspace("measured-open", budget, &CancellationToken::new())
@@ -251,15 +191,7 @@ async fn named_open_retains_cumulative_work_and_original_cancellation()
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(
-        fs.open_workspace(
-            "measured-open",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id(),
+        unbounded!(fs, open_workspace("measured-open"))?.id(),
         created.id()
     );
     Ok(())
@@ -288,15 +220,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     workspace
         .write_text("/later.txt", "later generation")
         .await?;
-    let head = workspace
-        .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id();
+    let head = unbounded!(workspace, head())?.id();
     assert_ne!(head, created.value.id());
     let key = IdempotencyKey::from_bytes(operation.into_bytes());
     let recovered = workspace
@@ -341,27 +265,11 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     assert!(absent.value.is_none());
     absent.work.verify(budget)?;
     assert_eq!(
-        workspace
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(workspace, head())?.id(),
         head
     );
     assert_eq!(
-        workspace
-            .operation_generation(
-                key,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        unbounded!(workspace, operation_generation(key))?
             .ok_or("convenience lost original")?
             .id(),
         created.value.id()
@@ -561,25 +469,12 @@ mod source_bound_lost_ack {
         assert!(failure.work.backend_write_operations > 0);
         failure.work.verify(budget)?;
         assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
-        let workspace = fs
-            .open_workspace(
-                "stream-lost-ack",
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        let initial = workspace
-            .operation_generation(
-                IdempotencyKey::from_bytes(operation.into_bytes()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .ok_or("lost acknowledgement did not retain original allocation")?;
+        let workspace = unbounded!(fs, open_workspace("stream-lost-ack"))?;
+        let initial = unbounded!(
+            workspace,
+            operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()))
+        )?
+        .ok_or("lost acknowledgement did not retain original allocation")?;
         let initial_id = initial.id();
         let workspace_id = initial.workspace_id();
         assert!(
@@ -594,15 +489,7 @@ mod source_bound_lost_ack {
         workspace
             .write_text("/later.txt", "head after lost acknowledgement")
             .await?;
-        let head = workspace
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id();
+        let head = unbounded!(workspace, head())?.id();
         assert_ne!(head, initial_id);
         drop(initial);
         drop(workspace);

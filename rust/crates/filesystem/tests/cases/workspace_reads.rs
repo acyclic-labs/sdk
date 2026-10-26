@@ -15,11 +15,9 @@ macro_rules! value {
     };
 }
 
-macro_rules! unbounded {
-    ($receiver:expr, $method:ident($($arg:expr),* $(,)?)) => {
-        value!($receiver.$method($($arg,)* WorkBudget::UNBOUNDED, &CancellationToken::new()).await)
-    };
-}
+#[macro_use]
+#[path = "../support/unbounded.rs"]
+mod unbounded;
 
 fn allow<E>(
     _: WorkBudget,

@@ -4,7 +4,11 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::too_many_lines,
-    reason = "test fixtures use explicit fatal assertions for impossible setup failures"
+    reason = "test fixtures #[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+
+use explicit fatal assertions for impossible setup failures"
 )]
 
 use acyclic_fs::{
@@ -418,15 +422,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
     let fs = Fs::memory();
     let store = SharedLineageStore::default();
     let graph = WorkspaceGraph::new(store.clone());
-    let root = fs
-        .create_workspace(
-            "graph-root",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let root = unbounded!(fs, create_workspace("graph-root"))?;
     graph.register_root(&root).await?;
     let child = graph
         .fork(&root, "graph-child", IdempotencyKey::from_bytes([1; 16]))
@@ -467,28 +463,13 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
 async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let target = fs
-        .create_workspace(
-            "immutable-target",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let target = unbounded!(fs, create_workspace("immutable-target"))?;
     target.write_text("/base", "base").await?;
     let source = target
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "immutable-source",
             ForkOptions::from_generation(
-                target
-                    .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?,
+                unbounded!(target, head())?,
                 IdempotencyKey::from_bytes([3; 16]),
             ),
             acyclic_fs::PublicationPermit::Unrestricted,
@@ -529,31 +510,12 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
-        target
-            .read(
-                "/source-before-plan",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        unbounded!(target, read("/source-before-plan", 16))?
             .as_ref(),
         &b"one"[..]
     );
     assert!(
-        target
-            .read(
-                "/source-after-plan",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(target, read("/source-after-plan", 16)).is_err()
     );
 
     let stale_plan = source
@@ -580,17 +542,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         JoinOutcome::StaleTarget(_)
     ));
     assert!(
-        target
-            .read(
-                "/source-after-plan",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(target, read("/source-after-plan", 16)).is_err()
     );
 
     let current_plan = source
@@ -627,16 +579,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         JoinOutcome::AlreadyApplied(_)
     ));
     assert_eq!(
-        target
-            .read(
-                "/source-after-plan",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        unbounded!(target, read("/source-after-plan", 16))?
             .as_ref(),
         &b"two"[..]
     );
@@ -647,28 +590,13 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
 async fn forged_merge_candidate_is_rejected_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let target = fs
-        .create_workspace(
-            "candidate-target",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let target = unbounded!(fs, create_workspace("candidate-target"))?;
     target.write_text("/shared", "base").await?;
     let source = target
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "candidate-source",
             ForkOptions::from_generation(
-                target
-                    .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?,
+                unbounded!(target, head())?,
                 IdempotencyKey::from_bytes([6; 16]),
             ),
             acyclic_fs::PublicationPermit::Unrestricted,
@@ -745,16 +673,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
         Err(DrivenJoinError::StaleCandidate)
     ));
     assert_eq!(
-        target
-            .read(
-                "/shared",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+        unbounded!(target, read("/shared", 16))?
             .as_ref(),
         &b"target"[..]
     );
@@ -920,27 +839,13 @@ async fn join_base_refines_only_to_a_descendant_of_the_common_ancestor()
     let workspace = |name: &'static str| {
         let fs = fs.clone();
         async move {
-            fs.create_workspace(
-                name,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+            unbounded!(fs, create_workspace(name))
         }
     };
     let target = workspace("refine-target").await?;
     target.write_text("/early", "early").await?;
     let head = |workspace: acyclic_fs::Workspace<_, _>| async move {
-        workspace
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+        unbounded!(workspace, head())
     };
     let early = head(target.clone()).await?;
     target.write_text("/base", "base").await?;

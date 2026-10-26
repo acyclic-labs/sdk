@@ -144,25 +144,12 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             LazyWorkspaceError::Store(_)
         ));
         failure.work.verify(budget)?;
-        let workspace = fs
-            .open_workspace(
-                "companion-fault",
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        let initial = workspace
-            .operation_generation(
-                IdempotencyKey::from_bytes(operation.into_bytes()),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .ok_or("companion failure lost the real committed creation")?;
+        let workspace = unbounded!(fs, open_workspace("companion-fault"))?;
+        let initial = unbounded!(
+            workspace,
+            operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()))
+        )?
+        .ok_or("companion failure lost the real committed creation")?;
         assert_eq!(initial.id(), prior.value.id());
         assert_eq!(initial.workspace_id(), prior.value.workspace_id());
         assert_eq!(
@@ -179,12 +166,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         workspace
             .write_text("/later.txt", "later authored head")
             .await?;
-        let head = workspace
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id();
+        let head = unbounded!(workspace, head())?.id();
         assert_ne!(head, initial.id());
         let recovered = {
             let cancellation = &CancellationToken::new();

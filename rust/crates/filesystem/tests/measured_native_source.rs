@@ -1,6 +1,10 @@
 //! Production native-root admission and source-bound attachment failure receipts.
 #![cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+
 use acyclic_fs::demand::{
     DemandDirectoryObserver, DemandError, DemandSource, SourceReference, native::NativeDemandSource,
 };

@@ -5,6 +5,10 @@
 #[path = "support/native_access.rs"]
 mod native_access;
 
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -136,24 +140,8 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     let exact = lazy
         .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
         .await?;
-    let file = exact
-        .stat(
-            "/hot/file",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let alias = exact
-        .stat(
-            "/hot/alias",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let file = unbounded!(exact, stat("/hot/file"))?;
+    let alias = unbounded!(exact, stat("/hot/alias"))?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     let view = tempfile::tempdir()?;
@@ -337,26 +325,14 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
 
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
-    let workspace = fs
-        .create_workspace_with_config(
-            "ntfs-link-capture",
-            VolumeConfig::native(Lifecycle::Durable),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let mut checkout = workspace
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode::tracking_transaction(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = unbounded!(
+        fs,
+        create_workspace_with_config("ntfs-link-capture", VolumeConfig::native(Lifecycle::Durable))
+    )?;
+    let mut checkout = unbounded!(
+        workspace,
+        checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction())
+    )?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),
         FilesystemProfile::Windows,

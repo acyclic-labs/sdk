@@ -255,18 +255,20 @@ fn historical_targets(
 }
 
 fn library_target(package: &Package) -> Option<&cargo_metadata::Target> {
-    package.targets.iter().find(|target| {
-        target.kind.iter().any(|kind| {
-            matches!(
-                kind,
-                TargetKind::ProcMacro
-                    | TargetKind::Lib
-                    | TargetKind::RLib
-                    | TargetKind::CDyLib
-                    | TargetKind::StaticLib
-                    | TargetKind::DyLib
-            )
-        })
+    package.targets.iter().find(|target| is_library_target(target))
+}
+
+pub(super) fn is_library_target(target: &cargo_metadata::Target) -> bool {
+    target.kind.iter().any(|kind| {
+        matches!(
+            kind,
+            TargetKind::ProcMacro
+                | TargetKind::Lib
+                | TargetKind::RLib
+                | TargetKind::CDyLib
+                | TargetKind::StaticLib
+                | TargetKind::DyLib
+        )
     })
 }
 

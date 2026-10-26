@@ -195,14 +195,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         Some(&rebound.value)
     );
     assert_eq!(
-        fs.open_workspace(
-            "epoch-attachment",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+        unbounded!(fs, open_workspace("epoch-attachment"))?
         .head(
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new()

@@ -1,6 +1,10 @@
 //! Black-box conformance for canonical distributed adapters over public memory providers.
 #![cfg(feature = "distributed")]
 
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
     CancellationToken, CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome,
@@ -502,15 +506,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs
-        .create_workspace(
-            "history",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = unbounded!(fs, create_workspace("history"))?;
     workspace.write_text("/kept.txt", "committed").await?;
     let authority = AuthorityId::from_bytes(workspace.id().into_bytes());
     let records = StreamPath::new(format!(
@@ -525,15 +521,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
         WorkspaceDelete::AlreadyDeleted
     );
     assert!(
-        fs.open_workspace(
-            "history",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        unbounded!(fs, open_workspace("history")).is_err()
     );
     assert!(!authority_store.authorities(16).await?.contains(&authority));
 
@@ -729,24 +717,9 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let source = fs
-        .create_workspace(
-            "source",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let source = unbounded!(fs, create_workspace("source"))?;
     source.write_text("/shared", "base").await?;
-    let selected = source
-        .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let selected = unbounded!(source, head())?;
     let child = source
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "child",
@@ -798,16 +771,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     }
     assert!(child_records.next().await.is_none());
     assert_eq!(
-        child
-            .read(
-                "/shared",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?,
+        unbounded!(child, read("/shared", 16))?,
         OwnedBytes::from_static(b"base")
     );
 
@@ -832,30 +796,10 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     assert_eq!(retry.id(), child.id());
     child.write_text("/child-only", "child").await?;
     assert!(
-        child
-            .read(
-                "/source-only",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(child, read("/source-only", 16)).is_err()
     );
     assert!(
-        source
-            .read(
-                "/child-only",
-                16,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(source, read("/child-only", 16)).is_err()
     );
     Ok(())
 }
@@ -878,23 +822,8 @@ async fn distributed_facade_leases_authorize_workspace_publication()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs
-        .create_workspace(
-            "leased",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let parent = workspace
-        .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = unbounded!(fs, create_workspace("leased"))?;
+    let parent = unbounded!(workspace, head())?;
     let operations = acyclic_fs::OperationWindowCoordinator::new(fs.operation_window_store());
     let lease = operations
         .begin(workspace.id(), parent.id(), "tool", 1, u64::MAX)
@@ -933,16 +862,7 @@ async fn distributed_facade_leases_authorize_workspace_publication()
         acyclic_fs::TransactionCommit::Committed(_)
     ));
     assert_eq!(
-        workspace
-            .read(
-                "/published",
-                32,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?,
+        unbounded!(workspace, read("/published", 32))?,
         OwnedBytes::from_static(b"through lease")
     );
     Ok(())
@@ -1029,24 +949,9 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let source = fs
-        .create_workspace(
-            "atomic-source",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let source = unbounded!(fs, create_workspace("atomic-source"))?;
     source.write_text("/shared", "base").await?;
-    let selected = source
-        .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let selected = unbounded!(source, head())?;
     let destination_id = fs.workspace_id("blocked-destination")?;
     let destination_authority = AuthorityId::from_bytes(destination_id.into_bytes());
     let prefix = format!(
