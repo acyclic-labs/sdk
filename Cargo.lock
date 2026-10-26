@@ -86,6 +86,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-agent-host-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-stream",
+ "async-trait",
+ "bytes",
+ "futures",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
@@ -129,6 +147,7 @@ dependencies = [
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [
+ "acyclic-agent-host-conformance",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-machines",

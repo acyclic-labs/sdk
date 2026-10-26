@@ -449,6 +449,9 @@ case "$lane" in
       [[ "$(wasm-bindgen-test-runner --version)" == "wasm-bindgen-test-runner 0.2.117" ]]
     fi
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+    CHROMEDRIVER="$(command -v chromedriver)" \
+      cargo test -p acyclic-agent-host-conformance --features browser \
+      --target wasm32-unknown-unknown --locked
     web_warning_closures
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \

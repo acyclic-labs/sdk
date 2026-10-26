@@ -1,5 +1,8 @@
 #![doc = include_str!("../README.md")]
 
+/// Portable public `AgentHost` vectors, also built independently for browser wasm.
+pub use acyclic_agent_host_conformance as agent_host;
+
 /// Production actor-client cases shared by local and hosted session adapters.
 #[cfg(all(feature = "client-session", not(target_arch = "wasm32")))]
 pub mod client;

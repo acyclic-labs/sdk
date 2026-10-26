@@ -2,6 +2,8 @@
 
 Private workspace qualification workloads for public Acyclic provider contracts. Run the relevant suite against your provider implementation before claiming protocol compatibility; this crate is not published to crates.io.
 
+The portable [AgentHost suite](agent-host/README.md) drives the public host API against disposable backend storage, including exact uncertain retry, admission, spawn cuts, guest codec/cancellation and crash/reopen vectors. It is also an independent workspace crate for browser wasm builds and is re-exported as `acyclic_conformance::agent_host`.
+
 The workspace crate exposes Filesystem workload vectors, a minimal Filesystem smoke check, canonical logical Objects v2 and Stream v2 provider suites, a Machines lifecycle suite, and machine-readable Harness reports and qualification receipts. Run provider suites against fresh, disposable state; their resources and idempotency identities are deliberately retained for exact replay checks. The Objects suite uses a deterministic fixture that makes completed mutations visible before subsequent reads; it does not qualify live eventual consistency. The durable Objects local-runner case still exercises the legacy v1 journal while that engine is being migrated, and is not v2 acceptance.
 
 Run the maintained workspace checks from the SDK root with `cargo test --workspace --all-features --locked` and `bun test`. The product-specific gate is `cargo test -p acyclic-plugin --locked`; platform qualification builds and validates the release package. The committed conformance vectors and Rust/TypeScript suites are the single maintained source of compatibility evidence.
