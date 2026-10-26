@@ -712,7 +712,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| filesystem_status(&failure.error))?;
+            .map_err(|failure| status(&WorkspaceError::from(failure.error)))?;
         let response = match observed.value {
             Some(commit) => wire::ObserveResponse {
                 state: "completed".to_owned(),

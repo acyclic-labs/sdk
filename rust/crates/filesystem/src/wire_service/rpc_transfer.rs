@@ -33,7 +33,7 @@ where
             .await;
         check_export_workspace(&generation.workspace).await?;
         let manifest = manifest
-            .map_err(|failure| filesystem_status(&failure.error))?
+            .map_err(|failure| status(&WorkspaceError::from(failure.error)))?
             .value;
         let encoded = crate::encode_generation_export_manifest(&manifest)
             .map_err(|error| Status::data_loss(error.to_string()))?;
@@ -138,7 +138,7 @@ where
                     &CancellationToken::new(),
                 )
                 .await
-                .map_err(|failure| filesystem_status(&failure.error))?;
+                .map_err(|failure| status(&WorkspaceError::from(failure.error)))?;
             expected_index = expected_index.saturating_add(1);
             if transfer_cursor(&chunk.cursor)? != expected_index as u64 {
                 return Err(Status::invalid_argument("import cursor mismatch"));
@@ -158,7 +158,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| filesystem_status(&failure.error))?;
+            .map_err(|failure| status(&WorkspaceError::from(failure.error)))?;
         self.import_response(&workspace_ref).await
     }
     async fn import_response(
