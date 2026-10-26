@@ -64,8 +64,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         .map(|journal| journal.with_turn(operation, turn))
     };
     let turn = OperationId::new();
-    let operation =
-        crate::filesystem::task_runtime::execution_operation(crate::TaskId::new(), turn, None)?;
+    let operation = OperationId::new();
     assert_ne!(operation, turn);
     let event = ExecutionEvent::Started {
         request_digest: [9; 32],
@@ -437,11 +436,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
         maximum_events: 4,
         maximum_bytes: 16_384,
     })?;
-    let execution_operation = crate::filesystem::task_runtime::execution_operation(
-        crate::TaskId::new(),
-        complete_operation,
-        None,
-    )?;
+    let execution_operation = OperationId::new();
     assert_ne!(execution_operation, complete_operation);
     let bound = new_journal()?
         .with_turn(execution_operation, complete_operation)

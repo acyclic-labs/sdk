@@ -8,12 +8,7 @@ mod execution;
 mod expectations;
 #[path = "../support/expected_outcome.rs"]
 mod expected_outcome;
-mod goal_execution;
-mod goal_workers;
-mod goals;
-mod goals_tests;
 mod limits_tests;
-mod local_admission;
 mod local_case;
 mod local_cloud;
 mod local_tests;

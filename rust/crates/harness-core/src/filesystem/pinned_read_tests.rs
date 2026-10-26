@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::{AggregateKind, AuthorityRoot};
+use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 use proptest::prelude::*;
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;

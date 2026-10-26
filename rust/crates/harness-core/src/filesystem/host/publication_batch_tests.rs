@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::{AggregateKind, AuthorityRoot};
+use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
     let issuer = AuthorityRoot::new(

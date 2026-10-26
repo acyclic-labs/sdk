@@ -29,6 +29,16 @@ fn model(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProv
     )
 }
 
+/// Settles one prompt on the root agent and returns its text.
+async fn run(local: &Arc<LocalHarness>, prompt: &str) -> Result<String> {
+    match crate::test_support::prompt_settled(local, &uuid::Uuid::new_v4().to_string(), prompt)
+        .await?
+    {
+        crate::test_support::PromptOutcome::Settled(_, output) => Ok(output.text),
+        crate::test_support::PromptOutcome::Failed(message) => Err(Error::Conflict(message)),
+    }
+}
+
 async fn send(
     local: &LocalHarness,
     client: &mut CommandSession<dyn StreamProvider>,
@@ -206,9 +216,9 @@ async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() ->
     )?
     .without_default_tools()
     .search_provider(search.clone());
-    let local = LocalHarness::open(config).await?;
+    let local = Arc::new(LocalHarness::open(config).await?);
     assert_eq!(
-        local.run("consult the configured source").await?.text,
+        run(&local, "consult the configured source").await?,
         "complete"
     );
     assert_eq!(search.remaining(), 0);
@@ -294,12 +304,9 @@ async fn expected_fetch_failure(case: u8) -> Result<()> {
         provider.clone(),
     )?
     .web_tools();
-    let local = LocalHarness::open(config).await?;
+    let local = Arc::new(LocalHarness::open(config).await?);
     assert_eq!(
-        local
-            .run("consult the source, or adapt to its refusal")
-            .await?
-            .text,
+        run(&local, "consult the source, or adapt to its refusal").await?,
         "adapted after the refusal"
     );
     if let Some(server) = server {
@@ -395,11 +402,8 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
             provider.clone(),
         )?
         .web_tools();
-        let local = LocalHarness::open(config).await?;
-        assert_eq!(
-            local.run("read the exact source").await?.text,
-            "source read"
-        );
+        let local = Arc::new(LocalHarness::open(config).await?);
+        assert_eq!(run(&local, "read the exact source").await?, "source read");
         server.await.map_err(crate::local::storage)??;
         let requests = provider.requests();
         assert_eq!(requests.len(), 2);
@@ -462,12 +466,9 @@ async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_mod
     )?
     .without_default_tools()
     .search_provider(search);
-    let local = LocalHarness::open(config).await?;
+    let local = Arc::new(LocalHarness::open(config).await?);
     assert_eq!(
-        local
-            .run("consult the configured search provider")
-            .await?
-            .text,
+        run(&local, "consult the configured search provider").await?,
         "adapted after search refusal"
     );
     server
@@ -614,5 +615,3 @@ async fn read_redirect_request(socket: &mut tokio::net::TcpStream) -> Result<Str
     }
     String::from_utf8(request).map_err(crate::local::storage)
 }
-
-mod executor_entrypoints;

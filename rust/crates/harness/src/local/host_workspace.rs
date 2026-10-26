@@ -17,9 +17,20 @@ pub use super::workspace::HOST_VIEW_ROOT;
 /// Checks that `reference` names an `agents/<reference>` mount; a spawn
 /// checks it before committing the child.
 pub(super) fn child_reference(reference: &str) -> Result<()> {
-    crate::task_volume::Component::new(reference)
-        .map(drop)
-        .map_err(storage)
+    let portable = !reference.is_empty()
+        && reference.len() <= 255
+        && reference != "."
+        && reference != ".."
+        && reference
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte));
+    if portable {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "child reference {reference:?} is not one portable path component"
+        )))
+    }
 }
 
 /// A native-host agent's workspace, with no execution authority of its own.

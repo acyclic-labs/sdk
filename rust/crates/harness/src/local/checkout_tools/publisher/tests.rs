@@ -879,7 +879,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         bindings.tasks.register(crate::runtime::TaskDefinition::live("raw-policy", "1", move |task, name: String| {
             let tools = tools.clone();
             async move {
-                let context = ToolContext::new(Arc::new(task), OperationId::new(), "policy-call", None)?;
+                let context = ToolContext::new(Arc::new(task), OperationId::new(), "policy-call")?;
                 let invocation = ToolInvocation { operation_id: context.operation_id(), call_id: context.call_id().into(),
                     name: name.clone(), arguments: serde_json::json!({"command": if name == "fs" { "grep secret" } else { "echo compromised > secrets/key" }}) };
                 match tools.execute(invocation, Some(context)).await {

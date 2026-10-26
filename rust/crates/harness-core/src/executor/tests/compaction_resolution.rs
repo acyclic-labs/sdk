@@ -1,72 +1,20 @@
 use super::*;
 use crate::context::CompactionPolicy;
 
-struct PrivateVolume(VolumeRef);
-
-impl crate::conversation::ContentPublisher for PrivateVolume {
-    fn volume(&self) -> &VolumeRef {
-        &self.0
-    }
-}
-
-struct NoReads;
-impl crate::conversation::ContentResidencyVerifier for NoReads {}
-
 /// An admitted task context, with or without an owner-bound private writer,
 /// and the scope that grants writes to it.
 async fn admitted(writer: bool) -> Result<(crate::runtime::TaskContext, RuntimeScope)> {
-    let volume = VolumeRef::new(
-        ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-        "private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([7; 16])),
-        &mut None,
-    )?;
+    let volume = private_volume(7)?;
     let write = volume.capability(acyclic_fs::access::VolumeOperation::Write, &mut None)?;
     let scope = RuntimeScope::new(
-        Capabilities::new([
-            "task:spawn:context-probe@1".to_owned(),
-            "model:generate".to_owned(),
-            write,
-        ]),
+        Capabilities::new(["model:generate".to_owned(), write]),
         Limits::default(),
     )?;
-    let captured = Arc::new(Mutex::new(None));
-    let sink = captured.clone();
-    let mut tasks = crate::runtime::TaskRegistry::default();
-    tasks.register(crate::runtime::TaskDefinition::live(
-        "context-probe",
-        "1",
-        move |context, _: ()| {
-            let sink = sink.clone();
-            async move {
-                *sink.lock().unwrap() = Some(context);
-                Ok(())
-            }
-        },
-    )?)?;
-    let harness = crate::runtime::Bindings {
-        tasks,
-        tools: ToolRegistry::default(),
-        scope: scope.clone(),
-        concurrency: 1,
-        artifacts: writer.then(|| crate::runtime::ContentBindings {
-            reader: Arc::new(NoReads),
-            writer: Some(Arc::new(PrivateVolume(volume))),
-        }),
-        ..crate::runtime::Bindings::local()
-    }
-    .build(None)?;
-    let definition = harness.task::<(), ()>("context-probe@1")?;
-    assert!(matches!(
-        harness.spawn(&definition, ()).await?.result().await?,
-        Outcome::Succeeded(())
-    ));
-    let context = captured.lock().unwrap().take();
-    Ok((
-        context.ok_or_else(|| Error::NotFound("admitted context".into()))?,
-        scope,
-    ))
+    let artifacts = writer.then(|| crate::runtime::ContentBindings {
+        reader: Arc::new(NoReads),
+        writer: Some(Arc::new(PrivateVolume(volume))),
+    });
+    Ok((agent_context(scope.clone(), artifacts)?, scope))
 }
 
 fn executor(

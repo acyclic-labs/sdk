@@ -18,8 +18,6 @@ pub mod crash_cuts;
 mod policy;
 mod scripted;
 pub use policy::FixedToolPolicy;
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use policy::native_fixture_policy_identity;
 
 /// One step of an effect-history root proof, in the order a differential
 /// capture observes it: the authority hashes `Hash` bytes, and a cut workflow

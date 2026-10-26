@@ -31,13 +31,6 @@ impl Driver for Composer {
     }
 }
 
-impl Driver for super::goals::GoalCase {
-    type Case = Self;
-    async fn execute(case: Self) -> TestResult {
-        super::goal_workers::scheduled(super::goal_execution::run(case)).await?
-    }
-}
-
 impl Driver for Notifications {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -135,12 +128,6 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
     // Keep each selected driver frame out of the shared dispatch frame. Otherwise
     // every cheap case retains the largest native driver state across each await.
     match driver.as_ref().and_then(Value::as_str) {
-        Some("goal-local") => {
-            Box::pin(super::goals::GoalCase::execute(
-                super::goals::GoalCase::parse(value)?,
-            ))
-            .await
-        }
         None if driver.is_none() => {
             Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
         }

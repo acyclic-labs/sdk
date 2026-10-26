@@ -4,18 +4,14 @@ use super::*;
 async fn original_context_survives_tool_response_loss_and_rejects_retargeted_replay() -> Result<()>
 {
     let scope = RuntimeScope::new(
-        crate::Capabilities::new([
-            "task:spawn:context-probe@1",
-            "model:generate",
-            "tool:call:example.echo",
-        ]),
+        crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
         Limits::default(),
     )?;
-    let original = capture_admitted_context(scope.clone()).await?;
-    let replacement = capture_admitted_context(scope.clone()).await?;
-    assert_ne!(original.id(), replacement.id());
+    let original = admitted_context(scope.clone())?;
+    let replacement = admitted_context(scope.clone())?;
+    assert_ne!(context_identity(&original), context_identity(&replacement));
     let tool = Arc::new(ContextOnlyTool {
-        admission: original.id(),
+        admission: context_identity(&original),
         lost_response: || Error::Storage("response lost after effect".into()),
         calls: AtomicUsize::new(0),
         reconciles: AtomicUsize::new(0),
@@ -1079,9 +1075,9 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
                 crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
                 Limits::default(),
             )?;
-            let original = capture_admitted_context(scope.clone()).await?;
+            let original = admitted_context(scope.clone())?;
             let tool = Arc::new(ContextOnlyTool {
-                admission: original.id(),
+                admission: context_identity(&original),
                 lost_response,
                 calls: AtomicUsize::new(0),
                 reconciles: AtomicUsize::new(0),

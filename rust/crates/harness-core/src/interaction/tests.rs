@@ -442,7 +442,7 @@ proptest::proptest! {
         proptest::prop_assert!(ApprovalDecisionFile::decode(&bytes, bytes.len() as u64 - 1).is_err());
         let file = ApprovalDecisionFile::principal_file(&principal);
         proptest::prop_assert_eq!(file.len(), 32);
-        proptest::prop_assert!(crate::task_volume::Component::new(&file).is_ok());
+        proptest::prop_assert!(file.bytes().all(|byte| byte.is_ascii_alphanumeric()));
     }
 }
 

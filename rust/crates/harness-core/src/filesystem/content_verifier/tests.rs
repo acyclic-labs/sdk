@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::Authority;
 use crate::{
     Capabilities,
     core::{AggregateKind, AuthorityRoot},

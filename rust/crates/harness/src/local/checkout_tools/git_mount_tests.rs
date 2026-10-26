@@ -16,12 +16,7 @@ async fn execute(
         name: name.into(),
         arguments: json!({"command":command}),
     };
-    let context = ToolContext::new(
-        task.clone(),
-        invocation.operation_id,
-        &invocation.call_id,
-        None,
-    )?;
+    let context = ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
     Ok(tools
         .execute(invocation, Some(context))
         .await
@@ -108,7 +103,7 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
                 )
                 .await?,
         );
-        let context = ToolContext::new(task.clone(), OperationId::new(), "select", None)?;
+        let context = ToolContext::new(task.clone(), OperationId::new(), "select")?;
         let tools = root.select(&context).await?.unwrap();
 
         if switched {

@@ -1,2 +1,0 @@
-{"expect":{"view":{"status":"done","markdown":"Finished\r\n"},"files":{"GOAL.md":"---\r\nstatus: done\r\n---\r\nFinished\r\n"}},
-    "seed":{"GOAL.md":"---\r\nstatus: done\r\n---\r\nFinished\r\n"}}

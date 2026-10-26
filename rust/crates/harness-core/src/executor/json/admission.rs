@@ -636,8 +636,6 @@ pub(crate) fn admit_value_layout(
     typed_cost(shape, cost.into_inner(), code)
 }
 mod owned;
-mod serialized;
-pub(crate) use serialized::serialized_layout_bytes;
 
 /// An object key, and whether the document escapes it.
 struct Key;

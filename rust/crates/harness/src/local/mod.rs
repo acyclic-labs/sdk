@@ -93,6 +93,7 @@ pub struct LocalHarness {
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
+    goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(any(test, feature = "native-execution"))]
@@ -170,6 +171,26 @@ impl LocalHarness {
     #[must_use]
     pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
         self.workspace.as_ref()
+    }
+
+    /// Releases this host's native mounts while preserving its durable state.
+    /// Consuming the host excludes live borrows; callers must first join
+    /// active agent turns and drop their observations.
+    pub async fn disconnect(self) -> Result<()> {
+        #[cfg(any(test, feature = "native-execution"))]
+        let retired = if let Some(workspace) = &self.workspace {
+            workspace::volumes::retire(&workspace.mounts).await
+        } else {
+            Ok(())
+        };
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let retired = Ok(());
+        // Native view destructors join callbacks. They must not occupy the
+        // coordination thread that those callbacks may still need to finish.
+        acyclic_native_runtime::spawn_blocking(move || drop(self))
+            .await
+            .map_err(storage)?;
+        retired
     }
 }
 

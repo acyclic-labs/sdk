@@ -48,9 +48,9 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
             ScriptedTurn::Text("answer".into()),
         ]));
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
-        let context = Arc::new(capture_admitted_context(scope.clone()).await?);
+        let context = Arc::new(admitted_context(scope.clone())?);
         let parent = OperationId::from_bytes([1; 16]);
-        let tool = crate::runtime::ToolContext::new(context, parent, "remote", None)?;
+        let tool = crate::runtime::ToolContext::new(context, parent, "remote")?;
         let catalog = catalog(count)?;
         let callbacks = McpRuntimeCallbacks::new(
             uncompacted_executor(

@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::core::{AggregateKind, AuthorityRoot};
+use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;

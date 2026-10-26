@@ -75,7 +75,5 @@ pub(crate) fn native_sdk_result<T>(
 
 #[cfg(any(feature = "native-execution", test))]
 mod completion;
-#[cfg(any(feature = "native-execution", test))]
-pub(crate) use completion::AcceptedCompletionIo;
 #[cfg(test)]
 mod tests;

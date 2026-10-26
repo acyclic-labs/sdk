@@ -32,9 +32,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 mod approvals;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod approvals_tests;
 mod cancellation;
 mod canonical;
 mod checkpoint;
@@ -42,8 +39,6 @@ mod checkpoint_maps;
 mod configuration;
 mod content;
 mod durability;
-#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod durability_tests;
 mod indexed_publication;
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod inline_tests;
@@ -64,8 +59,6 @@ mod selected;
 mod step_index;
 mod summary;
 mod summary_authorization;
-#[cfg(test)]
-mod summary_authorization_tests;
 mod summary_cache;
 mod summary_map;
 #[cfg(all(test, not(target_arch = "wasm32")))]

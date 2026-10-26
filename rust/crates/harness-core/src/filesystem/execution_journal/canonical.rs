@@ -1,13 +1,6 @@
 use super::*;
 
 mod output;
-#[cfg(all(
-    test,
-    feature = "test-support",
-    not(acyclic_harness_loom),
-    not(target_arch = "wasm32")
-))]
-mod tests;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where

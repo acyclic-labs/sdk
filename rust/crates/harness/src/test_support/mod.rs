@@ -137,14 +137,6 @@ pub async fn prompt_settled(
     )))
 }
 
-/// The composition's actual task provider, for scenario wire-frame assertions.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub fn local_task_stream(
-    harness: &crate::LocalHarness,
-) -> std::sync::Arc<acyclic_stream::LocalStream> {
-    harness.task_stream()
-}
-
 #[cfg(all(
     test,
     feature = "filesystem-local",

@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::{AggregateKind, Authority, AuthorityRoot};
+use crate::{AgentId, conversation::VolumeOwner};
 use acyclic_fs::access::{Capability, Generations, Grant, ResourcePattern};
 use proptest::prelude::*;
 

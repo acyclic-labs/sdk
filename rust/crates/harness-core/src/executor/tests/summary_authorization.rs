@@ -12,7 +12,7 @@ fn writerless_summaries_reject_before_any_model_or_journal_work() -> Result<()> 
         Capabilities::new(["task:spawn:context-probe@1", "model:generate"]),
         Limits::default(),
     )?;
-    let context = runtime.block_on(capture_admitted_context(scope.clone()))?;
+    let context = admitted_context(scope.clone())?;
     let strategy = (1usize..5, "[a-z]{1,24}");
     proptest::test_runner::TestRunner::new(proptest::test_runner::Config::with_cases(16))
         .run(&strategy, |(count, text)| {
@@ -82,7 +82,7 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
         Capabilities::new(["task:spawn:context-probe@1", "model:generate"]),
         Limits::default(),
     )?;
-    let context = capture_admitted_context(scope.clone()).await?;
+    let context = admitted_context(scope.clone())?;
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Text("summary".into())])
             .with_token_counter(fixture_token_count),

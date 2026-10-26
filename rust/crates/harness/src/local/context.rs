@@ -45,16 +45,6 @@ impl LocalHarness {
         )
     }
 
-    #[cfg(test)]
-    pub(super) async fn retained_context_manifest(
-        &self,
-        operation: OperationId,
-    ) -> Result<FileRef> {
-        self.observe_context_manifest(operation, self.input_publisher()?.as_ref())
-            .await?
-            .ok_or_else(|| Error::Storage("retained local input has no context manifest".into()))
-    }
-
     async fn observe_context_manifest(
         &self,
         operation: OperationId,
@@ -79,12 +69,6 @@ impl LocalHarness {
             ));
         }
         Ok(reference)
-    }
-
-    #[cfg(test)]
-    pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())?
-            .await
     }
 
     /// Pins the live file conventions once per admission, alongside instructions.

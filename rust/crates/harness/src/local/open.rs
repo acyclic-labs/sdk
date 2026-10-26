@@ -387,6 +387,7 @@ impl Opening {
             compaction: self.compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: self.diagnostics,
+            goal_continuations: self.config.goal_continuations,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
             #[cfg(test)]

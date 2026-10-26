@@ -35,6 +35,7 @@ pub(super) enum LocalProject {
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) active_directory: String,
+    pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
     /// Refuses ambient state and settings discovery; set only by `hermetic()`.
@@ -95,6 +96,7 @@ impl LocalHarnessConfig {
         let mut config = Self::configuration(workspace.into(), None);
         config.default_tools = false;
         config.hermetic = true;
+        config.goal_continuations = None;
         config.compaction = Some(crate::context::CompactionPolicy::Disabled);
         config
     }
@@ -102,6 +104,7 @@ impl LocalHarnessConfig {
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
             active_directory: String::new(),
+            goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace),
             state_directory: None,
             hermetic: false,
@@ -367,6 +370,15 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn run_limits(mut self, limits: TaskRunLimits) -> Self {
         self.run_limits = limits;
+        self
+    }
+    /// Selects the finite goal policy; `None` disables automatic continuations.
+    #[must_use]
+    pub fn goal_continuations(
+        mut self,
+        policy: Option<crate::goal::GoalContinuationPolicy>,
+    ) -> Self {
+        self.goal_continuations = policy;
         self
     }
     /// Selects an explicit compaction policy, validated without changing its budgets.

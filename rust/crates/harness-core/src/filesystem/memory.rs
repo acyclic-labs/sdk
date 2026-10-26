@@ -19,12 +19,6 @@ use crate::{
     runtime::RuntimeScope,
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
-#[cfg(test)]
-use crate::{
-    conversation::{Attachment, ConversationMessage, MessageKind},
-    executor::TurnInput,
-    store::StreamAggregate,
-};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
     MemoryObjectBackend,
@@ -335,6 +329,12 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     #[must_use]
     pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
         self.content_verifier.as_ref()
+    }
+
+    /// Shares the authenticated reader with a store's admission checks.
+    #[cfg(test)]
+    pub(crate) fn content_verifier(&self) -> Arc<dyn ContentResidencyVerifier> {
+        self.content_verifier.clone()
     }
 
     /// Stages user content or an attachment before it is admitted to a turn.
