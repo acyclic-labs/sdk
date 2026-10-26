@@ -32,17 +32,17 @@ fn socket_grants(host: String, ports: Vec<SocketPortRange>) -> GrantSet {
         }],
     }
 }
-fn socket_root(grants: GrantSet) -> Vec<Block> {
+fn socket_root(grants: GrantSet) -> Result<Vec<Block>, TestCaseError> {
     let mut root = root();
     root.certificates
         .as_mut()
-        .unwrap()
+        .ok_or_else(|| TestCaseError::fail("root certificates missing"))?
         .keys
         .first_mut()
-        .unwrap()
+        .ok_or_else(|| TestCaseError::fail("root certificate key missing"))?
         .key
         .grants = grants;
-    vec![root]
+    Ok(vec![root])
 }
 fn record_bytes(attributes: Vec<Attribute>) -> Vec<u8> {
     RecordAttributesProto {
@@ -98,7 +98,7 @@ proptest! {
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Resource {action:"fs/read",resource:&resource_name},&attrs,&usage);
         prop_assert_eq!(permits(&[root.clone()],&r,PolicyDecision::Allow).is_ok(),resource.starts_with(&prefix));
-        let mut descendant=prefix.clone();descendant.extend(resource);
+        let mut descendant=prefix;descendant.extend(resource);
         let name=encode(&descendant);
         let inside=request(Target::Resource {action:"fs/read",resource:&name},&attrs,&usage);
         prop_assert!(permits(&[root],&inside,PolicyDecision::Allow).is_ok());
@@ -117,7 +117,7 @@ proptest! {
     fn dns_socket_intersections_never_widen(label in "[a-z]{1,12}", other in "[a-z]{1,12}", port in 1..=65535u16, lower in 1..=65535u16, width in 0..100u16) {
         let host=format!("{label}.example.com");let sibling=format!("{other}.other.test");
         let upper=lower.saturating_add(width);
-        let parent=socket_root(socket_grants("*.example.com".into(),vec![SocketPortRange {first:1,last:65535}]));
+        let parent=socket_root(socket_grants("*.example.com".into(),vec![SocketPortRange {first:1,last:65535}]))?;
         let child=attenuate(&parent,vec![Caveat {kind:CaveatKind::Grants(socket_grants(host.clone(),vec![SocketPortRange {first:u32::from(lower),last:u32::from(upper)}]))}],vec![6;32]).unwrap();
         let mut certified=parent.clone();
         let certificates=certified.first_mut().unwrap().certificates.as_mut().unwrap();
@@ -140,11 +140,11 @@ proptest! {
     }
     #[test]
     fn socket_default_port_and_dns_boundaries(port in 1..=65535u16, label in "[a-z]{1,12}") {
-        let parent=socket_root(socket_grants("example.com".into(),vec![]));
+        let parent=socket_root(socket_grants("example.com".into(),vec![]))?;
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Websocket(Destination {host:Host::Dns("EXAMPLE.COM."),port}),&attrs,&usage);
         prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow).is_ok(),port==443);
-        let wildcard=socket_root(socket_grants("*.example.com".into(),vec![]));
+        let wildcard=socket_root(socket_grants("*.example.com".into(),vec![]))?;
         for host in ["example.com".to_owned(),format!("{label}example.com"),"example.com.evil".to_owned()] {
             let r=request(Target::Websocket(Destination {host:Host::Dns(&host),port:443}),&attrs,&usage);
             prop_assert!(!permits(&wildcard,&r,PolicyDecision::Allow).is_ok());
@@ -156,7 +156,7 @@ proptest! {
     fn ip_socket_intersections_never_widen(ip in any::<u32>(), prefix in 0..=32u8, ipv6 in any::<u128>(), prefix6 in 0..=128u8, candidate in any::<u32>(), candidate6 in any::<u128>()) {
         let attrs=RecordAttributes::default();let usage=limits(None);
         for (ip,prefix,all) in [(IpAddr::V4(Ipv4Addr::from(ip)),prefix,"0.0.0.0/0"),(IpAddr::V6(Ipv6Addr::from(ipv6)),prefix6,"::/0")] {
-            let parent=socket_root(socket_grants(all.into(),vec![]));
+            let parent=socket_root(socket_grants(all.into(),vec![]))?;
             let child=attenuate(&parent,vec![Caveat {kind:CaveatKind::Grants(socket_grants(format!("{ip}/{prefix}"),vec![]))}],vec![6;32]).unwrap();
             let r=request(Target::Websocket(Destination {host:Host::Ip(ip),port:443}),&attrs,&usage);
             prop_assert!(permits(&parent,&r,PolicyDecision::Allow).is_ok());

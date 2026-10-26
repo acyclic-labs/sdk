@@ -182,7 +182,7 @@ proptest! {
     #[test]
     fn root_certificates_and_versions_cannot_be_reintroduced(version in any::<u32>()) {
         let payload=BlockProto::from(root()).encode_to_vec();
-        let signed=SignedBlock {payload:payload.clone(),signature:vec![1;64]};
+        let signed=SignedBlock {payload,signature:vec![1;64]};
         let cap=Capability {version,blocks:vec![signed.clone()],proof:TipProof::Secret(vec![2;32])};
         let mut bytes=CapabilityProto::from(cap).encode_to_vec();
         let parsed=decode_capability(&bytes);
@@ -213,7 +213,7 @@ proptest! {
         let resource=ResourceGrant {resource:ResourcePattern {name:"execution:/".into(),prefix:true},actions:vec!["execution/invoke".into()]};
         let set=GrantSet {grants:vec![
             Grant {kind:GrantKind::Resource(resource.clone())},
-            Grant {kind:GrantKind::Execution(ExecutionGrant {grant:resource.clone(),cpu_millis:cpu,memory_bytes:memory})},
+            Grant {kind:GrantKind::Execution(ExecutionGrant {grant:resource,cpu_millis:cpu,memory_bytes:memory})},
             Grant {kind:GrantKind::Billing(BillingGrant {grant:ResourceGrant {resource:ResourcePattern {name:"billing:/".into(),prefix:true},actions:vec!["billing/read".into()]},spend_micros:spend})},
             Grant {kind:GrantKind::WebsocketConnect(WebsocketConnectGrant {rules:vec![SocketHostRule {host:"example.com".into(),ports:vec![SocketPortRange {first:443,last:443}]}]})} ]};
         let bytes=GrantSetProto::from(set.clone()).encode_to_vec();
