@@ -153,6 +153,10 @@ impl<'v> AdmittedAgent<'v> {
                     u64::MAX,
                     &mut None,
                 )?;
+                // That check admits a structured `filesystem:` grant by its
+                // label alone, so the filesystem's own decision over the
+                // grant's ceiling must also admit writing the private volume.
+                require_structured_write(&delegated, owner, &private.volume)?;
                 (issuer, Some(delegated))
             }
         };
@@ -193,6 +197,61 @@ impl<'v> AdmittedAgent<'v> {
             verifier,
             private,
         })
+    }
+}
+
+/// The filesystem's decision over `scope`'s structured grant, if it has one:
+/// it creates and writes every path of `volume`. It performs no IO; the
+/// writer still applies the volume's persisted policy.
+fn require_structured_write(
+    scope: &Scope,
+    owner: crate::AgentId,
+    volume: &crate::conversation::VolumeRef,
+) -> Result<()> {
+    use acyclic_fs::access::{
+        Action, Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind,
+        Resource,
+    };
+    let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
+        return Ok(());
+    };
+    let denied =
+        || Error::Unauthorized("admission does not grant writing its private volume".into());
+    let capability = Capability::from_scope_label(label)
+        .ok()
+        .flatten()
+        .ok_or_else(denied)?;
+    let policy: Policy = serde_json::from_slice(INITIAL_POLICY)
+        .map_err(|_| Error::FilesystemAccessConfiguration("initial policy is invalid"))?;
+    let principal = Principal {
+        kind: PrincipalKind::Agent,
+        id: owner.to_string(),
+        lineage: Vec::new(),
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let now = super::access::access_now()?;
+    let view = PathTrie::compile(
+        &policy,
+        &principal,
+        Resource {
+            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+            lineage: &[],
+            volume: volume.id(),
+            generation: 0,
+            head: 0,
+            path: "",
+        },
+        Context { now, approvals: 0 },
+        &capability,
+    )
+    .map_err(|_| denied())?;
+    if view.allows_every_path(&[Action::Create, Action::Write], now) {
+        Ok(())
+    } else {
+        Err(denied())
     }
 }
 

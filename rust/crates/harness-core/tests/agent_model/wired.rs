@@ -356,6 +356,14 @@ impl StreamProvider for Refusing {
     }
 }
 
+/// An admission's private-volume grant: exact volume labels, or one
+/// structured `filesystem:` grant over the whole volume.
+#[derive(Clone, Copy)]
+enum Grant {
+    Exact(&'static [VolumeOperation]),
+    Structured(acyclic_fs::access::ActionSet),
+}
+
 #[tokio::test]
 async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
     let parent = AgentPath::root(&id(6));
@@ -370,11 +378,11 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
     };
     let stranger = acyclic_harness_core::AgentId::from_bytes(id(8).to_bytes());
     // Each case: the audience the admission is issued for, the one the host
-    // is given, its bound agent, and its private-volume operations.
+    // is given, its bound agent, and its private-volume grant.
     let run = |issued: Authority,
                given: Authority,
                agent: Option<acyclic_harness_core::AgentId>,
-               operations: &'static [VolumeOperation]| {
+               grant: Grant| {
         let (parent, path) = (parent.clone(), path.clone());
         async move {
             let root = AuthorityRoot::new("agents", [7; 32], issued);
@@ -383,8 +391,16 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             )]));
             let (host, binding) = private(&path).await?;
             let mut grants = vec![INTERACTION_ROUTE.to_owned()];
-            for operation in operations {
-                grants.push(binding.volume.capability(*operation, &mut None)?);
+            match grant {
+                Grant::Exact(operations) => {
+                    for operation in operations {
+                        grants.push(binding.volume.capability(*operation, &mut None)?);
+                    }
+                }
+                Grant::Structured(actions) => grants.push(
+                    acyclic_fs::access::Capability::whole_volume(None, actions.actions())
+                        .to_scope_label()?,
+                ),
             }
             let scope =
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), agent, &mut None)?;
@@ -414,17 +430,28 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             )
         }
     };
-    let both: &'static [VolumeOperation] = &[VolumeOperation::Read, VolumeOperation::Write];
-    // Control: a valid admission reaches the stream (and fails there).
-    let reached = run(audience.clone(), audience.clone(), None, both).await?;
-    assert!(reached > 0, "a valid admission reads its history");
-    for (case, issued, given, agent, operations) in [
+    use acyclic_fs::access::ActionSet;
+    let both = Grant::Exact(&[VolumeOperation::Read, VolumeOperation::Write]);
+    // Controls: a valid exact or structured admission reaches the stream (and
+    // fails there).
+    for grant in [both, Grant::Structured(ActionSet::MountWrite)] {
+        let reached = run(audience.clone(), audience.clone(), None, grant).await?;
+        assert!(reached > 0, "a valid admission reads its history");
+    }
+    for (case, issued, given, agent, grant) in [
         (
             "read-only",
             audience.clone(),
             audience.clone(),
             None,
-            &[VolumeOperation::Read][..],
+            Grant::Exact(&[VolumeOperation::Read]),
+        ),
+        (
+            "structured read-only",
+            audience.clone(),
+            audience.clone(),
+            None,
+            Grant::Structured(ActionSet::MountRead),
         ),
         (
             "wrong audience",
@@ -441,7 +468,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             both,
         ),
     ] {
-        let calls = run(issued, given, agent, operations).await?;
+        let calls = run(issued, given, agent, grant).await?;
         assert_eq!(calls, 0, "{case}: refused before any stream IO");
     }
     Ok(())
