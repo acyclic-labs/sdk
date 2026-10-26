@@ -21,3 +21,5 @@ pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BE_EDGE_RUN_SUITE=1 bash scripts/be-
 The ephemeral containers stop when the command exits. The public model download
 persists under `/mnt/bb/lane-scratch/be-edge/models`. The conformance run excludes
 container startup/model download time.
+The recorded full suite took 2 ms in replay and 850 ms live on bb2, with exact
+usage checked independently for the text, tool and result completions.
