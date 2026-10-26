@@ -166,12 +166,12 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
     .await?;
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies) {
         let read = AsyncObjectStore::read(
-                &destination,
-                object_id,
-                manifest.config.limits.maximum_object_bytes,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-            )
-            .await?;
+            &destination,
+            object_id,
+            manifest.config.limits.maximum_object_bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
         assert_eq!(read.bytes.as_ref(), body.as_ref());
     }
     Ok(())

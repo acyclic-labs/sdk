@@ -580,4 +580,3 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
     );
     Ok(())
 }
-

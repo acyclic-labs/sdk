@@ -253,4 +253,3 @@ async fn empty_generation_batch_and_precancellation_reject_before_work()
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
-

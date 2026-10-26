@@ -5,13 +5,12 @@ use crate::kernel::{
     BlobBuildOptions, BlobNode, ExtentKind, ExtentMutationError, ExtentPage, FileMetadata,
     FileTablePage, InlineFileData, MAXIMUM_INLINE_FILE_BYTES, NameEncoding, TreePage,
     TreeReadError, build_blob, decode_blob_page, decode_extent_page, decode_file_table_page,
-    lookup_file_record,
-    lookup_path,
+    lookup_file_record, lookup_path,
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::Lifecycle;
 use crate::storage::{ObjectId, ObjectKind};
-use crate::tests::support::{put_file_metadata, put_tree_page, put_file_table_page};
+use crate::tests::support::{put_file_metadata, put_file_table_page, put_tree_page};
 use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,7 +26,10 @@ fn config() -> VolumeConfig {
 }
 
 fn metadata_value(modified: MetadataField<i64>) -> FileMetadata {
-    FileMetadata { modified_ns: modified, ..FileMetadata::default() }
+    FileMetadata {
+        modified_ns: modified,
+        ..FileMetadata::default()
+    }
 }
 
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
@@ -103,47 +105,58 @@ async fn inline_at(
 
 async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::error::Error>> {
     let limits = config().limits;
-    let metadata = put_file_metadata(store, metadata_value(MetadataField::Value(1)))
-    .await?;
-    let changed_metadata = put_file_metadata(store, metadata_value(MetadataField::Value(2)))
-    .await?;
-    let empty_tree = put_tree_page(store, &TreePage::Leaf(Vec::new()), limits.maximum_directory_page_entries)
+    let metadata = put_file_metadata(store, metadata_value(MetadataField::Value(1))).await?;
+    let changed_metadata =
+        put_file_metadata(store, metadata_value(MetadataField::Value(2))).await?;
+    let empty_tree = put_tree_page(
+        store,
+        &TreePage::Leaf(Vec::new()),
+        limits.maximum_directory_page_entries,
+    )
     .await?;
     let root_id = FileId::from_bytes([1; 16]);
     let file_id = FileId::from_bytes([2; 16]);
     let directory_id = FileId::from_bytes([3; 16]);
-    let root_tree = put_tree_page(store, &TreePage::Leaf(vec![
-                TreeEntry {
-                    name: name("a")?,
-                    file_id,
-                    kind: FileKind::Regular,
-                },
-                TreeEntry {
-                    name: name("dir")?,
-                    file_id: directory_id,
-                    kind: FileKind::Directory,
-                },
-            ]), limits.maximum_directory_page_entries)
+    let root_tree = put_tree_page(
+        store,
+        &TreePage::Leaf(vec![
+            TreeEntry {
+                name: name("a")?,
+                file_id,
+                kind: FileKind::Regular,
+            },
+            TreeEntry {
+                name: name("dir")?,
+                file_id: directory_id,
+                kind: FileKind::Directory,
+            },
+        ]),
+        limits.maximum_directory_page_entries,
+    )
     .await?;
-    let file_table = put_file_table_page(store, &FileTablePage::Leaf(vec![
-                FileRecord {
-                    file_id: root_id,
-                    kind: FileKind::Directory,
-                    link_count: 1,
-                    metadata,
-                    payload: FilePayload::Directory { entries: root_tree },
+    let file_table = put_file_table_page(
+        store,
+        &FileTablePage::Leaf(vec![
+            FileRecord {
+                file_id: root_id,
+                kind: FileKind::Directory,
+                link_count: 1,
+                metadata,
+                payload: FilePayload::Directory { entries: root_tree },
+            },
+            regular(file_id, metadata)?,
+            FileRecord {
+                file_id: directory_id,
+                kind: FileKind::Directory,
+                link_count: 1,
+                metadata,
+                payload: FilePayload::Directory {
+                    entries: empty_tree,
                 },
-                regular(file_id, metadata)?,
-                FileRecord {
-                    file_id: directory_id,
-                    kind: FileKind::Directory,
-                    link_count: 1,
-                    metadata,
-                    payload: FilePayload::Directory {
-                        entries: empty_tree,
-                    },
-                },
-            ]), limits.maximum_directory_page_entries)
+            },
+        ]),
+        limits.maximum_directory_page_entries,
+    )
     .await?;
     Ok(Fixture {
         generation: GenerationRoot {
@@ -226,8 +239,13 @@ async fn append_blob_bytes(
     root: ObjectId,
     output: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = AsyncObjectStore::read(store, root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-                .await?;
+    let encoded = AsyncObjectStore::read(
+        store,
+        root,
+        u64::MAX,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let page = decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
@@ -235,12 +253,15 @@ async fn append_blob_bytes(
         BlobNode::Leaf(chunks) => {
             for chunk in chunks {
                 let bytes = AsyncObjectStore::read(
-                        store,
-                        chunk.chunk,
-                        u64::MAX,
-                        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-                    )
-                    .await?;
+                    store,
+                    chunk.chunk,
+                    u64::MAX,
+                    &mut crate::AuthorityWork::new(
+                        WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    ),
+                )
+                .await?;
                 output.extend_from_slice(&bytes);
             }
         }
@@ -258,8 +279,13 @@ async fn collect_extents(
     root: ObjectId,
     output: &mut Vec<crate::kernel::Extent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = AsyncObjectStore::read(store, root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-                .await?;
+    let encoded = AsyncObjectStore::read(
+        store,
+        root,
+        u64::MAX,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     match decode_extent_page(&encoded, DecodeLimits::default(), &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })? {
@@ -317,8 +343,13 @@ async fn collect_file_table_records(
     root: ObjectId,
     records: &mut BTreeMap<FileId, FileRecord>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = AsyncObjectStore::read(store, root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-                .await?;
+    let encoded = AsyncObjectStore::read(
+        store,
+        root,
+        u64::MAX,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })? {
@@ -411,9 +442,9 @@ async fn assert_generation_matches_model(
     Ok(())
 }
 
-mod mutations;
-mod preconditions;
-mod identity;
-mod histories;
 mod construction;
+mod histories;
+mod identity;
+mod mutations;
 mod native_and_rename;
+mod preconditions;

@@ -568,4 +568,3 @@ async fn overlapping_same_file_clone_uses_preoperation_snapshot()
     assert!(receipt.work.bytes_copied >= 4);
     Ok(())
 }
-

@@ -343,8 +343,12 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
     ))
     .await?;
     let read = store
-            .read(receipt.root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-            .await?;
+        .read(
+            receipt.root,
+            u64::MAX,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
     assert_eq!(
         decode_extent_page(&read, DecodeLimits::default(), &mut |_| Ok::<
             _,
@@ -377,8 +381,12 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
     ))
     .await?;
     let read = store
-            .read(cloned.root, u64::MAX, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-            .await?;
+        .read(
+            cloned.root,
+            u64::MAX,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
     assert_eq!(
         decode_extent_page(&read, DecodeLimits::default(), &mut |_| Ok::<
             _,

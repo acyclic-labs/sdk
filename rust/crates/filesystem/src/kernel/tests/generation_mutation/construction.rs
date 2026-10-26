@@ -239,4 +239,3 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
-

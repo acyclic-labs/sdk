@@ -668,8 +668,13 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
         .ok_or("merged directory missing")?;
     let entries =
         directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
-    let read = AsyncObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-                .await?;
+    let read = AsyncObjectStore::read(
+        &store,
+        entries,
+        DecodeLimits::default().maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     let TreePage::Leaf(entries) =
         crate::kernel::decode_tree_page(&read.bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -688,14 +693,20 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
             .iter()
             .any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b)
     );
-    let stored = AsyncObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
-                .await?;
+    let stored = AsyncObjectStore::read(
+        &store,
+        generation_root,
+        DecodeLimits::default().maximum_object_bytes,
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     assert_eq!(
-        crate::kernel::decode_generation_root(
-            &stored.bytes,
-            DecodeLimits::default(),
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())
-        )?,
+        crate::kernel::decode_generation_root(&stored.bytes, DecodeLimits::default(), |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(
+            ()
+        ))?,
         root
     );
     assert!(original.receipt().page_reads > 0);
