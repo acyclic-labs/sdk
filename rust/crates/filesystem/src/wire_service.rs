@@ -379,7 +379,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|error| status(&WorkspaceError::engine(error)))?;
+            .map_err(|failure| status(&WorkspaceError::from(failure.error)))?;
         if let Some(commit) = committed.value {
             let sequence = commit
                 .sequence

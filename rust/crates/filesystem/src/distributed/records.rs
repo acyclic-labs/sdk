@@ -76,12 +76,11 @@ pub(super) fn stream_key(
 }
 
 pub(super) fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
+    // Absence has a filesystem meaning; every other category must survive
+    // through the workspace and wire boundaries without diagnostic flattening.
     match error {
         acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
-        acyclic_stream::StreamError::Capacity => {
-            AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
-        }
-        other => AuthorityStoreError::Rejected(other.to_string()),
+        other => AuthorityStoreError::NativeStream(other),
     }
 }
 

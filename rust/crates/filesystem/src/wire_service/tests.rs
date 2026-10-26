@@ -3,6 +3,8 @@ use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::Filesystem
 use futures::StreamExt;
 
 include!("access_tests.rs");
+#[path = "authority_error_tests.rs"]
+mod authority_error_tests;
 #[path = "metadata_tests.rs"]
 mod metadata_tests;
 
