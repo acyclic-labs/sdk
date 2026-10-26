@@ -74,37 +74,6 @@ impl Format for FileTableFormat {
         }
     }
 
-    fn page_encoded_length(
-        page: &PageRef<'_, Self>,
-        maximum_items: u32,
-    ) -> Result<usize, CanonicalDecodeError> {
-        let count = match page {
-            PageRef::Leaf(records) => records.len(),
-            PageRef::Internal(children) => children.len(),
-        };
-        if u32::try_from(count).unwrap_or(u32::MAX) > maximum_items {
-            return Err(CanonicalDecodeError::LengthOverflow);
-        }
-        let mut bytes = 8_usize + 2 + 1 + 4;
-        match page {
-            PageRef::Leaf(records) => {
-                for record in *records {
-                    bytes = bytes
-                        .checked_add(Self::leaf_item_encoded_length(record)?)
-                        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-                }
-            }
-            PageRef::Internal(children) => {
-                for child in *children {
-                    bytes = bytes
-                        .checked_add(Self::internal_item_encoded_length(&child.first)?)
-                        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-                }
-            }
-        }
-        Ok(bytes)
-    }
-
     fn leaf_item_encoded_length(value: &Self::Value) -> Result<usize, CanonicalDecodeError> {
         file_record_encoded_length(*value)
     }
