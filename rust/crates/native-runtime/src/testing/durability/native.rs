@@ -94,9 +94,7 @@ fn retains_cut(
             };
             let mut expected = b"original".to_vec();
             expected.resize(expected.len().max(transferred), 0);
-            let (destination, _) = expected.split_at_mut(transferred);
-            let (source, _) = bytes.split_at(transferred);
-            destination.copy_from_slice(source);
+            expected.splice(0..transferred, bytes.iter().take(transferred).copied());
             assert_eq!(std::fs::read(&from).unwrap(), expected);
             assert_eq!(
                 schedule.durable_writes().first().unwrap().transferred,
