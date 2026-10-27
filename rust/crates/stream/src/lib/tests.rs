@@ -180,22 +180,22 @@ mod replay_tests {
     }
 
     #[tokio::test]
-    async fn append_helper_uses_one_canonical_commit_and_keeps_conflicts_unspent() {
+    async fn append_helper_recovers_accepted_append_after_reopen_and_keeps_conflicts_unspent() {
         let provider = Arc::new(MemoryStream::default());
-        let stream = Stream::new(provider.clone(), "append-helper").unwrap();
         let first_key = IdempotencyKey::new(b"first".as_slice()).unwrap();
-        let first = stream.append("first", first_key.clone()).await.unwrap();
+        let path = StreamPath::new("append-helper").unwrap();
+        // The response is lost after the existing provider has accepted it.
+        let first = provider.append(AppendRequest {
+            path: path.clone(), records: vec!["first".into()], if_tail: None,
+            idempotency_key: Some(first_key.clone()),
+        }).await.unwrap();
+        let restored = Arc::new(MemoryStream::default());
+        restored.install_state(&provider.encode_state().await).await.unwrap();
+        let provider = restored;
+        let stream = Stream::new(provider.clone(), path.as_str()).unwrap();
         assert_eq!(stream.append("first", first_key.clone()).await.unwrap(), first);
         let observed = provider.inspect_idempotency(first_key).await.unwrap().unwrap();
-        let IdempotencyOutcome::Commit(fact) = observed.outcome else {
-            panic!("append must use the canonical commit recovery family");
-        };
-        let [CommittedMutation::Append(append)] = fact.mutations.as_slice() else {
-            panic!("expected one append fact");
-        };
-        assert_eq!(append.path, *stream.path());
-        assert_eq!((append.start, append.tail), (0, 1));
-        assert_eq!(append.records[0].value.as_ref(), b"first");
+        assert_eq!(observed.outcome, IdempotencyOutcome::Append(first));
         let key = IdempotencyKey::new(b"retry".as_slice()).unwrap();
         assert_eq!(stream.append_at("second", 0, key.clone()).await.unwrap(),
             AppendOutcome::TailConflict { actual_tail: 1 });

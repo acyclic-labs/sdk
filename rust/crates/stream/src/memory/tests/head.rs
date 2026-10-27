@@ -39,11 +39,12 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     assert!(wire.encoded_len() < append.records[0].value.len());
     assert_eq!(crate::wire_codec::receipt_from_wire(wire)?, *receipt);
     clock.0.store(9, std::sync::atomic::Ordering::SeqCst);
+    let destination = StreamPath::new("receipt/fork")?;
     let fork = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
+        conditions: vec![CommitCondition::Absent { path: destination.clone() }],
         mutations: vec![CommitMutation::Fork {
-            source, destination: StreamPath::new("receipt/fork")?, at_tail: 1,
+            source, destination, at_tail: 1,
             exclude: Vec::new(), records: Vec::new(),
         }],
         idempotency_key: IdempotencyKey::new(b"receipt-empty-fork".as_slice())?,
