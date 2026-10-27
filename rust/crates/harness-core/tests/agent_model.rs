@@ -489,6 +489,99 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
 }
 
 #[tokio::test]
+async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it() -> Result {
+    // A turn checkpoint past the record limit would make every retry of this
+    // step fail its commit; the step instead settles a visible failure.
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let driver = script(vec![TurnStep {
+        checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
+        outs: vec![Out::Conversation(b"partial".to_vec())],
+        wait: Wait::Continue,
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: OVERSIZED_STATE.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    assert_eq!(stepped.state.turn, None);
+    assert!(stepped.state.reported);
+    assert!(stepped.outs.iter().any(|out| matches!(
+        out,
+        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+    )));
+    // The turn's own effects still commit with the failure.
+    assert!(
+        stepped
+            .outs
+            .contains(&Out::Conversation(b"partial".to_vec()))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> Result {
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let driver = script(vec![TurnStep {
+        checkpoint: None,
+        outs: Vec::new(),
+        wait: Wait::Done(AgentOutcome::Failed {
+            message: "x".repeat(MAX_OUTCOME_BYTES),
+        }),
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: OVERSIZED_OUTCOME.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    // The report it sends encodes within the parent's inbox record limit.
+    let Some(Out::Send { record, .. }) = stepped.outs.iter().find(|out| {
+        matches!(
+            out,
+            Out::Send {
+                record: InboxRecord::ChildDone(_),
+                ..
+            }
+        )
+    }) else {
+        return Err("no ChildDone was sent".into());
+    };
+    assert!(record.encode().is_ok());
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Result {
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
@@ -776,15 +869,13 @@ async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other()
     assert!(spawns(&second.outs).is_empty());
     assert_eq!(
         first.state.spawn_outcome(&one),
-        Some(&SpawnOutcome::Spawned { child })
+        SpawnOutcome::Spawned { child }
     );
-    // Each state holds only its own step's outcomes.
-    assert_eq!(second.state.spawn_outcome(&one), None);
     assert_eq!(
         second.state.spawn_outcome(&two),
-        Some(&SpawnOutcome::Refused {
+        SpawnOutcome::Refused {
             reason: SpawnRefusal::Limit
-        })
+        }
     );
     assert_eq!(second.state.open_children.len(), MAX_OPEN_CHILDREN);
     Ok(())
@@ -833,13 +924,13 @@ async fn a_client_spawn_counts_against_a_tool_spawn_in_the_same_step() -> Result
     assert_eq!(spawns(&stepped.outs), [client.clone()]);
     assert_eq!(
         stepped.state.spawn_outcome(&client),
-        Some(&SpawnOutcome::Spawned { child })
+        SpawnOutcome::Spawned { child }
     );
     assert_eq!(
         stepped.state.spawn_outcome(&intent("spawn:tool")),
-        Some(&SpawnOutcome::Refused {
+        SpawnOutcome::Refused {
             reason: SpawnRefusal::Limit
-        })
+        }
     );
     assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN);
     Ok(())
