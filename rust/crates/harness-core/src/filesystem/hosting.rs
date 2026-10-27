@@ -200,6 +200,7 @@ where
             policy,
         } = request;
         let path = AgentPath::root(&agent);
+        let owner = crate::AgentId::from_bytes(agent.to_bytes());
         let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
         {
             let authority = agent_authority(&self.issuer, &self.admission, &path, &volumes, &[])
@@ -212,6 +213,15 @@ where
                     VolumeOperation::Write,
                     u64::MAX,
                     &mut None,
+                )
+                .map_err(turn)?;
+                // A structured `filesystem:` grant passes that check by its
+                // label alone, so the filesystem's own decision over its
+                // ceiling must admit writing each fresh volume too.
+                super::agent_turns::require_structured_write(
+                    &authority.scope,
+                    owner,
+                    &binding.volume,
                 )
                 .map_err(turn)?;
             }
@@ -287,26 +297,19 @@ where
     }
 
     /// Creates root `request`: exactly [`Self::prepare_root`] then
-    /// [`Self::submit_root`]. Retrying the same `intent` replays exactly.
+    /// [`Self::submit_root`]. An uncertain result is
+    /// [`RootSubmission::Unknown`], still owning the prepared commit and its
+    /// publication holds, to resubmit with [`Self::submit_root`].
     ///
     /// # Errors
-    /// As [`Self::prepare_root`] and [`Self::submit_root`]; an uncertain
-    /// result is [`Error::Unknown`], resolved by creating again under the same
-    /// `intent`, which re-prepares, and re-holds, the identical commit.
+    /// As [`Self::prepare_root`] and [`Self::submit_root`].
     pub async fn create_root(
         &self,
         intent: &IntentId,
         request: RootRequest,
-    ) -> Result<AgentPath, Error> {
-        match self
-            .submit_root(self.prepare_root(intent, request).await?)
-            .await?
-        {
-            RootSubmission::Created(child) => Ok(child),
-            RootSubmission::Unknown(prepared) => {
-                Err(Error::Unknown(Box::new(prepared.request().clone())))
-            }
-        }
+    ) -> Result<RootSubmission, Error> {
+        self.submit_root(self.prepare_root(intent, request).await?)
+            .await
     }
 }
 
