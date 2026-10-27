@@ -185,6 +185,17 @@ impl Conversation {
             })
     }
 
+    /// Why a dropped prompt got no turn: the agent finished, or a cancel
+    /// cleared it.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures.
+    pub async fn dropped(&self) -> Result<String> {
+        let (agents, _) = self.local.agents().await?;
+        let state = agents.state(&self.agent).await.map_err(failed)?;
+        Ok(finished(&state.phase).unwrap_or_else(|| "the prompt was cancelled".into()))
+    }
+
     /// Number of settled turns.
     ///
     /// # Errors
@@ -215,7 +226,11 @@ impl Conversation {
 /// finished.
 #[must_use]
 pub fn ended(status: &StatusRecord) -> Option<String> {
-    match &status.phase {
+    finished(&status.phase)
+}
+
+fn finished(phase: &Phase) -> Option<String> {
+    match phase {
         Phase::Done { outcome } => Some(format!("conversation ended: {outcome:?}")),
         _ => None,
     }
