@@ -52,7 +52,7 @@ export const compatibilityArtifacts = {
   machines: {
     schemaDigest: "rust/crates/machines/proto/machines/v1/machines.proto",
     descriptorDigest: "compatibility/descriptors/machines-v1.bin",
-    conformanceDigest: "conformance/vectors/machines.json",
+    conformanceDigest: "rust/crates/machines/conformance/machines.json",
   },
   inference: {
     schemaDigest: "rust/crates/inference/proto/inference/v1/inference.proto",
@@ -79,6 +79,5 @@ export const packagedSourceCopies = [
   ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
-  ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];

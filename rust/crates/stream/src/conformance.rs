@@ -1,11 +1,13 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
 mod backend;
-#[path = "conformance/wave1.rs"]
-mod histories;
+#[path = "conformance"]
+mod histories {
+    pub(super) mod wave1;
+}
 /// Stable selected-history and receipt API. Full qualification uses [`verify`].
 pub mod wave1 {
-    pub use super::histories::{Case, Failure, Invariant, RECOVERY, coverage, verify_case};
+    pub use super::histories::wave1::{Case, Failure, Invariant, RECOVERY, coverage, verify_case};
 }
 #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 pub use backend::injected;

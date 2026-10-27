@@ -27,3 +27,21 @@ Before the callback returns, the actual filesystem adapter must durably journal 
 `PublicationHold::none()` lets an external provider complete the existing flush contract after its own durability work. It provides no collection gate, root claim, historical proof custody or release permission. Dropping a hold must not release provider-owned durable claims. Default preparation, an accounting page watermark and delivery ACKs never authorize collection. PR #215 remains incomplete until the filesystem owner implements and supplies the atomic original-proof custody boundary for every relevant transition.
 
 `kernel::decode_generation_publication_evidence` projects retained bytes against the SHA256 from protected original custody, with explicit byte/item bounds and canonical re-encoding. It returns original request, manifest/configuration, root, logical bytes and full append; it does not manufacture a fresh closure proof or final outcome. Execution can reuse this Rust decoder during journal recovery instead of defining a private Cloud proof serialization.
+
+The `conformance` feature publishes `conformance::{Backend, Fixture, verify, bench,
+suite}` over the existing public `Fs`, `Workspace` and immutable `Generation`
+operations. `from_providers` composes actual Stream and Objects providers with one
+shared `Counted<P>` dispatch ledger, including errors. Downstream storage adapters
+retain their concrete authority and object types so publication guards, original
+work and custody cross the same production seams. Temporary resources must stay
+owned by the backend throughout each invocation.
+
+Portable vectors check binary size boundaries, immutable history, typed read
+refusals, cancellation, fork isolation and removal. The checked benchmark reads
+one exact immutable 4-KiB value after warmup and rejects head, metadata, list,
+lease or token probes. Mount qualification additionally exercises the real mounted
+interface through the existing mount qualifier. Run the memory adapter on demand:
+
+```sh
+cargo test --locked -p acyclic-fs --features conformance,memory --test main public_conformance
+```
