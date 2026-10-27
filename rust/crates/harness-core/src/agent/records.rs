@@ -9,8 +9,11 @@ use super::{AgentId, AgentPath, Error};
 use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
-/// Largest encoded inbox, status or close record. Payloads live in volume files.
-pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+/// Largest agent record. Every part of one is bounded (paths by
+/// [`super::MAX_DEPTH`], file and volume references by the conversation
+/// maxima, texts by their own limits), so every record a step builds is
+/// within this; `checkpoint`'s bound test checks each kind at its worst.
+pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 /// Largest intent identity.
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Largest failure message carried in a record.
@@ -167,6 +170,20 @@ pub struct Approval {
     pub id: IntentId,
 }
 
+/// An authorized caller asks this agent to spawn a child. The agent's next
+/// step spawns it exactly as its own turn's spawn tool does; the child is
+/// named by this record's inbox sequence, so no two requests collide.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnRequest {
+    /// Who asked.
+    pub by: Sender,
+    /// Stable intent identity.
+    pub id: IntentId,
+    /// Task brief, at most [`MAX_MESSAGE_BYTES`].
+    pub brief: String,
+}
+
 /// A child delegates an approval request to this agent (the parent approver).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -219,6 +236,8 @@ pub enum InboxRecord {
     Archive(Control),
     /// A host plugin hook.
     Hook(Hook),
+    /// Spawn a child on an authorized caller's request.
+    Spawn(SpawnRequest),
 }
 
 /// Current phase of an agent, appended to its status stream on change and on
@@ -311,9 +330,23 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
     }
 }
 
+/// At most [`MAX_VOLUMES`] bindings, each with a valid name.
+pub(super) fn check_volumes(volumes: &[VolumeBinding]) -> Result<(), Error> {
+    if volumes.len() > MAX_VOLUMES {
+        return Err(Error::Record("too many volumes"));
+    }
+    volumes
+        .iter()
+        .try_for_each(|binding| check_text(&binding.name))
+}
+
+/// A name: a binding, principal or host. Like a label, it admits no control
+/// character, so its encoding is at most twice its length.
 fn check_text(text: &str) -> Result<(), Error> {
-    if text.is_empty() || text.len() > MAX_INTENT_BYTES {
-        return Err(Error::Record("name must be 1-128 bytes"));
+    if text.is_empty() || text.len() > MAX_INTENT_BYTES || text.chars().any(char::is_control) {
+        return Err(Error::Record(
+            "name must be 1-128 bytes without control characters",
+        ));
     }
     Ok(())
 }
@@ -322,12 +355,7 @@ impl AgentRecord for InboxRecord {
     fn check(&self) -> Result<(), Error> {
         match self {
             Self::ForkAdopted(adopted) => {
-                if adopted.volumes.len() > MAX_VOLUMES {
-                    return Err(Error::Record("too many volumes"));
-                }
-                for binding in &adopted.volumes {
-                    check_text(&binding.name)?;
-                }
+                check_volumes(&adopted.volumes)?;
                 if adopted
                     .parent
                     .as_ref()
@@ -342,6 +370,12 @@ impl AgentRecord for InboxRecord {
             | Self::Cancel(Control { by: from, .. })
             | Self::Archive(Control { by: from, .. }) => check_sender(from),
             Self::Hook(hook) => check_text(&hook.host),
+            Self::Spawn(spawn) => {
+                if spawn.brief.is_empty() || spawn.brief.len() > MAX_MESSAGE_BYTES {
+                    return Err(Error::Record("spawn brief must be 1-4096 bytes"));
+                }
+                check_sender(&spawn.by)
+            }
             Self::Approval(_) | Self::ApprovalRequested(_) => Ok(()),
         }
     }

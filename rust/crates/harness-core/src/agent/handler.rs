@@ -7,6 +7,7 @@
 //! child's first delivery is its `ForkAdopted` record. There is no other timer,
 //! poller or per-agent task.
 
+use super::checkpoint::{self, checkpoint_state, codec, decode};
 use super::{
     AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
     Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower, step,
@@ -15,44 +16,17 @@ use acyclic_actors::{
     addressing::ActorReference,
     domain::{ActorLimits, CodeSha256},
     guest::{
-        AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
-        Manifest, Transition, Trigger,
+        AlarmChange, Checkpoint, Delivery, Effect, GuestError, GuestFuture, Handler, Manifest,
+        Transition, Trigger,
     },
     local::{PreparedPublish, Store, Subscription},
 };
 use acyclic_stream::{CommitRequest, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The agent's one subscription: its inbox.
 pub const INBOX: &str = "inbox";
-
-/// Checkpoint: the agent state and the inbox cursor of the last consumed record.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Saved {
-    state: AgentState,
-    cursor: u64,
-}
-
-fn codec() -> CodecIdentity {
-    CodecIdentity {
-        name: "acyclic.harness.agent".into(),
-        version: "1".into(),
-    }
-}
-
-/// The agent state a committed checkpoint carries.
-#[cfg(feature = "filesystem")]
-pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
-    if checkpoint.codec != codec() {
-        return Err(Error::Record("agent checkpoint codec differs"));
-    }
-    serde_json::from_slice::<Saved>(&checkpoint.bytes)
-        .map(|saved| saved.state)
-        .map_err(|_| Error::Record("agent checkpoint is malformed"))
-}
 
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
@@ -196,9 +170,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
             .map_err(|error| Error::Actor(Box::new(error)))?;
         let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
         let observed = if let Some(checkpoint) = state.checkpoint() {
-            serde_json::from_slice::<Saved>(&checkpoint.bytes)
-                .map_err(|_| Error::Record("agent checkpoint is malformed"))?
-                .state
+            checkpoint_state(checkpoint)?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
@@ -266,8 +238,10 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     ) -> Result<Transition, Error> {
         let saved = checkpoint
             .map(|checkpoint| {
-                serde_json::from_slice::<Saved>(&checkpoint.bytes)
-                    .map_err(|_| Error::Record("agent checkpoint is malformed"))
+                if checkpoint.codec != codec() {
+                    return Err(Error::Record("agent checkpoint codec differs"));
+                }
+                decode(&checkpoint.bytes)
             })
             .transpose()?;
         let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
@@ -281,13 +255,13 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             ),
             (Trigger::Alarm { generation, .. }, None) => (
                 Wake::Alarm,
-                saved.as_ref().map_or(0, |saved| saved.cursor),
+                saved.as_ref().map_or(0, |(_, cursor)| *cursor),
                 format!("alarm:{generation}"),
             ),
             _ => return Err(Error::Record("delivery does not match its trigger")),
         };
         let path = match (&saved, &wake) {
-            (Some(saved), _) => saved.state.path.clone(),
+            (Some((state, _)), _) => state.path.clone(),
             (
                 None,
                 Wake::Inbox {
@@ -315,7 +289,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             let brief = volumes.brief(&path, &adopted.volumes).await?;
             adopted.brief = brief;
         }
-        let mut state = saved.map(|saved| saved.state);
+        let mut state = saved.map(|(state, _)| state);
         if let Some(state) = state.as_mut() {
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
@@ -346,18 +320,9 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             let actor = Agents::<P>::actor(&delivery.actor, &child)?;
             effects.extend(self.agents.create(&actor, &path.child(&child)?, cursor)?);
         }
-        let saved = Saved {
-            state: step.state,
-            cursor,
-        };
         Ok(Transition {
             participant,
-            checkpoint: Checkpoint {
-                codec: codec(),
-                bytes: serde_json::to_vec(&saved)
-                    .map_err(|_| Error::Record("agent checkpoint does not encode"))?
-                    .into(),
-            },
+            checkpoint: checkpoint::checkpoint(&step.state, cursor)?,
             alarm: match step.alarm {
                 Alarm::Clear => AlarmChange::Clear,
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },

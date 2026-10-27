@@ -6,7 +6,9 @@
 //! and commits each step (checkpoint, conversation, status and every outgoing
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
+mod checkpoint;
 mod commit;
+#[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
@@ -23,6 +25,8 @@ mod records;
 mod volumes;
 pub use volumes::SpawnVolumes;
 
+pub use checkpoint::MAX_CHECKPOINT_BYTES;
+pub(crate) use checkpoint::checkpoint_state;
 pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
 };
@@ -30,21 +34,21 @@ pub use driver::{
     ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
     turn_id,
 };
-#[cfg(feature = "filesystem")]
-pub(crate) use handler::checkpoint_state;
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Wait, Wake, step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
+    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, SpawnOutcome, SpawnRefusal, Step,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
     ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-    MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, StatusRecord, VolumeBinding,
+    MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest, StatusRecord,
+    VolumeBinding,
 };
 
 /// Agent model failures.
@@ -59,6 +63,9 @@ pub enum Error {
     /// The recipient agent was never created.
     #[error("no such agent")]
     NoSuchAgent,
+    /// The parent's step applied the spawn and created no child.
+    #[error("spawn refused: {0:?}")]
+    SpawnRefused(SpawnRefusal),
     /// Completion is uncertain; retry this exact request until it resolves.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<acyclic_stream::CommitRequest>),
@@ -71,9 +78,6 @@ pub enum Error {
     /// Turn driver failure.
     #[error(transparent)]
     Turn(Box<crate::Error>),
-    /// A well-formed request this host does not serve.
-    #[error("unsupported agent request: {0}")]
-    Unsupported(&'static str),
 }
 
 impl Error {
@@ -85,11 +89,11 @@ impl Error {
             Self::Path(_) => "invalid_agent_path",
             Self::Record(_) => "invalid_agent_record",
             Self::NoSuchAgent => "no_such_agent",
+            Self::SpawnRefused(_) => "spawn_refused",
             Self::Unknown(_) => "agent_unknown",
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",
             Self::Turn(_) => "agent_turn_error",
-            Self::Unsupported(_) => "agent_unsupported",
         }
     }
 

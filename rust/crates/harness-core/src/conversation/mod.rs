@@ -14,10 +14,13 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Maximum normalized UTF-8 path length admitted by the Harness protocol.
-pub const MAX_PATH_BYTES: usize = MAX_PORTABLE_COUNT;
-/// Maximum UTF-8 bytes in a protocol label or display name.
-pub const MAX_LABEL_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
+/// Maximum normalized UTF-8 path length admitted by the Harness protocol:
+/// the common `PATH_MAX`. With [`MAX_LABEL_BYTES`] it bounds every file and
+/// volume reference, so every record that carries one has a static size bound.
+pub const MAX_PATH_BYTES: usize = 4096;
+/// Maximum UTF-8 bytes in a file or volume label, display name, provider
+/// identity part or media type: the common file-name limit.
+pub const MAX_LABEL_BYTES: usize = 255;
 /// Largest integer that can be represented exactly by a JavaScript number.
 pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
 #[allow(clippy::cast_precision_loss, reason = "2^53 - 1 is exact in f64")]

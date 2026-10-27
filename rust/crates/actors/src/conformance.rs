@@ -217,7 +217,9 @@ impl<'a, T: Target + ?Sized> Fixture<'a, T> {
             )]),
             Some(Checkpoint {
                 codec: codec(),
-                bytes: serde_json::to_vec(&ledger).map_err(Error::from)?.into(),
+                bytes: serde_json::to_vec(&ledger)
+                    .map_err(|_| Error::Invalid("conformance ledger does not encode"))?
+                    .into(),
             }),
         )?;
         Ok(Self {

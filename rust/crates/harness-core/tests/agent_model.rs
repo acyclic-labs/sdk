@@ -448,6 +448,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Conversation(b"answer".to_vec())],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
@@ -489,6 +490,101 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
 }
 
 #[tokio::test]
+async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it() -> Result {
+    // A turn checkpoint past the record limit would make every retry of this
+    // step fail its commit; the step instead settles a visible failure.
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let driver = script(vec![TurnStep {
+        reserved_children: 0,
+        checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
+        outs: vec![Out::Conversation(b"partial".to_vec())],
+        wait: Wait::Continue,
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: OVERSIZED_STATE.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    assert_eq!(stepped.state.turn, None);
+    assert!(stepped.state.reported);
+    assert!(stepped.outs.iter().any(|out| matches!(
+        out,
+        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+    )));
+    // The turn's own effects still commit with the failure.
+    assert!(
+        stepped
+            .outs
+            .contains(&Out::Conversation(b"partial".to_vec()))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> Result {
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let driver = script(vec![TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: Vec::new(),
+        wait: Wait::Done(AgentOutcome::Failed {
+            message: "x".repeat(MAX_OUTCOME_BYTES),
+        }),
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: OVERSIZED_OUTCOME.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    // The report it sends encodes within the parent's inbox record limit.
+    let Some(Out::Send { record, .. }) = stepped.outs.iter().find(|out| {
+        matches!(
+            out,
+            Out::Send {
+                record: InboxRecord::ChildDone(_),
+                ..
+            }
+        )
+    }) else {
+        return Err("no ChildDone was sent".into());
+    };
+    assert!(record.encode().is_ok());
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Result {
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
@@ -525,6 +621,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     assert_eq!(state.overflow, Some(33));
     // The awaited response is taken out of order, and remembered as taken.
     let resumed = script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
@@ -718,5 +815,234 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         seen += 1;
     }
     assert!(seen >= 13);
+    Ok(())
+}
+
+/// Root at `MAX_OPEN_CHILDREN - 1` open children, idle.
+fn one_below_the_child_limit() -> Result<(AgentPath, AgentState)> {
+    let root = AgentPath::root(&id(1));
+    let mut state = AgentState::adopted(root.clone(), &adopted(id(1)));
+    for n in 0..MAX_OPEN_CHILDREN - 1 {
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
+        state
+            .open_children
+            .insert(root.child(&AgentId::from_bytes(bytes))?);
+    }
+    Ok((root, state))
+}
+
+fn spawn_request(sequence: u64) -> Wake {
+    Wake::Inbox {
+        sequence,
+        record: InboxRecord::Spawn(SpawnRequest {
+            by: user(),
+            id: intent(&format!("s{sequence}")),
+            brief: "task".into(),
+        }),
+    }
+}
+
+fn spawns(outs: &[Out]) -> Vec<IntentId> {
+    outs.iter()
+        .filter_map(|out| match out {
+            Out::Spawn { intent, .. } => Some(intent.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other() -> Result {
+    // Two clients' requests land at inbox 1 and 2; the parent's steps apply
+    // them in order and each records its outcome in the committed state.
+    let (root, state) = one_below_the_child_limit()?;
+    let driver = script(Vec::new());
+    let first = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let second = step(
+        &driver,
+        &root,
+        Some(first.state.clone()),
+        3,
+        spawn_request(2),
+    )
+    .await?;
+    let (one, child) = requested_child(&root, 1)?;
+    let (two, _) = requested_child(&root, 2)?;
+    assert_eq!(spawns(&first.outs), [one.clone()]);
+    assert!(spawns(&second.outs).is_empty());
+    assert_eq!(
+        first.state.spawn_outcome(&one),
+        SpawnOutcome::Spawned { child }
+    );
+    assert_eq!(
+        second.state.spawn_outcome(&two),
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        }
+    );
+    assert_eq!(second.state.open_children.len(), MAX_OPEN_CHILDREN);
+    Ok(())
+}
+
+/// Spawns `spawn:tool` on its one turn, recording how many children it saw.
+struct ToolSpawner(Mutex<Option<usize>>);
+
+impl TurnDriver for ToolSpawner {
+    fn step<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        _cursor: u64,
+        _input: Option<TurnInput>,
+    ) -> TurnFuture<'a> {
+        *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
+        Box::pin(async move {
+            Ok(TurnStep {
+                reserved_children: 0,
+                checkpoint: None,
+                outs: vec![Out::Spawn {
+                    intent: intent("spawn:tool"),
+                    brief: None,
+                    volumes: Vec::new(),
+                }],
+                wait: Wait::Input,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
+    let (root, mut state) = one_below_the_child_limit()?;
+    state
+        .queued
+        .push_back(TurnInput::Approval { id: intent("q") });
+    let driver = ToolSpawner(Mutex::new(None));
+    // The spawn's step carries only the spawn: no turn runs while its child
+    // is being created, so none can write to it in the creating commit.
+    let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    assert_eq!(*driver.0.lock().expect("seen lock"), None);
+    let (client, child) = requested_child(&root, 1)?;
+    assert_eq!(spawns(&requested.outs), [client.clone()]);
+    assert_eq!(requested.outs.len(), 1);
+    assert_eq!(
+        requested.state.spawn_outcome(&client),
+        SpawnOutcome::Spawned {
+            child: child.clone()
+        }
+    );
+    // The queued turn continues at once, on the next step.
+    assert_eq!(requested.alarm, Alarm::At(CONTINUE_NOW));
+    let stepped = step(&driver, &root, Some(requested.state), 2, Wake::Alarm).await?;
+    // It runs with the client's child open and reachable, and the tool's
+    // spawn past the limit is refused rather than failing every retry.
+    assert_eq!(
+        *driver.0.lock().expect("seen lock"),
+        Some(MAX_OPEN_CHILDREN)
+    );
+    assert!(spawns(&stepped.outs).is_empty());
+    assert_eq!(
+        stepped.state.spawn_outcome(&client),
+        SpawnOutcome::Spawned { child }
+    );
+    assert_eq!(
+        stepped.state.spawn_outcome(&intent("spawn:tool")),
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        }
+    );
+    assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> Result {
+    // The turn's tool recorded a spawn into the last slot, then paused.
+    let (root, mut state) = one_below_the_child_limit()?;
+    state.turn = Some(Vec::new());
+    state.phase = Phase::WaitingApproval { id: intent("q") };
+    state.reserved_children = 1;
+    let driver = script(vec![TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: vec![Out::Spawn {
+            intent: intent("spawn:tool"),
+            brief: None,
+            volumes: Vec::new(),
+        }],
+        wait: Wait::Input,
+    }]);
+    // A client's spawn meanwhile is refused rather than taking that slot.
+    let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let (client, _) = requested_child(&root, 1)?;
+    assert!(spawns(&requested.outs).is_empty());
+    assert_eq!(
+        requested.state.spawn_outcome(&client),
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        }
+    );
+    // The resumed turn's spawn opens the child its tool reported.
+    let resumed = step(
+        &driver,
+        &root,
+        Some(requested.state),
+        3,
+        Wake::Inbox {
+            sequence: 2,
+            record: InboxRecord::Approval(Approval { id: intent("q") }),
+        },
+    )
+    .await?;
+    assert_eq!(spawns(&resumed.outs), [intent("spawn:tool")]);
+    assert_eq!(resumed.state.open_children.len(), MAX_OPEN_CHILDREN);
+    assert_eq!(resumed.state.reserved_children, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_it() -> Result {
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
+    let driver = script(vec![TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: vec![
+            Out::Conversation(oversized),
+            Out::Conversation(b"fits".to_vec()),
+        ],
+        wait: Wait::Input,
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: INADMISSIBLE_EFFECT.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    assert!(
+        !stepped
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Conversation(_)))
+    );
+    assert!(stepped.outs.iter().any(|out| matches!(
+        out,
+        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+    )));
     Ok(())
 }
