@@ -302,6 +302,10 @@ proptest! {
     }
 }
 
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
     use acyclic_stream::wire;
     wire::SessionFrame {
@@ -321,6 +325,10 @@ fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
 }
 
 #[test]
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 fn only_a_filtered_fold_advances_past_skipped_records() {
     let policy = StreamViewPolicy::default();
     let mut filtered = StreamView::new(policy, 2, 0, true);

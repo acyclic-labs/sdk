@@ -1,6 +1,7 @@
 import type {
-  AgentClient, AgentEvent, AgentWindow, ApprovalBinding, ModelContent,
+  AgentClient, AgentCommand, AgentControls, AgentEvent, AgentWindow, ApprovalBinding, ModelContent,
   ModelContentPart, ModelDataPart, StatusRecord,
+  PreparedAgentInvocation,
 } from "../src/index.js";
 import type {
   ApprovalBinding as RustApprovalBinding, ModelContent as RustModelContent,
@@ -36,4 +37,13 @@ function extensionConfigurationUsesAFileRef(extension: WasmExtensionAdmissionWir
 type _CanonicalEncoderIsRust = Assert<Equal<
   typeof import("../src/index.js").encodeCanonicalJson,
   typeof import("../generated/wasm/acyclic_harness_wasm.js").encodeCanonicalJson
+>>;
+
+type _PreparationUsesTheRustCommand = Assert<Equal<
+  Parameters<typeof import("../src/index.js").prepareAgentInvocation>,
+  [controls: AgentControls, value: AgentCommand]
+>>;
+type _PreparationKeepsCallerOwnedInvocation = Assert<Equal<
+  ReturnType<typeof import("../src/index.js").prepareAgentInvocation>,
+  PreparedAgentInvocation
 >>;
