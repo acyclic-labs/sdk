@@ -228,6 +228,7 @@ impl DaytonaProvider {
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when the configuration cannot produce a client.
     pub fn new(config: DaytonaConfig, ops: OperationRegistry) -> Result<Self, ProviderError> {
+        acyclic_machines::core::validate_workspace(&config.workspace_dir)?;
         let api = DaytonaApi::new(&config)?;
         let core = BackendCore::new(
             ops,
@@ -711,24 +712,24 @@ impl Backend for DaytonaProvider {
     }
     fn raw_exec(
         &self,
-        _machine: MachineId,
-        _native: Option<&NativeBinding>,
-        _command: ExecCommand,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+        command: ExecCommand,
     ) -> Result<ExecSession, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "Daytona guest command streaming is not bound".into(),
-        ))
+        let native = native.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        Ok(self
+            .api
+            .prepare_exec(&native.handle, &command, &self.config.workspace_dir))
     }
     async fn raw_read_output(
         &self,
-        _machine: MachineId,
-        _native: Option<&NativeBinding>,
-        _offset: u64,
-        _limit: u32,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+        offset: u64,
+        limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "Daytona retained console reads are not bound".into(),
-        ))
+        native.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        self.core.console().read(machine, offset, limit)
     }
     async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         let snapshot = self.resolve_snapshot(&image)?;
@@ -814,7 +815,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guest_io_is_unsupported_without_making_daytona_requests() {
+    async fn unknown_guest_io_is_refused_without_making_daytona_requests() {
         let mock = mock::Mock::start(|_| async { (500, "unexpected request".into()) }).await;
         let mut config = DaytonaConfig::new("fake");
         config.api_url = mock.url.clone();
@@ -823,12 +824,39 @@ mod tests {
         let command = ExecCommand::new(vec!["echo".into()], 1).unwrap();
         assert!(matches!(
             provider.exec(machine, command).await,
-            Err(ProviderError::Unsupported(_))
+            Err(ProviderError::NotFound(_))
         ));
         assert!(matches!(
             provider.read_output(machine, 0, 1).await,
-            Err(ProviderError::Unsupported(_))
+            Err(ProviderError::NotFound(_))
         ));
+        assert!(mock.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn known_guest_session_preparation_is_lazy() {
+        let mock = mock::Mock::start(|_| async { (500, "unexpected request".into()) }).await;
+        let mut config = DaytonaConfig::new("fake");
+        config.api_url = mock.url.clone();
+        let provider = DaytonaProvider::new(config, registry()).unwrap();
+        let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+        let native = NativeBinding {
+            provider: "daytona".into(),
+            handle: "native-guest".into(),
+            endpoint: None,
+        };
+        let command = ExecCommand::new(vec!["echo".into()], 1).unwrap();
+        let session = provider.raw_exec(machine, Some(&native), command).unwrap();
+        assert!(mock.requests().is_empty());
+        drop(session);
+        assert!(mock.requests().is_empty());
+        let output = provider
+            .raw_read_output(machine, Some(&native), 7, 1)
+            .await
+            .unwrap();
+        assert_eq!(output.machine, machine);
+        assert_eq!(output.offset, 7);
+        assert!(output.data.is_empty());
         assert!(mock.requests().is_empty());
     }
 

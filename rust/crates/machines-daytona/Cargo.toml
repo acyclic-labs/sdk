@@ -13,8 +13,10 @@ keywords = ["machines", "daytona", "sandbox"]
 categories = ["api-bindings"]
 
 [dependencies]
-acyclic-machines = { version = "=0.2.0", path = "../machines" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["provider-http"] }
 async-trait.workspace = true
+base64 = "=0.22.1"
+sse-stream.workspace = true
 futures.workspace = true
 reqwest.workspace = true
 serde.workspace = true

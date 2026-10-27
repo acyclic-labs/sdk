@@ -11,6 +11,9 @@
 
 use std::collections::BTreeMap;
 
+use acyclic_machines::core::http::{
+    credential_headers, endpoint_url, http_transport_builder, send_body,
+};
 use acyclic_machines::{
     ProviderError,
     core::{NativePage, collect_pages},
@@ -20,10 +23,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::field::Empty;
 
+mod execution;
+
 use crate::DaytonaConfig;
 
 /// Header carrying the organization to act in when a credential spans several.
-const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
+const ORGANIZATION_HEADER: &str = "x-daytona-organization-id";
 /// Largest page `GET /sandbox` accepts.
 const LIST_PAGE_LIMIT: u32 = 200;
 
@@ -227,7 +232,7 @@ pub struct ExecuteResponse {
 pub struct DaytonaApi {
     http: reqwest::Client,
     base: String,
-    api_key: String,
+    headers: reqwest::header::HeaderMap,
     organization_id: Option<String>,
     toolbox_proxy_hosts: Vec<String>,
 }
@@ -252,14 +257,21 @@ impl DaytonaApi {
         if config.api_key.is_empty() {
             return Err(ProviderError::Invalid("Daytona API key is empty".into()));
         }
-        let http = reqwest::Client::builder()
+        let endpoint = endpoint_url(&config.api_url)?;
+        let authorization = format!("Bearer {}", config.api_key);
+        let mut values = vec![("authorization", authorization.as_str())];
+        if let Some(organization) = config.organization_id.as_deref() {
+            values.push((ORGANIZATION_HEADER, organization));
+        }
+        let headers = credential_headers(values)?;
+        let http = http_transport_builder()
             .timeout(config.request_timeout)
             .build()
             .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
         Ok(Self {
             http,
-            base: config.api_url.trim_end_matches('/').to_owned(),
-            api_key: config.api_key.clone(),
+            base: endpoint.as_str().trim_end_matches('/').to_owned(),
+            headers,
             organization_id: config.organization_id.clone(),
             toolbox_proxy_hosts: config.toolbox_proxy_hosts.clone(),
         })
@@ -272,11 +284,7 @@ impl DaytonaApi {
     }
 
     fn authorized(&self, builder: RequestBuilder) -> RequestBuilder {
-        let builder = builder.bearer_auth(&self.api_key);
-        match &self.organization_id {
-            Some(organization) => builder.header(ORGANIZATION_HEADER, organization),
-            None => builder,
-        }
+        builder.headers(self.headers.clone())
     }
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
@@ -297,32 +305,7 @@ impl DaytonaApi {
         builder: RequestBuilder,
         decode: impl FnOnce(Vec<u8>) -> Result<T, ProviderError> + Send,
     ) -> Result<T, ProviderError> {
-        let result = async {
-            let response = builder
-                .send()
-                .await
-                .map_err(|error| transport_error(&error))?;
-            let status = response.status();
-            tracing::Span::current().record("http.status", status.as_u16());
-            let body = response
-                .bytes()
-                .await
-                .map_err(|error| transport_error(&error))?;
-            if status.is_success() {
-                decode(body.into())
-            } else {
-                Err(status_error(status, &String::from_utf8_lossy(&body)))
-            }
-        }
-        .await;
-        let span = tracing::Span::current();
-        match &result {
-            Ok(_) => span.record("outcome", "ok"),
-            Err(error) => span
-                .record("outcome", "err")
-                .record("error.kind", error.kind()),
-        };
-        result
+        send_body(builder, decode, status_error).await
     }
 
     async fn json<T: for<'de> Deserialize<'de>>(
@@ -715,15 +698,6 @@ fn multipart_file(contents: &[u8]) -> (String, Vec<u8>) {
     body.extend_from_slice(contents);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     (format!("multipart/form-data; boundary={boundary}"), body)
-}
-
-fn transport_error(error: &reqwest::Error) -> ProviderError {
-    tracing::warn!(
-        timeout = error.is_timeout(),
-        connect = error.is_connect(),
-        "Daytona request failed at the transport level"
-    );
-    ProviderError::Unavailable
 }
 
 /// Maps an HTTP status to the closest provider-boundary failure.

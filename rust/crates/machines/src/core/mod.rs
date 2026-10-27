@@ -17,8 +17,24 @@ pub use execution::{
     ConsoleHistory, ExecSession, cleanup_before_exit, collect_success, expiration_deadline,
     now_unix_ms, owned_exec,
 };
+#[cfg(not(target_arch = "wasm32"))]
+mod files;
+#[cfg(not(target_arch = "wasm32"))]
+pub use files::{
+    exec_read_file, exec_write_file, shell_quote, snapshot_unavailable, validate_workspace,
+};
+#[cfg(not(target_arch = "wasm32"))]
+mod framing;
+#[cfg(not(target_arch = "wasm32"))]
+pub use framing::{Frame, Framing, bounded_sse, connect_message, frames, json_frames};
+#[cfg(not(target_arch = "wasm32"))]
+mod process_group;
+#[cfg(not(target_arch = "wasm32"))]
+pub use process_group::{ProcessGroup, process_group_io, process_group_session};
 mod bindings;
 mod custody;
+#[cfg(all(feature = "provider-http", not(target_arch = "wasm32")))]
+pub mod http;
 mod journal;
 mod limits;
 mod pages;
