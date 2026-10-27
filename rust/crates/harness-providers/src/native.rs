@@ -103,17 +103,15 @@ fn error_has_no_excerpt(error: &Error) -> bool {
 
 pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
-        let semantic = !matches!(&error, Error::Storage(_));
-        let (code, message) = match error {
-            Error::Storage(message) => (ErrorCode::Storage, message),
+        let (code, message, semantic) = match error {
+            Error::Invalid(message) => (ErrorCode::Invalid, message, false),
+            Error::Unauthorized(message) => (ErrorCode::Unauthorized, message, false),
+            Error::Storage(message) => (ErrorCode::Storage, message, false),
+            Error::ModelDiagnostic { code, message, custody: None } => (code, message, true),
             // A native transport failure carries no excerpt to fund: it keeps its class.
             error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
-            error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string()),
-            error => {
-                return crate::diagnostic::rejection(error, |bytes| {
-                    Ok(Some(allocation.split_off(bytes)?))
-                });
-            }
+            error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string(), true),
+            error => return error,
         };
         match allocation.split_off(message.capacity() as u64) {
             Ok(custody) if semantic => Error::ModelDiagnostic {
@@ -132,6 +130,11 @@ pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation
             }
         }
     })
+}
+
+/// Apply the shared remote-response classification, then retain its original ledger.
+pub(crate) fn model_diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
+    diagnostic(result.map_err(crate::diagnostic::rejection), allocation)
 }
 
 // Count structural tokens without constructing a second JSON graph. Quoted
@@ -247,7 +250,7 @@ pub(crate) fn generate<'a>(
                                 let retry_after = response.retry_after;
                                 // The bounded prefix, its lossy decoding and the excerpt.
                                 let mut hold = work.claim(4 * crate::EXCERPT_BYTES as u64 + 64, 4, WorkCounters::UNCHARGED)?;
-                                (diagnostic::<()>(Err(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), &mut hold).err(), retry_after)
+                                (model_diagnostic::<()>(Err(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), &mut hold).err(), retry_after)
                             }
                             Ok(response) => {
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
@@ -349,7 +352,7 @@ fn parse_response<'a>(
                 let (bytes, nodes) = shape(frame.data.as_bytes());
                 let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                 parser.allocation.absorb(&mut admission)?;
-                let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data), &mut parser.allocation)?;
+                let events = model_diagnostic(stream::parse(&mut parser.state, adapter, &frame.data), &mut parser.allocation)?;
                 let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                 drop(frame);
                 let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
@@ -377,7 +380,7 @@ fn parse_response<'a>(
             });
             diagnostic(restored, &mut parser.allocation)?;
             let Parser { state, mut allocation } = parser;
-            let events = diagnostic(stream::finish(state, adapter, dispatch_id), &mut allocation)?;
+            let events = model_diagnostic(stream::finish(state, adapter, dispatch_id), &mut allocation)?;
             let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
             let retained = events.iter().try_fold(slots, |bytes, event| {
                 bytes.checked_add(event.logical_owned_bytes()?).ok_or_else(|| invalid("provider retained capacity overflow"))

@@ -281,7 +281,7 @@ async fn exchange_count(
                     let failure =
                         crate::http_failure(response, provider.config.max_event_bytes, Some(work))
                             .await;
-                    match crate::native::diagnostic::<()>(Err(failure), &mut hold) {
+                    match crate::native::model_diagnostic::<()>(Err(failure), &mut hold) {
                         Err(failure) => (failure, retry_after),
                         Ok(()) => return Err(boundary(Some(work), "token count refusal lost")),
                     }

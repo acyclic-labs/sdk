@@ -1,11 +1,76 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness_core::model::{ModelEvent, ModelProvider};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use std::sync::atomic::AtomicUsize;
 
 const AUTH_ERROR: &str = "data: {\"type\":\"error\",\"error\":{\"code\":\"invalid_api_key\",\"type\":\"authentication_error\"}}\n\n";
 const TEXT: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+
+#[tokio::test]
+async fn credential_read_failures_never_become_terminal_model_refusals() -> Result<()> {
+    for native in [false, true] {
+        for recovery in [false, true] {
+            let (root, login, server, _) = fixture(if recovery {
+                vec![(401, String::new())]
+            } else {
+                Vec::new()
+            })?;
+            let work = NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                &CancellationToken::new(),
+            ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let transport: Arc<dyn HttpTransport> = if native {
+                Arc::new(super::native::NativeServer {
+                    inner: server.clone(),
+                    work: work.clone(),
+                    sent: AtomicUsize::new(0),
+                })
+            } else {
+                server.clone()
+            };
+            let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+                .with_codex_login(login).resolve("openai/gpt-5")?;
+            let (request, dispatch) = crate::tests::request(&provider)?;
+            let path = root.path().join("auth.json");
+            if recovery {
+                // Remove only this fixture after the actual first HTTP refusal,
+                // before recovery rereads it. No timer or competing filesystem task.
+                *server.remove_auth_on_unauthorized.lock()
+                    .map_err(|_| invalid("fixture poisoned"))? = Some(path);
+            } else {
+                std::fs::remove_file(path).map_err(|error| invalid(error.to_string()))?;
+            }
+            let result: Result<()> = if native {
+                async {
+                    let mut events = provider.generate_with_native_work(&request, dispatch, &work)?.await?;
+                    while let Some(event) = events.next().await { drop(event?); }
+                    Ok(())
+                }.await
+            } else {
+                provider.generate(&request, dispatch).try_collect::<Vec<_>>().await.map(|_| ())
+            };
+            let error = match result {
+                Err(error) => error,
+                Ok(()) => return Err(invalid("missing fixture credentials unexpectedly succeeded")),
+            };
+            assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
+            if native {
+                assert!(matches!(&error, Error::NativeDiagnostic { custody, .. }
+                    if custody.work().shares_allocation_context(&work)), "{error:?}");
+            } else {
+                assert!(matches!(&error, Error::Invalid(_)), "{error:?}");
+            }
+            drop(error);
+            let mut requests = server.requests.lock().map_err(|_| invalid("fixture poisoned"))?;
+            assert_eq!(requests.len(), usize::from(recovery));
+            requests.clear();
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_sse() -> Result<()> {

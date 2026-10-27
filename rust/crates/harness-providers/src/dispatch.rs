@@ -26,8 +26,7 @@ pub(crate) fn generate<'a>(
             let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
             let mut events = generate_encoded(provider, request, dispatch, body, auth, names);
             while let Some(event) = events.next().await { yield event?; }
-        }
-        .map(|result: Result<ModelEvent>| result.map_err(crate::diagnostic::ordinary)),
+        },
     )
 }
 
@@ -53,7 +52,7 @@ pub(crate) fn generate_encoded<'a>(
                 Err(error) => (Some(error), None),
                 Ok(response) if !(200..300).contains(&response.status) => {
                     let retry_after = response.retry_after;
-                    (Some(crate::http_failure(response, provider.config.max_event_bytes, None).await), retry_after)
+                    (Some(crate::diagnostic::rejection(crate::http_failure(response, provider.config.max_event_bytes, None).await)), retry_after)
                 }
                 Ok(response) => {
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
@@ -69,7 +68,7 @@ pub(crate) fn generate_encoded<'a>(
                                 }
                                 yield event;
                             }
-                            Err(error) => { failure = Some(error); break; }
+                            Err(error) => { failure = Some(crate::diagnostic::rejection(error)); break; }
                         }
                     }
                     (failure, None)
@@ -94,7 +93,7 @@ pub(crate) fn generate_encoded<'a>(
             Err(error)?;
         }
 
-    }.map(|result: Result<ModelEvent>| result.map_err(crate::diagnostic::ordinary)))
+    })
 }
 
 pub(crate) async fn authenticate<'a>(

@@ -18,6 +18,7 @@ const RESPONSE: &str = concat!(
 struct Server {
     replies: Mutex<VecDeque<(u16, String)>>,
     requests: Mutex<Vec<HttpRequest>>,
+    remove_auth_on_unauthorized: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl Server {
@@ -26,11 +27,16 @@ impl Server {
             .lock()
             .map_err(|_| invalid("fixture poisoned"))?
             .push(request);
-        self.replies
+        let response = self.replies
             .lock()
             .map_err(|_| invalid("fixture poisoned"))?
             .pop_front()
-            .ok_or_else(|| invalid("unexpected HTTP request"))
+            .ok_or_else(|| invalid("unexpected HTTP request"))?;
+        if response.0 == 401 && let Some(path) = self.remove_auth_on_unauthorized
+            .lock().map_err(|_| invalid("fixture poisoned"))?.take() {
+            std::fs::remove_file(path).map_err(|error| invalid(error.to_string()))?;
+        }
+        Ok(response)
     }
 }
 
@@ -95,6 +101,7 @@ fn fixture(
         Arc::new(Server {
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),
+            remove_auth_on_unauthorized: Mutex::new(None),
         }),
         token,
     ))
