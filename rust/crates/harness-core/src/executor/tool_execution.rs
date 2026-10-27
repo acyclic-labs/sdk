@@ -413,7 +413,9 @@ impl StockExecution<'_> {
         if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
             return Err(Error::Conflict("stock policy changed after binding".into()));
         }
-        let decision = policy.evaluate(invocation, scope, None)?.await?.0;
+        // Evaluation, the prompt and the approval request are charged to the
+        // call's original ledger; the prompt's custody is held while it settles.
+        let (decision, custody) = policy.evaluate(invocation, scope, self.io)?.await?;
         if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
             return Err(Error::Conflict(
                 "stock policy changed during evaluation".into(),
@@ -443,8 +445,8 @@ impl StockExecution<'_> {
                     })?,
                     &tool.definition,
                     invocation,
-                    (prompt, None),
-                    None,
+                    (prompt, custody),
+                    self.native_work(),
                     crate::interaction::ApprovalRoute::Policy,
                 )?;
                 if let Some(progress) = self
