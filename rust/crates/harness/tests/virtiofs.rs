@@ -112,7 +112,11 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
         let temporary = tempfile::tempdir()?;
         let (config, _) = runtime.block_on(config(temporary.path()))?;
         let socket = temporary.path().join("fs.sock");
-        let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
+        // Exercise the review's permissive-umask trigger in the child only;
+        // changing the test process's umask would race parallel tests.
+        let mut daemon_command = Command::new("sh");
+        daemon_command.args(["-c", "umask 000; exec \"$@\"", "acyclic-daemon-test"]);
+        daemon_command.arg(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
         daemon_command
             .arg("--socket")
             .arg(&socket)
@@ -130,6 +134,12 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(
+                std::fs::symlink_metadata(&socket)?.mode() & 0o777,
+                0o700,
+                "the socket must be owner-only even with inherited umask 000"
+            );
             let mut command = frontend(vmm, &artifacts, &socket);
             let mut guest = ProcessTree::spawn(&mut command)?;
             let output = capture(&mut guest, Duration::from_secs(20))?;

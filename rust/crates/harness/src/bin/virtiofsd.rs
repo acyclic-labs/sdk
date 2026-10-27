@@ -20,6 +20,11 @@ mod linux {
     }
 
     pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
+        // This is the standalone process's single-threaded entry, before any
+        // runtime or SDK services start. Keep the socket private at creation;
+        // changing permissions after bind would leave an admission race.
+        rustix::fs::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
+        let host_uid = rustix::process::geteuid().as_raw();
         let mut arguments = std::env::args_os().skip(1);
         let mut socket = None;
         let mut config = None;
@@ -71,7 +76,11 @@ mod linux {
                     identity: std::fs::symlink_metadata(&socket)?,
                 };
                 let connection = tokio::select! {
-                    accepted = listener.accept() => accepted?.0.into_std()?,
+                    accepted = listener.accept() => {
+                        let connection = accepted?.0;
+                        require_host_peer(&connection, host_uid)?;
+                        connection.into_std()?
+                    },
                     signal = tokio::signal::ctrl_c() => { signal?; return Ok(()); }
                 };
                 drop(listener);
@@ -98,6 +107,45 @@ mod linux {
                 transport?;
                 Ok::<_, Box<dyn std::error::Error>>(())
             })
+    }
+
+    fn require_host_peer(
+        connection: &tokio::net::UnixStream,
+        host_uid: u32,
+    ) -> std::io::Result<()> {
+        if connection.peer_cred()?.uid() != host_uid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "step=admit host peer; recovery: run the VMM under the daemon's effective host user",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn host_peer_identity_is_kernel_authenticated_before_reading_packets()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let (connection, mut peer) = tokio::net::UnixStream::pair()?;
+            let uid = rustix::process::geteuid().as_raw();
+            let capture: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../filesystem/fixtures/fuse/linux-kernel-packets.json"
+            ))?;
+            let packet: Vec<u8> = serde_json::from_value(capture["packets"][0]["request"].clone())?;
+            tokio::io::AsyncWriteExt::write_all(&mut peer, &packet).await?;
+            assert_eq!(connection.peer_cred()?.uid(), uid);
+            let denied = require_host_peer(&connection, uid ^ 1).expect_err("foreign host peer");
+            assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+            require_host_peer(&connection, uid)?;
+            let mut received = vec![0; packet.len()];
+            let mut connection = connection;
+            tokio::io::AsyncReadExt::read_exact(&mut connection, &mut received).await?;
+            assert_eq!(received, packet, "refusal must leave FUSE packets unread");
+            Ok(())
+        }
     }
 
     struct Socket {

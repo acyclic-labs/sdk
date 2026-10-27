@@ -158,6 +158,9 @@ keyring = { version = "3.6.3", optional = true, features = ["apple-native", "win
 which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "net"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
