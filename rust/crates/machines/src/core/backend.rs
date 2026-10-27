@@ -170,7 +170,13 @@ impl<D: Backend> MachinesProvider for D {
             .await
     }
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        self.raw_qualify_image(image).await
+        let qualification = self.raw_qualify_image(image.clone()).await?;
+        if qualification.image != image {
+            return Err(ProviderError::Rejected(
+                "image qualification identity mismatch; recovery: repair the raw image mapping before creating a machine".into(),
+            ));
+        }
+        Ok(qualification)
     }
 
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {

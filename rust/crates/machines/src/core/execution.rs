@@ -382,6 +382,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_admission_never_polls_a_native_request_or_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::AtomicUsize;
+        for expiry in [Some(0), None] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let start = Arc::clone(&calls);
+            let stop = Arc::clone(&calls);
+            let command = match expiry {
+                Some(expiry) => command()?.with_expiry(expiry),
+                None => command()?,
+            };
+            let output = owned_exec(
+                machine(),
+                &command,
+                expiry.is_none().then_some(0),
+                ConsoleHistory::default(),
+                ExecSession {
+                    output: stream::once(async move {
+                        start.fetch_add(1, Ordering::SeqCst);
+                        Ok(ExecOutput::ExitCode(0))
+                    })
+                    .boxed(),
+                    stop: Box::pin(async move {
+                        stop.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }),
+                },
+            );
+            assert!(matches!(output, Err(ProviderError::Rejected(_))));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn drop_stops_a_start_before_its_reply_arrives() -> Result<(), Box<dyn std::error::Error>>
     {
         let (entered, accepted) = oneshot::channel();

@@ -755,6 +755,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
+ "acyclic-native-runtime",
  "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",

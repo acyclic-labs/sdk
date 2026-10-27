@@ -14,7 +14,7 @@ pub mod usage;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use acyclic_machines::{
@@ -27,7 +27,7 @@ use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
     Backend, BackendCore, Dispatch, ExecSession, NativeBinding, NativeResource, NativeResources,
-    OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage,
+    OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage, now_unix_ms,
 };
 #[cfg(test)]
 use acyclic_machines::{
@@ -220,14 +220,6 @@ impl std::fmt::Debug for DaytonaProvider {
             .field("core", &self.core)
             .finish_non_exhaustive()
     }
-}
-
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 impl DaytonaProvider {
