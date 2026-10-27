@@ -68,7 +68,7 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
     match policy {
         FileProjectionPolicy::Reference => (),
         FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_) => {
-            if !file.descriptor().media_type().starts_with("text/") {
+            if !FileProjectionPolicy::is_text(file.descriptor().media_type()) {
                 return Err(Error::Unsupported(
                     "bounded model files must be text".into(),
                 ));
