@@ -109,7 +109,7 @@ use super::{ForkSlot, OperationRegistry, RawMachines};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     ForkFidelity, MAX_FORK_CHILDREN, MachineId, MachineState, MutationIntent, MutationOutcome,
-    NonZeroU32,
+    NonZeroU32, SettledMutation,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -125,7 +125,7 @@ impl OperationRegistry {
         interval: Duration,
         timeout: Duration,
         at: u64,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         let count = count.get();
         if count > MAX_FORK_CHILDREN {
             return Err(ProviderError::Invalid("fork count exceeds 1024".into()));

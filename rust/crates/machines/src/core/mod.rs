@@ -110,7 +110,7 @@ impl StoredOperation {
 
 #[derive(Clone, Debug)]
 pub enum Admission {
-    Replay(Box<MutationOutcome>),
+    Replay(Box<SettledMutation>),
     Fresh(OperationId),
 }
 
@@ -205,9 +205,9 @@ impl OperationRegistry {
                     return Err(ProviderError::Conflict("Machines key is bound to another intent; recovery: inspect the original key or use a fresh key for a different intent".into()));
                 }
                 return match (record.phase, record.outcome) {
-                    (OperationPhase::Succeeded, Some(_)) => Ok(Admission::Replay(Box::new(
-                        self.settled(key).await?.outcome,
-                    ))),
+                    (OperationPhase::Succeeded, Some(_)) => {
+                        Ok(Admission::Replay(Box::new(self.settled(key).await?)))
+                    }
                     (OperationPhase::Failed, _) => Err(ProviderError::Failed),
                     (OperationPhase::Cancelled, _) => Err(ProviderError::Cancelled),
                     _ => Err(ProviderError::Indeterminate(key)),
@@ -849,14 +849,15 @@ impl OperationRegistry {
             .await
     }
 
-    /// Shared dispatch ownership; adapters supply only one native action and cleanup.
+    /// Shared dispatch ownership; adapters supply one native action and cleanup.
+    /// Returns the exact terminal publication on first execution and replay.
     pub async fn apply<T, F, R>(
         &self,
         key: IdempotencyKey,
         intent: &T,
         action: F,
         rollback: R,
-    ) -> Result<MutationOutcome, ProviderError>
+    ) -> Result<SettledMutation, ProviderError>
     where
         T: Serialize + Sync,
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
@@ -873,7 +874,7 @@ impl OperationRegistry {
         key: IdempotencyKey,
         intent: &T,
         action: F,
-    ) -> Result<MutationOutcome, ProviderError>
+    ) -> Result<SettledMutation, ProviderError>
     where
         D: NativeResources + ?Sized,
         T: Serialize + Sync,
@@ -896,7 +897,7 @@ impl OperationRegistry {
         intent: &T,
         action: F,
         rollback: R,
-    ) -> Result<MutationOutcome, ProviderError>
+    ) -> Result<SettledMutation, ProviderError>
     where
         T: Serialize + Sync,
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
@@ -909,7 +910,7 @@ impl OperationRegistry {
         match action(operation).await {
             Ok(outcome) => {
                 self.complete(operation, outcome).await?;
-                Ok(self.settled(key).await?.outcome)
+                self.settled(key).await
             }
             Err(error) => {
                 let touched = self

@@ -17,6 +17,10 @@ infers success from a native resource's name or labels.
 
 `watch` and `join` follow the point projection through Streams' checked cursor.
 `SettledMutation` includes the operation, final `CommitId`, and exact result.
+Core lifecycle methods return this value directly, on first execution and replay;
+`MachinesProvider` projects its public outcome at the backend composition boundary.
+A terminal transition publishes `ops/<id>/settlement` atomically with the mutable
+operation point/log. Later deletion acknowledgments cannot change its CommitId.
 Protocol 1.2 `Join` takes the original key and operation, and returns the same
 canonical publication as a one-result server stream. Send headers immediately;
 the single stream item awaits `join_settlement`, then the stream ends. This keeps
@@ -40,7 +44,17 @@ native admission; another backend cannot observe or clean up its resources.
 Bindings live in the machine projection, without a second process-local map.
 Each acknowledged deletion releases only that resource; a late create cannot be
 lost by another cleanup pass replacing the ownership list. A successful settlement
-never yields resources for cancellation to delete.
+never yields resources for cancellation to delete. Canonical per-operation cleanup
+links identify known public projections without an account scan or another copy
+of every child in the bounded operation record. Each acknowledged deletion commits
+the debt release with Destroyed state/event or revoked checkpoint forkability.
+Links confer no deletion authority: the operation's created-resource custody and
+matching native provider/address remain authoritative. Malformed metadata retains
+its typed address without inventing a public identity. Native deletion returns
+its observation timestamp; a confirmed missing resource retains the last known
+time if the provider supplies no new one. Simulation uses its existing virtual
+clock. Accepted children already owned by an operation are not also recorded as
+external targets when they become sources in a later fork round.
 
 Adapters dispatch each native mutation once. Asynchronous native resources use
 the shared bounded `settle` observer, which repeats reads, never mutations.

@@ -9,7 +9,7 @@ impl OperationRegistry {
         machine: MachineId,
         key: IdempotencyKey,
         at: u64,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         self.apply_with(driver, key, &MutationIntent::DestroyMachine(machine), async |operation| {
             let current = self.inspect_machine(driver, machine, at).await?;
             if current.state == MachineState::Destroyed {
@@ -37,7 +37,7 @@ impl OperationRegistry {
         driver: &D,
         checkpoint: CheckpointId,
         key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         self.apply_with(
             driver,
             key,

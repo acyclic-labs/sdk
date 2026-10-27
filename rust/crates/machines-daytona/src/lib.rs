@@ -818,7 +818,7 @@ impl MachinesProvider for DaytonaProvider {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
-        outcome
+        outcome.map(|settled| settled.outcome)
     }
 
     async fn inspect_machine(
@@ -872,6 +872,7 @@ impl MachinesProvider for DaytonaProvider {
                 now_unix_ms(),
             )
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn inspect_checkpoint(
@@ -900,6 +901,7 @@ impl MachinesProvider for DaytonaProvider {
                 self.config.ready_timeout,
             )
             .await
+            .map(|settled| settled.outcome)
     }
 
     /// Native memory-and-disk VM fork. Containers are refused without an atomic
@@ -921,6 +923,7 @@ impl MachinesProvider for DaytonaProvider {
                 now_unix_ms(),
             )
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn suspend(
@@ -939,6 +942,7 @@ impl MachinesProvider for DaytonaProvider {
                 now_unix_ms(),
             )
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn wake(
@@ -957,6 +961,7 @@ impl MachinesProvider for DaytonaProvider {
                 now_unix_ms(),
             )
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn set_suspension_policy(
@@ -968,6 +973,7 @@ impl MachinesProvider for DaytonaProvider {
         self.ops
             .set_suspension_policy(self, machine, policy, key, now_unix_ms())
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn destroy_machine(
@@ -978,6 +984,7 @@ impl MachinesProvider for DaytonaProvider {
         self.ops
             .destroy_machine(self, machine, key, now_unix_ms())
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn destroy_checkpoint(
@@ -985,7 +992,10 @@ impl MachinesProvider for DaytonaProvider {
         checkpoint: CheckpointId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.ops.destroy_checkpoint(self, checkpoint, key).await
+        self.ops
+            .destroy_checkpoint(self, checkpoint, key)
+            .await
+            .map(|settled| settled.outcome)
     }
 
     async fn events(

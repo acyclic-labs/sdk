@@ -14,7 +14,7 @@ impl OperationRegistry {
         request: CreateMachine,
         interval: Duration,
         timeout: Duration,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         let key = request.idempotency_key;
         self.apply_with(driver, key, &MutationIntent::Create(request.clone()), async |operation| {
             if interval.is_zero() || timeout.is_zero() {
@@ -173,7 +173,7 @@ impl OperationRegistry {
         interval: Duration,
         timeout: Duration,
         at: u64,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         let intent = if wake {
             MutationIntent::Wake(machine)
         } else {
@@ -217,7 +217,7 @@ impl OperationRegistry {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
         at: u64,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         self.apply_with(
             driver,
             key,

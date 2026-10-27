@@ -162,6 +162,7 @@ impl SimulatedMachines {
                 Ok(outcome)
             })
             .await
+            .map(|settled| settled.outcome)
     }
 
     async fn claim(

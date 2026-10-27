@@ -15,7 +15,7 @@ impl OperationRegistry {
         interval: Duration,
         timeout: Duration,
         at: u64,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         self.apply_with(driver, key, &MutationIntent::Checkpoint(machine), async |operation| {
             let source = self.inspect_machine(driver, machine, at).await?;
             require_capability(&source, Capability::LiveCheckpoint)?;
@@ -108,7 +108,7 @@ impl OperationRegistry {
         key: IdempotencyKey,
         interval: Duration,
         timeout: Duration,
-    ) -> Result<MutationOutcome, ProviderError> {
+    ) -> Result<SettledMutation, ProviderError> {
         let count = count.get();
         if count > MAX_FORK_CHILDREN {
             return Err(ProviderError::Invalid("fork count exceeds 1024".into()));

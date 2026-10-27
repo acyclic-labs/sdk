@@ -42,7 +42,7 @@ async fn restart_preserves_success_and_exact_settlement_identity() -> TestResult
     let core = open(dir.path()).await?;
     assert_eq!(settled, core.settled(key).await?);
     assert!(
-        matches!(core.admit(key, &"suspend").await?, Admission::Replay(value) if *value == settled.outcome)
+        matches!(core.admit(key, &"suspend").await?, Admission::Replay(value) if *value == settled)
     );
     assert!(matches!(
         core.admit(key, &"wake").await,
@@ -649,7 +649,8 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
             Duration::from_secs(1),
             3
         )
-        .await?,
+        .await?
+        .outcome,
         MutationOutcome::Suspended(machine)
     );
     let settled = core.settled(key).await?;
@@ -667,7 +668,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
             4
         )
         .await?,
-        settled.outcome
+        settled
     );
     assert_eq!(core.settled(key).await?, settled);
     assert_eq!(native.mutations.load(Ordering::SeqCst), 1);
@@ -682,13 +683,15 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
             Duration::from_secs(1),
             5
         )
-        .await?,
+        .await?
+        .outcome,
         MutationOutcome::Woken(machine)
     );
     let policy_key = IdempotencyKey::new();
     assert_eq!(
         core.set_suspension_policy(&native, machine, SuspensionPolicy::Manual, policy_key, 6)
-            .await?,
+            .await?
+            .outcome,
         MutationOutcome::SuspensionPolicySet(machine, SuspensionPolicy::Manual),
     );
     assert_eq!(
@@ -907,7 +910,7 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
             10,
         )
         .await?;
-    let MutationOutcome::Checkpointed(checkpoint) = &result else {
+    let MutationOutcome::Checkpointed(checkpoint) = &result.outcome else {
         return Err("expected checkpoint".into());
     };
     assert_eq!(
@@ -1001,6 +1004,7 @@ async fn creation_reopens_exact_native_binding_and_settlement_without_dispatch()
         .create_machine(&native, request.clone(), interval, timeout)
         .await?;
     let settlement = core.settled(request.idempotency_key).await?;
+    assert_eq!(original, settlement);
     let reads = native.reads.load(Ordering::SeqCst);
     drop(core);
     let core = open(dir.path()).await?;
@@ -1090,6 +1094,7 @@ async fn shared_checkpoint_fork_keeps_order_native_addresses_and_exact_replay() 
             10,
         )
         .await?
+        .outcome
     else {
         return Err("expected checkpoint".into());
     };
@@ -1098,7 +1103,7 @@ async fn shared_checkpoint_fork_keeps_order_native_addresses_and_exact_replay() 
     let original = core
         .fork_checkpoint(&native, checkpoint.id, count, key, interval, timeout)
         .await?;
-    let MutationOutcome::Forked(children) = &original else {
+    let MutationOutcome::Forked(children) = &original.outcome else {
         return Err("expected fork".into());
     };
     for (index, child) in children.iter().enumerate() {
@@ -1242,6 +1247,7 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
             10,
         )
         .await?
+        .outcome
     else {
         return Err("expected checkpoint".into());
     };
@@ -1293,13 +1299,13 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
     assert_eq!(
         core.destroy_checkpoint(&native, checkpoint.id, checkpoint_key)
             .await?,
-        checkpoint_settlement.outcome
+        checkpoint_settlement
     );
     assert_eq!(core.settled(checkpoint_key).await?, checkpoint_settlement);
     assert_eq!(
         core.destroy_machine(&native, value.id, machine_key, 13)
             .await?,
-        machine_settlement.outcome
+        machine_settlement
     );
     assert_eq!(core.settled(machine_key).await?, machine_settlement);
     assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
@@ -1352,7 +1358,7 @@ async fn shared_native_fork_uses_reopened_addresses_and_replays_ordered_settleme
         source,
         fidelity,
         children,
-    } = &outcome
+    } = &outcome.outcome
     else {
         return Err("expected native fork".into());
     };
@@ -1424,7 +1430,7 @@ async fn bounded_admission_is_atomic_releases_refusals_and_reopens_its_count() -
     )?;
     assert_eq!(core.settled(key).await?, settled);
     assert!(
-        matches!(core.admit(key, &"three").await?, Admission::Replay(value) if *value == outcome)
+        matches!(core.admit(key, &"three").await?, Admission::Replay(value) if value.outcome == outcome)
     );
     assert!(matches!(
         core.admit(IdempotencyKey::new(), &"four").await,
