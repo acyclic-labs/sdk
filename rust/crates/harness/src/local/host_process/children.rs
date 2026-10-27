@@ -4,7 +4,8 @@
 //! sandbox; its plugin only forwards coordination calls here. This owner
 //! claims each child's next input under a physical [`HostProcessLease`], runs
 //! the native child under the parent's inherited policy, records the native
-//! resume reference and answer from its event stream, and settles the claim.
+//! resume reference, answer and whole event log from its event stream, and
+//! settles the claim.
 //! Waits resolve through the harness's shared committed reply.
 use super::*;
 use crate::Outcome;
@@ -14,6 +15,9 @@ use crate::local::host_files;
 use crate::local::host_owner::{Control, HostAction, SessionAction, TurnClaim};
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+mod tools;
+pub use tools::serve;
 
 /// Byte bound of one native event line and of a retained answer's source.
 const EVENT_LIMIT: usize = 65_536;
@@ -268,6 +272,8 @@ impl NativeChildren {
                 let Ok(event) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
+                // The whole event stream joins the conversation at settlement.
+                running.process.record_event(line.as_bytes())?;
                 let id = event
                     .get("thread_id")
                     .or_else(|| event.get("session_id"))
@@ -291,11 +297,9 @@ impl NativeChildren {
     }
 
     /// Advances every running child by one bounded pass. Returns whether any
-    /// output flowed and the references whose turn settled; each such child
-    /// has its next input started.
-    pub fn pump(&mut self) -> Result<(bool, Vec<String>)> {
+    /// output flowed; a child whose turn settled has its next input started.
+    pub fn pump(&mut self) -> Result<bool> {
         let mut progressed = false;
-        let mut settled = Vec::new();
         for reference in self.children.keys().cloned().collect::<Vec<_>>() {
             let Some(mut running) = self.children.remove(&reference) else {
                 continue;
@@ -303,10 +307,7 @@ impl NativeChildren {
             let refreshed = self.refresh(&reference, &mut running);
             progressed |= running.process.take_output_progress();
             match refreshed {
-                Ok(true) => {
-                    self.start(&reference)?;
-                    settled.push(reference);
-                }
+                Ok(true) => self.start(&reference)?,
                 Ok(false) => {
                     self.children.insert(reference, running);
                 }
@@ -316,7 +317,7 @@ impl NativeChildren {
                 }
             }
         }
-        Ok((progressed, settled))
+        Ok(progressed)
     }
 
     /// Whether the process exited and its turn settled.

@@ -1,6 +1,5 @@
 //! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
 mod install;
-mod sessions;
 #[cfg(test)]
 mod tests;
 
@@ -83,7 +82,9 @@ fn internal(args: &[String]) -> Result<bool> {
             println!("acyclic {}", env!("CARGO_PKG_VERSION"));
         }
         "__mcp" => {
-            sessions::serve(args.get(1).map_or("codex", String::as_str))?;
+            acyclic_harness::local::host_process::children::serve(
+                args.get(1).map_or("codex", String::as_str),
+            )?;
         }
         "host" => {
             acyclic_harness::local::host_process::launch::launch(

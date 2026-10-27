@@ -28,6 +28,8 @@ mod codec;
 use codec::BoundedCodec;
 mod input;
 pub use input::JsonLineReader;
+mod server;
+pub use server::{ToolCall, ToolProvider, ToolServer};
 
 /// One initialized, bounded MCP connection and its owned native process tree.
 pub struct StdioMcpTransport {

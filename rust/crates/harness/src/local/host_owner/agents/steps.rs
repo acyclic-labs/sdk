@@ -94,7 +94,11 @@ pub(super) fn apply(
                 running.claimed = Some(claim);
             }
         }
-        Event::Complete { operation, outcome } => {
+        Event::Complete {
+            operation,
+            outcome,
+            events,
+        } => {
             if session.claimed() != Some(operation) {
                 return Ok(reject(
                     session,
@@ -104,6 +108,7 @@ pub(super) fn apply(
             }
             session.settled += 1;
             session.result = Some(bounded(outcome));
+            session.events = events;
             return Ok(session.running.take());
         }
         Event::Native { session: native } => session.native = Some(native),
@@ -121,6 +126,7 @@ pub(super) fn apply(
             {
                 session.settled += 1;
                 session.result = Some(crate::Outcome::Cancelled);
+                session.events = None;
                 return Ok(session.running.take());
             }
         }

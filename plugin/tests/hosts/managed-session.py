@@ -70,7 +70,7 @@ if prompt=='recursive':
   return json.loads(result['content'][0]['text'])
  try:
   grandchild=call(1,'spawn');finished=call(2,'wait')
-  assert finished['results'][0]['outcome'].get('Succeeded') is not None,finished
+  assert finished['kind']=='answered' and finished['outcome'].get('Succeeded') is not None,finished
   merged=subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],capture_output=True,text=True)
   assert merged.returncode==0,merged.stderr
   assert (cwd/'first.txt').read_text()=='native'
@@ -151,7 +151,7 @@ if prompt=='resumed':
   print('NATIVE_FIXTURE_PASS root-launch',flush=True)
   if scenario=='lifecycle':
    failed=tool('spawn','failed','failed');finished=tool('wait','failed')
-   assert finished['status']['settled'] and finished['results'][0]['outcome'].get('Failed'),finished
+   assert finished['kind']=='answered' and finished['outcome'].get('Failed'),finished
    assert not (workspace/'failed.txt').exists(),'failed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/failed'});assert (workspace/'failed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS failed-capture-merge',flush=True)
@@ -160,7 +160,7 @@ if prompt=='resumed':
    while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)
    print('NATIVE_FIXTURE_PASS cancelled-native-ready',time.monotonic()-started,flush=True)
    waiter=submit('wait','cancelled');stopped=tool('cancel','cancelled');response(waiter)
-   assert stopped['status']['state']=='Interrupted' and stopped['status']['settled'],stopped
+   assert stopped['control']=='Interrupt' and stopped['status']['settled'],stopped
    pid=int((view/'descendant.pid').read_text());proc=pathlib.Path('/proc')/str(pid)/'stat'
    assert not proc.exists() or proc.read_text().split()[2]=='Z','descendant still running after cancel'
    assert not (workspace/'cancelled.txt').exists(),'cancelled child write leaked before merge'
@@ -168,13 +168,13 @@ if prompt=='resumed':
    print('NATIVE_FIXTURE_PASS cancelled-capture-merge',flush=True)
    blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd']);deadline=time.monotonic()+2
    while not (view/'ready').exists():assert time.monotonic()<deadline,'blocked input readiness';time.sleep(.01)
-   stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['status']['state']=='Interrupted',stopped
+   stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['control']=='Interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
    recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
    assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
    error=pathlib.Path(recursive['cwd'])/'.volumes/scratch/native-error.txt'
-   assert finished['results'][0]['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
+   assert finished['kind']=='answered' and finished['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
    assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)
@@ -187,7 +187,7 @@ if prompt=='resumed':
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS resume-recreated-view-merge',flush=True)
-   archived=tool('archive','retained');assert archived['status']['state']=='Archived',archived
+   archived=tool('archive','retained');assert archived['control']=='Archive',archived
   close_bridge();stop_owner()
   print(json.dumps({'suite':'managed-native-session-'+scenario,'native_agent_fixture':True,'real_codex_workspace_write_sandbox':True,'model_calls':0,'cwd_and_discovery':True,'outside_denied':True,'seconds':time.monotonic()-started}),flush=True)
  except BaseException:

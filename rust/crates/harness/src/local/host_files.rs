@@ -1,13 +1,23 @@
-//! A workspace-local file projection of ordinary harness command files.
+//! Drives a harness through files, for hosts whose sandbox admits only their
+//! workspace (no network, no sockets).
 //!
-//! Only the trusted `GraphCoder` owner opens state. Sandboxed clients discover
-//! this already-running endpoint and write within their admitted workspace.
+//! Only the trusted `GraphCoder` owner opens state. A sandboxed client drops
+//! one request file under `requests/`: that file is the record, keyed by its
+//! operation, and every effect it causes is an agent commit keyed by the same
+//! operation. The owner keeps one latest-status file per agent under
+//! `status/<agent>/`, holding the replies to that agent's requests whose files
+//! are still present. A client awaits its reply on one process-wide watcher
+//! and withdraws its request once read; the owner then drops the reply. There
+//! is no per-request result file, watcher or deadline: a request waits until
+//! it is answered or its owner exits.
 use super::host_owner::{HostAction, HostWorkspaceOwner};
 use super::*;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{io::Read as _, time::Duration};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read as _;
+use std::sync::{Mutex, mpsc};
 
 #[cfg(all(test, not(loom)))]
 mod tests;
@@ -15,6 +25,10 @@ mod tests;
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
 const MAXIMUM_BYTES: u64 = 65_536;
+/// Bound of one agent's status file: the replies of its in-flight requests.
+const STATUS_BYTES: u64 = 16 * MAXIMUM_BYTES;
+/// Status key of requests that name no agent yet.
+const WORKSPACE: &str = "workspace";
 
 // Both endpoints observe their own reads. Admit only events that can change
 // the projection, so opening a file cannot schedule another scan of itself.
@@ -47,56 +61,166 @@ pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
     discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
 }
 
+/// The status file `action`'s reply appears in: its agent's, else the
+/// workspace's.
+fn status_key(action: &HostAction) -> String {
+    let agent = match action {
+        #[cfg(feature = "test-support")]
+        HostAction::ResourceProbe { task, .. } => Some(task),
+        HostAction::Sessions { parent } | HostAction::Session { parent, .. } => Some(parent),
+        HostAction::Reopen { task }
+        | HostAction::Capture { task }
+        | HostAction::Fs { task, .. }
+        | HostAction::Agents { task } => Some(task),
+        HostAction::Hook { .. } | HostAction::Locate { .. } | HostAction::Open { .. } => None,
+    };
+    agent.map_or_else(|| WORKSPACE.into(), |agent| agent.id().to_string())
+}
+
+const NO_OWNER: &str = "no running GraphCoder workspace owner; start graphcoder --host-workspace outside the host sandbox";
+
+enum Wake {
+    Changed,
+    OwnerGone,
+}
+
+/// This process's one wait for replies from one running owner: a watcher
+/// over the status directories it awaits and a thread that wakes it when the
+/// owner's lock is released. Requests from one process wait in turn; the
+/// owner serves requests one at a time regardless.
+struct Replies {
+    directory: PathBuf,
+    watcher: notify::RecommendedWatcher,
+    watched: BTreeSet<PathBuf>,
+    wakes: mpsc::Receiver<Wake>,
+    gone: bool,
+}
+
+static REPLIES: Mutex<Option<Replies>> = Mutex::new(None);
+
+impl Replies {
+    fn open(directory: &Path) -> Result<Self> {
+        let root = acyclic_fs::hold_root(directory).map_err(native_file_error)?;
+        let open = || {
+            root.open_file(Path::new("owner.lock"), false)
+                .map_err(native_file_error)
+        };
+        let (lock, probe) = (open()?, open()?);
+        // A shared lock is free exactly when no owner holds its exclusive one.
+        if acyclic_native_runtime::FileLock::try_acquire(
+            probe,
+            acyclic_native_runtime::FileLockMode::Shared,
+        )
+        .is_ok()
+        {
+            return Err(Error::NotFound(NO_OWNER.into()));
+        }
+        let (wake, wakes) = mpsc::sync_channel(1);
+        let changed = wake.clone();
+        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if projection_changed(&event) {
+                let _ = changed.try_send(Wake::Changed);
+            }
+        })
+        .map_err(storage)?;
+        std::thread::Builder::new()
+            .name("acyclic-host-files-owner".into())
+            .spawn(move || {
+                // Blocks until the owner's exclusive lock is released.
+                drop(acyclic_native_runtime::FileLock::acquire(
+                    lock,
+                    acyclic_native_runtime::FileLockMode::Shared,
+                ));
+                let _ = wake.send(Wake::OwnerGone);
+            })
+            .map_err(storage)?;
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            watcher,
+            watched: BTreeSet::new(),
+            wakes,
+            gone: false,
+        })
+    }
+
+    fn watch(&mut self, status: &Path) -> Result<()> {
+        if self.watched.insert(status.to_path_buf()) {
+            self.watcher
+                .watch(status, RecursiveMode::NonRecursive)
+                .map_err(storage)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the owner has not been seen to exit; consumes pending wakes,
+    /// after which the awaited status is read afresh.
+    fn live(&mut self) -> bool {
+        while let Ok(wake) = self.wakes.try_recv() {
+            self.gone = self.gone || matches!(wake, Wake::OwnerGone);
+        }
+        !self.gone
+    }
+
+    /// Blocks until a status changes; false once the owner exited.
+    fn changed(&mut self) -> bool {
+        self.gone = self.gone || !matches!(self.wakes.recv(), Ok(Wake::Changed));
+        !self.gone
+    }
+}
+
 /// Contacts an existing harness. Does not select state, acquire a lifecycle
 /// lock, publish an executable identity, or start any service or agent.
 pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
     let (directory, endpoint) = discover(&cwd)?;
     let operation = OperationId::new();
+    let key = status_key(&action);
     let request = Request {
         session: endpoint.session,
         operation,
         action,
     };
-    let result_path = directory.join("results").join(format!("{operation}.json"));
-    let request_path = directory.join("requests").join(format!("{operation}.json"));
-    let (wake, events) = std::sync::mpsc::sync_channel(1);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if !projection_changed(&event) {
-            return;
-        }
-        let _ = wake.try_send(event.map(|_| ()));
-    })
-    .map_err(storage)?;
-    watcher
-        .watch(&directory.join("results"), RecursiveMode::NonRecursive)
-        .map_err(storage)?;
     let bytes = serde_json::to_vec(&request).map_err(storage)?;
     if bytes.len() as u64 > MAXIMUM_BYTES {
         return Err(Error::Invalid(
             "native host request exceeds file bound".into(),
         ));
     }
+    let mut replies = REPLIES
+        .lock()
+        .map_err(|_| Error::Conflict("native reply wait poisoned".into()))?;
+    if replies
+        .as_mut()
+        .is_none_or(|replies| !replies.live() || replies.directory != directory)
+    {
+        *replies = Some(Replies::open(&directory)?);
+    }
+    let replies = replies
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("native reply wait absent".into()))?;
+    let status = directory.join("status").join(&key);
+    acyclic_fs::hold_root(&directory)
+        .map_err(native_file_error)?
+        .create_directories(&Path::new("status").join(&key))
+        .map_err(native_file_error)?;
+    // Watch before publishing, so the reply cannot land unobserved.
+    replies.watch(&status)?;
+    let request_path = directory.join("requests").join(format!("{operation}.json"));
     immutable(&request_path, &bytes)?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
     let result = loop {
-        match regular_bytes(&result_path) {
-            Ok(bytes) => break serde_json::from_slice::<Value>(&bytes).map_err(storage)?,
-            Err(Error::NotFound(_)) => {}
-            Err(error) => return Err(error),
+        if let Some(result) = reply(&status, operation)? {
+            break result;
         }
-        let remaining = deadline
-            .checked_duration_since(std::time::Instant::now())
-            .ok_or_else(|| Error::Indeterminate(operation))?;
-        events
-            .recv_timeout(remaining)
-            .map_err(|_| Error::Indeterminate(operation))?
-            .map_err(storage)?;
+        if !replies.changed() {
+            // Withdrawn, so no later owner serves a request nobody awaits.
+            // Whatever the exited owner committed stays keyed by `operation`.
+            remove_projection(&request_path)?;
+            return Err(Error::Indeterminate(operation));
+        }
     };
-    // These are disposable projections. Every effect is an agent commit keyed
-    // by this request's operation, so the reply is the only state they hold.
+    // Withdrawing the request retires its reply and any saved result. Every
+    // effect is an agent commit keyed by this operation.
     remove_projection(&request_path)?;
-    remove_projection(&result_path)?;
     if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
         return Err(Error::Indeterminate(operation));
     }
@@ -109,6 +233,52 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
                 .into(),
         )
     })
+}
+
+/// The newest status file under `status`, by its sequence.
+fn latest(status: &Path) -> Result<Option<(u64, PathBuf)>> {
+    let mut newest: Option<(u64, PathBuf)> = None;
+    for entry in std::fs::read_dir(status).map_err(storage)? {
+        let path = entry.map_err(storage)?.path();
+        let sequence = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|_| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .and_then(|stem| stem.parse::<u64>().ok());
+        if let Some(sequence) = sequence
+            && newest.as_ref().is_none_or(|(latest, _)| *latest < sequence)
+        {
+            newest = Some((sequence, path));
+        }
+    }
+    Ok(newest)
+}
+
+/// `operation`'s reply in the agent's latest status, once published.
+fn reply(status: &Path, operation: OperationId) -> Result<Option<Value>> {
+    loop {
+        let Some((_, path)) = latest(status)? else {
+            return Ok(None);
+        };
+        let bytes = match bounded_bytes(&path, STATUS_BYTES) {
+            Ok(bytes) => bytes,
+            // Superseded between listing and reading: its successor exists.
+            Err(Error::NotFound(_)) => continue,
+            Err(error) => return Err(error),
+        };
+        let mut published: Status = serde_json::from_slice(&bytes).map_err(storage)?;
+        return Ok(published.replies.remove(&operation));
+    }
+}
+
+/// One agent's latest status: the replies of its requests still present.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Status {
+    replies: BTreeMap<OperationId, Value>,
 }
 
 fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
@@ -131,7 +301,7 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
             Err(error) => return Err(error),
         }
     }
-    Err(Error::NotFound("no running GraphCoder workspace owner; start graphcoder --host-workspace outside the host sandbox".into()))
+    Err(Error::NotFound(NO_OWNER.into()))
 }
 
 /// Runs only in the trusted `GraphCoder` process, outside host sandboxes.
@@ -166,7 +336,7 @@ pub async fn serve_until(
         .create_directories(Path::new("requests"))
         .map_err(storage)?;
     directory
-        .create_directories(Path::new("results"))
+        .create_directories(Path::new("status"))
         .map_err(storage)?;
     let session = uuid::Uuid::from_bytes(
         context::publication_operation(
@@ -211,30 +381,50 @@ pub async fn serve_until(
     result
 }
 
+/// The owner's published statuses and which status holds each reply.
+#[derive(Default)]
+struct Published {
+    statuses: BTreeMap<String, (u64, Status)>,
+    answered: BTreeMap<OperationId, String>,
+}
+
 async fn serve_requests(
     owner: &mut HostWorkspaceOwner,
     directory: &Path,
     session: uuid::Uuid,
     changed: &tokio::sync::Notify,
 ) -> Result<()> {
+    let mut published = Published::default();
     loop {
         let waiting = changed.notified();
+        let mut present = BTreeSet::new();
+        let mut changed_keys = BTreeSet::new();
         for entry in std::fs::read_dir(directory.join("requests")).map_err(storage)? {
-            let entry = entry.map_err(storage)?;
-            if entry
-                .path()
-                .extension()
-                .is_none_or(|extension| extension != "json")
-            {
+            let path = entry.map_err(storage)?.path();
+            let Some(operation) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|_| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "json")
+                })
+                .and_then(|stem| {
+                    OperationId::parse(stem)
+                        .ok()
+                        .filter(|operation| operation.to_string() == stem)
+                })
+            else {
+                continue;
+            };
+            present.insert(operation);
+            if published.answered.contains_key(&operation) {
                 continue;
             }
             // Request projections are writable by native tools. Invalid input
             // must not terminate the trusted owner or dispatch another action.
-            let request = regular_bytes(&entry.path()).and_then(|bytes| {
+            let request = regular_bytes(&path).and_then(|bytes| {
                 let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
-                if request.session != session
-                    || entry.file_name() != format!("{}.json", request.operation).as_str()
-                {
+                if request.session != session || request.operation != operation {
                     return Err(Error::Unauthorized(
                         "native request identity changed".into(),
                     ));
@@ -244,31 +434,75 @@ async fn serve_requests(
             let Ok(request) = request else {
                 // Held-root removal unlinks the projection itself, never a
                 // symlink target. Clients keep their durable command records.
-                let _ = remove_projection(&entry.path());
+                let _ = remove_projection(&path);
+                present.remove(&operation);
                 continue;
             };
-            process_request(owner, directory, request).await?;
+            let key = status_key(&request.action);
+            let status = published.statuses.entry(key.clone()).or_default();
+            let size = serde_json::to_vec(&status.1).map_err(storage)?.len() as u64;
+            if size + MAXIMUM_BYTES > STATUS_BYTES {
+                // Full of unread replies: dispatch once a client withdraws.
+                continue;
+            }
+            let outcome = owner.dispatch(request.operation, request.action).await;
+            let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+            let reply = serde_json::from_slice(&bytes).map_err(storage)?;
+            status.1.replies.insert(operation, reply);
+            published.answered.insert(operation, key.clone());
+            changed_keys.insert(key);
+        }
+        // A withdrawn request's reply is read: drop it from its status.
+        for (operation, key) in published
+            .answered
+            .extract_if(.., |operation, _| !present.contains(operation))
+        {
+            if let Some((_, status)) = published.statuses.get_mut(&key) {
+                status.replies.remove(&operation);
+            }
+            changed_keys.insert(key);
+        }
+        for key in changed_keys {
+            if let Some((sequence, status)) = published.statuses.get_mut(&key) {
+                *sequence = publish_status(directory, &key, *sequence + 1, status)?;
+            }
+            if published
+                .statuses
+                .get(&key)
+                .is_some_and(|(_, status)| status.replies.is_empty())
+            {
+                published.statuses.remove(&key);
+            }
         }
         waiting.await;
     }
 }
 
-async fn process_request(
-    owner: &mut HostWorkspaceOwner,
-    directory: &Path,
-    request: Request,
-) -> Result<()> {
-    let result_path = directory
-        .join("results")
-        .join(format!("{}.json", request.operation));
-    match regular_bytes(&result_path) {
-        Ok(_) => return Ok(()),
-        Err(Error::NotFound(_)) => {}
-        Err(error) => return Err(error),
+/// Publishes `status` as `key`'s latest and removes every earlier one,
+/// returning the sequence it took.
+fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -> Result<u64> {
+    let root = acyclic_fs::hold_root(directory)
+        .map_err(native_file_error)?
+        .create_directories(&Path::new("status").join(key))
+        .map_err(native_file_error)?;
+    // A previous owner's statuses may remain: continue past them.
+    let floor = latest(root.path())?.map_or(0, |(latest, _)| latest);
+    let sequence = sequence.max(floor + 1);
+    let bytes = serde_json::to_vec(status).map_err(storage)?;
+    if bytes.len() as u64 > STATUS_BYTES {
+        return Err(Error::Invalid("native status exceeds its bound".into()));
     }
-    let outcome = owner.dispatch(request.operation, request.action).await;
-    let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-    immutable(&result_path, &bytes)
+    let leaf = format!("{sequence}.json");
+    root.publish_immutable(Path::new(&leaf), &bytes)
+        .map_err(native_file_error)?;
+    for entry in std::fs::read_dir(root.path()).map_err(storage)? {
+        let earlier = entry.map_err(storage)?.file_name();
+        if earlier != leaf.as_str() {
+            root.remove_file(Path::new(&earlier))
+                .map_err(native_file_error)?;
+        }
+    }
+    Ok(sequence)
 }
 
 fn remove_projection(path: &Path) -> Result<()> {
@@ -277,19 +511,23 @@ fn remove_projection(path: &Path) -> Result<()> {
 }
 
 fn regular_bytes(path: &Path) -> Result<Vec<u8>> {
+    bounded_bytes(path, MAXIMUM_BYTES)
+}
+
+fn bounded_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let (parent, leaf) = projection_parent(path)?;
     let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
-    if !metadata.is_file() || metadata.len() > MAXIMUM_BYTES {
+    if !metadata.is_file() || metadata.len() > maximum {
         return Err(Error::Invalid(
             "native file projection must be a bounded regular file".into(),
         ));
     }
     let mut bytes = Vec::new();
-    file.take(MAXIMUM_BYTES + 1)
+    file.take(maximum + 1)
         .read_to_end(&mut bytes)
         .map_err(storage)?;
-    if bytes.len() as u64 > MAXIMUM_BYTES {
+    if bytes.len() as u64 > maximum {
         return Err(Error::Invalid(
             "native file projection grew beyond its bound".into(),
         ));

@@ -74,7 +74,7 @@ def inside(config):
     assert rejected.get('continue') is False, rejected
     external = Path(cfg['external_data'])
     assert not list((external / 'requests').iterdir()), 'negative published a request outside'
-    assert not list((external / 'results').iterdir()), 'negative published a result outside'
+    assert not (external / 'status').exists(), 'negative awaited a status outside'
     result = dict(host=cfg['host'], commands=True, captured=True, merged=True,
                   discarded=True, hook_command=True, external_data_rejected=True,
                   outside_write_blocked=blocked, model_calls=0)
@@ -168,7 +168,8 @@ def main():
                                               payload=json.dumps(value)))
 
                 parent = action({'kind': 'open', 'host': args.host, 'session': 'sandbox-commands'})
-                child = action({'kind': 'fork', 'parent': parent['task'], 'reference': 'sandbox-child'})
+                child = action({'kind': 'session', 'parent': parent['task'], 'reference': 'sandbox-child',
+                                'action': {'kind': 'spawn', 'prompt': 'sandbox'}})
                 view = Path(child['cwd'])
                 env['ACYCLIC_TASK'] = parent['task']
                 negative = workspace / '.acyclic-sdk/sandbox-negative'
@@ -176,14 +177,13 @@ def main():
                 external = root / 'legacy-data'
                 external.mkdir()
                 (external / 'requests').mkdir()
-                (external / 'results').mkdir()
                 # Descriptor must name the negative workspace; only its location is wrong.
                 endpoint = json.loads(descriptor.read_text())
                 endpoint['workspace'] = str(negative)
                 (external / 'owner.json').write_text(json.dumps(endpoint))
                 (negative / '.acyclic-sdk').mkdir()
                 (negative / '.acyclic-sdk/host-files').symlink_to(external, target_is_directory=True)
-                # Count only request/result projections, not the descriptor itself.
+                # Count only request/status projections, not the descriptor itself.
                 config = workspace / 'sandbox-config.json'
                 config.write_text(json.dumps(dict(host=args.host, workspace=str(workspace), view=str(view),
                     binary=args.binary, parent=parent['task'], child=child['task'], negative=str(negative),

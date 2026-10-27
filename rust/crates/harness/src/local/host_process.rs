@@ -10,6 +10,13 @@ use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTree
 pub mod children;
 pub mod launch;
 
+/// The running turn's native event log, in its custody directory.
+const EVENT_LOG: &str = "events.jsonl";
+/// Bound of one turn's native event log, its omission marker included.
+pub const EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
+/// The line ending a log whose later events exceeded its bound.
+const EVENTS_OMITTED: &[u8] = b"{\"type\":\"acyclic.events_omitted\"}\n";
+
 /// Runs the interactive native root with its inherited console and process
 /// group. Native hosts retain terminal/job control; managed children use the
 /// separate, custodied session API below. Turn-end hooks capture root turns.
@@ -56,7 +63,7 @@ pub struct HostProcessLease {
     view: PathBuf,
     custody: Arc<ProcessCustody>,
     _ownership: FileLock,
-    _root: acyclic_fs::HeldRoot,
+    root: acyclic_fs::HeldRoot,
 }
 
 /// Physical proof held until capture and result publication both finish.
@@ -145,7 +152,7 @@ impl HostProcessLease {
             view,
             custody,
             _ownership: ownership,
-            _root: root,
+            root,
         })
     }
 
@@ -161,6 +168,7 @@ impl HostProcessLease {
             lease: Some(self),
             work: work.clone(),
             output_progress: false,
+            events: None,
         })
     }
 
@@ -176,6 +184,30 @@ impl HostProcessLease {
 }
 
 impl QuiescentHostProcess {
+    /// The settled turn's native event log, which its process recorded.
+    pub(crate) fn events(&self) -> Result<Option<Vec<u8>>> {
+        let file = match self.0.root.open_file(Path::new(EVENT_LOG), false) {
+            Ok(file) => file,
+            Err(acyclic_fs::demand::DemandError::Absent) => return Ok(None),
+            Err(acyclic_fs::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(storage(error)),
+        };
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(file, EVENT_LOG_BYTES + 1),
+            &mut bytes,
+        )
+        .map_err(storage)?;
+        if bytes.len() as u64 > EVENT_LOG_BYTES {
+            return Err(Error::Invalid("native event log exceeds its bound".into()));
+        }
+        Ok(Some(bytes))
+    }
+
     /// Refuses applying one task's physical proof to another view or claim.
     pub fn verify(&self, task: &AgentPath, view: &Path) -> Result<()> {
         if self.0.task != *task || self.0.view != view {
@@ -194,6 +226,14 @@ pub struct HostSessionProcess {
     lease: Option<HostProcessLease>,
     work: acyclic_fs::NativeMaterializationWork,
     output_progress: bool,
+    events: Option<EventLog>,
+}
+
+/// The running turn's native event log and the bytes it holds.
+struct EventLog {
+    file: std::fs::File,
+    written: u64,
+    omitted: bool,
 }
 
 fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
@@ -218,9 +258,49 @@ impl HostSessionProcess {
         command
             .env("ACYCLIC_WORKSPACE", &lease.view)
             .env("ACYCLIC_TASK", lease.task.to_string());
+        // Each turn's log starts empty; settlement reads the one it wrote.
+        match lease.root.remove_file(Path::new(EVENT_LOG)) {
+            Ok(()) | Err(acyclic_fs::demand::DemandError::Absent) => {}
+            Err(acyclic_fs::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(storage(error)),
+        }
+        let file = lease
+            .root
+            .open_file(Path::new(EVENT_LOG), true)
+            .map_err(storage)?;
+        self.events = Some(EventLog {
+            file,
+            written: 0,
+            omitted: false,
+        });
         self.tree
             .spawn(command, Some(&lease.custody))
             .map_err(storage)
+    }
+
+    /// Appends one native event line to the turn's log, which its settlement
+    /// appends to the conversation. Events past the bound are omitted, once
+    /// marked.
+    pub fn record_event(&mut self, line: &[u8]) -> Result<()> {
+        let log = self
+            .events
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("native event log absent before spawn".into()))?;
+        if log.omitted {
+            return Ok(());
+        }
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        if log.written + line.len() as u64 + 1 + EVENTS_OMITTED.len() as u64 <= EVENT_LOG_BYTES {
+            bytes.extend_from_slice(line);
+            bytes.push(b'\n');
+        } else {
+            log.omitted = true;
+            bytes.extend_from_slice(EVENTS_OMITTED);
+        }
+        std::io::Write::write_all(&mut log.file, &bytes).map_err(storage)?;
+        log.written += bytes.len() as u64;
+        Ok(())
     }
 
     /// Queues a prompt on the originally funded native stdin owner.
@@ -321,6 +401,8 @@ impl HostSessionProcess {
                 "step=release native process: containment remains active; recovery: reopen the original task through acyclic host".into(),
             ));
         }
+        // Settlement reads the closed log under the lease this releases.
+        self.events.take();
         self.lease.take();
         Ok(())
     }
