@@ -353,8 +353,7 @@ pub(crate) fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
 }
 
 pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
-    if request.conditions.is_empty()
-        || request.conditions.len() > MAX_ITEMS
+    if request.conditions.len() > MAX_ITEMS
         || request.mutations.is_empty()
         || request.mutations.len() > MAX_ITEMS
     {

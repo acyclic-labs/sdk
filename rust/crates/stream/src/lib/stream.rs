@@ -71,14 +71,40 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         if_tail: Option<u64>,
         idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
-        self.provider
-            .append(AppendRequest {
-                path: self.path.clone(),
-                records,
-                if_tail,
-                idempotency_key: Some(idempotency_key),
-            })
-            .await
+        let count = u64::try_from(records.len()).map_err(|_| StreamError::LimitExceeded)?;
+        let conditions = if_tail.into_iter().map(|expected| CommitCondition::Tail {
+            path: self.path.clone(), expected,
+        }).collect();
+        match self.provider.commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions,
+            mutations: vec![CommitMutation::Append { path: self.path.clone(), records }],
+            idempotency_key,
+        }).await? {
+            CommitOutcome::Committed(receipt) => {
+                let [range] = receipt.appends.as_slice() else {
+                    return Err(StreamError::InvalidResponse);
+                };
+                if !receipt.forks.is_empty() || range.path != self.path
+                    || range.start.checked_add(count) != Some(range.tail)
+                    || if_tail.is_some_and(|expected| range.start != expected)
+                {
+                    return Err(StreamError::InvalidResponse);
+                }
+                Ok(AppendOutcome::Committed(AppendReceipt {
+                    start: range.start, end: range.tail, tail: range.tail,
+                    commit_id: receipt.commit_id,
+                }))
+            }
+            CommitOutcome::Conflict(conflicts) => match conflicts.as_slice() {
+                [CommitConflict::Tail { path, expected, actual }]
+                    if path == &self.path && if_tail == Some(*expected) =>
+                {
+                    Ok(AppendOutcome::TailConflict { actual_tail: actual.unwrap_or(0) })
+                }
+                _ => Err(StreamError::InvalidResponse),
+            },
+        }
     }
 
     /// Forks the current or selected retained prefix.

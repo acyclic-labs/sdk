@@ -180,6 +180,34 @@ mod replay_tests {
     }
 
     #[tokio::test]
+    async fn append_helper_uses_one_canonical_commit_and_keeps_conflicts_unspent() {
+        let provider = Arc::new(MemoryStream::default());
+        let stream = Stream::new(provider.clone(), "append-helper").unwrap();
+        let first_key = IdempotencyKey::new(b"first".as_slice()).unwrap();
+        let first = stream.append("first", first_key.clone()).await.unwrap();
+        assert_eq!(stream.append("first", first_key.clone()).await.unwrap(), first);
+        let observed = provider.inspect_idempotency(first_key).await.unwrap().unwrap();
+        let IdempotencyOutcome::Commit(fact) = observed.outcome else {
+            panic!("append must use the canonical commit recovery family");
+        };
+        let [CommittedMutation::Append(append)] = fact.mutations.as_slice() else {
+            panic!("expected one append fact");
+        };
+        assert_eq!(append.path, *stream.path());
+        assert_eq!((append.start, append.tail), (0, 1));
+        assert_eq!(append.records[0].value.as_ref(), b"first");
+        let key = IdempotencyKey::new(b"retry".as_slice()).unwrap();
+        assert_eq!(stream.append_at("second", 0, key.clone()).await.unwrap(),
+            AppendOutcome::TailConflict { actual_tail: 1 });
+        assert!(provider.inspect_idempotency(key.clone()).await.unwrap().is_none());
+        let accepted = stream.append_at("second", 1, key.clone()).await.unwrap();
+        assert_eq!(stream.append_at("second", 1, key.clone()).await.unwrap(), accepted);
+        assert_eq!(stream.append_at("changed", 1, key).await,
+            Err(StreamError::IdempotencyMismatch));
+        assert_eq!(provider.head(stream.path().clone()).await.unwrap().tail, 2);
+    }
+
+    #[tokio::test]
     async fn replay_crosses_pages_in_order_from_any_cursor() {
         let stream = filled(MemoryStream::new(MemoryLimits::default()), 2_500).await;
         let mut replay = stream.replay(0);
