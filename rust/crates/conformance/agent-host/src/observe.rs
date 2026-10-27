@@ -170,3 +170,5 @@ impl StreamProvider for Observed {
         self.io(self.inner.read_commit(id)).await
     }
 }
+
+impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observed {}

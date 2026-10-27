@@ -78,7 +78,8 @@ impl AgentApprovalPolicy {
         })
     }
 
-    async fn request(&self, files: &dyn ApprovalFiles, id: &str) -> Result<Vec<u8>> {
+    /// The immutable request file of approval `id`.
+    pub(crate) async fn request(&self, files: &dyn ApprovalFiles, id: &str) -> Result<Vec<u8>> {
         files
             .read(&request_path(id), self.limits.file_bytes)
             .await?

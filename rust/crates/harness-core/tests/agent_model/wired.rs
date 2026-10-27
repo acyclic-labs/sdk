@@ -299,9 +299,9 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
 
 /// A stream that refuses, and counts, every call.
 #[derive(Default)]
-pub(super) struct Refusing {
+struct Refusing {
     claims: acyclic_stream::OperationClaims,
-    pub(super) calls: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
 }
 
 impl Refusing {

@@ -1,25 +1,25 @@
 //! The admitted root producer: one placement builds both the agents and their
-//! volumes, a root's fresh volumes and adoption are one commit prepared
-//! without IO, and an admission that does not cover it is refused before any.
+//! volumes, and a root's fresh volumes and adoption are one commit prepared
+//! without IO. Refusal vectors run for every host in the agent-host suite.
 
-use super::{Result, id, intent, wired::Refusing};
+use super::{Result, id, intent};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_core::{
     OperationId,
     agent::*,
-    contract::{Capabilities, capability::INTERACTION_ROUTE},
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityRoot, Scope},
+    conversation::{VolumeClass, VolumeOwner, VolumeRef},
+    core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
     filesystem::{
         PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
-        hosting::{Bound, Placement, Prepared, RootRequest, Turns, VerifiedCaller},
+        attestation::{Attempt, Attestation, AttestedProvider, Attestor},
+        hosting::{Bound, Placement, Prepared, RootRequest, Turns},
     },
     model::ModelContent,
     resources::ProviderRef,
 };
-use acyclic_stream::{BoxProviderFuture, MemoryStream};
+use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamError, StreamProvider};
 use std::sync::{Arc, atomic::Ordering};
 
 /// Never builds an executor: these tests only create roots.
@@ -61,6 +61,7 @@ fn placement<P>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
         capabilities: EmbeddedCapabilities::MEMORY,
         provider: provider()?,
         within: ActorReference::new(b"account", b"agents", b"owner")?,
+        attestor: None,
     })
 }
 
@@ -144,158 +145,191 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
     Ok(())
 }
 
-/// How an otherwise covering admission is spoiled after issue.
-#[derive(Clone, Copy, Debug)]
-enum Spoil {
-    Nothing,
-    Expired,
-    Revoked,
+/// A provider that admits a write only with valid evidence: it counts
+/// publications, records each presented attestation, and can lose the
+/// first commit's acknowledgement before applying it.
+#[derive(Default)]
+struct Evidence {
+    inner: MemoryStream,
+    valid: bool,
+    unknown_first: std::sync::atomic::AtomicBool,
+    presented: std::sync::Mutex<Vec<Attestation>>,
+    published: std::sync::atomic::AtomicUsize,
+}
+
+impl AttestedProvider for Evidence {
+    fn bind(
+        &self,
+        attestation: &Attestation,
+    ) -> std::result::Result<Option<Arc<dyn StreamProvider>>, StreamError> {
+        self.presented
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .push(attestation.clone());
+        if !self.valid || attestation.0.len() != 32 {
+            return Err(StreamError::AccessDenied);
+        }
+        Ok(None)
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamProvider for Evidence {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+        self.inner.inspect_idempotency(key).await
+    }
+    async fn tail(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> std::result::Result<u64, StreamError> {
+        self.inner.tail(path).await
+    }
+    async fn bounds(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
+        self.inner.bounds(path).await
+    }
+    async fn append(
+        &self,
+        request: acyclic_stream::AppendRequest,
+    ) -> std::result::Result<acyclic_stream::AppendOutcome, StreamError> {
+        self.published.fetch_add(1, Ordering::SeqCst);
+        self.inner.append(request).await
+    }
+    async fn fork(
+        &self,
+        request: acyclic_stream::ForkRequest,
+    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
+        self.published.fetch_add(1, Ordering::SeqCst);
+        self.inner.fork(request).await
+    }
+    async fn read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+    ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+        self.inner.read(request).await
+    }
+    async fn follow(
+        &self,
+        path: acyclic_stream::StreamPath,
+        from: u64,
+        filter: acyclic_stream::FollowFilter,
+    ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+        self.inner.follow(path, from, filter).await
+    }
+    async fn commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+    ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
+        if self.unknown_first.swap(false, Ordering::SeqCst) {
+            return Err(StreamError::Unavailable);
+        }
+        self.published.fetch_add(1, Ordering::SeqCst);
+        self.inner.commit(request).await
+    }
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
+        self.inner.read_commit(id).await
+    }
+}
+
+/// Attests each digest with itself, recording every request for evidence.
+#[derive(Default)]
+struct Digests(std::sync::Mutex<Vec<[u8; 32]>>);
+
+impl Attestor for Digests {
+    fn attest<'a>(
+        &'a self,
+        attempt: Attempt<'a>,
+    ) -> BoxProviderFuture<'a, std::result::Result<Attestation, StreamError>> {
+        Box::pin(async move {
+            self.0
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .push(attempt.digest);
+            Ok(Attestation(attempt.digest.to_vec().into()))
+        })
+    }
+}
+
+fn attested(stream: &Arc<Evidence>, attestor: &Arc<Digests>) -> Result<Bound<Evidence, Objects>> {
+    let mut placement = placement(stream)?;
+    placement.attestor = Some(attestor.clone());
+    Ok(Bound::local_root(
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        ),
+        placement,
+        turns()?,
+    )?)
 }
 
 #[tokio::test]
-async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() -> Result {
-    let audience = Authority {
-        kind: AggregateKind::Conversation,
-        id: "workload".into(),
-    };
-    let other = Authority {
-        kind: AggregateKind::Conversation,
-        id: "other".into(),
-    };
-    let stranger = acyclic_harness_core::AgentId::from_bytes(id(8).to_bytes());
-    // Each case: the audience the admission is issued for, the one the host
-    // verified, its bound agent, the private volume's operations, whether a
-    // second fresh volume is granted Write, and how the scope is spoiled.
-    let run = |issued: Authority,
-               given: Authority,
-               agent: Option<acyclic_harness_core::AgentId>,
-               operations: &'static [VolumeOperation],
-               shared_write: bool,
-               spoil: Spoil| async move {
-        let stream = Arc::new(Refusing::default());
-        let issuer = AuthorityRoot::new("agents", [7; 32], issued.clone());
-        let private = volume(PRIVATE_VOLUME, id(7))?;
-        let shared = volume("shared", id(7))?;
-        let mut grants = vec![INTERACTION_ROUTE.to_owned()];
-        for operation in operations {
-            grants.push(private.volume.capability(*operation, &mut None)?);
-        }
-        if shared_write {
-            grants.push(
-                shared
-                    .volume
-                    .capability(VolumeOperation::Write, &mut None)?,
-            );
-        }
-        let mut scope: Scope =
-            issuer.bootstrap_scope("admitted", &Capabilities::new(grants), agent, &mut None)?;
-        match spoil {
-            Spoil::Nothing => {}
-            // A live deadline narrowed offline, then allowed to elapse.
-            Spoil::Expired => {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
-                let deadline = now.as_secs() + 1;
-                scope = scope.with_workload_expiry(
-                    deadline,
-                    &issuer.public_workload_trust()?,
-                    &issued,
-                    now.as_secs(),
-                )?;
-                let deadline = std::time::Duration::from_secs(deadline);
-                std::thread::sleep(deadline.saturating_sub(now));
-            }
-            Spoil::Revoked => issuer.revoke_workload(&scope)?,
-        }
-        let bound = Bound::admitted(
-            issuer,
-            VerifiedCaller {
-                audience: given,
-                scope,
-            },
-            placement(&stream)?,
-            turns()?,
-        )?;
-        let prepared = bound
-            .prepare_root(&intent("root"), root(id(7), vec![private, shared]))
-            .await;
-        Ok::<_, Box<dyn std::error::Error>>((prepared.is_ok(), stream.calls.load(Ordering::SeqCst)))
-    };
-    let both: &'static [VolumeOperation] = &[VolumeOperation::Read, VolumeOperation::Write];
-    // Control: a covering admission prepares its root, and preparing is pure.
+async fn each_sealed_request_is_attested_once_and_an_unknown_retry_reuses_it() -> Result {
+    let stream = Arc::new(Evidence {
+        valid: true,
+        unknown_first: true.into(),
+        ..Evidence::default()
+    });
+    let attestor = Arc::new(Digests::default());
+    let bound = attested(&stream, &attestor)?;
+    let private = volume(PRIVATE_VOLUME, id(2))?;
+    let lost = bound
+        .create_root(&intent("root"), root(id(2), vec![private.clone()]))
+        .await;
+    assert!(matches!(lost, Err(Error::Unknown(_))), "{lost:?}");
+    let created = bound
+        .create_root(&intent("root"), root(id(2), vec![private]))
+        .await?;
+    assert_eq!(created, AgentPath::root(&id(2)));
+    let digests = attestor.0.lock().map_err(|_| "poisoned")?.clone();
+    let presented = stream.presented.lock().map_err(|_| "poisoned")?.clone();
+    let distinct: std::collections::BTreeSet<_> = digests.iter().collect();
     assert_eq!(
-        run(
-            audience.clone(),
-            audience.clone(),
-            None,
-            both,
-            true,
-            Spoil::Nothing
-        )
-        .await?,
-        (true, 0),
-        "a covering admission prepares without IO"
+        distinct.len(),
+        digests.len(),
+        "attested once per distinct request"
     );
-    for (case, issued, given, agent, operations, shared_write, spoil) in [
-        (
-            "read-only fresh private",
-            audience.clone(),
-            audience.clone(),
-            None,
-            &[VolumeOperation::Read][..],
-            true,
-            Spoil::Nothing,
-        ),
-        (
-            "read-only fresh shared",
-            audience.clone(),
-            audience.clone(),
-            None,
-            both,
-            false,
-            Spoil::Nothing,
-        ),
-        (
-            "audience mismatch",
-            other.clone(),
-            audience.clone(),
-            None,
-            both,
-            true,
-            Spoil::Nothing,
-        ),
-        (
-            "agent mismatch",
-            audience.clone(),
-            audience.clone(),
-            Some(stranger),
-            both,
-            true,
-            Spoil::Nothing,
-        ),
-        (
-            "expired",
-            audience.clone(),
-            audience.clone(),
-            None,
-            both,
-            true,
-            Spoil::Expired,
-        ),
-        (
-            "revoked",
-            audience.clone(),
-            audience.clone(),
-            None,
-            both,
-            true,
-            Spoil::Revoked,
-        ),
-    ] {
-        assert_eq!(
-            run(issued, given, agent, operations, shared_write, spoil).await?,
-            (false, 0),
-            "{case}: refused before any stream IO"
-        );
-    }
+    assert!(presented.len() >= 2);
+    assert_eq!(
+        presented[0], presented[1],
+        "the uncertain retry presents the identical attestation"
+    );
+    assert_eq!(presented[0].0.as_ref(), digests[0].as_slice());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_write_without_valid_evidence_publishes_nothing() -> Result {
+    let stream = Arc::new(Evidence::default());
+    let attestor = Arc::new(Digests::default());
+    let bound = attested(&stream, &attestor)?;
+    let private = volume(PRIVATE_VOLUME, id(3))?;
+    assert!(
+        bound
+            .create_root(&intent("root"), root(id(3), vec![private]))
+            .await
+            .is_err()
+    );
+    assert_eq!(stream.published.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        stream.presented.lock().map_err(|_| "poisoned")?.len(),
+        1,
+        "the root's one request was presented once"
+    );
     Ok(())
 }
