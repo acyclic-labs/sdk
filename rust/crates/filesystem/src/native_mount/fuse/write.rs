@@ -128,7 +128,7 @@ impl FuseProjection {
             file.open_file.clone()
         };
         #[cfg(test)]
-        pause_test_write();
+        tests::write_gate::pause(&self.core.source);
         let length = u32::try_from(data.len()).map_err(|_| libc::EOVERFLOW)?;
         let bytes = fuse_source_chunk(data, work)?;
         self.source_write(work, || {

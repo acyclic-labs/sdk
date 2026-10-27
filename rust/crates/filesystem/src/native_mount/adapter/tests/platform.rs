@@ -199,31 +199,34 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                         .open(&path)?;
                     let mut writer = file.try_clone()?;
                     let syncer = file.try_clone()?;
-                    let (admitted, release) =
-                        super::super::fuse::pause_next_write_after_admission();
-                    let writer_thread = std::thread::spawn(move || writer.write_all(b"new"));
-                    admitted.recv_timeout(Duration::from_secs(5))?;
+                    std::thread::scope(|threads| -> Result<(), Box<dyn std::error::Error>> {
+                        let pause =
+                            super::super::fuse::pause_next_write_after_admission(source.clone());
+                        let writer_thread = threads.spawn(move || writer.write_all(b"new"));
+                        pause.admitted.recv_timeout(Duration::from_secs(5))?;
 
-                    let (started, started_rx) = std::sync::mpsc::sync_channel(1);
-                    let (finished, finished_rx) = std::sync::mpsc::sync_channel(1);
-                    let sync_thread = std::thread::spawn(move || {
-                        let _ = started.send(());
-                        let result = syncer.sync_all();
-                        let _ = finished.send(result);
-                    });
-                    started_rx.recv_timeout(Duration::from_secs(5))?;
-                    assert!(
-                        finished_rx
-                            .recv_timeout(Duration::from_millis(100))
-                            .is_err(),
-                        "fsync must not overtake a write admitted on the same handle"
-                    );
-                    release.send(())?;
-                    writer_thread
-                        .join()
-                        .map_err(|_| "mounted writer panicked")??;
-                    sync_thread.join().map_err(|_| "mounted fsync panicked")?;
-                    finished_rx.recv_timeout(Duration::from_secs(5))??;
+                        let (started, started_rx) = std::sync::mpsc::sync_channel(1);
+                        let (finished, finished_rx) = std::sync::mpsc::sync_channel(1);
+                        let sync_thread = threads.spawn(move || {
+                            let _ = started.send(());
+                            let result = syncer.sync_all();
+                            let _ = finished.send(result);
+                        });
+                        started_rx.recv_timeout(Duration::from_secs(5))?;
+                        assert!(
+                            finished_rx
+                                .recv_timeout(Duration::from_millis(100))
+                                .is_err(),
+                            "fsync must not overtake a write admitted on the same handle"
+                        );
+                        pause.release.send(())?;
+                        writer_thread
+                            .join()
+                            .map_err(|_| "mounted writer panicked")??;
+                        sync_thread.join().map_err(|_| "mounted fsync panicked")?;
+                        finished_rx.recv_timeout(Duration::from_secs(5))??;
+                        Ok(())
+                    })?;
                     drop(file);
                     assert_eq!(std::fs::read(&path)?, b"new");
                     assert!(
