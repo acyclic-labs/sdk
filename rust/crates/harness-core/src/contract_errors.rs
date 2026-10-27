@@ -453,7 +453,7 @@ impl Error {
     #[must_use]
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
-        match self.cause() {
+        match self {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
