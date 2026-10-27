@@ -12,8 +12,10 @@ code; lifecycle, stream ownership, expiry, binary output and cancellation use th
 shared Machines core. The template needs bash, POSIX sh, setsid,
 `/bin/kill`, readable `/proc` and writable `/tmp`, and an existing workspace directory.
 Only blocked egress is supported. Snapshot, checkpoint restoration and fork are
-refused until an atomic provider boundary or an admitted immutable filesystem generation
-is available. No pause/resume or idle contract is advertised. Provider-default lifetime resolves to the configured ceiling
+currently refused pending integration of E2B's native filesystem snapshot boundary.
+The published SDK pauses the sandbox during capture and restores filesystem-only
+snapshots by cold boot; this primitive still needs provider qualification here.
+No pause/resume or idle contract is advertised. Provider-default lifetime resolves to the configured ceiling
 (one hour in the example); explicit infinite lifetime is refused. Operation records and console history are process-local. This
 binding does not implement the harness kernel filesystem seam.
 E2B resolves template IDs through mutable build tags. Freeze the dedicated

@@ -8,8 +8,9 @@ policy digest in `networks`. Supply `/workspace` to the qualification runner. Se
 
 The adapter projects the published Modal Sandbox V2 control-plane and task-command
 router RPCs. The shared core owns lifecycle, output, process-group cancellation,
-and expiry. Snapshot, checkpoint restoration and fork are refused until an atomic
-provider boundary or an admitted immutable filesystem generation is available. Images need bash, POSIX sh, setsid, `/bin/kill`,
+and expiry. Snapshot, checkpoint restoration and fork are currently refused pending
+integration of Modal's native immutable filesystem-image snapshot boundary and
+qualification with captured real responses. Images need bash, POSIX sh, setsid, `/bin/kill`,
 readable `/proc` and writable `/tmp` and an existing workspace. Blocked egress and explicit
 domain allowlists are supported. The example allocates one CPU and 1 GiB RAM.
 Provider-default lifetime resolves to 24 hours; infinite lifetime, memory forks,

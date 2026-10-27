@@ -11,8 +11,11 @@ account-free access.
 
 The Worker uses native Container exec and Sandbox 1.0 binary Files. The shared
 core owns lifecycle admission, replay, process-group cancellation, WallAlarm
-expiry and output retention. Snapshot, checkpoint restoration and fork are refused
-until an atomic provider boundary or an admitted immutable filesystem generation is available. Images require bash, POSIX
+expiry and output retention. Snapshot, checkpoint restoration and fork currently
+refuse: the adapter has not yet bound native `snapshotContainer()` to the shared
+checkpoint lifecycle. Cloudflare documents that primitive as an immutable,
+point-in-time root-filesystem snapshot, with a 30-day retention period refreshed
+by restore. This is distinct from the removed TAR-copy approximation. Images require bash, POSIX
 sh, setsid, `/bin/kill`, readable `/proc` and writable `/tmp`. No memory forks,
 suspend/resume, idle policy or unrestricted egress are advertised. Provider-default
 lifetime resolves to 24 hours; explicit infinite lifetime is refused. Operation records and captured console bytes live in the provider process. Keep that instance alive until cleanup.
@@ -34,9 +37,18 @@ A previous source revision passed the complete canonical suite on bb2 on
 2026-10-26 in 11.97 seconds (log
 `/home/var/log/buildbox/1793049401359-116279-5e4947b0.log`). That run exercised
 the removed TAR-copy approximation and does not prove snapshot consistency.
-The current source requires a fresh run and cannot pass the suite's unconditional
-checkpoint/fork vectors without an actual atomic boundary. No complete-suite
-qualification is claimed for the corrected source.
+Source `19aa611df8207fa2ebfbf1a1e6609b37a3142990` was validated on bb2 on
+2026-10-27 (log `/home/var/log/buildbox/1793089603079-134925-7c549c00.log`).
+The unchanged shell suite passed through actual workerd/native Containers;
+the unchanged lifecycle suite refused its unconditional checkpoint vector.
+The combined suite took 11.49 seconds and returned failure. All three unfiltered
+library runs passed: Daytona 24, Machines 68 and conformance 49 tests. Worker
+TypeScript checking passed. The shared process custodian confirmed workerd's
+process tree retired, and the build receipt confirmed job-home, target and
+temporary-directory cleanup. No complete lifecycle qualification is claimed.
+
+Native snapshot contract: [Cloudflare Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
+and [snapshot retention](https://developers.cloudflare.com/containers/guides/snapshots/).
 
 ## Live steps
 
