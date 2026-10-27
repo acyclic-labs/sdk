@@ -50,3 +50,12 @@ paid-provider execution or atomic snapshots.
 
 Live Daytona runs require `DAYTONA_MACHINES_JOURNAL` naming a durable
 account-specific directory. Restart with that directory and the original keys.
+
+The current Daytona adapter targets the `/sandbox` lifecycle API. Its documented
+[TypeScript waitUntilStarted method](https://www.daytona.io/docs/en/typescript-sdk/sandbox/#waituntilstarted)
+uses state polling; that is the readiness mechanism currently bound here. The
+[newer v2 SDK](https://www.daytona.io/docs/en/v2/typescript-sdk/sandbox/#sandboxeventsconfig)
+documents a WebSocket events hub for its different API. This draft does not claim
+that no native push mechanism exists, or silently substitute that API for the
+selected one. Raw completion-backed adapters should await native completion;
+operation watch/join always follows Streams rather than a readiness timer.

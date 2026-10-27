@@ -8,7 +8,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use acyclic_machines::{IdempotencyKey, MachinesProvider};
 use acyclic_machines_daytona::{
     DaytonaConfig, DaytonaProvider,
     api::{CreateSandboxRequest, DaytonaApi, ExecuteRequest},

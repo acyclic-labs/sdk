@@ -1,7 +1,7 @@
 # acyclic-machines-daytona
 
 `MachinesProvider` over [Daytona](https://www.daytona.io) sandboxes: VM classes (`linux-vm`,
-`windows`) with the full feature set, and `container` sandboxes with disk fork only.
+`windows`) with native memory-and-disk fork, and `container` sandboxes without an admitted atomic snapshot boundary.
 It is one replaceable provider behind the `acyclic-machines` contract: nothing Daytona-specific
 crosses into the harness, and switching providers changes bindings, not orchestration.
 
@@ -12,7 +12,7 @@ crosses into the harness, and switching providers changes bindings, not orchestr
 | `checkpoint`            | `POST /sandbox/{id}/snapshot` with `includeMemory: true` (hot snapshot)       |
 | `fork`                  | `POST /sandbox` from the hot snapshot, once per child                         |
 | `fork_machine` (VM)     | `POST /sandbox/{id}/fork` per child: memory and disk (`LiveFork`)             |
-| `fork_machine` (container) | tar the workspace via toolbox, `POST /sandbox` from the parent's snapshot, upload and unpack (`DiskFork`) |
+| `fork_machine` (container) | refused: no admitted atomic snapshot boundary |
 | `suspend` / `wake`      | `POST /sandbox/{id}/pause` / `POST /sandbox/{id}/start`                       |
 | `set_suspension_policy` | `POST /sandbox/{id}/autopause/{minutes}` (pause keeps memory; stop does not)  |
 | `destroy_*`             | `DELETE /sandbox/{id}` / `DELETE /snapshots/{id}`                             |
