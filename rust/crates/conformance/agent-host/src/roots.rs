@@ -52,6 +52,9 @@ enum Case {
     OtherAgent,
     Expired,
     Revoked,
+    /// One structured grant over the private volume alone, which admits the
+    /// agent but not the second fresh volume.
+    StructuredPrivateOnly,
 }
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
@@ -63,6 +66,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         Case::OtherAgent,
         Case::Expired,
         Case::Revoked,
+        Case::StructuredPrivateOnly,
     ] {
         run(backend, case).await?;
     }
@@ -125,6 +129,16 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
                 .volume
                 .capability(VolumeOperation::Write, &mut None)?,
         );
+    }
+    if case == Case::StructuredPrivateOnly {
+        grants = vec![
+            INTERACTION_ROUTE.to_owned(),
+            acyclic_fs::access::Capability::whole_volume(
+                Some(private.volume.id().to_owned()),
+                &acyclic_fs::access::Action::ALL,
+            )
+            .to_scope_label()?,
+        ];
     }
     let bound_agent =
         (case == Case::OtherAgent).then(|| acyclic_harness_core::AgentId::from_bytes([9; 16]));
@@ -202,8 +216,10 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             if !matches!(
                 bound.submit_root(again).await?,
                 RootSubmission::Created(replayed) if replayed == child
-            ) || bound.create_root(&intent, request()).await? != child
-            {
+            ) || !matches!(
+                bound.create_root(&intent, request()).await?,
+                RootSubmission::Created(replayed) if replayed == child
+            ) {
                 return Err("an exact root resubmission did not replay".into());
             }
             Ok(())

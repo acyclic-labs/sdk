@@ -18,7 +18,7 @@ use super::{
 use crate::{
     OperationId,
     agent::{
-        AgentHost, AgentId, AgentPath, Error, ExecutorDriver, ForkAdopted, IntentId, Spawn,
+        AgentHost, AgentId, AgentPath, Error, ExecutorDriver, ForkAdopted, IntentId, Sender, Spawn,
         VolumeBinding,
     },
     conversation::{ContentAccess, ContentGrant, ContentPublisher, FileRef, VolumeOperation},
@@ -280,7 +280,8 @@ where
     }
 
     /// Stages `text` once on `agent`'s private volume under the agent's
-    /// admitted authority, keyed by the agent, the input `kind` and `intent`,
+    /// admitted authority, keyed by the agent, the input `kind`, its sender
+    /// and `intent`,
     /// so every retry names the same file.
     ///
     /// # Errors
@@ -290,6 +291,7 @@ where
         &self,
         agent: &AgentPath,
         kind: &str,
+        by: &Sender,
         intent: &IntentId,
         text: &str,
     ) -> Result<FileRef, Error> {
@@ -297,9 +299,12 @@ where
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
             .map_err(turn)?;
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
-        for part in [agent.as_str(), kind, intent.as_str()] {
+        // Like the inbox's intent key, the staged input is the sender's own:
+        // two senders' same intent never share an operation.
+        let sender = crate::agent::sender_text(by);
+        for part in [agent.as_str(), kind, sender.as_str(), intent.as_str()] {
+            hasher.update(&(part.len() as u64).to_le_bytes());
             hasher.update(part.as_bytes());
-            hasher.update(&[0]);
         }
         let mut operation = [0; 16];
         operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
@@ -357,6 +362,7 @@ where
             policy,
         } = request;
         let path = AgentPath::root(&agent);
+        let owner = crate::AgentId::from_bytes(agent.to_bytes());
         let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
         {
             let authority = agent_authority(&self.issuer, &self.admission, &path, &volumes, &[])
@@ -369,6 +375,15 @@ where
                     VolumeOperation::Write,
                     u64::MAX,
                     &mut None,
+                )
+                .map_err(turn)?;
+                // A structured `filesystem:` grant passes that check by its
+                // label alone, so the filesystem's own decision over its
+                // ceiling must admit writing each fresh volume too.
+                super::agent_turns::require_structured_write(
+                    &authority.scope,
+                    owner,
+                    &binding.volume,
                 )
                 .map_err(turn)?;
             }
@@ -444,26 +459,19 @@ where
     }
 
     /// Creates root `request`: exactly [`Self::prepare_root`] then
-    /// [`Self::submit_root`]. Retrying the same `intent` replays exactly.
+    /// [`Self::submit_root`]. An uncertain result is
+    /// [`RootSubmission::Unknown`], still owning the prepared commit and its
+    /// publication holds, to resubmit with [`Self::submit_root`].
     ///
     /// # Errors
-    /// As [`Self::prepare_root`] and [`Self::submit_root`]; an uncertain
-    /// result is [`Error::Unknown`], resolved by creating again under the same
-    /// `intent`, which re-prepares, and re-holds, the identical commit.
+    /// As [`Self::prepare_root`] and [`Self::submit_root`].
     pub async fn create_root(
         &self,
         intent: &IntentId,
         request: RootRequest,
-    ) -> Result<AgentPath, Error> {
-        match self
-            .submit_root(self.prepare_root(intent, request).await?)
-            .await?
-        {
-            RootSubmission::Created(child) => Ok(child),
-            RootSubmission::Unknown(prepared) => {
-                Err(Error::Unknown(Box::new(prepared.request().clone())))
-            }
-        }
+    ) -> Result<RootSubmission, Error> {
+        self.submit_root(self.prepare_root(intent, request).await?)
+            .await
     }
 }
 

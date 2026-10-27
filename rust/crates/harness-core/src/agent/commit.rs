@@ -36,7 +36,7 @@ pub fn intent_key(kind: &str, parts: &[&str]) -> Result<IdempotencyKey, Error> {
     IdempotencyKey::new(hasher.finalize().to_hex().as_bytes().to_vec()).map_err(Error::Stream)
 }
 
-fn sender_text(sender: &Sender) -> String {
+pub(crate) fn sender_text(sender: &Sender) -> String {
     match sender {
         Sender::User { principal } => format!("user:{principal}"),
         Sender::Agent { path } => format!("agent:{path}"),

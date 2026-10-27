@@ -7,10 +7,11 @@
 //! the attestor for its evidence, and issues the write on the provider bound
 //! to that attestation. The attestation is a function of the sealed request
 //! itself, so it lives with that value and nowhere else: an uncertain retry
-//! resubmits identical bytes and so presents the identical attestation, a
-//! prepared native commit carries it from the bound provider that prepared
-//! it, and it is gone when the request is. `Attested` keeps no per-request
-//! state. Providers that need no evidence ignore it.
+//! resubmits identical bytes and so presents the identical attestation, and
+//! it is gone when the request is. `Attested` keeps no per-request state. A
+//! prepared native commit, whose final record arrives only after preparation,
+//! is refused under an attestor, since no attestation could cover its bytes.
+//! Providers that need no evidence ignore it.
 //!
 //! `Attested` overrides every [`StreamProvider`] method, so no write path
 //! falls back to a default that bypasses the attestor; a test checks this
@@ -349,19 +350,15 @@ impl<P: AttestedProvider + 'static> StreamProvider for Attested<P> {
         maximum_record_bytes: usize,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
-        // The prepared ingress publishes later, outside this call; the bound
-        // provider that prepares it hands it the attestation to publish with.
-        let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&meter, async move {
-            match self.target(|| commit_digest(&request)).await {
-                Ok(target) => {
-                    target
-                        .native_prepare_commit(request, maximum_record_bytes, original)
-                        .await
-                }
-                Err(error) => Ok(Err(error)),
-            }
-        })
+        // A prepared commit's final record arrives only at `finish`, after
+        // this call, so no attestation here could cover the bytes the provider
+        // publishes. Attested hosting refuses the path, as a provider without
+        // it does; callers take the ordinary commit, which is attested whole.
+        if self.attestor.is_some() {
+            return NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)));
+        }
+        self.inner
+            .native_prepare_commit(request, maximum_record_bytes, meter)
     }
 }
 
@@ -547,6 +544,52 @@ mod tests {
             *reached.lock().map_err(|_| "poisoned")?,
             vec![Some(super::Attestation(digest.to_vec().into()))],
             "the native commit reached the provider bound to its attestation"
+        );
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_prepared_native_commit_is_refused_under_an_attestor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_stream::{
+            CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
+        };
+        let attestor = std::sync::Arc::new(Counting::default());
+        let attested = super::Attested::new(
+            std::sync::Arc::new(Probe::default()),
+            Some(attestor.clone()),
+            super::TurnAdmission::LocalRoot,
+        );
+        let path = StreamPath::new("attested/prepared")?;
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 0,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![b"".as_slice().into()],
+            }],
+            idempotency_key: IdempotencyKey::new(b"prepared".to_vec())?,
+        };
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error.to_string())?;
+        let prepared = super::StreamProvider::native_prepare_commit(
+            &attested,
+            request,
+            64,
+            work.runtime_meter(),
+        )
+        .await?;
+        assert!(matches!(prepared, Err(super::StreamError::Unsupported)));
+        assert_eq!(
+            attestor.0.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing was attested for bytes it could not cover"
         );
         Ok(())
     }

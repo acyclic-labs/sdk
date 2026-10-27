@@ -203,7 +203,7 @@ impl<'v> AdmittedAgent<'v> {
 /// The filesystem's decision over `scope`'s structured grant, if it has one:
 /// it creates and writes every path of `volume`. It performs no IO; the
 /// writer still applies the volume's persisted policy.
-fn require_structured_write(
+pub(super) fn require_structured_write(
     scope: &Scope,
     owner: crate::AgentId,
     volume: &crate::conversation::VolumeRef,
@@ -215,8 +215,7 @@ fn require_structured_write(
     let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
         return Ok(());
     };
-    let denied =
-        || Error::Unauthorized("admission does not grant writing its private volume".into());
+    let denied = || Error::Unauthorized("admission does not grant writing the volume".into());
     let capability = Capability::from_scope_label(label)
         .ok()
         .flatten()
@@ -494,6 +493,27 @@ where
         let request = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Some((id.clone(), request)))
+    }
+
+    /// Approval `id` of `agent` as `principal` already decided it, read from
+    /// its request file whether or not the turn still waits on it: an
+    /// identical decision retried after the agent resumed replays.
+    pub async fn decided_approval(
+        &self,
+        agent: &AgentState,
+        id: &crate::agent::IntentId,
+        principal: &str,
+    ) -> Result<Option<crate::interaction::Interaction>> {
+        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
+        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        let Some(bytes) =
+            crate::approvals::decided_request(&*files, &policy, id.as_str(), principal).await?
+        else {
+            return Ok(None);
+        };
+        crate::contract::json_from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     /// `agent`'s verified admission; it performs no IO.

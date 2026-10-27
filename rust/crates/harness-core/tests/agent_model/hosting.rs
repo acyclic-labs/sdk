@@ -140,15 +140,27 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
         bound.submit_root(again).await?,
         RootSubmission::Created(replayed) if replayed == child
     ));
-    assert_eq!(
+    assert!(matches!(
         bound
             .create_root(&intent("root"), root(id(1), vec![private.clone()]))
             .await?,
-        child
+        RootSubmission::Created(replayed) if replayed == child
+    ));
+    let (alice, bob) = (
+        Sender::User {
+            principal: "alice".into(),
+        },
+        Sender::User {
+            principal: "bob".into(),
+        },
     );
     // The root's private volume is live: an input stages on it.
     bound
-        .stage_text(&created, "message", &intent("m1"), "hello")
+        .stage_text(&created, "message", &alice, &intent("m1"), "hello")
+        .await?;
+    // Another sender's same intent with different text stages its own input.
+    bound
+        .stage_text(&created, "message", &bob, &intent("m1"), "hi")
         .await?;
     Ok(())
 }
@@ -336,12 +348,12 @@ async fn a_write_without_valid_evidence_publishes_nothing() -> Result {
     let attestor = Arc::new(Digests::default());
     let bound = attested(&stream, &attestor)?;
     let private = volume(PRIVATE_VOLUME, id(3))?;
-    assert!(
+    assert!(!matches!(
         bound
             .create_root(&intent("root"), root(id(3), vec![private]))
-            .await
-            .is_err()
-    );
+            .await,
+        Ok(RootSubmission::Created(_))
+    ));
     assert_eq!(stream.published.load(Ordering::SeqCst), 0);
     assert_eq!(
         stream.presented.lock().map_err(|_| "poisoned")?.len(),

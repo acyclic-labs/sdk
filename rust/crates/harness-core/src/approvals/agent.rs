@@ -206,10 +206,35 @@ impl AgentApprovals {
     }
 }
 
+/// The request bytes of approval `id` when `principal` has already decided
+/// it, so an identical decision retried after the agent resumed can replay.
+///
+/// # Errors
+/// When a file read fails or exceeds the policy's bound.
+pub async fn decided_request(
+    files: &dyn ApprovalFiles,
+    policy: &AgentApprovalPolicy,
+    id: &str,
+    principal: &str,
+) -> Result<Option<Vec<u8>>> {
+    if files
+        .read(&decision_path(id, principal), policy.limits.file_bytes)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    files
+        .read(&request_path(id), policy.limits.file_bytes)
+        .await
+}
+
 /// `responder` decides request `id` of the agent whose approvals are `files`
 /// under `policy`: the decision must bind the active stage, and its file is
 /// created once. The caller then appends `InboxRecord::Approval { id }` to
 /// the agent's inbox, which resumes the waiting turn.
+/// An identical decision already recorded replays, even once the stage has
+/// moved on; a different one is a conflict.
 pub async fn decide(
     files: &dyn ApprovalFiles,
     policy: &AgentApprovalPolicy,
@@ -231,6 +256,16 @@ pub async fn decide(
         crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?;
     let decision =
         ApprovalDecisionFile::new(&principal, descriptor.sha256(), VERSION, approved, reason)?;
+    let path = decision_path(id, &principal);
+    let encoded =
+        serde_json::to_vec(&decision).map_err(|error| Error::Storage(error.to_string()))?;
+    if let Some(existing) = files.read(&path, policy.limits.file_bytes).await? {
+        return if existing == encoded {
+            Ok(())
+        } else {
+            Err(Error::Conflict("approval file binding changed".into()))
+        };
+    }
     super::validate_agent_decision(
         &policy.policy,
         policy.digest,
@@ -242,12 +277,6 @@ pub async fn decide(
         &decision,
     )
     .await?;
-    super::files::create_exact(
-        files,
-        &decision_path(id, &principal),
-        serde_json::to_vec(&decision).map_err(|error| Error::Storage(error.to_string()))?,
-        policy.limits.file_bytes,
-    )
-    .await?;
+    super::files::create_exact(files, &path, encoded, policy.limits.file_bytes).await?;
     Ok(())
 }

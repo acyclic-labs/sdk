@@ -7,7 +7,8 @@
 //!
 //! ```ignore
 //! let bound = Bound::admitted(issuer, caller, placement, turns)?;
-//! let server = hosting::serve(bound, platform, &intent, root).await?;
+//! let hosting::Serving::Served(server) = hosting::serve(bound, platform, &intent, root).await?
+//! else { /* uncertain: retain it and `resubmit` */ };
 //! let service = acyclic_stream::session::Service::new(stream, authority, node, limits)
 //!     .with_products(None, server.clone());
 //! tokio::spawn(async move { server.run(|actor, error| report(actor, error)).await });
@@ -26,8 +27,8 @@ pub use acyclic_harness_core::filesystem::{
 
 use crate::{
     agent::{
-        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId, Message, Sender,
-        SpawnRequest, StatusRecord, requested_child,
+        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId,
+        MAX_OPEN_CHILDREN, Message, Sender, SpawnRequest, StatusRecord, requested_child,
     },
     approvals::ApprovalResponder,
     interaction::Interaction,
@@ -37,8 +38,8 @@ use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::AsyncObjectStore;
 use acyclic_harness_client::{AgentCall, AgentCommand, AgentReply, ChildAgent, PendingApproval};
 use acyclic_stream::{
-    BoxProviderFuture, ChildrenPageRequest, ProviderPlatform, ReadRequest, StreamError, StreamPath,
-    StreamProvider as _,
+    BoxProviderFuture, ChildrenPageRequest, CommitId, ProviderPlatform, ReadRequest, StreamError,
+    StreamPath, StreamProvider as _,
     session::{CallAuthorization, CallProvider},
 };
 use bytes::Bytes;
@@ -66,35 +67,94 @@ pub struct Server<P: AttestedProvider + 'static, O: 'static> {
     resource: String,
 }
 
+/// What serving a root came to.
+pub enum Serving<P: AttestedProvider + 'static, O: 'static> {
+    /// The root is created and served.
+    Served(Arc<Server<P, O>>),
+    /// The root's creation is uncertain: [`Unsettled::resubmit`] submits the
+    /// identical prepared commit, which still holds its fresh volumes'
+    /// objects.
+    Unknown(Unsettled<P, O>),
+}
+
+/// A root whose creation is uncertain, owning its prepared commit.
+pub struct Unsettled<P: AttestedProvider + 'static, O: 'static> {
+    bound: Bound<P, O>,
+    platform: Arc<dyn Platform>,
+    prepared: Prepared,
+}
+
+impl<P, O> Unsettled<P, O>
+where
+    P: AttestedProvider + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// The prepared commit awaiting a definite outcome.
+    #[must_use]
+    pub const fn prepared(&self) -> &Prepared {
+        &self.prepared
+    }
+
+    /// Resubmits the identical prepared commit.
+    ///
+    /// # Errors
+    /// As [`serve`].
+    pub async fn resubmit(self) -> Result<Serving<P, O>, Error> {
+        settle(self.bound, self.platform, self.prepared).await
+    }
+}
+
 /// Creates (or, on the same `intent`, exactly reopens) `root` under `bound`
-/// and returns its server. The root and its fresh volumes are one commit.
+/// and serves it. The root and its fresh volumes are one commit; an uncertain
+/// creation is [`Serving::Unknown`], still owning that commit.
 ///
 /// # Errors
-/// When `bound`'s admission does not cover `root`, the store fails, or the
-/// creation is uncertain ([`Error::Unknown`]; serving again with the same
-/// `intent` resubmits it exactly).
+/// When `bound`'s admission does not cover `root`, or the store fails.
 pub async fn serve<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     intent: &IntentId,
     root: RootRequest,
-) -> Result<Arc<Server<P, O>>, Error>
+) -> Result<Serving<P, O>, Error>
 where
     P: AttestedProvider + 'static,
     O: AsyncObjectStore + 'static,
 {
-    let root = bound.create_root(intent, root).await?;
+    let prepared = bound.prepare_root(intent, root).await?;
+    settle(bound, platform, prepared).await
+}
+
+/// Submits `prepared` once under `bound` and serves the created root.
+async fn settle<P, O>(
+    bound: Bound<P, O>,
+    platform: Arc<dyn Platform>,
+    prepared: Prepared,
+) -> Result<Serving<P, O>, Error>
+where
+    P: AttestedProvider + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let root = match bound.submit_root(prepared).await? {
+        RootSubmission::Created(root) => root,
+        RootSubmission::Unknown(prepared) => {
+            return Ok(Serving::Unknown(Unsettled {
+                bound,
+                platform,
+                prepared,
+            }));
+        }
+    };
     let resource = format!(
         "actors:/{}",
         acyclic_auth::encode_component(bound.within().namespace().as_str().as_bytes())
     );
-    Ok(Arc::new_cyclic(|this| Server {
+    Ok(Serving::Served(Arc::new_cyclic(|this| Server {
         this: this.clone(),
         bound,
         platform,
         root,
         resource,
-    }))
+    })))
 }
 
 impl<P, O> Server<P, O>
@@ -164,7 +224,7 @@ where
                 let agent = self.within_tree(agent)?;
                 let body = self
                     .bound
-                    .stage_text(agent, "message", id, text(body)?)
+                    .stage_text(agent, "message", by, id, text(body)?)
                     .await?;
                 let record = InboxRecord::Message(Message {
                     from: by.clone(),
@@ -187,18 +247,20 @@ where
             }
             AgentCommand::Children { agent, page } => {
                 let agent = self.within_tree(agent)?;
-                let after = page
-                    .cursor()
-                    .map(StreamPath::new)
-                    .transpose()
-                    .map_err(Error::Stream)?;
+                let (hierarchy_version, after) = match page.cursor() {
+                    Some(cursor) => {
+                        let (version, after) = parse_children_cursor(cursor)?;
+                        (Some(version), Some(after))
+                    }
+                    None => (None, None),
+                };
                 let listed = match agents
                     .provider()
                     .children_page(ChildrenPageRequest {
                         tail_stream: None,
                         parent: Some(agent.children()?),
                         after,
-                        hierarchy_version: None,
+                        hierarchy_version,
                         limit: page.items(),
                     })
                     .await
@@ -220,7 +282,9 @@ where
                 }
                 Ok(AgentReply::Children {
                     items,
-                    next: listed.next_after.map(|path| path.as_str().to_owned()),
+                    next: listed
+                        .next_after
+                        .map(|after| children_cursor(&listed.hierarchy_version, &after)),
                 })
             }
             AgentCommand::Spawn { parent, id, brief } => {
@@ -230,13 +294,26 @@ where
                     id: id.clone(),
                     brief: text(brief)?.to_owned(),
                 });
-                match agents.send(parent, by, &record).await? {
-                    Delivered::Committed { inbox } => Ok(AgentReply::Spawned {
-                        agent: requested_child(parent, inbox)?.1,
-                        delivery: Delivered::Committed { inbox },
-                    }),
-                    Delivered::Closed => Err(Error::Record("the parent is archived")),
+                let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
+                    return Err(Error::Record("the parent is archived"));
+                };
+                let child = requested_child(parent, inbox)?.1;
+                // The parent's step consumes a request it cannot honour (it is
+                // archived or has its open-children limit) without creating
+                // the child, so a recorded refusal is reported, not a path
+                // that never appears. A child already created, as on a retry,
+                // is spawned whatever the parent's state now.
+                let state = agents.state(parent).await?;
+                if !state.open_children.contains(&child)
+                    && (state.closed || state.open_children.len() >= MAX_OPEN_CHILDREN)
+                    && !matches!(agents.state(&child).await, Ok(_))
+                {
+                    return Err(Error::Record("the parent refused the spawn"));
                 }
+                Ok(AgentReply::Spawned {
+                    agent: child,
+                    delivery: Delivered::Committed { inbox },
+                })
             }
             AgentCommand::Approvals { agent, page } => {
                 let agent = self.within_tree(agent)?;
@@ -262,27 +339,39 @@ where
                 reason,
             } => {
                 let agent = self.within_tree(agent)?;
-                // The decision binds the exact action the caller was shown.
-                let shown = match self.pending(agent).await? {
-                    Some((
-                        pending,
-                        Interaction::Approval {
-                            operation_id,
-                            action_digest,
-                            ..
-                        },
-                    )) if &pending == id => {
-                        operation_id == binding.operation_id
-                            && action_digest == binding.action_digest
-                    }
-                    _ => false,
+                let Sender::User { principal } = by else {
+                    return Err(Error::Record("a decision needs a human principal"));
+                };
+                // The decision binds the exact action the caller was shown:
+                // the pending approval, or, for an identical retry after the
+                // agent resumed, the request this principal already decided.
+                let binds = |shown: Option<Interaction>| {
+                    matches!(
+                        shown,
+                        Some(Interaction::Approval { operation_id, action_digest, .. })
+                            if operation_id == binding.operation_id
+                                && action_digest == binding.action_digest
+                    )
+                };
+                let pending = self
+                    .pending(agent)
+                    .await?
+                    .and_then(|(pending, shown)| (&pending == id).then_some(shown));
+                let shown = if pending.is_some() {
+                    binds(pending)
+                } else {
+                    let state = self.bound.agents().state(agent).await?;
+                    binds(
+                        self.bound
+                            .turns()
+                            .decided_approval(&state, id, principal)
+                            .await
+                            .map_err(|error| Error::Turn(Box::new(error)))?,
+                    )
                 };
                 if !shown {
                     return Err(Error::Record("approval is not pending with this binding"));
                 }
-                let Sender::User { principal } = by else {
-                    return Err(Error::Record("a decision needs a human principal"));
-                };
                 Ok(AgentReply::Delivered {
                     delivery: self
                         .bound
@@ -344,6 +433,38 @@ fn text(content: &ModelContent) -> Result<&str, Error> {
         ModelContent::Text(text) => Ok(text.as_str()),
         _ => Err(Error::Record("agent input must be text")),
     }
+}
+
+/// A children page's continuation: the listing's hierarchy version, which a
+/// later page must name, and the last listed path.
+fn children_cursor(version: &CommitId, after: &StreamPath) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut cursor = String::with_capacity(65 + after.as_str().len());
+    for byte in version.as_bytes() {
+        cursor.push(char::from(HEX[usize::from(byte >> 4)]));
+        cursor.push(char::from(HEX[usize::from(byte & 0xf)]));
+    }
+    cursor.push(':');
+    cursor.push_str(after.as_str());
+    cursor
+}
+
+/// The hierarchy version and last path [`children_cursor`] encoded.
+fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> {
+    let invalid = || Error::Stream(StreamError::InvalidArgument);
+    let (version, after) = cursor.split_once(':').ok_or_else(invalid)?;
+    if version.len() != 64 {
+        return Err(invalid());
+    }
+    let mut bytes = [0; 32];
+    for (byte, pair) in bytes.iter_mut().zip(version.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| invalid())?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
+    }
+    Ok((
+        CommitId::from_bytes(bytes),
+        StreamPath::new(after).map_err(Error::Stream)?,
+    ))
 }
 
 impl<P, O> CallProvider for Server<P, O>
