@@ -1,6 +1,6 @@
 use super::*;
-use futures::Stream;
 use futures::stream;
+use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
