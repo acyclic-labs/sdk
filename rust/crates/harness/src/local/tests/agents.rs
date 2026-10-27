@@ -199,11 +199,18 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
 
 /// The agent's own scope yields a live follow of its turn's tool output, and
 /// nothing over a volume it cannot read.
-async fn follow_tool_output(harness: &Arc<LocalHarness>, root: &AgentPath, turn: &str) -> Result<()> {
+async fn follow_tool_output(
+    harness: &Arc<LocalHarness>,
+    root: &AgentPath,
+    turn: &str,
+) -> Result<()> {
     use acyclic_stream::wire;
     let (agents, _) = harness.agents().await?;
     let state = agents.state(root).await.map_err(agent)?;
-    let issuer = harness.root_authority.as_ref().ok_or_else(|| Error::NotFound("issuer".into()))?;
+    let issuer = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("issuer".into()))?;
     let authority = crate::filesystem::agent_authority(
         issuer,
         &crate::filesystem::TurnAdmission::LocalRoot,
@@ -261,11 +268,13 @@ async fn follow_tool_output(harness: &Arc<LocalHarness>, root: &AgentPath, turn:
                 next: 0,
                 opaque: Default::default(),
             }),
-            kind: Some(wire::session_subscription::Kind::Follow(wire::SessionFollow {
-                resource: resource.clone(),
-                delivery: wire::SessionDelivery::All as i32,
-                ..Default::default()
-            })),
+            kind: Some(wire::session_subscription::Kind::Follow(
+                wire::SessionFollow {
+                    resource: resource.clone(),
+                    delivery: wire::SessionDelivery::All as i32,
+                    ..Default::default()
+                },
+            )),
         })
         .map_err(agent)?;
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -274,12 +283,14 @@ async fn follow_tool_output(harness: &Arc<LocalHarness>, root: &AgentPath, turn:
                 .await
                 .map_err(agent)?
                 .ok_or_else(|| Error::Conflict("tool output follow ended".into()))?;
+            // Filesystem change records carry their paths in the compact
+            // change list, not as wire keys.
             let stdout = session.resource_view(&resource).and_then(|view| {
                 view.records()
-                    .flat_map(|record| &record.keys)
-                    .filter_map(|key| std::str::from_utf8(key).ok())
+                    .filter_map(|record| acyclic_stream::decode_changes(&record.value).ok())
+                    .flat_map(|changes| changes.entries)
+                    .filter_map(|entry| String::from_utf8(entry.key.to_vec()).ok())
                     .find(|key| key.contains("/stdout/"))
-                    .map(str::to_owned)
             });
             if let Some(path) = stdout {
                 let bytes = output.read(&path, 1 << 16).await?;

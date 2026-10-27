@@ -182,8 +182,11 @@ impl OutputTail {
         };
         let mut chunks = Vec::new();
         for record in view.records().filter(|record| record.sequence >= self.next) {
-            for key in &record.keys {
-                if let Ok(path) = std::str::from_utf8(key)
+            // Filesystem change records carry their paths in the compact
+            // change list, not as wire keys.
+            let changes = acyclic_stream::decode_changes(&record.value).map_err(storage)?;
+            for entry in &changes.entries {
+                if let Ok(path) = std::str::from_utf8(&entry.key)
                     && let Some((call, _)) = path
                         .split_once("/stdout/")
                         .or_else(|| path.split_once("/stderr/"))

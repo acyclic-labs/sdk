@@ -56,8 +56,6 @@ pub use agent_turns::{
 mod fork_preparer;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod tool_output;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use tool_output::{TOOL_OUTPUT, ToolOutputFollow};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
@@ -71,6 +69,8 @@ pub(crate) use fork_preparer::bounded_io::{DecodeReservation, retain_decoded};
 pub use fork_preparer::bounded_io::{PreparationCustody, PreparationIo};
 pub(crate) use fork_preparer_io::PreparationScope;
 use fork_preparer_io::decode_record;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use tool_output::{TOOL_OUTPUT, ToolOutputFollow};
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
 mod interaction_host;

@@ -81,7 +81,10 @@ fn now_unix_seconds() -> u64 {
 
 impl AuthorityState for LocalTrust {
     fn snapshot(&self) -> std::result::Result<TrustSnapshot, VerifyError> {
-        let trust = self.0.public_workload_trust().map_err(|_| VerifyError::Trust)?;
+        let trust = self
+            .0
+            .public_workload_trust()
+            .map_err(|_| VerifyError::Trust)?;
         Ok(TrustSnapshot {
             trust: Arc::new(trust),
             now_unix_seconds: now_unix_seconds(),
