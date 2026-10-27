@@ -308,7 +308,7 @@ impl StreamProvider for HttpStream {
             "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
             "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
             "commit" => {
-                IdempotencyOutcome::Commit(Self::commit_response(&outcome["outcome"])?)
+                IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?)
             }
             _ => return Err(StreamError::Unavailable),
         };

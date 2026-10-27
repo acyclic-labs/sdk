@@ -96,15 +96,10 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
         retain(
             &mut state,
             &mut || probes += 1,
-            Some(envelope),
+            None,
             None,
             [0; 32],
-            IdempotencyOutcome::Commit(CommitOutcome::Committed(crate::CommitReceipt {
-                commit_id,
-                committed_at_micros: 0,
-                appends: Vec::new(),
-                forks: Vec::new(),
-            })),
+            IdempotencyOutcome::Commit(envelope),
             Default::default(),
         );
         assert!(probes <= COMMIT_INDEX_PROBES);

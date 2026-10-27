@@ -155,7 +155,7 @@ pub(crate) fn observation_from_wire(
             IdempotencyOutcome::Fork(fork_receipt_from_wire(value)?)
         }
         wire::idempotency_observation::Outcome::Commit(value) => {
-            IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
+            IdempotencyOutcome::Commit(envelope_from_wire(value)?)
         }
     };
     Ok(IdempotencyObservation {
@@ -175,7 +175,7 @@ pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObser
             wire::idempotency_observation::Outcome::Fork(fork_receipt_to_wire(&value))
         }
         IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_to_wire(value))
+            wire::idempotency_observation::Outcome::Commit(envelope_to_wire(value))
         }
     };
     wire::IdempotencyObservation {

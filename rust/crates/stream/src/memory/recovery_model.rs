@@ -754,10 +754,10 @@ pub fn stable_intent_key(retain_conflicts: bool) {
         writer.join().unwrap();
         let observed = block_on(provider.inspect_idempotency(key.clone()))?;
         let settled = match first {
-            CommitOutcome::Committed(_) => {
+            CommitOutcome::Committed(ref receipt) => {
                 assert_eq!(
                     observed.map(|observation| observation.outcome),
-                    Some(IdempotencyOutcome::Commit(first.clone())),
+                    Some(IdempotencyOutcome::Commit(block_on(provider.read_commit(receipt.commit_id))?)),
                     "a committed intent must be recoverable"
                 );
                 first

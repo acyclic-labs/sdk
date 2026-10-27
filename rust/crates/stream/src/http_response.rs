@@ -235,7 +235,7 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         }),
         wire::idempotency_observation::Outcome::Commit(value) => json!({
             "type": "commit",
-            "outcome": commit_value(value)?,
+            "outcome": envelope_value(&value)?,
         }),
     };
     Ok(Some(json!({

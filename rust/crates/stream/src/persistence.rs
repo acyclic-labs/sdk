@@ -1,6 +1,6 @@
 //! Bounded canonical protobuf codecs for retained Stream v1 facts.
 use crate::{
-    AppendOutcome, CommitConflict, CommitId, CommitOutcome, CommittedEnvelope, CommittedMutation,
+    AppendOutcome, CommitId, CommittedEnvelope, CommittedMutation,
     IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError,
     StreamPath, wire, wire_codec,
 };
@@ -85,44 +85,7 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
                 return Err(StreamError::InvalidArgument);
             }
         }
-        IdempotencyOutcome::Commit(CommitOutcome::Committed(receipt)) => {
-            receipt.validate()?;
-        }
-        IdempotencyOutcome::Commit(CommitOutcome::Conflict(conflicts)) => {
-            if conflicts.is_empty() || conflicts.len() > MAX_ITEMS {
-                return Err(StreamError::InvalidArgument);
-            }
-            let mut previous = None;
-            for conflict in conflicts {
-                let path = match conflict {
-                    CommitConflict::Head {
-                        path,
-                        expected,
-                        actual,
-                    } => {
-                        if expected == actual {
-                            return Err(StreamError::InvalidArgument);
-                        }
-                        path
-                    }
-                    CommitConflict::Tail {
-                        path,
-                        expected,
-                        actual,
-                    } => {
-                        if *actual == Some(*expected) {
-                            return Err(StreamError::InvalidArgument);
-                        }
-                        path
-                    }
-                    CommitConflict::Exists { path } | CommitConflict::Missing { path } => path,
-                };
-                if previous.is_some_and(|previous| previous >= path) {
-                    return Err(StreamError::InvalidArgument);
-                }
-                previous = Some(path);
-            }
-        }
+        IdempotencyOutcome::Commit(envelope) => validate_envelope(envelope)?,
         IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. }) => {}
     }
     Ok(())

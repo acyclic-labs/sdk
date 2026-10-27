@@ -1,7 +1,6 @@
 struct CommitPlan {
     envelope: CommittedEnvelope,
     result: CommitOutcome,
-    cached: CommitOutcome,
     histories: Vec<Arc<History>>,
     paths: Vec<(StreamPath, PathState)>,
     resident: Allocation,
@@ -12,13 +11,11 @@ struct CommitPlan {
 impl CommitPlan {
     fn bind(&mut self, commit_id: CommitId, time: u64) -> Result<(), StreamError> {
         bind_envelope(&mut self.envelope, commit_id, time);
-        for output in [&mut self.result, &mut self.cached] {
-            if let CommitOutcome::Committed(receipt) = output {
-                receipt.commit_id = commit_id;
-                receipt.committed_at_micros = time;
-                for fork in &mut receipt.forks {
-                    fork.commit_id = commit_id;
-                }
+        if let CommitOutcome::Committed(receipt) = &mut self.result {
+            receipt.commit_id = commit_id;
+            receipt.committed_at_micros = time;
+            for fork in &mut receipt.forks {
+                fork.commit_id = commit_id;
             }
         }
         bind_histories(&mut self.histories, commit_id, time)
@@ -39,10 +36,10 @@ impl CommitPlan {
         retain(
             state,
             probe,
-            Some(self.envelope),
+            None,
             Some(key),
             digest,
-            IdempotencyOutcome::Commit(self.cached),
+            IdempotencyOutcome::Commit(self.envelope),
             self.resident,
         );
         Ok((self.result, self.output_claim))
@@ -293,13 +290,11 @@ impl MemoryStream {
         };
         let (receipt, output_claim) = self.receipt(&envelope, time)?;
         let result = CommitOutcome::Committed(receipt);
-        let (cached, mut resident) = self.copy_commit(&result)?;
-        self.absorb(&mut resident, facts_claim)?;
+        let resident = facts_claim;
         self.absorb(&mut scratch, paths_claim)?;
         Ok(CommitPlan {
             envelope,
             result,
-            cached,
             histories,
             paths,
             resident,
@@ -339,7 +334,8 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.copy_commit(result).map(Decision::Returned);
+            return self.receipt(result, result.committed_at_micros)
+                .map(|(receipt, claim)| Decision::Returned((CommitOutcome::Committed(receipt), claim)));
         }
         let check_deadline = move || {
             if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
@@ -364,15 +360,16 @@ impl MemoryStream {
             #[cfg(all(loom, feature = "local"))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
                 admit_replay(state, Some(&request.idempotency_key), self.limits)?;
-                let (cached, resident) = self.copy_commit(&result)?;
                 retain(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     None,
                     Some(request.idempotency_key),
                     digest,
-                    IdempotencyOutcome::Commit(cached),
-                    resident,
+                    // Spending a refused key is the injected defect. Its invalid
+                    // retained family cannot be emitted by successful commits.
+                    IdempotencyOutcome::Append(AppendOutcome::TailConflict { actual_tail: 0 }),
+                    Default::default(),
                 );
             }
             return Ok(Decision::Returned((result, output_claim)));

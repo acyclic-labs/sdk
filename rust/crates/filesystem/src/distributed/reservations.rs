@@ -131,15 +131,10 @@ fn verify_release(
             work,
         ));
     }
-    let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
         return Err(authority_corrupt(
             "publication release identity retained another Stream mutation family",
             work,
-        ));
-    };
-    let CommitOutcome::Committed(envelope) = outcome else {
-        return Err(AuthorityStoreError::RejectedStatic(
-            "publication reservation is no longer active",
         ));
     };
     let mut request = request(
@@ -199,7 +194,7 @@ fn qualified(
     ) {
         return Ok(false);
     }
-    let acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) =
         &observation.outcome
     else {
         return Ok(false);
@@ -278,7 +273,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let result = self.authority_inspect(key, work).await;
         let mut actual = WorkCounters::UNCHARGED;
         if let Ok((Some(observation), _)) = &result
-            && let acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
+            && let acyclic_stream::IdempotencyOutcome::Commit(envelope) =
                 &observation.outcome
         {
             for mutation in &envelope.mutations {

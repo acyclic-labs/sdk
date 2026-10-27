@@ -229,15 +229,16 @@ impl MemoryStream {
         Ok(())
     }
 
-    fn copy_commit(
+    fn copy_envelope(
         &self,
-        value: &CommitOutcome,
-    ) -> Result<(CommitOutcome, Allocation), StreamError> {
+        value: &CommittedEnvelope,
+    ) -> Result<(CommittedEnvelope, Allocation), StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            let output = work.record(crate::native::clone_commit(
+            let output = work.record(crate::native::clone_envelope(
                 value,
                 &work.meter,
+                acyclic_native_runtime::NativeOperationKind::Write,
             ))?;
             let (value, allocation) = output.into_parts();
             return Ok((value, Some(allocation)));

@@ -510,7 +510,7 @@ pub enum IdempotencyOutcome {
     /// Successful immutable-prefix fork.
     Fork(ForkReceipt),
     /// Successful coordinated commit. Conflicts leave the key unspent.
-    Commit(CommitOutcome),
+    Commit(CommittedEnvelope),
 }
 
 /// Exact retained recovery fact for one caller-owned retry identity.

@@ -69,7 +69,7 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
         let observed = recovered.value().as_ref().ok_or("missing completion")?;
         assert_eq!(
             observed.outcome,
-            crate::IdempotencyOutcome::Commit(result.value().clone())
+            crate::IdempotencyOutcome::Commit(envelope)
         );
         drop(result);
         drop(recovered);

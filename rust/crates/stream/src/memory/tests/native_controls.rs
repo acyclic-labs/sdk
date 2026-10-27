@@ -155,10 +155,12 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
         );
         let cached = provider.inspect_idempotency(key).await?;
         if index == 0 {
-            assert_eq!(
-                cached.ok_or(StreamError::Unavailable)?.outcome,
-                IdempotencyOutcome::Commit(output.value().clone())
-            );
+            let IdempotencyOutcome::Commit(envelope) = cached.ok_or(StreamError::Unavailable)?.outcome
+                else { panic!("original Commit family") };
+            let CommitOutcome::Committed(receipt) = output.value()
+                else { panic!("original Commit result") };
+            assert!(receipt.matches_envelope(&envelope));
+            assert_eq!(provider.read_commit(receipt.commit_id).await?, envelope);
         } else {
             assert!(cached.is_none());
         }
@@ -306,7 +308,8 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     let IdempotencyOutcome::Commit(recovered) = &observation.outcome else {
         panic!("original Commit family")
     };
-    assert_eq!(recovered, output.value());
+    assert!(envelope.matches_envelope(recovered));
+    assert_eq!(*recovered, provider.read_commit(envelope.commit_id).await?);
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
@@ -374,7 +377,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
             assert_eq!(envelope.appends.len(), 2);
             assert!(envelope.forks.is_empty());
             assert_eq!(provider.tail(path("completion/owner")?).await?, 2);
-            IdempotencyOutcome::Commit(outcome)
+            IdempotencyOutcome::Commit(provider.read_commit(envelope.commit_id).await?)
         } else {
             let outcome = provider
                 .append(AppendRequest {
@@ -450,12 +453,12 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         .inspect_idempotency(key)
         .await?
         .ok_or(StreamError::Unavailable)?;
-    let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = &accepted.outcome else {
+    let IdempotencyOutcome::Commit(envelope) = &accepted.outcome else {
         panic!("canonical Commit family");
     };
     {
     let facts = provider.read_commit(envelope.commit_id).await?;
-    assert!(envelope.matches_envelope(&facts));
+    assert_eq!(*envelope, facts);
     let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
         panic!("one append");
     };
@@ -475,10 +478,9 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         .0
         .finish((OwnedBytes::from_static(b"actual-scalars")).into())
         .await??;
-    assert_eq!(
-        IdempotencyOutcome::Commit(repeated.value().clone()),
-        accepted.outcome
-    );
+    let CommitOutcome::Committed(receipt) = repeated.value()
+        else { panic!("original Commit result") };
+    assert!(receipt.matches_envelope(envelope));
     let (mut mismatch, mismatch_guard) = mismatch.into_parts();
     let recovery = mismatch
         .take_recovery_future()

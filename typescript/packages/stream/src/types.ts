@@ -119,7 +119,7 @@ export interface CommitOptions { readonly idempotencyKey: IdempotencyKey; readon
 export type IdempotencyOutcome =
   | { readonly type: Extract<IdempotencyKind, "append">; readonly outcome: AppendResult }
   | { readonly type: Extract<IdempotencyKind, "fork">; readonly receipt: ForkReceipt }
-  | { readonly type: Extract<IdempotencyKind, "commit">; readonly outcome: CommitResult };
+  | { readonly type: Extract<IdempotencyKind, "commit">; readonly outcome: CommittedEnvelope };
 export type IdempotencyObservation = PublicWire<WireIdempotencyObservation, { readonly idempotencyKey: IdempotencyKey; readonly outcome: IdempotencyOutcome }>;
 export type TokenGrant = PublicWire<WireTokenGrant, { readonly operations: readonly TokenOperation[] }>;
 export type CreateTokenRequest = PublicWire<WireCreateTokenRequest, { readonly allow: readonly TokenGrant[] }>;

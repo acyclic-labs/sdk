@@ -374,7 +374,7 @@ message IdempotencyObservation {
   oneof outcome {
     AppendResponse append = 3;
     ForkReceipt fork = 4;
-    CommitResponse commit = 7;
+    CommittedEnvelope commit = 7;
   }
 }
 

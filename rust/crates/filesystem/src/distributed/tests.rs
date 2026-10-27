@@ -741,7 +741,7 @@ impl StreamProvider for ReleaseSpy {
                 observation.idempotency_key = stream_key(b"another-release", b"identity")
                     .map_err(|_| StreamError::InvalidArgument)?;
             }
-            if let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
+            if let IdempotencyOutcome::Commit(envelope) =
                 &mut observation.outcome
             {
                 if let Some(CommittedMutation::Append(append)) = envelope.mutations.first_mut() {

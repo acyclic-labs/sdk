@@ -10,7 +10,7 @@ pub struct AppendRange {
 }
 
 /// Compact acknowledgment of one atomic publication. Full immutable records
-/// remain available through `StreamProvider::read_commit`.
+/// remain available through `StreamProvider::read_commit` and keyed inspection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitReceipt {
     /// Identity shared by every record and fork in this publication.

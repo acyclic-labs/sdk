@@ -507,7 +507,9 @@ impl StreamProvider for MemoryStream {
                             let IdempotencyOutcome::Commit(value) = &replay.result else {
                                 return Err(E::from(StreamError::IdempotencyMismatch));
                             };
-                            return provider.copy_commit(value).map_err(E::from);
+                            return provider.receipt(value, value.committed_at_micros)
+                                .map(|(receipt, claim)| (CommitOutcome::Committed(receipt), claim))
+                                .map_err(E::from);
                         }
                     }
                     before().await?;
