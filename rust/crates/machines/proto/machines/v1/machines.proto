@@ -78,6 +78,8 @@ enum ExpirationKind {
   EXPIRATION_KIND_MAX_AGE = 2;
   EXPIRATION_KIND_AT = 3;
   EXPIRATION_KIND_IDLE = 4;
+  // Admission only: the returned contract contains a concrete policy.
+  EXPIRATION_KIND_PROVIDER_DEFAULT = 5;
 }
 message ExpirationPolicy {
   ExpirationKind kind = 1;
@@ -377,14 +379,35 @@ message ExecRequest {
   repeated string argv = 3;
   // Command deadline in milliseconds, 1..60000.
   uint32 timeout_ms = 4;
+  // Absolute deadline of the verified caller authority. Presence is significant:
+  // zero is an already expired deadline, never an absent deadline.
+  optional uint64 expiry_unix_ms = 5;
+  // Combined stdout/stderr allowance. Zero permits no output; absent is unbounded.
+  optional uint64 maximum_output_bytes = 6;
+}
+enum ExecStopKind {
+  EXEC_STOP_KIND_UNSPECIFIED = 0;
+  EXEC_STOP_KIND_TIMEOUT = 1;
+  EXEC_STOP_KIND_EXPIRED = 2;
+  EXEC_STOP_KIND_OUTPUT_LIMIT = 3;
+  EXEC_STOP_KIND_CONTROL_STOPPED = 4;
+  EXEC_STOP_KIND_CAPTURE_FAILED = 5;
+}
+message ExecStop {
+  ExecStopKind kind = 1;
+  // At most 128 Unicode scalar values.
+  string message = 2;
+  bool cleanup_completed = 3;
 }
 message ExecOutput {
   MachineId machine = 1;
-  // Data is merged stdout/stderr in observed console order, 1..65536 bytes.
-  // Exactly one exit-code frame terminates the stream; no frame follows it.
+  // Exact stream bytes, 1..65536 per frame. Preserve each stream's order.
+  // Exactly one exit-code or stopped frame terminates the stream.
   oneof output {
-    bytes data = 2;
+    bytes stdout = 2;
     int32 exit_code = 3;
+    bytes stderr = 4;
+    ExecStop stopped = 5;
   }
 }
 // Reads the live retained guest console, without a lifecycle operation identity.

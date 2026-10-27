@@ -1,0 +1,223 @@
+{
+  "schema": "acyclic.machines.cloudflare-native-snapshot-capture.v1",
+  "source_commit": "07e558968fa4926b9262562885b5b48be2620de0",
+  "namespace": "ab1b6ff7-ab9c-491c-aa3e-e145cf870b94",
+  "provenance": "Actual HTTP responses from pinned Wrangler/workerd native local Containers on bb2; no account or credentials; request bodies are probe inputs.",
+  "provider_versions": {
+    "wrangler": "4.148.0",
+    "sandbox": "1.0.3"
+  },
+  "snapshot_retention": "Native provider TTL; Worker API exposes no snapshot deletion. This capture does not claim physical snapshot retirement.",
+  "snapshot": {
+    "id": "bc1888e2-3d14-4e1a-b80e-5e39930b0d51",
+    "size": 84914038
+  },
+  "cleanup_failures": [],
+  "exchanges": [
+    {
+      "captured_at": "2026-10-27T09:11:56.892Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0",
+      "method": "POST",
+      "request_base64": "eyJpbWFnZSI6IndvcmtzcGFjZSIsImVudiI6e30sImludGVybmV0IjpmYWxzZX0=",
+      "status": 201,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "",
+      "response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:56.962Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0/file?path=/workspace/snapshot-probe",
+      "method": "PUT",
+      "request_base64": "YmVmb3JlCg==",
+      "status": 204,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ]
+      ],
+      "response_base64": "",
+      "response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:57.060Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0/snapshot",
+      "method": "POST",
+      "request_base64": null,
+      "status": 200,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "eyJpZCI6ImJjMTg4OGUyLTNkMTQtNGUxYS1iODBlLTVlMzk5MzBiMGQ1MSIsInNpemUiOjg0OTE0MDM4fQ==",
+      "response_sha256": "32d63af454bc37eebfc433375180ab8eb4e25a6fcc5ad96a64f7a4a499db96f7"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:57.122Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0/file?path=/workspace/snapshot-probe",
+      "method": "PUT",
+      "request_base64": "YWZ0ZXIK",
+      "status": 204,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ]
+      ],
+      "response_base64": "",
+      "response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:57.798Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-afbdc960-c206-40d8-a059-5050085b5ce2-0",
+      "method": "POST",
+      "request_base64": "eyJpbWFnZSI6IndvcmtzcGFjZSIsImVudiI6e30sImludGVybmV0IjpmYWxzZSwic25hcHNob3QiOnsiaWQiOiJiYzE4ODhlMi0zZDE0LTRlMWEtYjgwZS01ZTM5OTMwYjBkNTEiLCJzaXplIjo4NDkxNDAzOH19",
+      "status": 201,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "",
+      "response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:57.871Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-afbdc960-c206-40d8-a059-5050085b5ce2-0/file?path=/workspace/snapshot-probe",
+      "method": "GET",
+      "request_base64": null,
+      "status": 200,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "YmVmb3JlCg==",
+      "response_sha256": "9160d4be34c8695bd172a76c7c7966587ea5a4d991ad22c87b2b91af54aa9ebb"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:57.931Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0/file?path=/workspace/snapshot-probe",
+      "method": "GET",
+      "request_base64": null,
+      "status": 200,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "YWZ0ZXIK",
+      "response_sha256": "7b9a72466d3960eb2aacccfc848939453490db0678bd4725def3f789b891c919"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:57.938Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-afbdc960-c206-40d8-a059-5050085b5ce2-0",
+      "method": "GET",
+      "request_base64": null,
+      "status": 200,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "eyJydW5uaW5nIjp0cnVlfQ==",
+      "response_sha256": "5359579cc62de8b34114eaf670858967b53735fc1ec16d4ceb55f237a19708c1"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:58.014Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-afbdc960-c206-40d8-a059-5050085b5ce2-0",
+      "method": "DELETE",
+      "request_base64": null,
+      "status": 204,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ]
+      ],
+      "response_base64": "",
+      "response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:58.021Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0",
+      "method": "GET",
+      "request_base64": null,
+      "status": 200,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ]
+      ],
+      "response_base64": "eyJydW5uaW5nIjp0cnVlfQ==",
+      "response_sha256": "5359579cc62de8b34114eaf670858967b53735fc1ec16d4ceb55f237a19708c1"
+    },
+    {
+      "captured_at": "2026-10-27T09:11:58.089Z",
+      "url": "http://127.0.0.1:15440/sandboxes/acyclic-ab1b6ff7-ab9c-491c-aa3e-e145cf870b94-ba030af7-90c3-4850-9a31-1b0b44a5be9c-0",
+      "method": "DELETE",
+      "request_base64": null,
+      "status": 204,
+      "headers": [
+        [
+          "content-encoding",
+          "gzip"
+        ]
+      ],
+      "response_base64": "",
+      "response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

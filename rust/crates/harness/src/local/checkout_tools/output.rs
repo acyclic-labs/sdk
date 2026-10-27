@@ -4,7 +4,7 @@ use acyclic_native_runtime::ProcessOutput;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, oneshot};
 
-mod writer;
+use crate::tools::ToolOutputWriter;
 
 /// The native contract's bound on one host control check.
 pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
@@ -20,7 +20,7 @@ pub(super) fn await_publication<T, F: std::future::Future<Output = std::io::Resu
 }
 
 pub(super) struct Output {
-    writer: Arc<Mutex<writer::Writer>>,
+    writer: Arc<Mutex<ToolOutputWriter>>,
     ready: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
     timer: Option<tokio::task::JoinHandle<()>>,
@@ -85,7 +85,7 @@ impl Health {
 
 impl Output {
     pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
-        let writer = writer::Writer::open(context, request).await?;
+        let writer = ToolOutputWriter::open(context, request).await?;
         let writer = Arc::new(Mutex::new(writer));
         let ready = Arc::new(Notify::new());
         let health = Health::default();
@@ -114,7 +114,9 @@ impl Output {
         let mut writer = self.writer.blocking_lock();
         self.health.check()?;
         let was_empty = !writer.pending();
-        if let Err(cause) = writer.observe(chunk) {
+        if let Err(cause) = await_publication(&self.runtime, || async {
+            writer.observe(chunk).await.map_err(std::io::Error::other)
+        }) {
             self.health.fail(&cause);
             return Err(cause);
         }
@@ -173,7 +175,7 @@ impl Drop for Output {
 }
 
 async fn flush_ready(
-    writer: Arc<Mutex<writer::Writer>>,
+    writer: Arc<Mutex<ToolOutputWriter>>,
     ready: Arc<Notify>,
     health: Health,
     mut stopped: oneshot::Receiver<()>,

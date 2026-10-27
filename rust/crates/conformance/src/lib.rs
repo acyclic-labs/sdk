@@ -10,6 +10,10 @@ pub mod client;
 pub mod filesystem;
 /// Provider-neutral inference assertions over the public streaming model seam.
 pub mod inference;
+mod machines_io;
+/// Shell executor vectors, identical for every real Machines transport.
+#[cfg(all(feature = "machines-shell", not(target_arch = "wasm32")))]
+pub mod machines_shell;
 /// Machine-readable cross-language conformance reports and qualification receipts.
 pub mod runner;
 
@@ -165,6 +169,10 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     if machine.state != MachineState::Running || machine.endpoints.len() != 1 {
         return Err("created machine is not ready with one stable endpoint".into());
     }
+    if machine.contract.expiration == acyclic_machines::ExpirationPolicy::ProviderDefault {
+        return Err("create retained an unresolved expiration request in its contract".into());
+    }
+    machines_io::verify(provider, &machine).await?;
     let operation = provider
         .recover_operation(create_key)
         .await
@@ -199,7 +207,7 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     let checkpointed = provider
         .checkpoint(machine.id, key(2)?)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("disk checkpoint vector: {error}"))?;
     let MutationOutcome::Checkpointed(checkpoint) = checkpointed else {
         return Err("checkpoint returned the wrong outcome".into());
     };
@@ -220,23 +228,37 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     if first_child.id == second_child.id || children.contains(&machine) {
         return Err("fork identities are not an exact fresh set".into());
     }
-    provider
-        .suspend(machine.id, key(4)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_machine(machine.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .state
-        != MachineState::Suspended
+    if machine
+        .contract
+        .capabilities
+        .contains(&Capability::SuspendResume)
     {
-        return Err("suspend did not change observable state".into());
+        provider
+            .suspend(machine.id, key(4)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if provider
+            .inspect_machine(machine.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .state
+            != MachineState::Suspended
+        {
+            return Err("suspend did not change observable state".into());
+        }
+        provider
+            .wake(machine.id, key(5)?)
+            .await
+            .map_err(|error| error.to_string())?;
+    } else if !matches!(
+        provider.suspend(machine.id, key(4)?).await,
+        Err(ProviderError::Unsupported(_))
+    ) || !matches!(
+        provider.wake(machine.id, key(5)?).await,
+        Err(ProviderError::Unsupported(_))
+    ) {
+        return Err("undeclared suspension did not fail explicitly".into());
     }
-    provider
-        .wake(machine.id, key(5)?)
-        .await
-        .map_err(|error| error.to_string())?;
     let events = provider
         .events(machine.id, None, 16)
         .await
@@ -249,14 +271,19 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
             _ => None,
         })
         .collect::<Vec<_>>();
-    if !states.windows(3).any(|states| {
-        states
-            == [
-                MachineState::Running,
-                MachineState::Suspended,
-                MachineState::Running,
-            ]
-    }) {
+    if machine
+        .contract
+        .capabilities
+        .contains(&Capability::SuspendResume)
+        && !states.windows(3).any(|states| {
+            states
+                == [
+                    MachineState::Running,
+                    MachineState::Suspended,
+                    MachineState::Running,
+                ]
+        })
+    {
         return Err("lifecycle state event history is incomplete".into());
     }
     let usage = provider
@@ -270,6 +297,12 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
         return Err("simulation usage receipt is malformed".into());
     }
     live_fork(provider, &machine).await?;
+    for (suffix, child) in [(0x40, first_child), (0x41, second_child)] {
+        provider
+            .destroy_machine(child.id, key(suffix)?)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     provider
         .destroy_checkpoint(checkpoint.id, key(6)?)
         .await

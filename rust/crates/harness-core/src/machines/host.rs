@@ -155,7 +155,7 @@ impl MachinesHost {
             .map_err(|_| Error::Invalid("machine image artifact key must be 32 bytes".into()))?;
         Image::custom(digest).map_err(|error| Error::Invalid(error.to_string()))
     }
-    fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
+    pub(super) fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
         parse_uuid(self.key(reference.as_resource())?, MachineId::parse)
     }
     pub(super) fn checkpoint_id(&self, reference: &CheckpointRef) -> Result<CheckpointId> {

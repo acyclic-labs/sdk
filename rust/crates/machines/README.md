@@ -1,6 +1,6 @@
 # acyclic-machines
 
-Machines protocol 1.1 is shape-free. Customers choose an immutable image and
+Machines protocol 1.2 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject
@@ -9,17 +9,21 @@ the predecessor protocol revision rather than reinterpret its requests.
 Typed Machines contract for immutable image qualification, machine lifecycle, checkpoints, forks, operation recovery, events, and usage receipts.
 
 `Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one bounded guest
-command and returns a disposable stream of merged output bytes followed by one
-exit code. Dropping the stream cancels its RPC. A lost reply or interrupted stream
-returns `ProviderError::CommandIndeterminate(machine)`: the command may have run,
-so never redispatch it automatically. Argument validation does not evaluate a
+command and returns separate binary `ExecOutput::Stdout` and `Stderr` frames,
+followed by one exit code or typed `Stopped` result. `with_expiry` bounds the
+command by verified authority; `with_output_limit` bounds both streams together.
+A stopped result records its reason and whether cleanup completed. Dropping the
+stream stops the command and its descendants. Remote capture failures return a
+typed stop with partial output and cleanup evidence. An uncertain dispatch or
+interrupted gRPC stream can return `ProviderError::CommandIndeterminate(machine)`:
+the command may have run, so never redispatch it automatically. Argument validation does not evaluate a
 shell; shell execution requires an explicit shell program in `argv`.
 
 `Machine::read_output(offset, limit)` reads the retained live console with exact
 `u64` offsets. A later response offset exposes discarded bytes; continue from
 `output.offset + output.data.len()`. Empty data means no newer bytes now, not EOF.
-The simulator and Daytona adapter return `Unsupported` for guest I/O; neither
-fabricates output or a command result.
+The simulator returns `Unsupported` for guest I/O. Remote sandbox providers use
+the shared execution owner; Daytona requires its documented v2 process toolbox.
 
 ```sh
 cargo add acyclic-machines

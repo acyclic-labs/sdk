@@ -18,6 +18,7 @@ use crate::{
     resources::{GenerationRef, ProviderRef},
     runtime::RuntimeScope,
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
+    runtime::ContentBindings,
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
@@ -327,6 +328,15 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     #[must_use]
     pub const fn volume(&self) -> &VolumeRef {
         &self.volume
+    }
+
+    /// Composes the authenticated private volume with a caller-selected runtime.
+    #[must_use]
+    pub fn content_bindings(&self) -> ContentBindings {
+        ContentBindings {
+            reader: self.content_verifier.clone(),
+            writer: Some(self.publisher.clone()),
+        }
     }
 
     /// Borrows the authenticated reader for context and client adapters.

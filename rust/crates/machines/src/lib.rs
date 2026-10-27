@@ -40,7 +40,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Current public protocol major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 2;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Largest bearer credential, in bytes, that an SDK client accepts.
@@ -67,3 +67,7 @@ pub mod grpc;
 mod obs;
 #[cfg(feature = "grpc")]
 pub use grpc::Tls;
+
+/// Mechanisms shared by remote sandbox providers.
+#[cfg(all(feature = "provider-core", not(target_arch = "wasm32")))]
+pub mod provider_core;

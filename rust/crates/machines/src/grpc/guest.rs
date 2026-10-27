@@ -37,14 +37,40 @@ pub(super) fn decode_exec_output(
         ));
     }
     match value.output {
-        Some(wire::exec_output::Output::Data(data))
+        Some(wire::exec_output::Output::Stdout(data))
             if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
         {
-            Ok(ExecOutput::Data(data))
+            Ok(ExecOutput::Stdout(data))
+        }
+        Some(wire::exec_output::Output::Stderr(data))
+            if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
+        {
+            Ok(ExecOutput::Stderr(data))
         }
         Some(wire::exec_output::Output::ExitCode(code)) => {
             *exited = true;
             Ok(ExecOutput::ExitCode(code))
+        }
+        Some(wire::exec_output::Output::Stopped(stop)) => {
+            let kind = match wire::ExecStopKind::try_from(stop.kind) {
+                Ok(wire::ExecStopKind::Timeout) => ExecStopKind::Timeout,
+                Ok(wire::ExecStopKind::Expired) => ExecStopKind::Expired,
+                Ok(wire::ExecStopKind::OutputLimit) => ExecStopKind::OutputLimit,
+                Ok(wire::ExecStopKind::ControlStopped) => ExecStopKind::ControlStopped,
+                Ok(wire::ExecStopKind::CaptureFailed) => ExecStopKind::CaptureFailed,
+                _ => return Err(ProviderError::Rejected("invalid exec stop kind".into())),
+            };
+            if stop.message.chars().count() > 128 {
+                return Err(ProviderError::Rejected(
+                    "exec stop message exceeds its bound".into(),
+                ));
+            }
+            *exited = true;
+            Ok(ExecOutput::Stopped(ExecStop {
+                kind,
+                message: stop.message,
+                cleanup_completed: stop.cleanup_completed,
+            }))
         }
         _ => Err(ProviderError::Rejected("invalid exec output frame".into())),
     }

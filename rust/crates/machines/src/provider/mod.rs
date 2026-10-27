@@ -117,3 +117,6 @@ pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError
 
 mod client;
 pub use client::*;
+
+mod intent;
+pub use intent::MutationIntent;

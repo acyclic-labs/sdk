@@ -6,6 +6,19 @@ pub use agents::{
 };
 pub mod shell;
 pub use shell::ShellInput;
+#[cfg(all(
+    feature = "filesystem",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod output_writer;
+#[cfg(all(
+    feature = "filesystem",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub use output_writer::ToolOutputWriter;
 mod defaults;
 pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;

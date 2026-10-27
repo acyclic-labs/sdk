@@ -155,6 +155,8 @@ pub type OperationStream =
 pub struct ExecCommand {
     pub(crate) argv: Vec<String>,
     pub(crate) timeout_ms: u32,
+    pub(crate) expiry_unix_ms: Option<u64>,
+    pub(crate) maximum_output_bytes: Option<u64>,
 }
 
 impl ExecCommand {
@@ -169,9 +171,40 @@ impl ExecCommand {
             || argv.iter().map(String::len).sum::<usize>() > 32768
             || !(1..=60000).contains(&timeout_ms)
         {
-            return Err(ProviderError::Invalid("invalid guest command".into()));
+            return Err(ProviderError::Invalid("guest command admission failed; recovery: supply 1..64 NUL-free arguments within 4096 bytes each and 32768 bytes total, and an explicit timeout within 1..60000 milliseconds".into()));
         }
-        Ok(Self { argv, timeout_ms })
+        Ok(Self {
+            argv,
+            timeout_ms,
+            expiry_unix_ms: None,
+            maximum_output_bytes: None,
+        })
+    }
+
+    /// Bounds execution by an already verified authority's absolute expiry.
+    /// This deadline applies even when a command produces no output.
+    #[must_use]
+    pub fn with_expiry(mut self, expiry_unix_ms: u64) -> Self {
+        self.expiry_unix_ms = Some(expiry_unix_ms);
+        self
+    }
+
+    #[must_use]
+    pub fn expiry_unix_ms(&self) -> Option<u64> {
+        self.expiry_unix_ms
+    }
+
+    /// Stops capture and the command when combined stdout/stderr exceeds this
+    /// allowance. The emitted bytes are a prefix no longer than the allowance.
+    #[must_use]
+    pub fn with_output_limit(mut self, maximum_output_bytes: u64) -> Self {
+        self.maximum_output_bytes = Some(maximum_output_bytes);
+        self
+    }
+
+    #[must_use]
+    pub fn maximum_output_bytes(&self) -> Option<u64> {
+        self.maximum_output_bytes
     }
 
     #[must_use]
@@ -185,11 +218,31 @@ impl ExecCommand {
     }
 }
 
-/// Merged stdout/stderr bytes or the single terminal guest exit code.
+/// Exact stdout/stderr bytes followed by one terminal exit or stopped capture.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecOutput {
-    Data(Vec<u8>),
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
     ExitCode(i32),
+    Stopped(ExecStop),
+}
+
+/// Why a command stopped before its normal, fully drained exit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecStopKind {
+    Timeout,
+    Expired,
+    OutputLimit,
+    ControlStopped,
+    CaptureFailed,
+}
+
+/// A bounded capture result; cleanup failure never implies a safe retry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecStop {
+    pub kind: ExecStopKind,
+    pub message: String,
+    pub cleanup_completed: bool,
 }
 
 /// Disposable guest output view. Dropping it cancels the RPC, never retries it.

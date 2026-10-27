@@ -90,3 +90,21 @@ fn windows_shell_name_keeps_powershell_execution() -> crate::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn native_shell_contract_is_preserved_before_executor_selection() -> crate::Result<()> {
+    let mut input = ShellInput {
+        command: "#".repeat(32_768),
+        cwd: Some("a/".repeat(4096)),
+        timeout: None,
+    };
+    input.validate()?;
+    assert_eq!(input.timeout_ms()?, 300_000);
+    input.command = "sleep 90".into();
+    input.timeout = Some(120);
+    input.validate()?;
+    assert_eq!(input.timeout_ms()?, 120_000);
+    input.timeout = Some(4_294_967);
+    assert_eq!(input.timeout_ms()?, 4_294_967_000);
+    Ok(())
+}

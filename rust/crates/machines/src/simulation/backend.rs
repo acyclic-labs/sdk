@@ -33,7 +33,7 @@ impl MachinesProvider for SimulatedMachines {
     }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
         let key = request.idempotency_key;
-        let intent = MemoryIntent::Create(request.clone());
+        let intent = MutationIntent::Create(request.clone());
         let capabilities = self.capabilities.clone();
         self.apply(key, intent, move |state| {
             if let CompatibilityPolicy::Require(required) = &request.compatibility
@@ -122,7 +122,7 @@ impl MachinesProvider for SimulatedMachines {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, MemoryIntent::Checkpoint(machine), move |state| {
+        self.apply(key, MutationIntent::Checkpoint(machine), move |state| {
             let source = state
                 .machines
                 .get(&machine)
@@ -178,7 +178,7 @@ impl MachinesProvider for SimulatedMachines {
         }
         self.apply(
             key,
-            MemoryIntent::Fork(checkpoint, count_value),
+            MutationIntent::Fork(checkpoint, count_value),
             move |state| {
                 let source = state
                     .checkpoints
@@ -236,7 +236,7 @@ impl MachinesProvider for SimulatedMachines {
         }
         self.apply(
             key,
-            MemoryIntent::ForkMachine(machine, count_value),
+            MutationIntent::ForkMachine(machine, count_value),
             move |state| {
                 let source = state
                     .machines
@@ -292,7 +292,7 @@ impl MachinesProvider for SimulatedMachines {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, MemoryIntent::Suspend(machine), move |state| {
+        self.apply(key, MutationIntent::Suspend(machine), move |state| {
             transition(
                 state,
                 machine,
@@ -308,7 +308,7 @@ impl MachinesProvider for SimulatedMachines {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, MemoryIntent::Wake(machine), move |state| {
+        self.apply(key, MutationIntent::Wake(machine), move |state| {
             transition(
                 state,
                 machine,
@@ -325,7 +325,7 @@ impl MachinesProvider for SimulatedMachines {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, MemoryIntent::Policy(machine, policy), move |state| {
+        self.apply(key, MutationIntent::Policy(machine, policy), move |state| {
             let value = state
                 .machines
                 .get(&machine)
@@ -351,7 +351,7 @@ impl MachinesProvider for SimulatedMachines {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, MemoryIntent::DestroyMachine(machine), move |state| {
+        self.apply(key, MutationIntent::DestroyMachine(machine), move |state| {
             let current = state
                 .machines
                 .get(&machine)
@@ -394,7 +394,7 @@ impl MachinesProvider for SimulatedMachines {
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(
             key,
-            MemoryIntent::DestroyCheckpoint(checkpoint),
+            MutationIntent::DestroyCheckpoint(checkpoint),
             move |state| {
                 let value = state
                     .checkpoints

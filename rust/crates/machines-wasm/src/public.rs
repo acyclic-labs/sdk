@@ -332,6 +332,7 @@ fn suspension_in(value: SuspensionIn) -> Result<SuspensionPolicy, JsValue> {
 #[derive(Deserialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ExpirationIn {
+    ProviderDefault {},
     Never {},
     MaxAge {
         #[tsify(type = "number")]
@@ -348,6 +349,7 @@ pub enum ExpirationIn {
 }
 fn expiration_in(value: ExpirationIn) -> Result<ExpirationPolicy, JsValue> {
     match value {
+        ExpirationIn::ProviderDefault {} => Ok(ExpirationPolicy::ProviderDefault),
         ExpirationIn::Never {} => Ok(ExpirationPolicy::Never),
         ExpirationIn::MaxAge { milliseconds } => {
             let milliseconds = milliseconds.0;
@@ -384,6 +386,7 @@ pub enum TimedOut {
         #[tsify(type = "number")]
         milliseconds: SafeNumber,
     },
+    ProviderDefault,
     Never,
     MaxAge {
         #[tsify(type = "number")]
@@ -411,6 +414,7 @@ fn suspension_out(value: &SuspensionPolicy) -> TimedOut {
 }
 fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
     match value {
+        ExpirationPolicy::ProviderDefault => TimedOut::ProviderDefault,
         ExpirationPolicy::Never => TimedOut::Never,
         ExpirationPolicy::MaxAge(v) => TimedOut::MaxAge {
             milliseconds: SafeNumber(millis(*v)),

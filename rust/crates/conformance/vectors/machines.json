@@ -22,6 +22,17 @@
     "live-fork-children-inherit-the-source-contract",
     "live-fork-without-capability-is-unsupported",
     "live-fork-children-join-before-their-source",
-    "all-seven-capability-intents-round-trip"
+    "all-seven-capability-intents-round-trip",
+    "unsupported-suspend-and-wake-fail-explicitly",
+    "guest-stdout-and-stderr-stream-before-exit",
+    "guest-output-preserves-binary-bytes",
+    "guest-nonzero-exit-code-is-terminal",
+    "guest-output-drop-stops-process-descendants",
+    "guest-normal-exit-retires-process-descendants",
+    "guest-absolute-expiry-wakes-an-unpolled-quiet-stream",
+    "guest-output-limit-stops-process-descendants",
+    "guest-stops-report-cleanup-completion",
+    "guest-console-output-is-retained",
+    "simulation-refuses-os-execution"
   ]
 }

@@ -28,6 +28,18 @@ mod fork;
 mod host;
 mod identity;
 pub use host::MachinesHost;
+#[cfg(all(
+    feature = "filesystem",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod shell;
 use identity::{machines_key, map_error, parse_uuid};
+#[cfg(all(
+    feature = "filesystem",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use shell::MachineShell;
 #[cfg(test)]
 mod tests;

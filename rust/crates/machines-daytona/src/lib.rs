@@ -10,8 +10,10 @@ pub mod map;
     reason = "test-only HTTP stand-in; a broken mock should fail the test loudly"
 )]
 mod mock;
-pub mod ops;
-pub mod usage;
+#[cfg(test)]
+mod operation_tests;
+#[cfg(test)]
+mod usage_tests;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,6 +22,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use acyclic_machines::provider_core::{Admission, operation_id, shell_quote};
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
     ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
@@ -29,16 +33,17 @@ use acyclic_machines::{
     ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
-use futures::StreamExt as _;
-use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use api::{CreateSnapshotRequest, DaytonaApi, ExecuteRequest, ForkRequest, Sandbox, Snapshot};
-use ops::{Admission, OperationRegistry};
+use acyclic_machines::provider_core::{
+    Allocation, MutationIntent as Intent, OperationRegistry, allocation_receipt,
+    snapshot_unavailable,
+};
+use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox, Snapshot};
 
 /// Default Daytona API base URL.
 pub const DEFAULT_API_URL: &str = "https://app.daytona.io/api";
-/// Default directory a container disk fork copies into its children.
+/// Default working directory for guest command execution.
 pub const DEFAULT_WORKSPACE_DIR: &str = "/home/daytona/workspace";
 
 /// Provider configuration.
@@ -74,8 +79,7 @@ pub struct DaytonaConfig {
     pub ready_timeout: Duration,
     /// Per-request HTTP timeout.
     pub request_timeout: Duration,
-    /// Absolute directory a container disk fork (`Capability::DiskFork`) copies from the
-    /// source into each child; everything outside it comes from the source's snapshot.
+    /// Absolute working directory for guest command execution.
     pub workspace_dir: String,
 }
 
@@ -171,7 +175,7 @@ pub enum Assurance {
 }
 
 /// Feature declaration of this provider. VM-class features apply to `linux-vm` and `windows`
-/// sandboxes; container-class sandboxes offer only [`Self::container_disk_fork`].
+/// sandboxes. Container-class sandboxes have no atomic snapshot boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DaytonaCapabilities {
     /// Checkpoints capture VM memory (hot snapshot, `includeMemory`).
@@ -179,8 +183,7 @@ pub struct DaytonaCapabilities {
     /// Native fork copies a running VM's memory and disk (`POST /sandbox/{id}/fork`), at any
     /// time, without an intermediate checkpoint.
     pub live_fork_memory: Assurance,
-    /// Container disk fork: fresh sandboxes from the source's snapshot, with the source's
-    /// workspace directory copied in through the toolbox. No process or memory state.
+    /// Container disk fork is unavailable without an atomic snapshot boundary.
     pub container_disk_fork: Assurance,
     /// A suspended machine keeps its memory (pause, not stop) and frees CPU and memory quota.
     pub suspend_keeps_memory: Assurance,
@@ -197,26 +200,12 @@ pub struct DaytonaCapabilities {
 pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
     checkpoint_memory: Assurance::Yes,
     live_fork_memory: Assurance::Yes,
-    container_disk_fork: Assurance::Yes,
+    container_disk_fork: Assurance::No,
     suspend_keeps_memory: Assurance::Yes,
     network_policy: Assurance::Provisional,
     usage_receipts: Assurance::Provisional,
     restore_cross_host: Assurance::No,
 };
-
-/// Canonical intent of one mutation, digested for idempotency-key rebinding checks.
-#[derive(Clone, Debug, Serialize)]
-enum Intent {
-    Create(CreateMachine),
-    Checkpoint(MachineId),
-    Fork(CheckpointId, u32),
-    ForkMachine(MachineId, u32),
-    Suspend(MachineId),
-    Wake(MachineId),
-    Policy(MachineId, SuspensionPolicy),
-    DestroyMachine(MachineId),
-    DestroyCheckpoint(CheckpointId),
-}
 
 /// Machines provider over Daytona VM sandboxes.
 pub struct DaytonaProvider {
@@ -225,6 +214,7 @@ pub struct DaytonaProvider {
     ops: OperationRegistry,
     boot_env: Mutex<BTreeMap<IdempotencyKey, BTreeMap<String, String>>>,
     snapshot_classes: Mutex<BTreeMap<String, String>>,
+    history: acyclic_machines::provider_core::ConsoleHistory,
 }
 
 /// Staged boot environments hold credentials; only their count and variable names are ever
@@ -269,6 +259,7 @@ impl DaytonaProvider {
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when the configuration cannot produce a client.
     pub fn new(config: DaytonaConfig) -> Result<Self, ProviderError> {
+        acyclic_machines::provider_core::validate_workspace(&config.workspace_dir)?;
         let api = DaytonaApi::new(&config)?;
         Ok(Self {
             config,
@@ -276,6 +267,7 @@ impl DaytonaProvider {
             ops: OperationRegistry::default(),
             boot_env: Mutex::default(),
             snapshot_classes: Mutex::default(),
+            history: acyclic_machines::provider_core::ConsoleHistory::default(),
         })
     }
 
@@ -402,7 +394,12 @@ impl DaytonaProvider {
             compatibility: request.compatibility.clone(),
             compatibility_revision: Self::revision(),
             suspension,
-            expiration: request.expiration,
+            expiration: if request.expiration == acyclic_machines::ExpirationPolicy::ProviderDefault
+            {
+                acyclic_machines::ExpirationPolicy::Never
+            } else {
+                request.expiration
+            },
             network_policy_digest: request.network_policy_digest,
             budgets: request.budgets,
         })
@@ -647,51 +644,11 @@ impl DaytonaProvider {
     where
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
     {
-        let operation = match self.ops.admit(key, intent)? {
-            Admission::Replay(outcome) => return Ok(*outcome),
-            Admission::Fresh(operation) => operation,
-        };
-        match action(operation).await {
-            Ok(outcome) => {
-                self.ops.complete(operation, outcome.clone());
-                match self.ops.inspect(operation).map(|value| value.phase) {
-                    Some(OperationPhase::Cancelled) => Err(ProviderError::Cancelled),
-                    _ => Ok(outcome),
-                }
-            }
-            Err(error) => {
-                let touched = self
-                    .ops
-                    .record(operation)
-                    .is_some_and(|record| !record.created.is_empty() || !record.targets.is_empty());
-                let before_side_effect = matches!(
-                    error,
-                    ProviderError::Invalid(_)
-                        | ProviderError::Unsupported(_)
-                        | ProviderError::NotFound(_)
-                        | ProviderError::Conflict(_)
-                        | ProviderError::Rejected(_)
-                );
-                if !touched && before_side_effect {
-                    self.ops.forget(operation);
-                } else {
-                    self.ops.fail(operation, &error);
-                    // A definite failure leaves nothing the caller can use or replay, so undo
-                    // whatever the operation created (for example fork children whose
-                    // workspace never unpacked). An indeterminate outcome keeps its sandboxes
-                    // for `recover`, and `cancel` undoes it.
-                    if !matches!(
-                        error,
-                        ProviderError::Indeterminate(_)
-                            | ProviderError::Unavailable
-                            | ProviderError::Cancelled
-                    ) {
-                        self.roll_back(operation).await;
-                    }
-                }
-                Err(error)
-            }
-        }
+        self.ops
+            .apply(key, intent, action, async |operation| {
+                self.roll_back(operation).await;
+            })
+            .await
     }
 
     /// Waits for fork children to start and observes them under `contract`.
@@ -830,98 +787,6 @@ impl DaytonaProvider {
         }
     }
 
-    /// Container disk fork: archives the parent's workspace directory once, at a quiescent
-    /// instant (see [`quiescent_archive_script`]), creates each child from the parent's snapshot
-    /// with the parent's lifecycle settings, environment, and foreign labels, and unpacks the
-    /// archive into it. The workspace is this provider's declared persistent disk; everything
-    /// else is the snapshot both boot from. Processes and memory are not inherited. A child is
-    /// labelled ready only after its workspace is unpacked.
-    async fn disk_fork(
-        &self,
-        operation: OperationId,
-        parent: &MachineObservation,
-        count: u32,
-        key: IdempotencyKey,
-    ) -> Result<Vec<MachineObservation>, ProviderError> {
-        let source = self.api.get(&parent.id.to_string()).await?;
-        let snapshot = source.snapshot.clone().ok_or_else(|| {
-            ProviderError::Rejected(format!("sandbox {} reports no snapshot", source.id))
-        })?;
-        let tar_path = format!("/tmp/acyclic-fork-{key}.tar");
-        let archive_path = format!("{tar_path}.gz");
-        let workspace = shell_quote(&self.config.workspace_dir);
-        let archive_quoted = shell_quote(&archive_path);
-        match run_status(
-            &self.api,
-            &source.id,
-            quiescent_archive_script(&self.config.workspace_dir, &tar_path, ARCHIVE_ATTEMPTS),
-        )
-        .await?
-        {
-            Some(0) => {}
-            Some(NOT_QUIESCENT) => {
-                return Err(ProviderError::Conflict(format!(
-                    "the workspace of {} kept changing across {ARCHIVE_ATTEMPTS} archive attempts; a disk fork needs one consistent instant, so quiesce the workload and retry",
-                    source.id
-                )));
-            }
-            _ => return Err(ProviderError::Failed),
-        }
-        let archive = self.api.download_file(&source.id, &archive_path).await;
-        if let Err(error) = run(&self.api, &source.id, format!("rm -f {archive_quoted}")).await {
-            tracing::warn!(
-                sandbox_id = source.id.as_str(),
-                error.kind = error.kind(),
-                "best-effort removal of the fork archive in the parent failed"
-            );
-        }
-        let archive = archive?;
-        let mut ids = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let slot = map::ForkSlot { index, count };
-            let mut body =
-                map::create_request(&self.config, &snapshot, key, Some(slot), &parent.contract)?;
-            body.labels = map::relabel(&source.labels, self.live_fork_labels(key, slot, parent));
-            if let Some(minutes) = source
-                .auto_stop_interval
-                .and_then(|value| u32::try_from(value).ok())
-            {
-                body.auto_stop_interval = Some(minutes);
-            }
-            if let Some(minutes) = source.auto_delete_interval {
-                body.auto_delete_interval = Some(minutes);
-            }
-            body.env = inherited_env(&source);
-            let (child, adopted) = self.create_or_adopt(&body).await?;
-            self.claim(operation, &child.id, adopted).await?;
-            ids.push((child.id, body.labels));
-        }
-        let mut children = Vec::with_capacity(ids.len());
-        for (id, mut labels) in ids {
-            let settled = self.wait_settled(&id, key).await?;
-            self.api
-                .upload_file(&settled.id, &archive_path, &archive)
-                .await?;
-            run(
-                &self.api,
-                &settled.id,
-                format!(
-                    "mkdir -p {workspace} && tar -C {workspace} -xzf {archive_quoted} && rm -f {archive_quoted}"
-                ),
-            )
-            .await?;
-            // Only now is the child a complete copy; label recovery requires this marker.
-            labels.insert(map::LABEL_READY.to_owned(), "true".to_owned());
-            self.api.replace_labels(&id, labels).await?;
-            let observation = self.observe(&settled, Some(&parent.contract), None)?;
-            if observation.state != MachineState::Running {
-                return Err(ProviderError::Failed);
-            }
-            children.push(observation);
-        }
-        Ok(children)
-    }
-
     fn live_fork_labels(
         &self,
         key: IdempotencyKey,
@@ -1032,22 +897,41 @@ impl MachinesProvider for DaytonaProvider {
     }
     async fn exec(
         &self,
-        _machine: MachineId,
-        _command: ExecCommand,
+        machine: MachineId,
+        command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "Daytona guest command streaming is not bound".into(),
-        ))
+        let observation = self
+            .ops
+            .machine(machine)
+            .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        if observation.state != MachineState::Running {
+            return Err(ProviderError::Conflict(
+                "exec requires a running machine".into(),
+            ));
+        }
+        let expiry = acyclic_machines::provider_core::expiration_deadline(
+            observation.contract.expiration,
+            observation.created_at_unix_ms,
+        )?;
+        acyclic_machines::provider_core::owned_exec(
+            machine,
+            &command,
+            expiry,
+            self.history.clone(),
+            self.api
+                .prepare_exec(&machine.to_string(), &command, &self.config.workspace_dir),
+        )
     }
     async fn read_output(
         &self,
-        _machine: MachineId,
-        _offset: u64,
-        _limit: u32,
+        machine: MachineId,
+        offset: u64,
+        limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "Daytona retained console reads are not bound".into(),
-        ))
+        self.ops
+            .machine(machine)
+            .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        self.history.read(machine, offset, limit)
     }
 
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
@@ -1279,9 +1163,9 @@ impl MachinesProvider for DaytonaProvider {
         .await
     }
 
-    /// Native VM fork for machines declaring [`Capability::LiveFork`] (memory and disk), and
-    /// a workspace-copying disk fork for containers declaring [`Capability::DiskFork`]; see
-    /// the crate README. Children are labelled with their source (`acyclic.parent`).
+    /// Native VM fork for machines declaring [`Capability::LiveFork`] (memory and disk).
+    /// Containers are refused: no atomic workspace snapshot boundary is available.
+    /// Children are labelled with their source (`acyclic.parent`).
     async fn fork_machine(
         &self,
         machine: MachineId,
@@ -1309,9 +1193,7 @@ impl MachinesProvider for DaytonaProvider {
                     ForkFidelity::MemoryAndDisk => {
                         self.native_fork(operation, &parent, count, key).await?
                     }
-                    ForkFidelity::DiskOnly => {
-                        self.disk_fork(operation, &parent, count, key).await?
-                    }
+                    ForkFidelity::DiskOnly => return Err(snapshot_unavailable()),
                 };
                 Ok(MutationOutcome::MachineForked {
                     source: machine,
@@ -1476,7 +1358,7 @@ impl MachinesProvider for DaytonaProvider {
         })
     }
 
-    /// Allocation-based estimate; see [`usage`]. Daytona has no per-sandbox metering endpoint.
+    /// Allocation-based estimate; see [`acyclic_machines::provider_core::allocation_receipt`]. Daytona has no per-sandbox metering endpoint.
     async fn usage(
         &self,
         machine: MachineId,
@@ -1491,12 +1373,13 @@ impl MachinesProvider for DaytonaProvider {
         let id = machine.to_string();
         let sandbox = self.api.get(&id).await?;
         let observation = self.observe(&sandbox, None, None)?;
-        let allocation = usage::Allocation {
+        let allocation = Allocation {
             cpu: sandbox.cpu.unwrap_or(0),
             memory_gib: sandbox.memory.unwrap_or(0),
             disk_gib: sandbox.disk.unwrap_or(0),
         };
-        usage::receipt(
+        allocation_receipt(
+            "daytona",
             machine,
             &id,
             (start_unix_ms, end_unix_ms),
@@ -1563,19 +1446,7 @@ impl MachinesProvider for DaytonaProvider {
         &self,
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
-        let current = self.inspect_operation(operation).await?;
-        if current.phase != OperationPhase::Pending {
-            return Ok(futures::stream::once(async move { Ok(current) }).boxed());
-        }
-        let last = self
-            .ops
-            .watch(
-                operation,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-            )
-            .await;
-        Ok(futures::stream::iter([Ok(current), last]).boxed())
+        self.ops.watch(operation)
     }
 }
 
@@ -1592,85 +1463,8 @@ fn require_capability(
     }
 }
 
-/// Runs `command` in `sandbox` through the toolbox and requires exit code zero.
-async fn run(api: &DaytonaApi, sandbox_id: &str, command: String) -> Result<(), ProviderError> {
-    match run_status(api, sandbox_id, command).await? {
-        Some(0) => Ok(()),
-        _ => Err(ProviderError::Failed),
-    }
-}
-
 /// Longest wait between retries of a fork refused because its source is still forking.
 const MAX_FORK_BACKOFF: Duration = Duration::from_secs(2);
-/// Attempts [`quiescent_archive_script`] makes before giving up.
-const ARCHIVE_ATTEMPTS: u32 = 5;
-/// Exit status of [`quiescent_archive_script`] when the workspace never held still.
-const NOT_QUIESCENT: i64 = 75;
-
-/// POSIX `sh` script that archives `workspace` into `tar_path.gz` only at a quiescent moment.
-///
-/// `tar` reads files one after another, so a workspace written during the read yields files
-/// from different moments. The script archives, then re-reads the tree the same way (both
-/// reads stream to stdout, so `tar` pads them identically) and compares checksums. It keeps
-/// the archive only when both reads agree and neither `tar` saw a file change under it (a
-/// failed re-read appends a marker to its stream, so its checksum can never match), which
-/// means nothing changed across the whole read. It retries up to `attempts` times, one second
-/// apart, and exits [`NOT_QUIESCENT`] otherwise.
-fn quiescent_archive_script(workspace: &str, tar_path: &str, attempts: u32) -> String {
-    let (workspace, tar) = (shell_quote(workspace), shell_quote(tar_path));
-    format!(
-        "mkdir -p {workspace} || exit 1; i=0; \
-         while :; do \
-           if tar -C {workspace} -cf - . > {tar}; then \
-             a=$(cksum < {tar}) && b=$({{ tar -C {workspace} -cf - . || echo changed; }} | cksum) && [ \"$a\" = \"$b\" ] && break; \
-           else r=$?; [ $r -eq 1 ] || {{ rm -f {tar}; exit $r; }}; fi; \
-           i=$((i+1)); if [ $i -ge {attempts} ]; then rm -f {tar}; exit {NOT_QUIESCENT}; fi; \
-           sleep 1; \
-         done; \
-         gzip -n -f {tar}"
-    )
-}
-
-/// Runs `command` in the sandbox through the toolbox and returns its exit code.
-async fn run_status(
-    api: &DaytonaApi,
-    sandbox_id: &str,
-    command: String,
-) -> Result<Option<i64>, ProviderError> {
-    let output = api
-        .execute(
-            sandbox_id,
-            &ExecuteRequest {
-                command: format!("sh -c {}", shell_quote(&command)),
-                cwd: None,
-                timeout: Some(300),
-            },
-        )
-        .await?;
-    if output.exit_code != Some(0) {
-        tracing::error!(sandbox = sandbox_id, exit = ?output.exit_code, output = ?output.result, "toolbox command failed");
-    }
-    Ok(output.exit_code)
-}
-
-/// POSIX single-quoted shell word.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-/// Environment Daytona reports for `sandbox` (`env`), as string pairs.
-fn inherited_env(sandbox: &Sandbox) -> BTreeMap<String, String> {
-    sandbox
-        .extra
-        .get("env")
-        .and_then(serde_json::Value::as_object)
-        .map(|env| {
-            env.iter()
-                .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 #[cfg(test)]
 #[allow(
@@ -1683,7 +1477,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn guest_io_is_unsupported_without_making_daytona_requests() {
+    async fn unknown_guest_io_is_refused_without_making_daytona_requests() {
         let mock = mock::Mock::start(|_| async { (500, "unexpected request".into()) }).await;
         let mut config = DaytonaConfig::new("fake");
         config.api_url = mock.url.clone();
@@ -1692,11 +1486,11 @@ mod tests {
         let command = ExecCommand::new(vec!["echo".into()], 1).unwrap();
         assert!(matches!(
             provider.exec(machine, command).await,
-            Err(ProviderError::Unsupported(_))
+            Err(ProviderError::NotFound(_))
         ));
         assert!(matches!(
             provider.read_output(machine, 0, 1).await,
-            Err(ProviderError::Unsupported(_))
+            Err(ProviderError::NotFound(_))
         ));
         assert!(mock.requests().is_empty());
     }
@@ -1807,7 +1601,7 @@ mod tests {
             provider.staged_boot_env(key).is_none(),
             "a terminal create failure clears the staged boot environment"
         );
-        let op = ops::operation_id(key);
+        let op = operation_id(key);
         assert!(matches!(
             provider.inspect_operation(op).await,
             Err(ProviderError::NotFound(_))
@@ -1838,25 +1632,16 @@ mod tests {
     }
 
     #[test]
-    fn shell_words_and_inherited_environment() {
+    fn shell_words_are_quoted() {
         assert_eq!(
             shell_quote("/home/daytona/work space"),
             "'/home/daytona/work space'"
         );
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
-        let sandbox: Sandbox = serde_json::from_value(serde_json::json!({
-            "id": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
-            "env": { "ACYCLIC_HOST": "h", "NUMBER": 7 }
-        }))
-        .unwrap();
-        assert_eq!(
-            inherited_env(&sandbox),
-            BTreeMap::from([("ACYCLIC_HOST".to_owned(), "h".to_owned())])
-        );
     }
 
     #[test]
-    fn container_contracts_declare_disk_fork_and_never_auto_suspend() {
+    fn container_contracts_refuse_fork_and_never_auto_suspend() {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000005").unwrap();
         let request = CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32]);
         let container = DaytonaProvider::contract(
@@ -1864,7 +1649,8 @@ mod tests {
             map::capabilities_for_class(Some("container")).unwrap(),
         )
         .unwrap();
-        assert_eq!(container.fork_fidelity(), Some(ForkFidelity::DiskOnly));
+        assert_eq!(container.fork_fidelity(), None);
+        assert_eq!(CAPABILITIES.container_disk_fork, Assurance::No);
         assert_eq!(container.suspension, SuspensionPolicy::Manual);
         let mut config = DaytonaConfig::new("k");
         config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
@@ -1882,16 +1668,17 @@ mod tests {
         .unwrap();
         assert_eq!(vm.fork_fidelity(), Some(ForkFidelity::MemoryAndDisk));
         assert_eq!(vm.suspension, request.suspension);
-        let mut require = request;
-        require.compatibility =
-            CompatibilityPolicy::Require(BTreeSet::from([Capability::LiveFork]));
-        assert!(matches!(
-            DaytonaProvider::contract(
-                &require,
-                map::capabilities_for_class(Some("container")).unwrap()
-            ),
-            Err(ProviderError::Unsupported(_))
-        ));
+        for capability in [Capability::LiveFork, Capability::DiskFork] {
+            let mut require = request.clone();
+            require.compatibility = CompatibilityPolicy::Require(BTreeSet::from([capability]));
+            assert!(matches!(
+                DaytonaProvider::contract(
+                    &require,
+                    map::capabilities_for_class(Some("container")).unwrap()
+                ),
+                Err(ProviderError::Unsupported(_))
+            ));
+        }
     }
 
     const MACHINE: &str = "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61";
@@ -2066,7 +1853,7 @@ mod tests {
         });
         mock.wait_for("POST", &format!("/sandbox/{MACHINE}/pause"))
             .await;
-        let cancelled = provider.cancel(ops::operation_id(key)).await.unwrap();
+        let cancelled = provider.cancel(operation_id(key)).await.unwrap();
         assert_eq!(cancelled.phase, OperationPhase::Cancelled);
         release.add_permits(1);
         assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
@@ -2102,7 +1889,7 @@ mod tests {
             async move { provider.create(request(key)).await }
         });
         mock.wait_for("POST", "/sandbox").await;
-        provider.cancel(ops::operation_id(key)).await.unwrap();
+        provider.cancel(operation_id(key)).await.unwrap();
         release.add_permits(1);
         assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
         assert!(
@@ -2666,80 +2453,13 @@ mod tests {
             "{outcome:?}"
         );
         assert!(!mock.requests().iter().any(|r| r.method == "DELETE"));
-        let cancelled = provider.cancel(ops::operation_id(key)).await.unwrap();
+        let cancelled = provider.cancel(operation_id(key)).await.unwrap();
         assert_eq!(cancelled.phase, OperationPhase::Cancelled);
         assert!(
             mock.requests()
                 .iter()
                 .any(|r| r.is("DELETE", &format!("/sandbox/{CHILD}")))
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_workspace_archive_is_kept_only_at_a_quiescent_instant() {
-        let dir = std::env::temp_dir().join(format!("acyclic-quiescent-{}", std::process::id()));
-        let workspace = dir.join("ws");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("a"), "stable").unwrap();
-        let tar = dir.join("out.tar");
-        let script =
-            quiescent_archive_script(workspace.to_str().unwrap(), tar.to_str().unwrap(), 2);
-        let status = acyclic_native_runtime::process_status(
-            std::process::Command::new("sh").arg("-c").arg(&script),
-            std::time::Duration::from_secs(120),
-        )
-        .unwrap();
-        assert!(status.success());
-        assert!(dir.join("out.tar.gz").exists());
-
-        // Shadow `tar` so the workspace changes, or a read reports a change, deterministically
-        // between the two reads of every attempt instead of racing a writer thread.
-        let real_tar = acyclic_native_runtime::process_output(
-            std::process::Command::new("sh").args(["-c", "command -v tar"]),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )
-        .unwrap();
-        let real_tar = String::from_utf8(real_tar.stdout).unwrap();
-        let bin = dir.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let run_with_tar = |after_each_read: &str| {
-            use std::os::unix::fs::PermissionsExt;
-            let shim = bin.join("tar");
-            std::fs::write(
-                &shim,
-                format!(
-                    "#!/bin/sh\n{} \"$@\" || exit $?\n{after_each_read}\n",
-                    real_tar.trim()
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let _ = std::fs::remove_file(dir.join("out.tar.gz"));
-            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-            let status = acyclic_native_runtime::process_status(
-                std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&script)
-                    .env("PATH", path),
-                std::time::Duration::from_secs(120),
-            )
-            .unwrap();
-            assert_eq!(status.code(), Some(i32::try_from(NOT_QUIESCENT).unwrap()));
-            assert!(!dir.join("out.tar.gz").exists() && !tar.exists());
-        };
-        // A workspace written between the two reads of every attempt never yields an archive.
-        let busy = workspace.join("busy");
-        run_with_tar(&format!("echo x >> '{}'", busy.display()));
-        // Nor does one whose re-read sees a file change under it (`tar` exits 1) even though
-        // both reads come out byte-identical.
-        let calls = dir.join("calls");
-        run_with_tar(&format!(
-            "echo x >> '{c}'; [ $(wc -l < '{c}') -eq 1 ] || {{ : > '{c}'; exit 1; }}",
-            c = calls.display()
-        ));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
@@ -2772,7 +2492,7 @@ mod tests {
             async move { provider.create(request(key)).await }
         });
         mock.wait_for("GET", &format!("/sandbox/{OTHER}")).await;
-        provider.cancel(ops::operation_id(key)).await.unwrap();
+        provider.cancel(operation_id(key)).await.unwrap();
         release.add_permits(1);
         assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
         assert!(
@@ -2800,8 +2520,7 @@ mod tests {
         .await;
         let provider = mocked(&mock, None);
         let key = test_key(17);
-        let ops::Admission::Fresh(operation) = provider.registry().admit(key, &"fork").unwrap()
-        else {
+        let Admission::Fresh(operation) = provider.registry().admit(key, &"fork").unwrap() else {
             panic!("expected fresh")
         };
         for id in ["a", "b", "c"] {

@@ -54,6 +54,8 @@ pub enum SuspensionPolicy {
 /// Automatic destruction policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ExpirationPolicy {
+    /// Admission request only. The returned contract names the concrete policy.
+    ProviderDefault,
     Never,
     MaxAge(Duration),
     AtUnixMs(u64),
@@ -81,7 +83,8 @@ pub struct CreateMachine {
     pub compatibility: CompatibilityPolicy,
     /// Suspension policy.
     pub suspension: SuspensionPolicy,
-    /// Expiration policy.
+    /// Requested expiration policy. `ProviderDefault` delegates to the provider;
+    /// explicit policies must be honored or refused before dispatch.
     pub expiration: ExpirationPolicy,
     /// Commitment to a separately authorized network policy.
     pub network_policy_digest: [u8; 32],
@@ -90,7 +93,7 @@ pub struct CreateMachine {
 }
 
 impl CreateMachine {
-    /// Creates a best-effort request with 15-second idle suspension and no expiry.
+    /// Creates a best-effort request with 15-second idle suspension and provider-default expiry.
     pub fn new(
         idempotency_key: IdempotencyKey,
         image: Image,
@@ -101,7 +104,7 @@ impl CreateMachine {
             image,
             compatibility: CompatibilityPolicy::BestEffort,
             suspension: SuspensionPolicy::AfterIdle(DEFAULT_IDLE_SUSPEND),
-            expiration: ExpirationPolicy::Never,
+            expiration: ExpirationPolicy::ProviderDefault,
             network_policy_digest,
             budgets: Budgets::default(),
         }

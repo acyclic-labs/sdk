@@ -13,6 +13,10 @@ readme = "README.md"
 inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
 storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "dep:object_store", "dep:async-trait", "dep:rustls"]
+cloudflare = ["acyclic-machines/cloudflare"]
+e2b = ["acyclic-machines/e2b"]
+modal = ["acyclic-machines/modal"]
+machines-shell = ["acyclic-harness/machines", "acyclic-harness/native-execution"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
@@ -142,6 +146,21 @@ test = false
 
 [lints]
 workspace = true
+
+[[example]]
+name = "cloudflare-conformance"
+path = "examples/cloudflare_conformance.rs"
+required-features = ["cloudflare", "machines-shell"]
+
+[[example]]
+name = "e2b-conformance"
+path = "examples/e2b_conformance.rs"
+required-features = ["e2b", "machines-shell"]
+
+[[example]]
+name = "modal-conformance"
+path = "examples/modal_conformance.rs"
+required-features = ["modal", "machines-shell"]
 
 [[bin]]
 name = "client-conformance"

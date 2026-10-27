@@ -1,23 +1,16 @@
-//! Process-local operation registry.
+//! Shared process-local lifecycle journal for remote machine adapters.
 //!
-//! Daytona has no idempotency keys and no operation objects of its own, so the provider keeps
-//! this registry: one record per idempotency key bound to the digest of the intent it admitted,
-//! the sandbox it acted on, its phase, and its terminal outcome. It also retains the last
-//! observation and the state-event history of every machine the provider has seen, which is
-//! what `events` and post-destroy `inspect_machine` are served from.
-//!
-//! Everything here is in memory. A restarted provider recovers `create` and `fork` outcomes by
-//! sandbox label lookup (see `DaytonaProvider::recover`); other outcomes are lost with the
-//! process, and `recover` reports them as not found.
+//! Keys bind to canonical mutation intents before dispatch. Terminal outcomes,
+//! resource ownership, observations and state events survive for this provider
+//! instance only; restart recovery remains the adapter's responsibility.
 
 use std::{
     collections::BTreeMap,
-    sync::{Mutex, PoisonError},
-    time::Duration,
+    sync::{Arc, Mutex, PoisonError},
 };
 
-pub use acyclic_machines::intent_digest;
-use acyclic_machines::{
+pub use crate::intent_digest;
+use crate::{
     CheckpointId, CheckpointObservation, EventFact, IdempotencyKey, MachineEvent, MachineId,
     MachineObservation, MachineState, MutationOutcome, OperationId, OperationObservation,
     OperationPhase, ProviderError,
@@ -37,9 +30,11 @@ pub struct OperationRecord {
     pub key: IdempotencyKey,
     /// SHA-256 of the canonical intent encoding, used to detect key rebinding.
     pub intent_digest: [u8; 32],
-    /// Daytona sandbox ids the operation created. Cancelling the operation deletes these.
+    /// provider resource ids the operation created. Cancelling the operation deletes these.
     pub created: Vec<String>,
-    /// Existing Daytona sandbox ids the operation acts on (suspend, wake, policy, checkpoint,
+    /// Native checkpoints still owned by this unfinished operation.
+    pub created_checkpoints: Vec<CheckpointId>,
+    /// Existing provider resource ids the operation acts on (suspend, wake, policy, checkpoint,
     /// destroy). They belong to the machine, not to the operation, so cancellation never
     /// deletes them.
     pub targets: Vec<String>,
@@ -75,13 +70,56 @@ struct Inner {
     by_key: BTreeMap<IdempotencyKey, OperationId>,
     machines: BTreeMap<MachineId, MachineObservation>,
     events: BTreeMap<MachineId, Vec<MachineEvent>>,
-    checkpoints: BTreeMap<CheckpointId, CheckpointObservation>,
+    checkpoints: BTreeMap<CheckpointId, StoredCheckpoint>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct NativeCheckpoint {
+    pub snapshot: super::ProviderSnapshot,
+    pub image: String,
+}
+
+struct StoredCheckpoint {
+    observation: CheckpointObservation,
+    native: Option<NativeCheckpoint>,
+    released: bool,
+}
+
+impl Inner {
+    fn observe_machine(&mut self, observation: MachineObservation, observed_at_unix_ms: u64) {
+        let inner = self;
+        let id = observation.id;
+        let previous = inner.machines.get(&id).map(|value| value.state);
+        // Destruction is terminal. A response captured before cancellation or
+        // expiry must not resurrect an observation after either completes.
+        if previous == Some(MachineState::Destroyed) && observation.state != MachineState::Destroyed
+        {
+            return;
+        }
+        if previous != Some(observation.state) {
+            let events = inner.events.entry(id).or_default();
+            if events.len() >= MAX_EVENTS_PER_MACHINE {
+                events.remove(0);
+            }
+            let sequence = events
+                .last()
+                .map_or(1, |event| event.sequence.saturating_add(1));
+            events.push(MachineEvent {
+                machine: id,
+                sequence,
+                observed_at_unix_ms,
+                fact: EventFact::State(observation.state),
+            });
+        }
+        inner.machines.insert(id, observation);
+    }
 }
 
 /// Registry keyed by idempotency key; see the module documentation.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct OperationRegistry {
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for OperationRegistry {
@@ -100,12 +138,78 @@ impl std::fmt::Debug for OperationRegistry {
 #[must_use]
 pub fn operation_id(key: IdempotencyKey) -> OperationId {
     let mut hash = Sha256::new();
+    // Preserve operation identities admitted by the original Daytona adapter.
     hash.update(b"acyclic-machines-daytona/operation");
     hash.update(key.as_bytes());
     OperationId::from_digest(hash.finalize().into())
 }
 
 impl OperationRegistry {
+    /// Admits and applies one mutation, retaining ownership for cancellation.
+    /// Definite failures roll back only resources created by this operation;
+    /// uncertain dispatches remain recoverable and are never retried here.
+    ///
+    /// # Errors
+    /// Returns admission errors or the error from the adapter's action.
+    pub async fn apply<T, F, R>(
+        &self,
+        key: IdempotencyKey,
+        intent: &T,
+        action: F,
+        rollback: R,
+    ) -> Result<MutationOutcome, ProviderError>
+    where
+        T: Serialize,
+        F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
+        R: AsyncFnOnce(OperationId),
+    {
+        let operation = match self.admit(key, intent)? {
+            Admission::Replay(outcome) => return Ok(*outcome),
+            Admission::Fresh(operation) => operation,
+        };
+        match action(operation).await {
+            Ok(outcome) => {
+                self.complete(operation, outcome.clone());
+                match self.inspect(operation).map(|value| value.phase) {
+                    Some(OperationPhase::Cancelled) => Err(ProviderError::Cancelled),
+                    _ => Ok(outcome),
+                }
+            }
+            Err(error) => {
+                let touched = self.record(operation).is_some_and(|record| {
+                    !record.created.is_empty()
+                        || !record.created_checkpoints.is_empty()
+                        || !record.targets.is_empty()
+                });
+                let before_side_effect = matches!(
+                    error,
+                    ProviderError::Invalid(_)
+                        | ProviderError::Unsupported(_)
+                        | ProviderError::NotFound(_)
+                        | ProviderError::Conflict(_)
+                        | ProviderError::Rejected(_)
+                );
+                if !touched && before_side_effect {
+                    self.forget(operation);
+                } else {
+                    self.fail(operation, &error);
+                    // A definite failure leaves nothing the caller can use or replay, so undo
+                    // whatever the operation created. An indeterminate outcome keeps its sandboxes
+                    // for `recover`, and `cancel` undoes it.
+                    if !matches!(
+                        error,
+                        ProviderError::Indeterminate(_)
+                            | ProviderError::Unavailable
+                            | ProviderError::Cancelled
+                    ) {
+                        rollback(operation).await;
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -150,6 +254,7 @@ impl OperationRegistry {
                 key,
                 intent_digest: digest,
                 created: Vec::new(),
+                created_checkpoints: Vec::new(),
                 targets: Vec::new(),
                 phase: OperationPhase::Pending,
                 outcome: None,
@@ -203,7 +308,12 @@ impl OperationRegistry {
         {
             record.phase = OperationPhase::Succeeded;
             record.outcome = Some(outcome);
+            // Success transfers resource ownership to the returned outcome.
+            // A later terminal cancel or rollback must never reclaim it.
+            record.created.clear();
+            record.created_checkpoints.clear();
         }
+        self.changed.notify_waiters();
     }
 
     /// Marks the operation terminal in a non-success phase derived from `error`.
@@ -220,15 +330,17 @@ impl OperationRegistry {
         {
             record.phase = phase;
         }
+        self.changed.notify_waiters();
     }
 
-    /// Releases a key whose operation was rejected before any Daytona side effect happened,
+    /// Releases a key whose operation was rejected before any provider side effect happened,
     /// so the caller can retry under the same key with a corrected request.
     pub fn forget(&self, operation: OperationId) {
         let mut inner = self.lock();
         if let Some(record) = inner.operations.remove(&operation) {
             inner.by_key.remove(&record.key);
         }
+        self.changed.notify_waiters();
     }
 
     /// Reads one operation.
@@ -268,6 +380,7 @@ impl OperationRegistry {
     pub fn cancel(&self, operation: OperationId) -> Option<(OperationObservation, Vec<String>)> {
         let mut inner = self.lock();
         let record = inner.operations.get_mut(&operation)?;
+        self.changed.notify_waiters();
         match record.phase {
             OperationPhase::Pending | OperationPhase::Indeterminate => {
                 record.phase = OperationPhase::Cancelled;
@@ -297,57 +410,88 @@ impl OperationRegistry {
         }
     }
 
-    /// Polls `inspect` until the operation leaves `Pending` or `timeout` elapses.
-    ///
-    /// Mutations in this provider complete inline, so the loop normally returns on the first
-    /// iteration; it exists for callers that hold an operation id from another task.
-    ///
-    /// # Errors
-    /// Returns [`ProviderError::NotFound`] for an unknown operation and
-    /// [`ProviderError::Indeterminate`] with the operation's key when the timeout elapses.
-    pub async fn watch(
-        &self,
-        operation: OperationId,
-        poll: Duration,
-        timeout: Duration,
-    ) -> Result<OperationObservation, ProviderError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let record = self
-                .record(operation)
-                .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-            if record.phase != OperationPhase::Pending {
-                return Ok(record.observation());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ProviderError::Indeterminate(record.key));
-            }
-            tokio::time::sleep(poll).await;
-        }
+    /// Streams the current phase immediately, then changes through a terminal
+    /// phase. Registering before reading closes the completion/wait race.
+    pub fn watch(&self, operation: OperationId) -> Result<crate::OperationStream, ProviderError> {
+        use futures::StreamExt;
+        let current = self
+            .inspect(operation)
+            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+        let registry = self.clone();
+        let first = futures::stream::once(async move { Ok(current) });
+        let changes = futures::stream::try_unfold(
+            (registry, current),
+            move |(registry, previous)| async move {
+                if previous.phase != OperationPhase::Pending {
+                    return Ok(None);
+                }
+                loop {
+                    let changed = registry.changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    let current = registry
+                        .inspect(operation)
+                        .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+                    if current != previous {
+                        drop(changed);
+                        return Ok(Some((current, (registry.clone(), current))));
+                    }
+                    changed.await;
+                }
+            },
+        );
+        Ok(first.chain(changes).boxed())
     }
 
     /// Records the latest observation of a machine and appends a state event when the state
     /// differs from the last one recorded (or none was recorded yet).
     pub fn observe_machine(&self, observation: MachineObservation, observed_at_unix_ms: u64) {
+        self.lock()
+            .observe_machine(observation, observed_at_unix_ms);
+    }
+
+    /// Publishes the initial observation and cancellation ownership together.
+    /// A cancelled in-flight create remains the caller's orphan to delete.
+    pub fn bind_created_machine(
+        &self,
+        operation: OperationId,
+        sandbox: &str,
+        observation: MachineObservation,
+    ) -> bool {
         let mut inner = self.lock();
-        let id = observation.id;
-        let previous = inner.machines.get(&id).map(|value| value.state);
-        if previous != Some(observation.state) {
-            let events = inner.events.entry(id).or_default();
-            if events.len() >= MAX_EVENTS_PER_MACHINE {
-                events.remove(0);
-            }
-            let sequence = events
-                .last()
-                .map_or(1, |event| event.sequence.saturating_add(1));
-            events.push(MachineEvent {
-                machine: id,
-                sequence,
-                observed_at_unix_ms,
-                fact: EventFact::State(observation.state),
-            });
+        let Some(record) = inner.operations.get_mut(&operation) else {
+            return false;
+        };
+        if record.phase != OperationPhase::Pending {
+            return false;
         }
-        inner.machines.insert(id, observation);
+        record.created.push(sandbox.into());
+        let at = observation.changed_at_unix_ms;
+        inner.observe_machine(observation, at);
+        true
+    }
+
+    /// Publishes readiness only while its create still owns the machine.
+    pub fn observe_pending_machine(
+        &self,
+        operation: OperationId,
+        observation: MachineObservation,
+    ) -> bool {
+        let mut inner = self.lock();
+        if !inner
+            .operations
+            .get(&operation)
+            .is_some_and(|record| record.phase == OperationPhase::Pending)
+            || inner
+                .machines
+                .get(&observation.id)
+                .is_some_and(|value| value.state == MachineState::Destroyed)
+        {
+            return false;
+        }
+        let at = observation.changed_at_unix_ms;
+        inner.observe_machine(observation, at);
+        true
     }
 
     /// Last recorded observation of a machine.
@@ -358,12 +502,25 @@ impl OperationRegistry {
 
     /// Records a machine as destroyed at `observed_at_unix_ms`, keeping its last contract.
     pub fn mark_destroyed(&self, machine: MachineId, observed_at_unix_ms: u64) {
-        let Some(mut observation) = self.machine(machine) else {
-            return;
-        };
-        observation.state = MachineState::Destroyed;
-        observation.changed_at_unix_ms = observed_at_unix_ms;
-        self.observe_machine(observation, observed_at_unix_ms);
+        self.observe_state(machine, MachineState::Destroyed, observed_at_unix_ms);
+    }
+
+    /// Updates provider state without overwriting a concurrently changed contract.
+    /// Destruction is terminal, including when an older read finishes afterwards.
+    pub fn observe_state(
+        &self,
+        machine: MachineId,
+        state: MachineState,
+        at: u64,
+    ) -> Option<MachineObservation> {
+        let mut inner = self.lock();
+        let mut observation = inner.machines.get(&machine)?.clone();
+        if observation.state != MachineState::Destroyed && observation.state != state {
+            observation.state = state;
+            observation.changed_at_unix_ms = at;
+            inner.observe_machine(observation.clone(), at);
+        }
+        Some(observation)
     }
 
     /// Every recorded machine, in identity order.
@@ -401,148 +558,102 @@ impl OperationRegistry {
 
     /// Records a checkpoint observation.
     pub fn remember_checkpoint(&self, checkpoint: CheckpointObservation) {
-        self.lock().checkpoints.insert(checkpoint.id, checkpoint);
+        self.lock()
+            .checkpoints
+            .entry(checkpoint.id)
+            .and_modify(|entry| entry.observation = checkpoint.clone())
+            .or_insert(StoredCheckpoint {
+                observation: checkpoint,
+                native: None,
+                released: false,
+            });
     }
 
     /// Last recorded observation of a checkpoint.
     #[must_use]
     pub fn checkpoint(&self, checkpoint: CheckpointId) -> Option<CheckpointObservation> {
-        self.lock().checkpoints.get(&checkpoint).cloned()
+        self.lock()
+            .checkpoints
+            .get(&checkpoint)
+            .map(|entry| entry.observation.clone())
     }
 
     /// Records that a checkpoint no longer accepts forks.
     pub fn mark_checkpoint_destroyed(&self, checkpoint: CheckpointId) {
         if let Some(value) = self.lock().checkpoints.get_mut(&checkpoint) {
-            value.forkable = false;
+            value.observation.forkable = false;
         }
     }
-}
 
-#[cfg(test)]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "tests index collections whose shape they just built or asserted"
-)]
-mod tests {
-    use super::*;
-
-    fn key(suffix: u8) -> IdempotencyKey {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}")).unwrap()
-    }
-
-    #[test]
-    fn admission_replays_success_and_rejects_rebinding() {
-        let registry = OperationRegistry::default();
-        let Admission::Fresh(id) = registry.admit(key(1), &"intent-a").unwrap() else {
-            panic!("expected fresh")
+    /// Publishes native custody in the existing checkpoint registry. A late
+    /// reply after cancellation remains owned for rollback; it cannot be used.
+    pub(super) fn bind_native_checkpoint(
+        &self,
+        operation: OperationId,
+        mut observation: CheckpointObservation,
+        native: NativeCheckpoint,
+    ) -> bool {
+        let mut inner = self.lock();
+        let Some(record) = inner.operations.get_mut(&operation) else {
+            return false;
         };
-        assert!(matches!(
-            registry.admit(key(1), &"intent-a"),
-            Err(ProviderError::Indeterminate(_))
-        ));
-        assert!(matches!(
-            registry.admit(key(1), &"intent-b"),
-            Err(ProviderError::Conflict(_))
-        ));
-        let machine = MachineId::new();
-        registry.complete(id, MutationOutcome::Suspended(machine));
-        let Admission::Replay(outcome) = registry.admit(key(1), &"intent-a").unwrap() else {
-            panic!("expected replay")
-        };
-        assert_eq!(*outcome, MutationOutcome::Suspended(machine));
-        assert_eq!(operation_id(key(1)), id);
-        assert_ne!(operation_id(key(1)), operation_id(key(2)));
-        // Pinned so recovery keeps finding operations admitted by earlier releases.
-        assert_eq!(
-            operation_id(key(1)).to_string(),
-            "5826b47d-5e02-5c80-a94c-145737646d7f"
+        let pending = record.phase == OperationPhase::Pending;
+        record.created_checkpoints.push(observation.id);
+        observation.forkable = pending;
+        inner.checkpoints.insert(
+            observation.id,
+            StoredCheckpoint {
+                observation,
+                native: Some(native),
+                released: false,
+            },
         );
+        pending
     }
 
-    #[test]
-    fn cancel_returns_bound_sandboxes_once() {
-        let registry = OperationRegistry::default();
-        let Admission::Fresh(id) = registry.admit(key(3), &"x").unwrap() else {
-            panic!("expected fresh")
-        };
-        assert!(registry.bind_created(id, "sb-1"));
-        registry.bind_target(id, "existing");
-        let (observation, sandboxes) = registry.cancel(id).unwrap();
-        assert_eq!(observation.phase, OperationPhase::Cancelled);
-        assert_eq!(sandboxes, vec!["sb-1".to_owned()]);
-        assert!(registry.cancel(id).unwrap().1.is_empty());
-        assert!(
-            !registry.bind_created(id, "sb-late"),
-            "a sandbox created after cancellation is handed back to the caller to delete"
-        );
-        assert_eq!(registry.record(id).unwrap().created, Vec::<String>::new());
-        registry.complete(id, MutationOutcome::Woken(MachineId::new()));
-        assert_eq!(
-            registry.inspect(id).unwrap().phase,
-            OperationPhase::Cancelled
-        );
+    pub(super) fn native_checkpoint(&self, checkpoint: CheckpointId) -> Option<NativeCheckpoint> {
+        self.lock()
+            .checkpoints
+            .get(&checkpoint)
+            .and_then(|entry| entry.native.clone())
     }
 
-    #[test]
-    fn cancel_finishes_undoing_indeterminate_and_failed_operations() {
-        let registry = OperationRegistry::default();
-        let Admission::Fresh(id) = registry.admit(key(5), &"fork").unwrap() else {
-            panic!("expected fresh")
-        };
-        assert!(registry.bind_created(id, "child-0"));
-        registry.fail(id, &ProviderError::Unavailable);
-        let (observation, sandboxes) = registry.cancel(id).unwrap();
-        assert_eq!(observation.phase, OperationPhase::Cancelled);
-        assert_eq!(sandboxes, ["child-0"]);
-
-        let Admission::Fresh(id) = registry.admit(key(6), &"fork").unwrap() else {
-            panic!("expected fresh")
-        };
-        assert!(registry.bind_created(id, "child-1"));
-        registry.fail(id, &ProviderError::Failed);
-        assert_eq!(registry.take_created(id), ["child-1"]);
-        registry.restore_created(id, vec!["child-1".to_owned()]);
-        let (observation, sandboxes) = registry.cancel(id).unwrap();
-        assert_eq!(observation.phase, OperationPhase::Failed);
-        assert_eq!(sandboxes, ["child-1"]);
-        assert!(registry.cancel(id).unwrap().1.is_empty());
+    pub(super) fn unreleased_checkpoints(&self) -> Vec<CheckpointId> {
+        self.lock()
+            .checkpoints
+            .iter()
+            .filter_map(|(id, entry)| (entry.native.is_some() && !entry.released).then_some(*id))
+            .collect()
     }
 
-    #[test]
-    fn cancel_never_returns_the_machine_an_operation_acts_on() {
-        let registry = OperationRegistry::default();
-        let Admission::Fresh(id) = registry.admit(key(4), &"suspend").unwrap() else {
-            panic!("expected fresh")
-        };
-        registry.bind_target(id, "existing-machine");
-        let (observation, sandboxes) = registry.cancel(id).unwrap();
-        assert_eq!(observation.phase, OperationPhase::Cancelled);
-        assert!(sandboxes.is_empty(), "{sandboxes:?}");
+    pub(super) fn checkpoint_released(&self, checkpoint: CheckpointId) -> bool {
+        self.lock()
+            .checkpoints
+            .get(&checkpoint)
+            .is_some_and(|entry| entry.released)
     }
 
-    #[test]
-    fn observations_append_events_only_on_state_change() {
-        let registry = OperationRegistry::default();
-        let sandbox: crate::api::Sandbox =
-            serde_json::from_str(include_str!("../tests/fixtures/sandbox_started.json")).unwrap();
-        let mut observation = crate::map::sandbox_to_observation(&sandbox, None, None, 0).unwrap();
-        registry.observe_machine(observation.clone(), 1);
-        registry.observe_machine(observation.clone(), 2);
-        observation.state = MachineState::Suspended;
-        registry.observe_machine(observation.clone(), 3);
-        observation.state = MachineState::Running;
-        registry.observe_machine(observation.clone(), 4);
-        let (events, next) = registry.events(observation.id, None, 2);
-        assert_eq!(events.len(), 2);
-        assert_eq!(next, Some(2));
-        let (rest, next) = registry.events(observation.id, next, 16);
-        assert_eq!(rest.len(), 1);
-        assert_eq!(rest[0].fact, EventFact::State(MachineState::Running));
-        assert_eq!(next, None);
-        registry.mark_destroyed(observation.id, 5);
-        assert_eq!(
-            registry.machine(observation.id).unwrap().state,
-            MachineState::Destroyed
-        );
+    pub(super) fn mark_checkpoint_released(&self, checkpoint: CheckpointId) {
+        if let Some(entry) = self.lock().checkpoints.get_mut(&checkpoint) {
+            entry.released = true;
+        }
+    }
+
+    pub(super) fn take_created_checkpoints(&self, operation: OperationId) -> Vec<CheckpointId> {
+        self.lock()
+            .operations
+            .get_mut(&operation)
+            .map(|record| std::mem::take(&mut record.created_checkpoints))
+            .unwrap_or_default()
+    }
+
+    pub(super) fn restore_created_checkpoints(
+        &self,
+        operation: OperationId,
+        checkpoints: Vec<CheckpointId>,
+    ) {
+        if let Some(record) = self.lock().operations.get_mut(&operation) {
+            record.created_checkpoints.extend(checkpoints);
+        }
     }
 }

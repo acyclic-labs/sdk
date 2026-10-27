@@ -26,11 +26,34 @@ fn default_tool_names_and_shell_contract_match_the_host() -> Result<()> {
     assert_eq!(schema["required"], serde_json::json!(["command"]));
     assert!(schema["properties"].get("cwd").is_some());
     assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["timeout"]["maximum"], 4_294_967);
+    assert!(schema["properties"]["command"].get("maxLength").is_none());
+    assert!(schema["properties"]["cwd"].get("maxLength").is_none());
     assert!(tool.hook_names.is_empty());
     assert!(tool.definition.description.contains(if cfg!(windows) {
         "PowerShell syntax"
     } else {
         "bash syntax"
     }));
+    Ok(())
+}
+
+#[test]
+fn native_inputs_are_not_narrowed_by_remote_machine_limits() -> Result<()> {
+    use acyclic_harness_core::tools::ShellInput;
+    for timeout in [None, Some(120), Some(4_294_967)] {
+        ShellInput {
+            command: "#".repeat(32_768),
+            cwd: Some("a/".repeat(4096)),
+            timeout,
+        }
+        .validate()?;
+    }
+    ShellInput {
+        command: "sleep 90".into(),
+        cwd: None,
+        timeout: Some(120),
+    }
+    .validate()?;
     Ok(())
 }

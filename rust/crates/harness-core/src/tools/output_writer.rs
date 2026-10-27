@@ -2,11 +2,16 @@
 //! an operation derived from the command's own: `tools/{turn}/{operation}/`,
 //! under the turn the call belongs to, holds
 //! `request.json`, `stdout/{sequence}`, `stderr/{sequence}` and `result.json`.
-use super::*;
-use crate::local::tool_output::CHUNK_BYTES as OUTPUT_BATCH_BYTES;
+use crate::{Error, OperationId, Result, runtime::ToolContext, tool::ToolResult};
+fn storage(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}
 use acyclic_native_runtime::ProcessOutput;
 
-pub(super) struct Writer {
+const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
+
+/// Shared private-volume layout for native and remote shell output.
+pub struct ToolOutputWriter {
     context: ToolContext,
     /// `tools/{turn}/{operation}`.
     directory: String,
@@ -14,15 +19,16 @@ pub(super) struct Writer {
     sequence: (u64, u64),
     pending: (Vec<u8>, Vec<u8>),
     maximum: usize,
-    runtime: tokio::runtime::Handle,
 }
 
-impl Writer {
-    pub(super) fn pending(&self) -> bool {
+impl ToolOutputWriter {
+    /// Whether either stream has bytes awaiting publication.
+    pub fn pending(&self) -> bool {
         !self.pending.0.is_empty() || !self.pending.1.is_empty()
     }
 
-    pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
+    /// Stages the exact request before dispatch.
+    pub async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
         let maximum = usize::try_from(context.effective_scope().limits().file_bytes)
             .unwrap_or(usize::MAX)
             .min(OUTPUT_BATCH_BYTES);
@@ -36,7 +42,6 @@ impl Writer {
             sequence: (0, 0),
             pending: (Vec::new(), Vec::new()),
             maximum,
-            runtime: tokio::runtime::Handle::current(),
         };
         writer
             .stage("request.json", &request, "application/json")
@@ -65,7 +70,8 @@ impl Writer {
         Ok(())
     }
 
-    pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
+    /// Accepts bytes with bounded buffering, publishing each full batch.
+    pub async fn observe(&mut self, chunk: ProcessOutput<'_>) -> Result<()> {
         let (stderr, mut bytes) = match chunk {
             ProcessOutput::Stdout(bytes) => (false, bytes),
             ProcessOutput::Stderr(bytes) => (true, bytes),
@@ -79,21 +85,19 @@ impl Writer {
             };
             let amount = bytes.len().min(maximum - pending.len());
             let (prefix, rest) = bytes.split_at(amount);
-            pending.try_reserve(amount).map_err(std::io::Error::other)?;
+            pending.try_reserve(amount).map_err(storage)?;
             pending.extend_from_slice(prefix);
             bytes = rest;
             if pending.len() == maximum {
-                let runtime = self.runtime.clone();
-                await_publication(&runtime, || async {
-                    self.flush(stderr).await.map_err(std::io::Error::other)
-                })?;
+                self.flush(stderr).await?;
             }
         }
         Ok(())
     }
 
     // Retain the bytes and sequence until their file is staged.
-    pub(super) async fn flush(&mut self, stderr: bool) -> Result<()> {
+    /// Publishes the pending bytes of one stream once.
+    pub async fn flush(&mut self, stderr: bool) -> Result<()> {
         let (pending, sequence, stream) = if stderr {
             (&self.pending.1, self.sequence.1, "stderr")
         } else {
@@ -121,15 +125,18 @@ impl Writer {
         Ok(())
     }
 
-    pub(super) async fn finish(&mut self, result: &ToolResult) -> Result<()> {
+    /// Flushes both streams and writes terminal metadata without duplicating output.
+    pub async fn finish(&mut self, result: &ToolResult) -> Result<()> {
         self.flush(false).await?;
         self.flush(true).await?;
-        let outcome = crate::local::tool_metadata::encode(
-            result
-                .value
-                .as_object()
-                .ok_or_else(|| Error::Invalid("process result must be an object".into()))?,
-        )?;
+        let metadata: std::collections::BTreeMap<_, _> = result
+            .value
+            .as_object()
+            .ok_or_else(|| Error::Invalid("process result must be an object".into()))?
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "stdout" | "stderr"))
+            .collect();
+        let outcome = serde_json::to_vec(&metadata).map_err(storage)?;
         self.stage("result.json", &outcome, "application/json")
             .await
     }

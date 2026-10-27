@@ -41,6 +41,8 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
         const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
         if (query.argv.length < 1 || query.argv.length > 64 || !query.argv[0] || query.argv.some(value => value.includes("\0")) || lengths.some(length => length > 4096) || lengths.reduce((sum, length) => sum + length, 0) > 32768) throw new RangeError("invalid exec argv");
         if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 60000) throw new RangeError("timeoutMs must be 1..60000");
+        if (query.expiryUnixMs !== undefined && (query.expiryUnixMs < 0n || query.expiryUnixMs > MAX_OFFSET)) throw new RangeError("expiryUnixMs must be uint64");
+        if (query.maximumOutputBytes !== undefined && (query.maximumOutputBytes < 0n || query.maximumOutputBytes > MAX_OFFSET)) throw new RangeError("maximumOutputBytes must be uint64");
         const controller = new AbortController();
         const signal = callOptions?.signal;
         const abort = () => controller.abort(signal?.reason);
@@ -50,12 +52,21 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
           let exited = false;
           for await (const frame of machines.exec(query, { ...callOptions, signal: controller.signal, timeoutMs: callOptions?.timeoutMs ?? query.timeoutMs + 1000 })) {
             checkMachine(query.machine, frame.machine);
-            if (exited) throw new ConnectError("exec frame follows terminal exit code", Code.DataLoss);
+            if (exited) throw new ConnectError("exec frame follows terminal result", Code.DataLoss);
             if (frame.output.case === "exitCode") exited = true;
-            else if (frame.output.case !== "data" || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
+            else if (frame.output.case === "stopped") {
+              const stop = frame.output.value;
+              let scalars = 0;
+              for (const scalar of stop.message) {
+                if (++scalars > 128 || (scalar.length === 1 && scalar.charCodeAt(0) >= 0xd800 && scalar.charCodeAt(0) <= 0xdfff)) throw new ConnectError("invalid exec stop message", Code.DataLoss);
+              }
+              if (!Number.isInteger(stop.kind) || stop.kind < wire.ExecStopKind.TIMEOUT || stop.kind > wire.ExecStopKind.CAPTURE_FAILED) throw new ConnectError("invalid exec stop", Code.DataLoss);
+              exited = true;
+            }
+            else if ((frame.output.case !== "stdout" && frame.output.case !== "stderr") || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
             yield frame;
           }
-          if (!exited) throw new ConnectError("exec stream ended without exit code", Code.DataLoss);
+          if (!exited) throw new ConnectError("exec stream ended without terminal result", Code.DataLoss);
         } finally {
           // Connect's promise-client iterator does not forward return() to the RPC.
           controller.abort();

@@ -1,0 +1,9 @@
+{
+  "name": "acyclic-machines",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [{ "name": "MACHINES", "class_name": "Machine" }] },
+  "containers": [{ "class_name": "Machine", "scheduling_policy": "durable_object", "images": { "workspace": { "dockerfile": "./Dockerfile" } } }],
+  "exports": { "Machine": { "type": "durable-object", "storage": "sqlite" } }
+}

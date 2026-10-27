@@ -174,6 +174,7 @@ pub(in super::super) fn encode_expiration(
     value: ExpirationPolicy,
 ) -> Result<wire::ExpirationPolicy, ProviderError> {
     let (kind, value_ms) = match value {
+        ExpirationPolicy::ProviderDefault => (wire::ExpirationKind::ProviderDefault, 0),
         ExpirationPolicy::Never => (wire::ExpirationKind::Never, 0),
         ExpirationPolicy::MaxAge(value) if !value.is_zero() => {
             (wire::ExpirationKind::MaxAge, millis(value)?)

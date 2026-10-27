@@ -1,0 +1,8 @@
+{
+  "name": "acyclic-machines-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "wrangler dev --ip 127.0.0.1", "deploy": "wrangler deploy", "check": "tsc --noEmit" },
+  "dependencies": { "@cloudflare/sandbox": "1.0.3" },
+  "devDependencies": { "@cloudflare/workers-types": "5.20261008.1", "typescript": "6.0.3", "wrangler": "4.148.0" }
+}

@@ -37,7 +37,7 @@ impl ShellInput {
                 .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
         {
             return Err(Error::Invalid(
-                "invalid shell command, cwd or timeout".into(),
+                "shell input admission failed; recovery: supply nonempty NUL-free source and a relative directory without parent traversal".into(),
             ));
         }
         self.timeout_ms()?;
@@ -49,7 +49,7 @@ impl ShellInput {
             .unwrap_or(300)
             .checked_mul(1000)
             .filter(|timeout| *timeout > 0)
-            .ok_or_else(|| Error::Invalid("shell timeout is outside the native clock range".into()))
+            .ok_or_else(|| Error::Invalid("shell timeout admission failed; recovery: choose 1..4294967 seconds or omit timeout for 300 seconds".into()))
     }
 }
 

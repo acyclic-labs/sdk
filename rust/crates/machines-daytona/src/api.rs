@@ -19,6 +19,8 @@ use tracing::field::Empty;
 
 use crate::DaytonaConfig;
 
+mod execution;
+
 /// Header carrying the organization to act in when a credential spans several.
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
@@ -251,7 +253,7 @@ impl DaytonaApi {
         if config.api_key.is_empty() {
             return Err(ProviderError::Invalid("Daytona API key is empty".into()));
         }
-        let http = reqwest::Client::builder()
+        let http = acyclic_machines::provider_core::http_transport_builder()
             .timeout(config.request_timeout)
             .build()
             .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
