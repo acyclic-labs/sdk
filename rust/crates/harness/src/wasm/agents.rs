@@ -18,7 +18,7 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
-        PRIVATE_VOLUME,
+        PRIVATE_VOLUME, TurnAdmission,
     },
     model::Model,
     resources::ProviderRef,
@@ -331,7 +331,8 @@ impl WasmAgents {
     ) -> std::result::Result<WasmAgents, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let providers = Providers::indexed_db(&options).await?;
-        let handler = providers.handler(&options, owner, registry)?;
+        // This profile's own host: its owner custody is the tree's root.
+        let handler = providers.handler(&options, owner, registry, &TurnAdmission::LocalRoot)?;
         Self::host(options, owner, providers, Arc::new(handler), report, true)
     }
 
@@ -454,7 +455,9 @@ impl WasmAgents {
         background: bool,
     ) -> std::result::Result<WasmAgents, JsValue> {
         options.limits.validate(&mut None).map_err(js_error)?;
-        let composer = providers.spawn_volumes(&options, owner);
+        // The host of this profile's own tree spawns as its root; its turns
+        // run in the guest under the admission the guest was opened with.
+        let composer = providers.spawn_volumes(&options, owner, &TurnAdmission::LocalRoot);
         let Providers { stream, filesystem } = providers;
         let agents = Arc::new(
             AgentHost::hosting(

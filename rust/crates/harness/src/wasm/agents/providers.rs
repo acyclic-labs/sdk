@@ -271,11 +271,14 @@ impl Providers {
 
     /// The one agent handler package over these providers: the handler the
     /// in-process host runs and the guest artifact exports.
+    /// Its turns and spawns act under `admission`: the admission its host
+    /// was admitted with, never chosen here.
     pub(super) fn handler(
         &self,
         options: &WasmBrowserAgentOptions,
         owner: &WasmReducer,
         registry: &WasmAgentRegistry,
+        admission: &TurnAdmission,
     ) -> Result<BrowserHandler, JsValue> {
         // The options a handler runs under are its own, not its providers'.
         options.limits.validate(&mut None).map_err(js_error)?;
@@ -293,7 +296,7 @@ impl Providers {
             Arc::clone(&self.stream),
             Arc::clone(&self.filesystem),
             owner.issuer.clone(),
-            TurnAdmission::LocalRoot,
+            admission.clone(),
             Arc::new(StockExecutors::new(
                 (model, Arc::new(provider)),
                 registry.tools.clone(),
@@ -313,7 +316,7 @@ impl Providers {
             )
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
         )
-        .map(|handler| handler.with_spawn_volumes(self.spawn_volumes(options, owner)))
+        .map(|handler| handler.with_spawn_volumes(self.spawn_volumes(options, owner, admission)))
         .map_err(|error| js_error(Error::Invalid(error.to_string())))
     }
 
@@ -321,11 +324,12 @@ impl Providers {
         &self,
         options: &WasmBrowserAgentOptions,
         owner: &WasmReducer,
+        admission: &TurnAdmission,
     ) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
         Arc::new(FilesystemSpawnVolumes::new(
             self.filesystem.clone(),
             owner.issuer.clone(),
-            TurnAdmission::LocalRoot,
+            admission.clone(),
             options.limits.file_bytes,
         ))
     }
