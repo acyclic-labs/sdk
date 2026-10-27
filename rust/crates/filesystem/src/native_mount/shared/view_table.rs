@@ -196,7 +196,7 @@ impl<C> ViewTable<C> {
             .len()
     }
 
-    fn retire(&self, serial: ViewSerial) -> Option<C> {
+    fn retire(&self, serial: ViewSerial, stop: impl FnOnce()) -> Option<C> {
         let Some(Live { core, drain }) = self
             .views
             .write()
@@ -206,6 +206,10 @@ impl<C> ViewTable<C> {
         else {
             unreachable!("a view owner retires its own listed view once");
         };
+        // Unlist before stopping the adapter, then drain even if stopping
+        // unwinds. Neither a serial callback nor adapter teardown can bypass
+        // the lifetime of an already admitted callback.
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(stop));
         let mut state = drain.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.retiring = true;
         #[cfg(loom)]
@@ -221,6 +225,9 @@ impl<C> ViewTable<C> {
             }
         }
         drop(state);
+        if let Err(panic) = stopped {
+            std::panic::resume_unwind(panic);
+        }
         match Arc::try_unwrap(core) {
             Ok(core) => Some(core),
             // Only the broken model returns before its leases drain; the last
@@ -242,12 +249,12 @@ impl<C> ViewOwner<C> {
         self.serial
     }
 
-    /// Retires the view, waiting for in-flight callbacks, and returns its core.
-    pub(crate) fn retire(mut self) -> C {
+    /// Unlists the view, runs `stop`, then drains callbacks and returns its core.
+    pub(crate) fn retire_after(mut self, stop: impl FnOnce()) -> C {
         let Some(table) = self.table.take() else {
             unreachable!("an owner retires once");
         };
-        match table.retire(self.serial) {
+        match table.retire(self.serial, stop) {
             Some(core) => core,
             None => unreachable!("retirement drains every lease"),
         }
@@ -257,7 +264,7 @@ impl<C> ViewOwner<C> {
 impl<C> Drop for ViewOwner<C> {
     fn drop(&mut self) {
         if let Some(table) = self.table.take() {
-            drop(table.retire(self.serial));
+            drop(table.retire(self.serial, || {}));
         }
     }
 }
@@ -401,7 +408,7 @@ mod tests {
         let a = ViewTable::insert(&table, core(1, &drops)).unwrap();
         let b = ViewTable::insert(&table, core(2, &drops)).unwrap();
         let lease_b = table.enter(b.serial().get()).unwrap();
-        assert_eq!(a.retire().id, 1);
+        assert_eq!(a.retire_after(|| {}).id, 1);
         assert_eq!(lease_b.id, 2);
         assert_eq!(table.len(), 1);
         drop(lease_b);
@@ -440,26 +447,42 @@ mod tests {
 
     #[test]
     fn retirement_waits_for_an_in_flight_lease() {
-        let drops = Arc::new(AtomicUsize::new(0));
-        let table = Arc::new(ViewTable::new(u64::MAX));
-        let owner = ViewTable::insert(&table, core(1, &drops)).unwrap();
-        let lease = table.enter(owner.serial().get()).unwrap();
-        let (entered, release) = std::sync::mpsc::channel::<()>();
-        let retirer = std::thread::spawn(move || {
-            let core = owner.retire();
-            entered.send(()).unwrap();
-            core.id
-        });
-        // The retirer cannot finish while the lease is held.
-        assert!(
-            release
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err()
-        );
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
-        assert_eq!(lease.id, 1);
-        drop(lease);
-        assert_eq!(retirer.join().unwrap(), 1);
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        for unwind in [false, true] {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let table = Arc::new(ViewTable::new(u64::MAX));
+            let owner = ViewTable::insert(&table, core(1, &drops)).unwrap();
+            let serial = owner.serial().get();
+            let lease = table.enter(serial).unwrap();
+            let (stopped, stopping) = std::sync::mpsc::channel();
+            let (entered, release) = std::sync::mpsc::channel();
+            let retirer = std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    owner.retire_after(|| {
+                        stopped.send(()).unwrap();
+                        assert!(!unwind, "stop failed");
+                    })
+                }));
+                entered
+                    .send(result.map(|core| core.id).map_err(|_| ()))
+                    .unwrap();
+            });
+            stopping.recv().unwrap();
+            assert!(table.enter(serial).is_none());
+            // Neither completion nor unwinding can finish while a lease is held.
+            assert!(
+                release
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .is_err()
+            );
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            assert_eq!(lease.id, 1);
+            drop(lease);
+            assert_eq!(
+                release.recv().unwrap(),
+                if unwind { Err(()) } else { Ok(1) }
+            );
+            retirer.join().unwrap();
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
     }
 }

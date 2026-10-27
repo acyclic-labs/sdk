@@ -1,3 +1,4 @@
+use super::mount_probe::same_mount;
 use super::*;
 use crate::native_mount::NativeMountRecoveryOwner;
 use std::os::unix::fs::MetadataExt;
@@ -31,17 +32,6 @@ fn is_loopback_mount(mount: &libc::statfs, uid: u32) -> Result<bool, NativeMount
     Ok(mount.f_owner == uid
         && field(&mount.f_fstypename)?.to_bytes() == b"nfs"
         && socket_id.is_some_and(|id| !id.is_empty() && !id.contains(&b'/')))
-}
-
-fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
-    // SAFETY: Darwin's fsid_t consists of two initialized int32_t values.
-    let identity = |mount: &libc::statfs| unsafe {
-        std::mem::transmute::<libc::fsid_t, [i32; 2]>(mount.f_fsid)
-    };
-    identity(left) == identity(right)
-        && left.f_owner == right.f_owner
-        && left.f_mntonname == right.f_mntonname
-        && left.f_mntfromname == right.f_mntfromname
 }
 
 #[cfg(test)]

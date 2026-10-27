@@ -58,11 +58,10 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
         let number = serial.get();
         let owner = ViewTable::insert_reserved(&self.table, serial, build(number)?);
         names.by_name.insert(name.clone(), number);
-        names.by_serial.insert(number, name.clone());
+        names.by_serial.insert(number, name);
         Ok(NamedView {
             views: Arc::clone(self),
             owner: Some(owner),
-            name,
         })
     }
 
@@ -121,27 +120,28 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
 pub(crate) struct NamedView<K: Clone + Eq + Hash, C> {
     views: Arc<NamedViews<K, C>>,
     owner: Option<ViewOwner<C>>,
-    name: K,
 }
 
 impl<K: Clone + Eq + Hash, C> NamedView<K, C> {
     /// Unlists the view, so no new callback is admitted, runs `stop`, then
-    /// waits for every admitted callback and returns the core. `None` once
-    /// retired.
-    pub(crate) fn retire_after(&mut self, stop: impl FnOnce()) -> Option<C> {
+    /// waits for every admitted callback and returns the name and core.
+    /// `None` once retired.
+    pub(crate) fn retire_after(&mut self, stop: impl FnOnce()) -> Option<(K, C)> {
         let owner = self.owner.take()?;
         let serial = owner.serial().get();
-        {
+        let name = {
             let mut names = self
                 .views
                 .names
                 .write()
                 .unwrap_or_else(PoisonError::into_inner);
-            names.by_name.remove(&self.name);
-            names.by_serial.remove(&serial);
-        }
-        stop();
-        Some(owner.retire())
+            let Some(name) = names.by_serial.remove(&serial) else {
+                unreachable!("a view owner has a listed name");
+            };
+            names.by_name.remove(&name);
+            name
+        };
+        Some((name, owner.retire_after(stop)))
     }
 }
 
@@ -169,9 +169,20 @@ mod tests {
         ));
         let (serial, lease) = views.enter_name(b"a".as_slice()).expect("listed");
         assert_eq!(*lease, 1);
-        drop(lease);
         let mut stopped = false;
-        assert_eq!(first.retire_after(|| stopped = true), Some(1));
+        assert_eq!(
+            first.retire_after(|| {
+                assert!(views.enter_name(b"a".as_slice()).is_none());
+                assert!(
+                    views.enter(serial).is_none(),
+                    "stop must close serial admission"
+                );
+                assert_eq!(*lease, 1, "an admitted callback retains its view");
+                drop(lease);
+                stopped = true;
+            }),
+            Some((b"a".to_vec(), 1))
+        );
         assert!(stopped);
         assert_eq!(first.retire_after(|| unreachable!()), None);
         assert!(views.enter_name(b"a".as_slice()).is_none());

@@ -1,15 +1,13 @@
 //! Bounded live APFS sparse and copy-on-write clone probes.
 
 use super::{
-    NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
-    NativeStorageAccelerationError, NativeStorageAccelerationEvidence,
-    probe_directory::ProbeDirectory,
+    NativeBlockCloneAccelerationEvidence, NativeStorageAccelerationError,
+    NativeStorageAccelerationEvidence, probe_directory::ProbeDirectory, sparse_probe,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 fn probe_bytes(allocation_unit_bytes: u64) -> Result<u64, NativeStorageAccelerationError> {
@@ -25,50 +23,6 @@ fn probe_bytes(allocation_unit_bytes: u64) -> Result<u64, NativeStorageAccelerat
         ));
     }
     Ok(bytes)
-}
-
-fn sparse_probe(
-    directory: &ProbeDirectory,
-    logical_bytes: u64,
-) -> Result<NativeSparseAccelerationEvidence, NativeStorageAccelerationError> {
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(directory.path().join("sparse.bin"))?;
-    file.set_len(logical_bytes)?;
-    let edge = [0xA5_u8; 4_096];
-    file.write_all(&edge)?;
-    file.seek(SeekFrom::Start(logical_bytes - edge.len() as u64))?;
-    file.write_all(&edge)?;
-    // APFS can allocate a zero tail after ftruncate and a later write.
-    crate::native_host::punch_hole(
-        &file,
-        edge.len() as u64,
-        logical_bytes - 2 * edge.len() as u64,
-        None,
-    )?;
-    file.sync_all()?;
-    let allocated_bytes = file.metadata()?.blocks().checked_mul(512).ok_or(
-        NativeStorageAccelerationError::Invalid("allocated byte count overflow"),
-    )?;
-    if allocated_bytes == 0 || allocated_bytes >= logical_bytes {
-        return Err(NativeStorageAccelerationError::Invalid(
-            "sparse file did not retain a physical hole",
-        ));
-    }
-    file.seek(SeekFrom::Start(logical_bytes / 2))?;
-    let mut hole = [1_u8; 4_096];
-    file.read_exact(&mut hole)?;
-    if hole.iter().any(|byte| *byte != 0) {
-        return Err(NativeStorageAccelerationError::Invalid(
-            "sparse hole did not read as zero bytes",
-        ));
-    }
-    Ok(NativeSparseAccelerationEvidence::Available {
-        logical_bytes,
-        allocated_bytes,
-    })
 }
 
 #[allow(unsafe_code, reason = "probes copy-on-write cloning with clonefile")]
@@ -146,7 +100,7 @@ pub(super) fn probe(
 ) -> Result<NativeStorageAccelerationEvidence, NativeStorageAccelerationError> {
     let bytes = probe_bytes(allocation_unit_bytes)?;
     let directory = ProbeDirectory::create(root)?;
-    let sparse = sparse_probe(&directory, bytes)?;
+    let sparse = sparse_probe(directory.path(), bytes)?;
     let block_clone = block_clone_probe(&directory, bytes / 16)?;
     directory.remove()?;
     Ok(NativeStorageAccelerationEvidence {
@@ -157,6 +111,7 @@ pub(super) fn probe(
 
 #[cfg(test)]
 mod tests {
+    use super::super::NativeSparseAccelerationEvidence;
     use super::*;
 
     #[test]

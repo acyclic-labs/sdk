@@ -171,25 +171,20 @@ fn unexpected_platform_error(
     ))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn sparse_probe(
     directory: &Path,
-    allocation_unit_bytes: u64,
+    logical_bytes: u64,
 ) -> Result<NativeSparseAccelerationEvidence, NativeStorageAccelerationError> {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    let logical_bytes = allocation_unit_bytes
-        .checked_mul(256)
-        .ok_or(NativeStorageAccelerationError::Invalid(
-            "sparse logical length overflow",
-        ))?
-        .max(1024 * 1024);
     let path = directory.join("sparse.bin");
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .read(true)
         .write(true)
         .open(path)?;
+    #[cfg(windows)]
     if let Err(error) = mark_sparse(&file) {
         return unavailable_platform_code(&error).map_or_else(
             || Err(unexpected_platform_error("sparse allocation", &error)),
@@ -205,8 +200,25 @@ fn sparse_probe(
     file.write_all(&edge)?;
     file.seek(SeekFrom::Start(logical_bytes - 4_096))?;
     file.write_all(&edge)?;
+    // APFS can allocate a zero tail after ftruncate and a later write.
+    #[cfg(target_os = "macos")]
+    crate::native_host::punch_hole(
+        &file,
+        edge.len() as u64,
+        logical_bytes - 2 * edge.len() as u64,
+        None,
+    )?;
     file.sync_all()?;
+    #[cfg(windows)]
     let allocated_bytes = file_allocation_bytes(&file)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let allocated_bytes = {
+        use std::os::unix::fs::MetadataExt;
+
+        file.metadata()?.blocks().checked_mul(512).ok_or(
+            NativeStorageAccelerationError::Invalid("allocated byte count overflow"),
+        )?
+    };
     if allocated_bytes == 0 || allocated_bytes >= logical_bytes {
         return Err(NativeStorageAccelerationError::Invalid(
             "sparse file did not retain a physical hole",
@@ -216,9 +228,11 @@ fn sparse_probe(
     let mut hole = [1_u8; 4_096];
     file.read_exact(&mut hole)?;
     if hole.iter().any(|byte| *byte != 0) {
-        return Err(NativeStorageAccelerationError::Invalid(
-            "sparse hole did not read as logical zero bytes",
-        ));
+        #[cfg(target_os = "macos")]
+        let message = "sparse hole did not read as zero bytes";
+        #[cfg(not(target_os = "macos"))]
+        let message = "sparse hole did not read as logical zero bytes";
+        return Err(NativeStorageAccelerationError::Invalid(message));
     }
     Ok(NativeSparseAccelerationEvidence::Available {
         logical_bytes,
@@ -338,7 +352,13 @@ fn probe_platform(
     allocation_unit_bytes: u64,
 ) -> Result<NativeStorageAccelerationEvidence, NativeStorageAccelerationError> {
     let directory = ProbeDirectory::create(root)?;
-    let sparse = sparse_probe(directory.path(), allocation_unit_bytes)?;
+    let logical_bytes = allocation_unit_bytes
+        .checked_mul(256)
+        .ok_or(NativeStorageAccelerationError::Invalid(
+            "sparse logical length overflow",
+        ))?
+        .max(1024 * 1024);
+    let sparse = sparse_probe(directory.path(), logical_bytes)?;
     let block_clone = block_clone_probe(directory.path(), allocation_unit_bytes)?;
     directory.remove()?;
     Ok(NativeStorageAccelerationEvidence {

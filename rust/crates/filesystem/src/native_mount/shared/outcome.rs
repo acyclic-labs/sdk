@@ -158,9 +158,6 @@ impl CallbackFailure {
     pub(crate) fn of_source(error: &MountSourceError) -> Self {
         source_failure(error)
     }
-    pub(crate) fn of_workspace(error: &crate::WorkspaceError) -> Self {
-        workspace_failure(error)
-    }
 }
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 pub(crate) use retention::callback_is_terminal as stops_mount;

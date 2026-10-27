@@ -71,9 +71,8 @@ pub(super) fn shared<T>(
     work: &Work,
     mut value: DarwinOwned<T>,
 ) -> Result<Arc<DarwinOwned<T>>, NativeMountError> {
-    let bytes = std::mem::size_of::<DarwinOwned<T>>()
-        .checked_add(2 * std::mem::size_of::<usize>())
-        .ok_or(WorkError::Overflow)? as u64;
+    let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<DarwinOwned<T>>())
+        .map_err(|_| WorkError::Overflow)? as u64;
     value.claim_more(bytes, work)?;
     Ok(Arc::new(value))
 }

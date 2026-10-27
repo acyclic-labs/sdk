@@ -110,6 +110,25 @@ pub enum MountNodeKind {
     Unsupported,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl MountNodeKind {
+    pub(super) fn special(
+        mode: libc::mode_t,
+        device: u64,
+    ) -> Result<(Self, Option<(u32, u32)>), i32> {
+        let kind = match mode {
+            libc::S_IFIFO => Self::Fifo,
+            libc::S_IFSOCK => Self::Socket,
+            libc::S_IFCHR => Self::CharacterDevice,
+            libc::S_IFBLK => Self::BlockDevice,
+            _ => return Err(libc::EOPNOTSUPP),
+        };
+        let device = matches!(kind, Self::CharacterDevice | Self::BlockDevice)
+            .then(|| super::device::split_device(device));
+        Ok((kind, device))
+    }
+}
+
 /// Native sparse-file seek target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MountSeekTarget {

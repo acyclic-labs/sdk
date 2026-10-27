@@ -25,10 +25,12 @@ pub(crate) use inotify::NativeSourceWatch;
 
 /// Known SDK control storage: Arc's two counters, alignment, and Rust payload.
 pub(super) const fn arc_control_bytes<T>() -> u64 {
-    let header = std::mem::size_of::<[usize; 2]>();
-    let alignment = std::mem::align_of::<T>();
-    let payload_offset = (header + alignment - 1) & !(alignment - 1);
-    (payload_offset + std::mem::size_of::<T>()) as u64
+    const {
+        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<T>()) {
+            Ok(bytes) => bytes as u64,
+            Err(_) => panic!("source watch Arc layout overflow"),
+        }
+    }
 }
 
 fn cleanup_credits(delta: WorkCounters) -> [(crate::materializer::NativeResourceCredit, u64); 3] {

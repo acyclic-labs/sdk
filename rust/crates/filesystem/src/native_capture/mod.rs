@@ -68,6 +68,8 @@ use stage::*;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod held_root_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod immutable_publication_tests;
 mod metadata;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
