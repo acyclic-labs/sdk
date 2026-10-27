@@ -7,12 +7,13 @@
 //
 // The key hashes every top-level entry of the HEAD tree except documentation
 // and repository chrome (EXCLUDED), plus rustc's identity, the WASM profile and
-// the package and the exact HEAD commit, so any build input (manifests,
+// the package, so any build input (manifests,
 // buf.gen.yaml, compatibility families, scripts, sources) changes it. A dirty
 // input tree, or any compiler/flag/bindgen override, bypasses the cache.
 // A hit restores every file the build generated (all ignored outputs under the
 // package closure and the Rust generated sources), verifying each sha256 as it
-// copies; any missing or corrupt entry falls back to building. A miss runs
+// copies and binding producer receipts to HEAD; a broken entry is moved
+// aside and rebuilt. A miss runs
 // build-wasm.mjs and publishes with one atomic rename of a private temporary
 // directory, so readers never see a partial entry. DIR defaults to
 // $ACYCLIC_WASM_CACHE, else /mnt/bb/artifacts/wasm when /mnt/bb/artifacts
@@ -28,7 +29,19 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EXCLUDED = new Set([".agents", ".github", ".gitleaks.toml", ".gitleaksignore", ".jscpd.json", "LICENSE", "NOTICE", "docs", "llms.txt"]);
 const RETAINED = 24;
 const IDLE_MS = 60 * 60 * 1000; // Entries and temporaries younger than this are never pruned.
-const SCHEMA = "acyclic.wasm-cache.v2";
+const SCHEMA = "acyclic.wasm-cache.v3";
+const RECEIPT = "acyclic.wasm-build-receipt.v1";
+
+// The only build output that names a commit is a family producer receipt.
+// Its inputs are exactly the keyed tree, so a hit binds it to this HEAD the
+// same way build-wasm.mjs re-stamps a validated cached receipt.
+export function restamp(path, bytes, head) {
+  if (!path.endsWith("/producer-receipt.json")) return bytes;
+  const receipt = JSON.parse(bytes.toString("utf8"));
+  if (receipt.schema !== RECEIPT || !/^[0-9a-f]{40,64}$/u.test(receipt.source_commit ?? "")) throw new Error(`unexpected receipt ${path}`);
+  receipt.source_commit = head;
+  return Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
+}
 
 const capture = (command, args) => {
   const result = spawnSync(command, args, { cwd: root, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
@@ -56,10 +69,10 @@ export function cacheKey(name) {
   // Untracked files at the root (job scripts) are outside every listed path.
   const status = capture("git", ["status", "--porcelain=v1", "--untracked-files=normal", "--", ...entries.map(e => `:(literal)${e.name}`)]);
   if (status.trim() !== "") return null;
-  // The exact commit, not only its tree: family producer receipts record
-  // source_commit, so a hit restores what build-wasm.mjs writes for this HEAD.
+  // Content, not the commit: build boxes give every job a fresh synthetic
+  // commit of the same tree. A hit re-stamps producer receipts (restamp).
   return createHash("sha256").update(JSON.stringify({
-    schema: SCHEMA, package: name, commit: capture("git", ["rev-parse", "HEAD"]).trim(), tree: entries.map(e => e.line),
+    schema: SCHEMA, package: name, tree: entries.map(e => e.line),
     rustc: capture("rustc", ["-vV"]).trim(), profile: process.env.ACYCLIC_WASM_PROFILE || "wasm-release",
   })).digest("hex");
 }
@@ -76,18 +89,24 @@ function outputs(name) {
 
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 
-// Restores an entry; null when it is missing, partial or corrupt.
+// Restores an entry; null when it is absent. A present entry that is partial,
+// unreadable or corrupt is moved aside atomically so the rebuild republishes it.
 function fetch(entry) {
-  let manifest;
   try {
     const now = new Date();
     utimesSync(entry, now, now); // Recency first, so pruning skips an active reader.
-    manifest = JSON.parse(readFileSync(join(entry, "manifest.json"), "utf8"));
-    if (manifest.schema !== SCHEMA) return null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const head = capture("git", ["rev-parse", "HEAD"]).trim();
+  try {
+    const manifest = JSON.parse(readFileSync(join(entry, "manifest.json"), "utf8"));
+    if (manifest.schema !== SCHEMA) throw new Error(`schema ${manifest.schema}`);
     const files = manifest.files.map(({ path, sha }) => {
       const bytes = readFileSync(join(entry, "files", path));
-      if (sha256(bytes) !== sha) throw Object.assign(new Error(`corrupt ${path}`), { corrupt: true });
-      return [path, bytes];
+      if (sha256(bytes) !== sha) throw new Error(`corrupt ${path}`);
+      return [path, restamp(path, bytes, head)];
     });
     for (const [path, bytes] of files) {
       mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -95,10 +114,9 @@ function fetch(entry) {
     }
     return files.length;
   } catch (error) {
-    if (error.corrupt) {
-      // Move it aside atomically; the rebuild republishes a good entry.
-      try { renameSync(entry, mkdtempSync(join(dirname(entry), ".tmp-corrupt-"))); } catch {}
-    } else if (error.code !== "ENOENT") throw error;
+    if (error.code && error.code !== "ENOENT") throw error; // I/O trouble other than a missing file.
+    console.error(`WASM_CACHE_BROKEN entry=${entry} ${error.message}`);
+    try { renameSync(entry, mkdtempSync(join(dirname(entry), ".tmp-broken-"))); } catch {}
     return null;
   }
 }

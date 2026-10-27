@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { overrides } from './wasm-cache.mjs';
+import { overrides, restamp } from './wasm-cache.mjs';
 
 test('compiler, flag and bindgen overrides bypass the cache; wrappers and empty values do not', () => {
   assert.deepEqual(overrides({
@@ -12,4 +12,14 @@ test('compiler, flag and bindgen overrides bypass the cache; wrappers and empty 
   // bb2 exports dev/test profile settings for every job; they never reach wasm-release.
   assert.deepEqual(overrides({ CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_INCREMENTAL: 'false' }), []);
   assert.deepEqual(overrides({ ACYCLIC_WASM_PROFILE: 'dev', CARGO_PROFILE_DEV_DEBUG: '0' }), ['CARGO_PROFILE_DEV_DEBUG']);
+});
+
+test('a hit binds the producer receipt to HEAD and leaves other outputs untouched', () => {
+  const head = 'a'.repeat(40);
+  const receipt = Buffer.from(`${JSON.stringify({ schema: 'acyclic.wasm-build-receipt.v1', source_commit: 'b'.repeat(40), source_sha256: 'x' }, null, 2)}\n`);
+  const out = JSON.parse(restamp('typescript/packages/actors/generated/wasm/producer-receipt.json', receipt, head).toString());
+  assert.deepEqual(out, { schema: 'acyclic.wasm-build-receipt.v1', source_commit: head, source_sha256: 'x' });
+  const other = Buffer.from('{"source_commit":"b"}');
+  assert.equal(restamp('typescript/packages/actors/generated/wasm/index.js', other, head), other);
+  assert.throws(() => restamp('x/producer-receipt.json', Buffer.from('{"schema":"other"}'), head));
 });
