@@ -22,11 +22,11 @@ use std::sync::Arc;
 /// What one host adds to a stock turn once its model, tools, limits and
 /// compaction are composed: at least the turn's tool authority.
 pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
-    /// Completes `executor`, composed under `limits`, for `agent`'s turn
-    /// `turn` on `input`.
+    /// Completes `composed`, the executor and the limits it was composed
+    /// under, for `agent`'s turn `turn` on `input`.
     fn prepare<'a>(
         &'a self,
-        (executor, limits): (StockExecutor, Limits),
+        composed: (StockExecutor, Limits),
         agent: &'a AgentState,
         turn: OperationId,
         input: &'a ModelContent,
