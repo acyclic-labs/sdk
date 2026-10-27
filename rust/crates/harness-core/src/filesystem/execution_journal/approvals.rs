@@ -122,13 +122,7 @@ where
             crate::filesystem::interaction_host::admit_interaction(&bytes, io)?;
         }
         with_history_io(io, |work| {
-            ticket.validate_decision_bytes(
-                resolution,
-                None,
-                detail,
-                &bytes,
-                work,
-            )
+            ticket.validate_decision_bytes(resolution, None, detail, &bytes, work)
         })?;
         // The validation above bound the file's verdict to this outcome.
         let approved = matches!(resolution.outcome, InteractionOutcome::Approved {});

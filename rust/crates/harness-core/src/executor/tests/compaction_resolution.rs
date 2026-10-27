@@ -237,7 +237,10 @@ async fn writerless_summary_reports_one_error_without_repeating_resolution() -> 
             if prepared {
                 let _ = execution.compaction();
             }
-            let cached = execution.compaction.get().and_then(|resolved| resolved.destination);
+            let cached = execution
+                .compaction
+                .get()
+                .and_then(|resolved| resolved.destination);
             let expected = acyclic_test_support::measure(|| {
                 assert!(matches!(
                     match cached {
