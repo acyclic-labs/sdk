@@ -403,11 +403,11 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
 ) -> Result<(), W::Error> {
     #[cfg(all(test, target_os = "linux"))]
     stat_probe::directory_sync(directory.as_raw_fd());
-    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    #[cfg(all(test, target_os = "linux", loom))]
     let kernel = held_record_models::current();
-    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    #[cfg(all(test, target_os = "linux", loom))]
     let mut atomic_flush = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
-    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    #[cfg(all(test, target_os = "linux", loom))]
     if let Some(state) = atomic_flush.as_mut() {
         **state = true;
     }

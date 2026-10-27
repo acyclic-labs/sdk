@@ -23,7 +23,7 @@ doc = false
 bench = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]

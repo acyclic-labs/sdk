@@ -30,15 +30,17 @@ required-features = ["filesystem-local", "native-execution"]
 [[test]]
 name = "mcp-loom"
 path = "tests/mcp_loom.rs"
+required-features = ["model-checking"]
 
 [[test]]
 name = "skill-materializer-loom"
 path = "tests/skill_materializer_loom.rs"
+required-features = ["model-checking"]
 
 [[test]]
 name = "memory-accounting-model"
 path = "tests/memory_accounting_model.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "model-checking"]
 
 [features]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
@@ -47,8 +49,6 @@ tui = []
 test-support = ["acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
-# Native presentation only; this does not select providers or grant authority.
-terminal = []
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]

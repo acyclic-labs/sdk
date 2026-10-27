@@ -1,10 +1,10 @@
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 pub(crate) use loom::sync::Arc;
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 use loom::thread;
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 pub(crate) use std::sync::Arc;
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 use std::thread;
 
 // Callers provide disjoint outputs. No lock is held while spawning or joining;

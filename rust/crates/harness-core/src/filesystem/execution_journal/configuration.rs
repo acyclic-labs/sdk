@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>

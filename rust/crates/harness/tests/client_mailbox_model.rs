@@ -1,5 +1,5 @@
 //! Exhaustive ownership and wakeup checks over the production mailbox.
-#![cfg(acyclic_harness_loom)]
+#![cfg(loom)]
 
 #[test]
 fn ownership_handoff_preserves_order_cancellation_and_wakeups() {

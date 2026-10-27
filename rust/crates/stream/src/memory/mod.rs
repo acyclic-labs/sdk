@@ -23,7 +23,7 @@ use futures::{StreamExt as _, stream};
 #[cfg(test)]
 use prost::Message;
 
-#[cfg(all(acyclic_loom, feature = "local"))]
+#[cfg(all(loom, feature = "local"))]
 pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.
 #[cfg(any(test, feature = "local"))]
@@ -38,7 +38,7 @@ use crate::{
     UnixMillisClock,
 };
 
-#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+#[cfg(all(loom, feature = "local"))]
 /// Models checked cursor preparation and publication interests against recovery.
 pub mod browser_follow_model;
 #[cfg(test)]

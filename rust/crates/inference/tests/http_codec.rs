@@ -1,5 +1,4 @@
 //! Native protobuf JSON boundary conformance.
-#![cfg(feature = "http-codec")]
 
 use acyclic_inference::{
     MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES,

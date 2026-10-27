@@ -151,7 +151,7 @@ impl<K: Clone + Eq + Hash, C> Drop for NamedView<K, C> {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 

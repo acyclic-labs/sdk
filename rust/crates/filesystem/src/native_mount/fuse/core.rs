@@ -62,7 +62,7 @@ impl StateGuard<'_> {
         {
             wake.wake();
         }
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(all(test, loom))]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
@@ -90,9 +90,9 @@ impl Drop for StateGuard<'_> {
         DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
             dropped.extend(superseded.iter().map(|(inode, _)| *inode));
         });
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(all(test, loom))]
         let notify = !invalidation::model_checking::omit_guard_notification();
-        #[cfg(not(all(test, acyclic_fs_loom)))]
+        #[cfg(not(all(test, loom)))]
         let notify = true;
         if notify {
             self.core.invalidation.notify_all();

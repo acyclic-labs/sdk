@@ -73,7 +73,7 @@ impl<R: Read> Iterator for JsonLineReader<R> {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use serde_json::json;

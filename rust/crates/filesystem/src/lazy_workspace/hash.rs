@@ -77,11 +77,11 @@ fn hash_with_charge<T: Serialize>(
 }
 
 #[cfg(test)]
-#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "hash_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "hash_loom_tests.rs"]
 mod models;

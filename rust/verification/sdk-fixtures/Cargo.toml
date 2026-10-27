@@ -12,9 +12,13 @@ path = "../../crates/sdk-docs/src/sync.rs"
 [[test]]
 name = "fixture-model"
 path = "model.rs"
+required-features = ["model-checking"]
 
 [dependencies]
 loom = "=0.7.2"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_sdk_docs_loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[features]
+model-checking = []

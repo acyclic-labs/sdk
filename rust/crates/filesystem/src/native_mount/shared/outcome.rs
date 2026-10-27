@@ -165,7 +165,7 @@ impl CallbackFailure {
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 pub(crate) use retention::callback_is_terminal as stops_mount;
 pub(crate) use retention::source_is_terminal as source_stops_mount;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 

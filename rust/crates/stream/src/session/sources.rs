@@ -4,10 +4,10 @@ use super::*;
 use futures::task::ArcWake;
 use std::task::{Context, Poll};
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub(super) mod model;
 #[cfg(test)]
-#[cfg(not(acyclic_stream_loom))]
+#[cfg(not(loom))]
 mod tests;
 
 const OPENING: usize = 0;
@@ -19,24 +19,24 @@ struct Wake {
     identity: wire::SessionChannel,
     queued: AtomicU64,
     signal: Arc<signal::Signal<wire::SessionChannel>>,
-    #[cfg(acyclic_stream_loom)]
+    #[cfg(loom)]
     omit_signal: bool,
-    #[cfg(acyclic_stream_loom)]
+    #[cfg(loom)]
     clear_after_recheck: bool,
-    #[cfg(acyclic_stream_loom)]
+    #[cfg(loom)]
     release_only: bool,
 }
 impl Wake {
     fn recheck<T>(&self, provider: impl FnOnce() -> T) -> T {
-        #[cfg(acyclic_stream_loom)]
+        #[cfg(loom)]
         let late = self.clear_after_recheck;
-        #[cfg(not(acyclic_stream_loom))]
+        #[cfg(not(loom))]
         let late = false;
         // A wake racing the provider recheck must enqueue a fresh hint. Clearing
         // afterward can erase a wake that was deduplicated against the old hint.
         // The RMW also acquires publications carried by coalesced wakes.
         let reset = || {
-            #[cfg(acyclic_stream_loom)]
+            #[cfg(loom)]
             if self.release_only {
                 self.queued.store(0, Ordering::Release);
                 return;
@@ -59,7 +59,7 @@ impl Wake {
     fn notify(&self) -> bool {
         let coalesced = self.queued.swap(1, Ordering::AcqRel) != 0;
         if !coalesced {
-            #[cfg(acyclic_stream_loom)]
+            #[cfg(loom)]
             if self.omit_signal {
                 return false;
             }
@@ -135,11 +135,11 @@ impl Sources {
                     identity,
                     queued: AtomicU64::new(0),
                     signal: self.signal.clone(),
-                    #[cfg(acyclic_stream_loom)]
+                    #[cfg(loom)]
                     omit_signal: false,
-                    #[cfg(acyclic_stream_loom)]
+                    #[cfg(loom)]
                     clear_after_recheck: false,
-                    #[cfg(acyclic_stream_loom)]
+                    #[cfg(loom)]
                     release_only: false,
                 }),
                 opening: true,

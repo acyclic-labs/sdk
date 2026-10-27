@@ -484,7 +484,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
             }
             // decode_record checked every record; the header admitted count.
             // Keep ordering after finish to preserve trailing-byte precedence.
-            #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+            #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
             super::decode_probe::after_decode(&records, observe)?;
             Ok(FileTablePage::Leaf(records))
         }
@@ -621,6 +621,6 @@ pub fn file_table_page_id(
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 #[path = "../tests/file_table_decode.rs"]
 mod tests;

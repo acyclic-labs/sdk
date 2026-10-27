@@ -8,7 +8,7 @@ pub(crate) fn observe_facts<S, T, E>(
     Ok((stamp, facts()?))
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(all(test, loom))]
 mod tests {
     fn model(broken: bool) {
         loom::model(move || {

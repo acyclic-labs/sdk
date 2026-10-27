@@ -25,6 +25,7 @@ path = "tests/main.rs"
 [[test]]
 name = "e2e-progress-model"
 path = "tests/e2e_progress_model.rs"
+required-features = ["model-checking"]
 
 [[test]]
 name = "filesystem_access"
@@ -76,7 +77,7 @@ browser = ["wasm", "hosting", "dep:acyclic-objects", "acyclic-fs/browser", "acyc
 hosting = ["filesystem", "acyclic-harness-client/agents"]
 wasm-journal = ["browser", "acyclic-stream/wasm-journal"]
 # Native presentation only; this does not select providers or grant authority.
-terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "acyclic-harness-core/terminal"]
+terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
 wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/wasm"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/filesystem", "acyclic-harness-search/filesystem"]

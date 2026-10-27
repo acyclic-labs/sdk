@@ -3,12 +3,12 @@ use super::RestoreGuard;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-#[cfg(acyclic_harness_tui_loom)]
+#[cfg(loom)]
 use loom::{
     sync::{Arc, Condvar, Mutex, MutexGuard},
     thread::{self, JoinHandle},
 };
-#[cfg(not(acyclic_harness_tui_loom))]
+#[cfg(not(loom))]
 use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard},
     thread::{self, JoinHandle},
@@ -89,14 +89,14 @@ impl<W: Write + Send + 'static> Owner<W> {
         // Timer wakeups that leave the state unchanged are stutters. Model
         // acknowledgement notifications and explicit cancellation transitions;
         // real Windows tests exercise the bounded wall-clock waits.
-        #[cfg(acyclic_harness_tui_loom)]
+        #[cfg(loom)]
         {
             let _ = timeout;
             self.wake
                 .wait(state)
                 .map_err(|_| io::ErrorKind::Other.into())
         }
-        #[cfg(not(acyclic_harness_tui_loom))]
+        #[cfg(not(loom))]
         {
             self.wake
                 .wait_timeout(state, timeout)
@@ -243,11 +243,11 @@ impl<W: Write + Send + 'static> Owner<W> {
             owner.wake.notify_all();
         };
         let spawn = || {
-            #[cfg(acyclic_harness_tui_loom)]
+            #[cfg(loom)]
             {
                 Ok(thread::spawn(worker))
             }
-            #[cfg(not(acyclic_harness_tui_loom))]
+            #[cfg(not(loom))]
             {
                 thread::Builder::new()
                     .name("terminal-console".into())
@@ -280,11 +280,11 @@ impl<W: Write + Send + 'static> Owner<W> {
 
     fn cancel_background(this: &Arc<Self>, generation: u64) {
         let owner = Arc::clone(this);
-        #[cfg(acyclic_harness_tui_loom)]
+        #[cfg(loom)]
         let _worker = thread::spawn(move || {
             let _ = owner.quiesce_generation::<true>(true, Some(generation));
         });
-        #[cfg(not(acyclic_harness_tui_loom))]
+        #[cfg(not(loom))]
         let _worker = thread::Builder::new()
             .name("terminal-cancel".into())
             .spawn(move || {
@@ -371,7 +371,7 @@ impl<W: Write + Send + 'static> Owner<W> {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_harness_tui_loom)]
+#[cfg(loom)]
 mod tests {
     use super::*;
     use crate::term::{Capabilities, ModeState};

@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub(super) mod accounting;
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 #[path = "ownership_loom_tests.rs"]
 mod loom_tests;
 
@@ -175,9 +175,9 @@ impl SourcePayloadOwnership {
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
         if let Self::Registered(custody, bytes) = self {
-            #[cfg(acyclic_fs_loom)]
+            #[cfg(loom)]
             let bytes = bytes.with_mut(|bytes| *bytes);
-            #[cfg(not(acyclic_fs_loom))]
+            #[cfg(not(loom))]
             let bytes = *bytes.get_mut();
             custody.retire_deferred(bytes);
         }

@@ -7,13 +7,13 @@ use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::Al
 use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(loom)))]
 mod charge_tests;
 mod codec;
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod codec_properties;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(loom)))]
 mod custody_tests;
 mod history;
 mod quota;

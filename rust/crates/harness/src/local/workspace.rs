@@ -10,7 +10,7 @@ pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
 
 mod bootstrap;
 #[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
+#[cfg(not(loom))]
 mod performance_tests;
 
 mod children;
@@ -81,9 +81,9 @@ pub struct LocalWorkspace {
     pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
     /// Diff baselines of the workspaces this owner selected, shared with the
     /// views it derives.
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(all(test, not(loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(all(test, not(loom)))]
     pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
@@ -258,7 +258,7 @@ impl LocalWorkspace {
         acyclic_fs::WorkspaceId,
         Option<checkout_tools::reconciliation::Pending>,
     )> {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(all(test, not(loom)))]
         self.selection_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = self.view.workspace().id();
@@ -404,9 +404,9 @@ pub(super) async fn open(
     )));
     let mount_directory = path.join(HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(all(test, not(loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(all(test, not(loom)))]
         mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,

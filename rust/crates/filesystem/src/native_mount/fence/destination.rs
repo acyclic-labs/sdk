@@ -1,10 +1,10 @@
 use super::*;
 
 #[cfg(test)]
-#[cfg(all(target_os = "linux", not(acyclic_fs_native_loom)))]
+#[cfg(all(target_os = "linux", not(loom)))]
 mod retry_tests;
 #[cfg(test)]
-#[cfg(all(target_os = "linux", not(acyclic_fs_native_loom)))]
+#[cfg(all(target_os = "linux", not(loom)))]
 mod tests;
 
 fn cleanup_work(_name: &[crate::native_host::NativeUnit]) -> crate::WorkCounters {

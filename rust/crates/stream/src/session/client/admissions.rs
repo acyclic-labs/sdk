@@ -58,7 +58,7 @@ impl Admissions {
     }
 }
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 /// Home binding and admission registration serialize on the same real lock.
 pub fn verify_admission_binding(broken: bool) {
     loom::model(move || {

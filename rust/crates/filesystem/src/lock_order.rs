@@ -73,5 +73,5 @@ pub(crate) fn lock<T, const RANK: u16>(
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests;

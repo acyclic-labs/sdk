@@ -97,18 +97,18 @@ impl<T> Unpublished<T> {
     }
 
     #[cfg(test)]
-    #[cfg(acyclic_fs_loom)]
+    #[cfg(loom)]
     pub(super) fn install_unpublished(self) {
         self.install::<true, true>(Sequence::new(1));
     }
 }
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod loom_tests;
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests;
 
 #[cfg(test)]

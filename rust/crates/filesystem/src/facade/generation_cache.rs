@@ -68,7 +68,7 @@ impl<const N: usize> GenerationPositions<N> {
         }
     }
 
-    #[cfg(all(test, acyclic_fs_loom))]
+    #[cfg(all(test, loom))]
     fn record_torn(&self, key: Key, position: Sequence) {
         let index = {
             let mut entries = self.entries.lock().unwrap();

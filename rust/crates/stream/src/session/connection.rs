@@ -95,7 +95,7 @@ impl Drop for Change<'_> {
     }
 }
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 /// Explores handshake publication concurrent with a waiter parking or cancelling.
 pub fn verify_connections(omit_wake: bool) {
     loom::model(move || {

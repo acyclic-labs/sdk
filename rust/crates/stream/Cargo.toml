@@ -30,6 +30,7 @@ name = "browser-test-host"
 required-features = ["grpc", "test-support"]
 
 [features]
+model-checking = ["dep:loom", "dep:tempfile"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]
 grpc = ["session", "dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
@@ -44,6 +45,8 @@ wasm-journal = ["dep:wasm-bindgen"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
+loom = { version = "0.7.2", features = ["futures"], optional = true }
+tempfile = { version = "3.27.0", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
@@ -87,9 +90,6 @@ rustls-platform-verifier = { workspace = true, optional = true }
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 
-[target.'cfg(acyclic_stream_loom)'.dependencies]
-loom = { version = "0.7.2", features = ["futures"] }
-
 [dev-dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
@@ -118,9 +118,6 @@ wasm-bindgen-test = "=0.3.67"
 getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
 web-sys = { workspace = true, features = ["Performance"] }
 
-[target.'cfg(acyclic_loom)'.dependencies]
-loom = { version = "0.7.2", features = ["futures"] }
-tempfile = "3.27.0"
 
 [lints]
 workspace = true
@@ -132,3 +129,38 @@ required-features = ["http"]
 [[example]]
 name = "postgres-conformance"
 required-features = ["postgres"]
+
+[[test]]
+name = "browser_follow_model"
+path = "tests/browser_follow_model.rs"
+required-features = ["local", "model-checking"]
+
+[[test]]
+name = "client_pool_loom"
+path = "tests/client_pool_loom.rs"
+required-features = ["grpc", "model-checking"]
+
+[[test]]
+name = "client_session_loom"
+path = "tests/client_session_loom.rs"
+required-features = ["local", "model-checking"]
+
+[[test]]
+name = "local_follow_loom"
+path = "tests/local_follow_loom.rs"
+required-features = ["local", "model-checking"]
+
+[[test]]
+name = "local_replay_model"
+path = "tests/local_replay_model.rs"
+required-features = ["local", "model-checking"]
+
+[[test]]
+name = "wave1_loom"
+path = "tests/wave1_loom.rs"
+required-features = ["local", "model-checking"]
+
+[[test]]
+name = "wave1_recovery"
+path = "tests/wave1_recovery.rs"
+required-features = ["local"]

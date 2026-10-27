@@ -1,5 +1,5 @@
 //! Models the browser's shared production state and interest subscription path.
-#![cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+#![cfg(loom)]
 
 #[test]
 fn checked_follow_rejects_replaced_history_without_lost_wakeup() {

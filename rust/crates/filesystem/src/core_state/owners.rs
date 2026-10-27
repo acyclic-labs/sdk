@@ -71,10 +71,10 @@ impl LocalCoreStateStore {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod models;
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

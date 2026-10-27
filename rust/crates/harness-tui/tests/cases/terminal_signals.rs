@@ -1,5 +1,5 @@
 //! Real subprocesses and PTYs exercise the production signal lifecycle.
-#![cfg(all(unix, feature = "tui", not(acyclic_harness_tui_loom)))]
+#![cfg(all(unix, feature = "tui", not(loom)))]
 
 use std::fs::File;
 use std::io::{self, Read, Write};

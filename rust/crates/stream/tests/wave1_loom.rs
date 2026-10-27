@@ -1,5 +1,5 @@
 //! Production state-machine models; exhaustive at the explicit preemption bound.
-#![cfg(all(acyclic_loom, feature = "local"))]
+#![cfg(loom)]
 #[test]
 fn subtree_fork_races_coordinated_descendant_writes() {
     acyclic_stream::verification::subtree_cut(false);

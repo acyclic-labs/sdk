@@ -423,7 +423,7 @@ impl LocalStream {
         // This call flushed this exact snapshot. Later callers may have advanced
         // durable_tails beyond it; never pair that newer prefix with this cut.
         let covered = accepted;
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut)
         {
             *durable

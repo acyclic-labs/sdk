@@ -103,9 +103,9 @@ struct Shard {
 struct Idle {
     classes: Vec<(usize, Vec<Vec<u8>>)>,
     bytes: usize,
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     broken_accounting: bool,
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     broken_ownership: bool,
 }
 
@@ -113,14 +113,14 @@ impl Idle {
     const EMPTY: Self = Self {
         classes: Vec::new(),
         bytes: 0,
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         broken_accounting: false,
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         broken_ownership: false,
     };
 }
 
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 static SHARDS: [Shard; POOL_SHARDS] = [const { Shard::new() }; POOL_SHARDS];
 
 thread_local! {
@@ -128,7 +128,7 @@ thread_local! {
 }
 
 impl Shard {
-    #[cfg(not(acyclic_native_runtime_loom))]
+    #[cfg(not(loom))]
     const fn new() -> Self {
         Self {
             idle: Mutex::new(Idle::EMPTY),
@@ -136,7 +136,7 @@ impl Shard {
     }
 
     /// Model builds create each shard inside the model, with a Loom lock.
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(loom)]
     fn new() -> Self {
         Self {
             idle: Mutex::new(Idle::EMPTY),
@@ -144,7 +144,7 @@ impl Shard {
     }
 
     /// The calling worker's shard, assigned round-robin on first use.
-    #[cfg(not(acyclic_native_runtime_loom))]
+    #[cfg(not(loom))]
     fn local() -> &'static Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -159,7 +159,7 @@ impl Shard {
     }
 
     /// Model builds have no process-wide shards; each thread gets its own.
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(loom)]
     fn local() -> &'static Self {
         LOCAL_SHARD.with(|local| {
             local.get().unwrap_or_else(|| {
@@ -191,9 +191,9 @@ impl Shard {
                 .iter_mut()
                 .find(|(capacity, _)| *capacity == class)
                 .and_then(|(_, buffers)| buffers.pop());
-            #[cfg(all(test, acyclic_native_runtime_loom))]
+            #[cfg(all(test, loom))]
             let broken = idle.broken_accounting;
-            #[cfg(not(all(test, acyclic_native_runtime_loom)))]
+            #[cfg(not(all(test, loom)))]
             let broken = false;
             if reused.is_some() && !broken {
                 idle.bytes -= class;
@@ -224,7 +224,7 @@ impl Idle {
         if self.bytes + class > POOL_BUDGET / POOL_SHARDS {
             return Some(buffer);
         }
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         if self.broken_ownership {
             return Some(buffer);
         }
@@ -769,6 +769,6 @@ mod faults;
 mod tests;
 
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 #[path = "apple_model.rs"]
 mod model;

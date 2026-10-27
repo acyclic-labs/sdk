@@ -44,7 +44,7 @@ pub use publication::NativeMountPublicationFailure;
 pub use working_set::NativeWorkingSet;
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_native_loom))]
+#[cfg(not(loom))]
 mod command_tests;
 #[cfg(test)]
 mod mounted_tests;

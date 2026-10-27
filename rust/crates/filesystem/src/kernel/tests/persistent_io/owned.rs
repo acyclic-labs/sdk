@@ -3,7 +3,7 @@ use crate::kernel::file_table_mutation::FileTableFormat;
 use crate::kernel::persistent_point::Owned;
 use proptest::prelude::*;
 
-#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "owned_loom.rs"]
 mod loom_tests;
 

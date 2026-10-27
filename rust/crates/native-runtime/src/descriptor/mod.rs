@@ -16,9 +16,9 @@ use std::sync::{Arc, OnceLock};
 
 mod admission;
 mod cache;
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(all(test, loom))]
 mod model;
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 pub use admission::{

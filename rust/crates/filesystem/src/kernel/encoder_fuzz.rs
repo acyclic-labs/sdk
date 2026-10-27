@@ -410,5 +410,5 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests;

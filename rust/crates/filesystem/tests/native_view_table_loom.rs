@@ -1,8 +1,8 @@
-//! Dedicated command: `cargo rustc --test native_view_table_loom ... -- --cfg acyclic_fs_loom`.
+//! Dedicated command: `cargo rustc --test native_view_table_loom ... --features model-checking -- --cfg loom`.
 //!
 //! Model of the production shared-instance view table: callbacks admitted
 //! through `enter`, retirement through the owner, and a concurrent insert.
-#![cfg(acyclic_fs_loom)]
+#![cfg(loom)]
 
 #[path = "../src/sync.rs"]
 mod sync;

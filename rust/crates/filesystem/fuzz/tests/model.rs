@@ -1,5 +1,5 @@
 //! Exhaustive schedules through the production native directory cache.
-#![cfg(acyclic_fs_loom)]
+#![cfg(loom)]
 use acyclic_fs::kernel;
 use acyclic_fs::{
     CancellationToken, Digest, FsError, ObjectId, ObjectKind, OperationClaims, VolumeId, WorkError,

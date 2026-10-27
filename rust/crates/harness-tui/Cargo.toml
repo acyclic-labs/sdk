@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
+model-checking = ["dep:loom"]
 default = []
 test-support = []
 tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:memchr", "dep:serde"]
@@ -17,6 +18,7 @@ tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:
 serde_json.workspace = true
 
 [dependencies]
+loom = { version = "0.7.2", optional = true }
 serde = { workspace = true, optional = true }
 vte = { version = "0.15", optional = true }
 memchr = { version = "2", optional = true }
@@ -48,8 +50,6 @@ signal-hook = { version = "0.4", optional = true }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["event"], optional = true }
 
-[target.'cfg(acyclic_harness_tui_loom)'.dependencies]
-loom = "=0.7.2"
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { workspace = true, features = ["process"] }
@@ -67,7 +67,10 @@ path = "tests/main.rs"
 [[test]]
 name = "terminal_negotiation"
 path = "tests/terminal_negotiation.rs"
+required-features = ["tui"]
+
 
 [[test]]
 name = "terminal_frames"
 path = "tests/terminal_frames.rs"
+required-features = ["tui"]

@@ -750,10 +750,10 @@ mod provider;
 mod tests;
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 #[path = "cache/decoded_model.rs"]
 mod decoded_model;
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 #[path = "cache/decoded_properties.rs"]
 mod decoded_properties;

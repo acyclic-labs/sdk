@@ -8,11 +8,7 @@ mod native;
 #[cfg(test)]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 use native::Connect;
-#[cfg(all(
-    any(test, acyclic_stream_loom),
-    feature = "grpc",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
@@ -35,29 +31,29 @@ use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
-#[cfg(not(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32"))))]
+#[cfg(not(all(test, not(loom), not(target_arch = "wasm32"))))]
 type Routes = BTreeMap<u64, Route>;
 #[cfg(test)]
-#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod routes;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use admissions::verify_admission_binding;
-#[cfg(acyclic_stream_loom)]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use cache::verify_cache;
-#[cfg(acyclic_stream_loom)]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_follow_data,
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
     verify_registration_deadline, verify_terminal_cursor_dial,
 };
-#[cfg(acyclic_stream_loom)]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
 #[cfg(test)]
-#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 use routes::Routes;
 mod progress;
 use progress::Progress;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use progress::verify_latest_progress;
 // The client tests drive the native gRPC transport.
 #[cfg(test)]

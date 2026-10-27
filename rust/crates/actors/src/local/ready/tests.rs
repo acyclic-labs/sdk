@@ -12,7 +12,7 @@ fn alarm(
     }
 }
 
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 #[test]
 fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
 -> Result<(), super::super::Error> {
@@ -71,7 +71,7 @@ fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
     Ok(())
 }
 
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 #[test]
 fn due_wake_survives_running_work_but_cleared_and_stale_generations_do_not_rearm()
 -> Result<(), super::super::Error> {
@@ -108,7 +108,7 @@ fn due_wake_survives_running_work_but_cleared_and_stale_generations_do_not_rearm
     Ok(())
 }
 
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 #[test]
 fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), super::super::Error> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -157,7 +157,7 @@ fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), su
     Ok(())
 }
 
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 #[test]
 fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), super::super::Error> {
     let set = ReadySet::default();
@@ -195,7 +195,7 @@ fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), supe
     Ok(())
 }
 
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 #[test]
 fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries()
 -> Result<(), super::super::Error> {
@@ -219,7 +219,7 @@ fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries()
     Ok(())
 }
 
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 mod schedules {
     use super::*;
     use loom::{

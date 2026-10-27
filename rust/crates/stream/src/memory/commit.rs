@@ -328,7 +328,7 @@ impl MemoryStream {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
             // Old behaviour, for negative controls only: the conflict spends the key.
-            #[cfg(all(acyclic_loom, feature = "local"))]
+            #[cfg(all(loom, feature = "local"))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
                 admit_replay(state, Some(&request.idempotency_key), self.limits)?;
                 let (cached, resident) = self.copy_commit(&result)?;
@@ -495,14 +495,14 @@ fn publish(
                     .node(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .clone();
-                #[cfg(all(acyclic_loom, feature = "local"))]
+                #[cfg(all(loom, feature = "local"))]
                 let subtree =
                     if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
                         build.node(subtree.data.clone(), None)?
                     } else {
                         subtree
                     };
-                #[cfg(all(acyclic_loom, feature = "local"))]
+                #[cfg(all(loom, feature = "local"))]
                 let excludes = if crate::verification::fault_is(
                     crate::verification::Fault::IgnoreForkExclusions,
                 ) {
@@ -510,7 +510,7 @@ fn publish(
                 } else {
                     &fork.exclude[..]
                 };
-                #[cfg(not(all(acyclic_loom, feature = "local")))]
+                #[cfg(not(all(loom, feature = "local")))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
                 next.put(&fork.destination, subtree, build)?;
@@ -532,9 +532,9 @@ fn publish(
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
         };
-        #[cfg(all(acyclic_loom, feature = "local"))]
+        #[cfg(all(loom, feature = "local"))]
         let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
-        #[cfg(not(all(acyclic_loom, feature = "local")))]
+        #[cfg(not(all(loom, feature = "local")))]
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path) {
             signals.changed.send_replace(tail);

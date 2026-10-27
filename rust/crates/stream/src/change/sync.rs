@@ -1,9 +1,9 @@
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub(crate) use loom::sync::Arc;
-#[cfg(not(acyclic_stream_loom))]
+#[cfg(not(loom))]
 pub(crate) use std::sync::{Arc, Mutex};
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 mod checked {
     use std::{
         cell::Cell,
@@ -46,5 +46,7 @@ mod checked {
         }
     }
 }
-#[cfg(acyclic_stream_loom)]
-pub(crate) use checked::{Mutex, assert_unlocked};
+#[cfg(loom)]
+pub(crate) use checked::Mutex;
+#[cfg(all(loom, test))]
+pub(crate) use checked::assert_unlocked;

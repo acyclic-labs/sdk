@@ -18,9 +18,11 @@ test = false
 bench = false
 
 [features]
+model-checking = ["dep:loom"]
 test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "tokio/io-util"]
 
 [dependencies]
+loom = { version = "=0.7.2", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
 blake3.workspace = true
@@ -88,3 +90,8 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "wake_loom"
+path = "tests/wake_loom.rs"
+required-features = ["model-checking"]

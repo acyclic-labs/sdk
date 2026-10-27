@@ -2,7 +2,7 @@ use super::summary_map::SummaryMap;
 use super::*;
 
 #[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
+#[cfg(not(loom))]
 pub(super) mod tests;
 
 #[derive(Default)]

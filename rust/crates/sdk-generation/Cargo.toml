@@ -33,4 +33,7 @@ bench = false
 doc = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_sdk_docs_loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[features]
+model-checking = []

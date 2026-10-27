@@ -50,14 +50,14 @@ impl Scanner {
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 pub(super) fn contains(text: &str) -> bool {
     let mut scanner = Scanner::new();
     scanner.push(text.as_bytes()) || scanner.finish()
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

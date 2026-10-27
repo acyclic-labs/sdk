@@ -1,5 +1,5 @@
 //! The dedicated model command instruments the shared production scan and mutex.
-#![cfg(acyclic_harness_loom)]
+#![cfg(loom)]
 
 mod primitives {
     include!("../src/sync/arc.rs");

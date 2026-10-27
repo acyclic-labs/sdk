@@ -23,14 +23,14 @@ pub(crate) fn retire(dirty: &AtomicBool, release_owner: impl FnOnce()) {
     publish(dirty);
 }
 
-#[cfg(any(feature = "native-watch", all(test, acyclic_fs_loom)))]
+#[cfg(any(feature = "native-watch", all(test, loom)))]
 pub(crate) fn retire_bytes<const RELEASE_FIRST: bool>(
     dirty: &AtomicBool,
     retained: &AtomicU64,
     bytes: u64,
     floor: u64,
 ) -> Result<(), crate::WorkError> {
-    let publish_first = !RELEASE_FIRST && cfg!(all(test, acyclic_fs_loom));
+    let publish_first = !RELEASE_FIRST && cfg!(all(test, loom));
     if publish_first {
         publish(dirty);
     }

@@ -5,7 +5,7 @@ mod case_fold;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(kani)");
-    println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
+    println!("cargo:rustc-check-cfg=cfg(loom)");
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     case_fold::generate()?;
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");

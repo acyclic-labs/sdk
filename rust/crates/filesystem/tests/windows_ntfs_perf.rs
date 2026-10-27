@@ -1,6 +1,6 @@
 //! Local NTFS qualification for pinned, no-driver SDK working sets.
 
-#![cfg(all(windows, feature = "native-mount"))]
+#![cfg(windows)]
 
 #[path = "support/native_access.rs"]
 mod native_access;

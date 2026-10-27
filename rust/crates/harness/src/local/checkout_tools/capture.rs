@@ -11,7 +11,7 @@ use std::time::Duration;
 
 mod converge;
 #[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
+#[cfg(not(loom))]
 mod tests;
 
 // Exclude owned projections individually below, never their authored siblings.
@@ -27,7 +27,7 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
-    #[cfg(all(test, not(acyclic_harness_loom)))]
+    #[cfg(all(test, not(loom)))]
     injection: Option<tests::Injection>,
 }
 
@@ -69,7 +69,7 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             injection: None,
         })
     }

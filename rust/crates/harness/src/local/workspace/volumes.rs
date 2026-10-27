@@ -10,10 +10,10 @@ pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
 mod exclude;
 pub(super) mod parents;
 #[cfg(test)]
-#[cfg(all(any(test, feature = "native-execution"), not(acyclic_harness_loom)))]
+#[cfg(all(any(test, feature = "native-execution"), not(loom)))]
 mod publication_tests;
 #[cfg(test)]
-#[cfg(all(target_os = "linux", not(acyclic_harness_loom)))]
+#[cfg(all(target_os = "linux", not(loom)))]
 mod recovery_tests;
 
 #[cfg(target_os = "linux")]

@@ -4,7 +4,7 @@ use std::{
 };
 
 mod job;
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod model;
 
 // Implementations acquire locks first, then synchronously update their cursor.
@@ -20,11 +20,11 @@ pub(crate) trait Snapshot: Send + 'static {
 
 pub(crate) fn read<S: Snapshot>(
     state: S,
-    #[cfg(acyclic_loom)] retain_pending: bool,
+    #[cfg(loom)] retain_pending: bool,
 ) -> impl Future<Output = (S, S::Output)> + Send {
     let read = read_owned(
         state,
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         retain_pending,
     );
     // Observation can pause after a read completes. Keep it outside the
@@ -40,9 +40,9 @@ pub(crate) fn read<S: Snapshot>(
 
 async fn read_owned<S: Snapshot>(
     mut state: S,
-    #[cfg(acyclic_loom)] retain_pending: bool,
+    #[cfg(loom)] retain_pending: bool,
 ) -> (S, S::Output) {
-    #[cfg(acyclic_loom)]
+    #[cfg(loom)]
     if retain_pending {
         let result = state.read().await;
         return (state, result);
@@ -58,9 +58,9 @@ async fn read_owned<S: Snapshot>(
         }
         let (job, completed) = job::new(state);
         let worker = job.run();
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         model::spawn(worker);
-        #[cfg(all(not(acyclic_loom), not(target_arch = "wasm32")))]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         if tokio::runtime::Handle::try_current().is_ok() {
             #[cfg(feature = "test-support")]
             drop(acyclic_native_runtime::testing::spawn(worker));
@@ -69,7 +69,7 @@ async fn read_owned<S: Snapshot>(
         } else {
             std::thread::spawn(move || futures::executor::block_on(worker));
         }
-        #[cfg(all(not(acyclic_loom), target_arch = "wasm32"))]
+        #[cfg(all(not(loom), target_arch = "wasm32"))]
         wasm_bindgen_futures::spawn_local(worker);
         let (returned, result) = completed.await;
         if let Some(result) = result {
@@ -81,7 +81,7 @@ async fn read_owned<S: Snapshot>(
     }
 }
 
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) fn park<F: Future + ?Sized>(future: std::pin::Pin<Box<F>>) -> F::Output {
     use std::{
         mem::ManuallyDrop,

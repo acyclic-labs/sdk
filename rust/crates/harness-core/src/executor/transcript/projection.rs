@@ -1,12 +1,7 @@
 //! The single durable projection codec retains main's inline context schema.
 use super::*;
 
-#[cfg(all(
-    test,
-    feature = "filesystem",
-    not(target_arch = "wasm32"),
-    not(acyclic_harness_loom)
-))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
 impl ResponseProjection {

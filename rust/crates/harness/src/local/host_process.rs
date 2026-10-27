@@ -323,7 +323,7 @@ impl HostSessionProcess {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 

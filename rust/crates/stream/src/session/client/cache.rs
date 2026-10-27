@@ -6,7 +6,7 @@ pub(crate) struct Cache<T = Client> {
     client: Mutex<Option<T>>,
 }
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 /// Models the real cache lock and detects split publication.
 pub fn verify_cache(broken: bool) {
     loom::model(move || {

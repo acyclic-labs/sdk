@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
-#[cfg(acyclic_harness_tui_loom)]
+#[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
-#[cfg(not(acyclic_harness_tui_loom))]
+#[cfg(not(loom))]
 pub(crate) use std::sync::{Arc, Mutex};
 
 use super::{Capabilities, RestoreGuard};
@@ -14,12 +14,12 @@ pub(crate) struct State<W: Write> {
     restored: bool,
 }
 
-#[cfg(any(unix, acyclic_harness_tui_loom))]
+#[cfg(any(unix, loom))]
 pub(crate) type Owner<W> = Mutex<Option<Arc<Mutex<State<W>>>>>;
 
 // Lock order: owner slot -> terminal state. Ordinary I/O only takes state;
 // it never takes the owner slot. The dispatcher remains installed for life.
-#[cfg(any(unix, acyclic_harness_tui_loom))]
+#[cfg(any(unix, loom))]
 pub(crate) fn attach<W: Write>(
     owner: &Owner<W>,
     create: impl FnOnce() -> io::Result<W>,
@@ -33,7 +33,7 @@ pub(crate) fn attach<W: Write>(
     Ok(state)
 }
 
-#[cfg(any(unix, acyclic_harness_tui_loom))]
+#[cfg(any(unix, loom))]
 pub(crate) fn detach<W: Write>(
     owner: &Owner<W>,
     state: &Arc<Mutex<State<W>>>,
@@ -59,7 +59,7 @@ pub(crate) fn detach<W: Write>(
     result
 }
 
-#[cfg(any(unix, acyclic_harness_tui_loom))]
+#[cfg(any(unix, loom))]
 pub(crate) fn with_owner<W: Write, T>(
     owner: &Owner<W>,
     action: impl FnOnce(Option<&Arc<Mutex<State<W>>>>) -> T,
@@ -132,7 +132,7 @@ pub(crate) fn restore<W: Write>(
     result
 }
 
-#[cfg(any(unix, acyclic_harness_tui_loom))]
+#[cfg(any(unix, loom))]
 pub(crate) fn resume<W: Write>(
     state: &Mutex<State<W>>,
     os_reapply: impl FnOnce(&mut W) -> io::Result<()>,
@@ -148,7 +148,7 @@ pub(crate) fn resume<W: Write>(
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_harness_tui_loom))]
+#[cfg(not(loom))]
 mod poison_tests {
     use super::*;
 
@@ -177,7 +177,7 @@ mod poison_tests {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_harness_tui_loom)]
+#[cfg(loom)]
 mod terminal_lifecycle_model {
     use super::*;
     use crate::term::ModeState;

@@ -17,7 +17,7 @@ mod output;
 pub(super) mod reconciliation;
 pub(super) mod shell;
 #[cfg(test)]
-#[cfg(acyclic_harness_loom)]
+#[cfg(loom)]
 mod tests;
 
 pub(super) struct CheckoutTools {

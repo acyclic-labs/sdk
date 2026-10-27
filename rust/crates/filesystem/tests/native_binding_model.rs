@@ -6,11 +6,11 @@ mod cached_binding;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 #[path = "../src/native_mount/projfs/probe_guard.rs"]
 mod probe_guard;
 
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod probe_registration {
     use super::probe_guard::{ProbeGuard, with_guard};
     use crate::sync::{Arc, Mutex};
@@ -67,7 +67,7 @@ mod probe_registration {
     }
 }
 
-#[cfg(all(acyclic_fs_loom, not(kani)))]
+#[cfg(all(loom, not(kani)))]
 mod interleavings {
     use super::cached_binding::cached_binding_matches;
     use crate::sync::atomic::{AtomicU8, Ordering};
@@ -206,7 +206,7 @@ mod interleavings {
     }
 }
 
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod proofs {
     use super::cached_binding::cached_binding_decision;
     use std::cell::Cell;
@@ -280,7 +280,7 @@ mod proofs {
     }
 }
 
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 #[cfg_attr(kani, kani::proof)]
 #[cfg_attr(not(kani), test)]
 fn projection_copy_releases_its_mutex_and_preserves_lease_errors() {

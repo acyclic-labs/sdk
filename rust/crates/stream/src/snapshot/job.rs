@@ -15,14 +15,14 @@ struct Completion<S: Snapshot> {
     abandoned: bool,
     // Registered only while the read is pending; completion retires it.
     worker: Option<Waker>,
-    #[cfg(acyclic_loom)]
+    #[cfg(loom)]
     mutant: super::model::Mutant,
 }
 
 pub(super) struct Job<S: Snapshot> {
     state: Option<S>,
     completed: Arc<SyncMutex<Completion<S>>>,
-    #[cfg(acyclic_loom)]
+    #[cfg(loom)]
     discard_on_drop: bool,
 }
 
@@ -34,13 +34,13 @@ pub(super) fn new<S: Snapshot>(
         waker: None,
         abandoned: false,
         worker: None,
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         mutant: super::model::mutant(),
     }));
     let job = Job {
         state: Some(state),
         completed: completed.clone(),
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         discard_on_drop: super::model::discard_on_drop(),
     };
     (
@@ -91,7 +91,7 @@ impl<S: Snapshot> Future for Receiver<S> {
 impl<S: Snapshot> Drop for Receiver<S> {
     fn drop(&mut self) {
         if self.satisfied {
-            #[cfg(acyclic_loom)]
+            #[cfg(loom)]
             if self
                 .completed
                 .lock()
@@ -101,7 +101,7 @@ impl<S: Snapshot> Drop for Receiver<S> {
             {
                 return;
             }
-            #[cfg(not(acyclic_loom))]
+            #[cfg(not(loom))]
             return;
         }
         let (value, worker) = {
@@ -111,7 +111,7 @@ impl<S: Snapshot> Drop for Receiver<S> {
                 .unwrap_or_else(PoisonError::into_inner);
             completed.abandoned = true;
             completed.waker = None;
-            #[cfg(acyclic_loom)]
+            #[cfg(loom)]
             if completed.mutant == super::model::Mutant::NoWake {
                 completed.worker = None;
             }
@@ -140,7 +140,7 @@ impl<S: Snapshot> Job<S> {
                 {
                     let mut completed = completed.lock().unwrap_or_else(PoisonError::into_inner);
                     if completed.abandoned {
-                        #[cfg(acyclic_loom)]
+                        #[cfg(loom)]
                         if completed.mutant == super::model::Mutant::LeakReservation {
                             return Poll::Pending;
                         }
@@ -169,7 +169,7 @@ impl<S: Snapshot> Job<S> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             completed.value = Some((state, result));
-            #[cfg(acyclic_loom)]
+            #[cfg(loom)]
             if completed.mutant == super::model::Mutant::ArmedAfterCompletion {
                 if let Some(waker) = completed.waker.take() {
                     waker.wake();
@@ -187,7 +187,7 @@ impl<S: Snapshot> Job<S> {
 
 impl<S: Snapshot> Drop for Job<S> {
     fn drop(&mut self) {
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         if self.discard_on_drop {
             return;
         }

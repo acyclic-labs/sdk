@@ -5,7 +5,7 @@ mod media_type;
     feature = "filesystem-local",
     feature = "native-execution",
     not(target_arch = "wasm32"),
-    not(acyclic_harness_loom)
+    not(loom)
 ))]
 mod skills_tests;
 

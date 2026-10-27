@@ -142,5 +142,5 @@ where
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
+#[cfg(not(loom))]
 mod tests;

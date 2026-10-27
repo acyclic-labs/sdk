@@ -29,7 +29,7 @@ mod tests;
 mod accounting;
 
 #[cfg(test)]
-#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod scope_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,5 +75,5 @@ mod paths;
 pub(crate) use paths::*;
 
 #[cfg(test)]
-#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 mod context_loom_tests;

@@ -291,7 +291,7 @@ impl DemandWork {
             return Ok(shared.clone());
         }
         let bytes = NativeProofAccounting::ALLOCATION_BYTES;
-        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
         let bytes = metadata_tests::admitted_bytes(bytes);
         self.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
         let shared = Arc::new(NativeProofAccounting::default());
@@ -379,11 +379,11 @@ mod registry_tests;
 mod tests;
 
 #[cfg(test)]
-#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "admissions_loom_tests.rs"]
 mod loom_tests;
 
 #[cfg(test)]
-#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "admissions_metadata_tests.rs"]
 mod metadata_tests;

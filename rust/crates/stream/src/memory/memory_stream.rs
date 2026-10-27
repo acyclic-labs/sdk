@@ -11,7 +11,7 @@ pub struct MemoryStream {
     commit_clock: Arc<dyn UnixMillisClock>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) work: Option<Arc<Work>>,
-    #[cfg(acyclic_loom)]
+    #[cfg(loom)]
     pub(crate) retain_pending_read: bool,
 }
 
@@ -47,7 +47,7 @@ impl MemoryStream {
             commit_clock,
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
-            #[cfg(acyclic_loom)]
+            #[cfg(loom)]
             retain_pending_read: false,
         }
     }
@@ -68,7 +68,7 @@ impl MemoryStream {
     }
 }
 
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 impl MemoryStream {
     pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
         self.state.write().await

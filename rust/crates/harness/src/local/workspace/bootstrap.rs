@@ -26,8 +26,8 @@ pub(super) async fn initialize(
 }
 
 #[cfg(test)]
-#[cfg(acyclic_harness_loom)]
+#[cfg(loom)]
 mod loom_tests;
 #[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
+#[cfg(not(loom))]
 mod tests;

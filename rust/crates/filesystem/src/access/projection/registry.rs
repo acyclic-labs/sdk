@@ -286,6 +286,6 @@ fn prefix(tree: &Tree, volume: Volume, inclusive: bool) -> State {
     sum
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 #[path = "registry/tests.rs"]
 mod tests;

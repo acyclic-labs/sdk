@@ -114,7 +114,7 @@ fn canonical_resource(
     Ok(result)
 }
 
-#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+#[cfg(all(test, feature = "memory", not(loom)))]
 mod tests {
     use super::*;
     use acyclic_stream::wire;

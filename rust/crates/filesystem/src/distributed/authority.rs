@@ -183,7 +183,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 |record, work| work.decode_epoch(&record.value, EPOCH_DOMAIN),
             )
             .await?;
-        #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+        #[cfg(all(test, loom, loom))]
         let epoch = super::head_payload_loom_tests::observed_epoch(epoch);
         let record = self
             .record_at(authority, "/records", record_tail - 1, work)

@@ -405,5 +405,5 @@ pub(super) fn put_group_sizes(
 mod tests;
 
 #[cfg(test)]
-#[cfg(objects_loom)]
+#[cfg(loom)]
 mod model;

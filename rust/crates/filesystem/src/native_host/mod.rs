@@ -95,7 +95,7 @@ pub use held_files::PublishedPair;
 #[cfg(feature = "native-watch")]
 mod search;
 #[cfg(test)]
-#[cfg(all(target_os = "linux", acyclic_fs_native_loom))]
+#[cfg(all(target_os = "linux", loom))]
 pub(crate) use held_files::models as held_record_models;
 #[cfg(test)]
 #[cfg(target_os = "linux")]

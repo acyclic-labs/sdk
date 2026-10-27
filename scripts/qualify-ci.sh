@@ -185,19 +185,19 @@ case "$lane" in
     node scripts/check-hermetic-clippy.mjs
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem-local,model-checking --lib
     # Unit tests compile without optional native features, so a test seam
     # cannot cross a feature gate the all-features suites never close.
     cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       harness_tests -p acyclic-harness --features model-checking \
         --test client-mailbox-model
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       harness_tests -p acyclic-harness-core --features model-checking --test mcp-loom
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate

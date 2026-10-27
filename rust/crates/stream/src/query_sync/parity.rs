@@ -103,13 +103,13 @@ pub(crate) fn run() {
     cancellations!(super::RwLock::new(()));
 }
 
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) fn negative() {
     admitted!(super::RwLock::stalled_reader_control(()));
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 #[test]
 fn admission_and_cancellation_match_tokio() {
     run();

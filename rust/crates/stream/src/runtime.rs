@@ -86,7 +86,7 @@ impl Executor for PlatformExecutor {
 }
 
 #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
-#[cfg(not(acyclic_stream_loom))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use acyclic_native_runtime::testing::{CapturedClock, Schedule};

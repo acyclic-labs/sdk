@@ -1,13 +1,13 @@
 use std::io;
 
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 pub type Lock = loom::sync::Arc<loom::sync::Mutex<()>>;
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 pub type Lock = std::fs::File;
 
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 loom::thread_local! { static ENTERED: std::cell::Cell<bool> = std::cell::Cell::new(false); }
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 std::thread_local! { static ENTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 struct Entered;
@@ -17,9 +17,9 @@ impl Drop for Entered {
     }
 }
 
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 struct Held<'a>(&'a Lock);
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 impl Drop for Held<'_> {
     #[expect(
         clippy::disallowed_methods,
@@ -58,9 +58,9 @@ fn cached<const FAST: bool, T>(
         Ok(lock) => lock,
         Err(_) => return compute(),
     };
-    #[cfg(acyclic_sdk_docs_loom)]
+    #[cfg(loom)]
     let _held = lock.lock().unwrap();
-    #[cfg(not(acyclic_sdk_docs_loom))]
+    #[cfg(not(loom))]
     #[expect(
         clippy::disallowed_methods,
         reason = "its own workspace, without acyclic_native_runtime::FileLock; Held unlocks explicitly"
@@ -88,7 +88,7 @@ fn lookup<T>(
     Ok(value)
 }
 
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 pub fn without_lock<T>(
     read: impl FnOnce() -> io::Result<Option<T>>,
     compute: impl FnOnce() -> io::Result<T>,
@@ -97,7 +97,7 @@ pub fn without_lock<T>(
     lookup(read, compute, publish)
 }
 
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 pub fn without_fast_read<T>(
     open_lock: impl FnOnce() -> io::Result<Lock>,
     read: impl FnMut() -> io::Result<Option<T>>,

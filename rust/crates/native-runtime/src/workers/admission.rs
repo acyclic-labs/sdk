@@ -16,14 +16,14 @@ pub(crate) struct AdmissionState {
     notifying: bool,
     notify_again: bool,
     notify_next: Option<Arc<CapacityWaiter>>,
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     pub(crate) broken_wake: bool,
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     pub(crate) broken_accounting: bool,
     /// Refunds a live shared node early, for the Loom negative control.
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     pub(crate) broken_charge: bool,
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     pub(crate) broken_broadcast: bool,
 }
 
@@ -50,13 +50,13 @@ impl AdmissionState {
             notifying: false,
             notify_again: false,
             notify_next: None,
-            #[cfg(all(test, acyclic_native_runtime_loom))]
+            #[cfg(all(test, loom))]
             broken_wake: false,
-            #[cfg(all(test, acyclic_native_runtime_loom))]
+            #[cfg(all(test, loom))]
             broken_accounting: false,
-            #[cfg(all(test, acyclic_native_runtime_loom))]
+            #[cfg(all(test, loom))]
             broken_charge: false,
-            #[cfg(all(test, acyclic_native_runtime_loom))]
+            #[cfg(all(test, loom))]
             broken_broadcast: false,
         }
     }
@@ -103,7 +103,7 @@ impl AdmissionState {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         if self.broken_charge {
             state._allocation.take();
         }
@@ -141,9 +141,9 @@ impl AdmissionState {
         // The owner's reference ends here; a notifier may still hold the node.
         drop(state);
         drop(node);
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         let notify = !self.broken_wake;
-        #[cfg(not(all(test, acyclic_native_runtime_loom)))]
+        #[cfg(not(all(test, loom)))]
         let notify = true;
         if previous.is_none() && notify {
             self.head.as_ref().map(|head| {
@@ -292,12 +292,12 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert_ne!(admission.queued_jobs, 0, "native queue accounting lost");
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         if admission.broken_accounting {
             return;
         }
         admission.queued_jobs = admission.queued_jobs.saturating_sub(1);
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         if admission.broken_wake {
             return;
         }
@@ -328,7 +328,7 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             admission.notify_next = state.next.clone();
-            #[cfg(all(test, acyclic_native_runtime_loom))]
+            #[cfg(all(test, loom))]
             if admission.broken_broadcast {
                 admission.notify_next = None;
             }

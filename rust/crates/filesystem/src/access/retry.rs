@@ -47,9 +47,9 @@ mod tests {
 
     #[test]
     fn mount_revocation_fences_policy_observation() {
-        #[cfg(acyclic_fs_loom)]
+        #[cfg(loom)]
         loom::model(check_mount_revocation);
-        #[cfg(not(acyclic_fs_loom))]
+        #[cfg(not(loom))]
         check_mount_revocation();
     }
 

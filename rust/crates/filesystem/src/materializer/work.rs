@@ -411,6 +411,6 @@ impl NativeMaterializationWork {
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 #[path = "work_normalization_tests.rs"]
 mod tests;

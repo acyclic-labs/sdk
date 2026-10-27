@@ -64,7 +64,7 @@ async fn canonical_local_root(
     test,
     any(test, feature = "local"),
     not(target_arch = "wasm32"),
-    not(acyclic_fs_loom)
+    not(loom)
 ))]
 #[path = "local_root_tests.rs"]
 mod local_root_tests;

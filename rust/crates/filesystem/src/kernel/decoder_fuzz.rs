@@ -232,7 +232,7 @@ fn check_inner<const OMIT_COMPLETION: bool>(input: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use crate::foundation::{Digest, FileId, GenerationId, VolumeId};

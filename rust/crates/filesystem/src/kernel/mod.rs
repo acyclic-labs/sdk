@@ -278,9 +278,9 @@ pub use types::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 pub(crate) use volume::encode_volume_created;
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
 pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
