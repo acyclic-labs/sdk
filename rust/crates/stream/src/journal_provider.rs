@@ -260,18 +260,7 @@ impl JournalStream {
         let encoded = command.encode_to_vec();
         let mut cache = self.0.cache.lock().await;
         self.refresh(&mut cache).await?;
-        let key = match &command {
-            Command::Append(request) => request.idempotency_key.as_ref(),
-            Command::Fork(request) => request.idempotency_key.as_ref(),
-            Command::Commit(request) => Some(&request.idempotency_key),
-        };
-        if let Some(key) = key
-            && cache
-                .provider
-                .inspect_idempotency(key.clone())
-                .await?
-                .is_some()
-        {
+        if command.has_replay(&cache.provider).await? {
             return apply(&cache.provider, command, deadline).await;
         }
         let length = encoded.len() + 17;

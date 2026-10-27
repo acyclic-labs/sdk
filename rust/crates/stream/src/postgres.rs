@@ -299,14 +299,7 @@ impl PostgresStream {
         self.catch_up(&tx, cursor).await?;
         // The shared core gives an existing retry receipt precedence over an
         // elapsed deadline, including cross-operation identity mismatches.
-        if let Command::Commit(request) = &command
-            && self
-                .inner
-                .core
-                .inspect_idempotency(request.idempotency_key.clone())
-                .await?
-                .is_some()
-        {
+        if command.has_replay(&self.inner.core).await? {
             return self.apply(command).await;
         }
         let bytes = command.encode_to_vec();
