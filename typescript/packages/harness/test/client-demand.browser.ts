@@ -1,21 +1,32 @@
-import { DemandLoader, RequestScheduler, Harness,
-  initializeClientQueries, PageWindow, HydrationCache, type FileRef } from "@acyclic-labs/harness";
+import { DemandLoader, RequestScheduler,
+  initializeClientQueries, PageWindow, HydrationCache } from "@acyclic-labs/harness";
 const result = document.querySelector<HTMLElement>("#result")!;
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
+type Volume = { readonly provider: { readonly namespace: string; readonly family: string; readonly version: string };
+  readonly id: string; readonly class: string; readonly owner: { readonly kind: string; readonly id: string } };
+type FileRef = { readonly volume: Volume; readonly path: string; readonly version: string; readonly display_name: string;
+  readonly descriptor: { readonly sha256: string; readonly byte_length: number; readonly media_type: string } };
+// The page exercises demand loading only; this stands in for the host's content admission.
+const digest = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> =>
+  Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
 try {
-  const harness = await Harness.create({ authority: { kind: "conversation", id: "demand-browser" }, issuerId: "demand-issuer", issuerKey: new Uint8Array(32).fill(7) });
   const scheduler = new RequestScheduler({ concurrent: 2, requests: 4, bytes: 8192 });
   const body = new TextEncoder().encode("Pinned selective body\n");
-  const descriptor = harness.contracts.fileDescriptor(body, "text/plain");
+  const descriptor = { sha256: await digest(body), byte_length: body.byteLength, media_type: "text/plain" };
   const volume = { provider: { namespace: "browser", family: "filesystem", version: "2" }, id: "demand", class: "project", owner: { kind: "project", id: "demand" } } as const;
-  const refs = Array.from({ length: 4 }, (_, i) => harness.contracts.validate("file_ref", { volume, path: `messages/${i}`, version: "pinned-1", descriptor, display_name: `${i}` }));
-  const scope = harness.issueScope("body-read", [harness.volumeCapability(volume, "read")]);
+  const refs: FileRef[] = Array.from({ length: 4 }, (_, i) => ({ volume, path: `messages/${i}`, version: "pinned-1", descriptor, display_name: `${i}` }));
+  const verifyContentRead = (file: FileRef): void => {
+    if (JSON.stringify(file.volume) !== JSON.stringify(volume)) throw new Error("content read outside the admitted volume");
+  };
+  const verifyFileBytes = async (file: FileRef, bytes: Uint8Array<ArrayBuffer>): Promise<void> => {
+    if (bytes.byteLength !== file.descriptor.byte_length || await digest(bytes) !== file.descriptor.sha256) throw new Error("file bytes differ from descriptor");
+  };
   let reads = 0, transferred = 0, allocatedBytes = 0, mainThreadMs = 0;
   const source = {
     reserve: (file: FileRef) => file.descriptor.byte_length * 3 + 96,
     load: async (file: FileRef, signal: AbortSignal) => {
       const admissionStart = performance.now();
-      harness.verifyContentRead(scope, file);
+      verifyContentRead(file);
       reads++;
       const fetching = fetch(`./client-demand-body.txt?reference=${file.path}`, { signal, cache: "no-store" });
       mainThreadMs += performance.now() - admissionStart;
@@ -24,7 +35,7 @@ try {
       const bytes = new Uint8Array(await response.arrayBuffer());
       const workStart = performance.now();
       assert(bytes.buffer.byteLength <= file.descriptor.byte_length, "actual backing allocation");
-      harness.contracts.verifyFileBytes(file, bytes);
+      await verifyFileBytes(file, bytes);
       transferred += bytes.byteLength;
       const value = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       allocatedBytes += bytes.byteLength + value.length * 2;
@@ -44,7 +55,7 @@ try {
   })));
   pageRequest.free();
   assert(reads === 0 && window.items().length === 4, "reference pages loaded bodies");
-  const selected = harness.contracts.validate("file_ref", window.items()[1]!.content);
+  const selected = (window.items() as readonly { content: FileRef }[])[1]!.content;
   window.free();
   const coldStart = performance.now();
   const [first, duplicate] = await Promise.all([demand.read(selected), demand.read(selected)]);
@@ -88,7 +99,7 @@ try {
   const baselineReads = reads - beforeBaselineReads;
   assert(coldBytes * 4 === baselineBytes && baselineReads === 4, "cold selective bound versus actual baseline");
   const beforeDeniedReads = reads;
-  const foreign = harness.contracts.validate("file_ref", { ...selected, volume: { ...volume, id: "foreign" } });
+  const foreign: FileRef = { ...selected, volume: { ...volume, id: "foreign" } };
   const denied = await demand.read(foreign).catch(error => error);
   assert(denied instanceof Error && reads === beforeDeniedReads && demand.peek(foreign) === undefined,
     "foreign authority fetched or retained a body");
@@ -128,7 +139,7 @@ try {
   const disposedResult = await boundary.read(selected).catch(error => error);
   assert(disposedResult.name === "AbortError" && boundary.residency.demand === 0, "completed provider published a disposed browser result");
   boundaryScheduler.dispose();
-  demand.dispose(); baselineCache.clear(); scheduler.dispose(); harness.free();
+  demand.dispose(); baselineCache.clear(); scheduler.dispose();
   assert(scheduler.residency.requests === 0 && demand.residency.bytes === 0, "disposed residency");
   result.dataset.status = "passed";
   result.textContent = JSON.stringify({ coldReads: 1, coldMs, nonSpeculativeColdMs, coldAllocatedBytes, coldMainThreadMs, nonSpeculativeMainThreadMs, coldBytes, baselineReads, baselineBytes, warmReads: 100000, baselineMs, warmMs, warmTransferredBytes: 0, warmReceiptAllocations: 0, demandResidentBytes: boundedBytes, retainedEntries: 2 });

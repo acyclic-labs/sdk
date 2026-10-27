@@ -23,7 +23,7 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 /// External client fixtures retain exact integers and ordinary object fields.
 #[wasm_bindgen(js_name = decodeClientJson)]
 pub fn decode_client_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
-    to_js_client(&parse_json_bytes(bytes)?)
+    json_to_js(&parse_json_bytes(bytes)?)
 }
 
 /// Admits one canonical ref-only execution journal observation through Rust.
@@ -283,6 +283,46 @@ pub(super) fn to_js_client<T: serde::Serialize>(value: &T) -> Result<JsValue, Js
     serialize_js(value, true)
 }
 
+/// Builds a plain JS value from JSON data with exact 64-bit integers as
+/// `BigInt`. Object keys are data, so each one is defined as an own property:
+/// assignment would let a `__proto__` key replace the object's prototype.
+fn json_to_js(value: &serde_json::Value) -> Result<JsValue, JsValue> {
+    Ok(match value {
+        serde_json::Value::Null => JsValue::NULL,
+        serde_json::Value::Bool(value) => JsValue::from_bool(*value),
+        serde_json::Value::Number(number) => match (number.as_i64(), number.as_u64()) {
+            (Some(value), _) => js_sys::BigInt::from(value).into(),
+            (None, Some(value)) => js_sys::BigInt::from(value).into(),
+            (None, None) => JsValue::from_f64(
+                number
+                    .as_f64()
+                    .ok_or_else(|| JsValue::from_str("JSON number is not representable"))?,
+            ),
+        },
+        serde_json::Value::String(value) => JsValue::from_str(value),
+        serde_json::Value::Array(items) => {
+            let array = js_sys::Array::new();
+            for item in items {
+                array.push(&json_to_js(item)?);
+            }
+            array.into()
+        }
+        serde_json::Value::Object(fields) => {
+            let object = js_sys::Object::new();
+            for (key, field) in fields {
+                let descriptor = js_sys::Object::new();
+                let field = json_to_js(field)?;
+                js_sys::Reflect::set(&descriptor, &JsValue::from_str("value"), &field)?;
+                for flag in ["writable", "enumerable", "configurable"] {
+                    js_sys::Reflect::set(&descriptor, &JsValue::from_str(flag), &JsValue::TRUE)?;
+                }
+                js_sys::Reflect::define_property(&object, &JsValue::from_str(key), &descriptor)?;
+            }
+            object.into()
+        }
+    })
+}
+
 fn serialize_js<T: serde::Serialize>(value: &T, object_maps: bool) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_maps_as_objects(object_maps)
@@ -296,7 +336,7 @@ fn serialize_js<T: serde::Serialize>(value: &T, object_maps: bool) -> Result<JsV
 /// Generic page entries keep JSON object property access while using the same
 /// exact-integer and descriptor projection as typed contract outputs.
 pub(super) fn to_js_page_value(value: &serde_json::Value) -> Result<JsValue, JsValue> {
-    let js = serialize_js(value, true)?;
+    let js = json_to_js(value)?;
     normalize_descriptor_lengths(&js, value)?;
     Ok(js)
 }

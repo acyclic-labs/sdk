@@ -108,7 +108,7 @@ test("generated context selections and updates use native schemas, placement and
 test("Rust constructs exact descriptors for empty files and rejects invalid media types", async () => {
   const descriptor = contracts.fileDescriptor(new Uint8Array(), "application/octet-stream");
   expect(descriptor.byte_length).toBe(0);
-  expect(descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join(""))
+  expect(descriptor.sha256.map((byte: number) => byte.toString(16).padStart(2, "0")).join(""))
     .toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
   expect(() => contracts.fileDescriptor(new Uint8Array(), "not a media type")).toThrow();
 });

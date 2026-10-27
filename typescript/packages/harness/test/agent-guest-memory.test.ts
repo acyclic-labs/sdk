@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ensureHarnessWasm } from "../src/wasm-runtime.js";
+import { ensureBrowserWasm } from "../src/wasm-runtime.js";
 // @ts-expect-error The shared browser fixture is untyped JavaScript.
 import { agentsFixture, turnText, until } from "./browser-agents-fixture.mjs";
 
@@ -10,11 +10,12 @@ test("the guest artifact runs one agent turn over in-memory host storage", async
   const global = globalThis as { indexedDB?: unknown };
   const installed = Object.getOwnPropertyDescriptor(global, "indexedDB");
   delete global.indexedDB;
-  let fixture, providers, guest, agents;
+  // The fixture is untyped JavaScript, so its handles are too.
+  let fixture: any, providers: any, guest: any, agents: any;
   try {
     fixture = await agentsFixture(crypto.randomUUID(), async function* ({ texts }: { texts: string[] }) {
       yield { kind: "content", delta: `guest:${texts.at(-1)}` };
-    }, ensureHarnessWasm);
+    }, ensureBrowserWasm);
     expect("indexedDB" in globalThis).toBe(false);
     providers = fixture.providers("memory");
     guest = fixture.guest(providers);
