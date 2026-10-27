@@ -45,7 +45,10 @@ Admission precedes native dispatch. A keyed conditional commit publishes the poi
 projection and account operation log (`machines/<account>/ops`) together.
 An identical successful retry returns the original result; a different intent is
 a conflict. A pending or unknown operation refuses redispatch. Recovery never
-infers success from a native resource's name or labels.
+infers success from a native resource's name or labels. Daytona's former
+create/fork name-holder adoption paths are deleted: a native collision is a
+conflict, with no follow-up lookup, relabel or deletion claim. Existing settled
+operations replay from Streams without another native dispatch.
 
 `watch` and `join` follow the point projection through Streams' checked cursor.
 `SettledMutation` includes the operation, final `CommitId`, and exact result.

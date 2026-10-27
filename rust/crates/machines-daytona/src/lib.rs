@@ -350,7 +350,6 @@ impl DaytonaProvider {
         sandbox: &Sandbox,
         contract: &MachineContract,
         checkpoint: Option<CheckpointId>,
-        adopted: bool,
     ) -> RawCreated {
         RawCreated {
             handle: sandbox.id.clone(),
@@ -361,85 +360,7 @@ impl DaytonaProvider {
                 checkpoint,
                 now_unix_ms(),
             ),
-            adopted,
-        }
-    }
-
-    /// Creates a sandbox, or adopts the one an earlier attempt under the same deterministic
-    /// name already created.
-    ///
-    /// The name alone proves nothing: in a shared organization another tenant or an unrelated
-    /// workload can hold it. A name holder is adopted only when its provider labels (managed,
-    /// key, kind, fork slot, tenant, and the serialized contract with its image) are exactly the
-    /// ones this request attaches; otherwise the create fails with a conflict. The flag is
-    /// `true` for an adopted sandbox, which core never deletes as this operation's creation.
-    async fn create_or_adopt(
-        &self,
-        body: &api::CreateSandboxRequest,
-    ) -> Result<(Sandbox, bool), ProviderError> {
-        match self.api.create(body).await {
-            Err(ProviderError::Conflict(detail)) => {
-                let Some(name) = &body.name else {
-                    return Err(ProviderError::Conflict(detail));
-                };
-                let existing = self
-                    .api
-                    .get(name)
-                    .await
-                    .map_err(|_| ProviderError::Conflict(detail.clone()))?;
-                if metadata::provider_labels(&existing.labels)
-                    == metadata::provider_labels(&body.labels)
-                {
-                    Ok((existing, true))
-                } else {
-                    Err(ProviderError::Conflict(format!(
-                        "sandbox {name} exists but was not created by this request: {detail}"
-                    )))
-                }
-            }
-            other => other.map(|created| (created, false)),
-        }
-    }
-
-    /// Accepts the holder of a native fork child's deterministic name only when it really is a
-    /// fork child of `parent_id` from this request: Daytona must list it among the parent's
-    /// forks, and its provider labels must be either the ones this request attaches (already
-    /// relabelled) or still the parent's own (inherited, relabel pending). Anything else, such
-    /// as another parent's child under a reused key, is a conflict.
-    async fn adopt_fork_child(
-        &self,
-        parent_id: &str,
-        name: &str,
-        ours: &BTreeMap<String, String>,
-        detail: String,
-    ) -> Result<Sandbox, ProviderError> {
-        let conflict = |why: &str| {
-            ProviderError::Conflict(format!(
-                "sandbox {name} is not this request's fork child of {parent_id} ({why}): {detail}"
-            ))
-        };
-        let child = self
-            .api
-            .get(name)
-            .await
-            .map_err(|_| conflict("unreadable"))?;
-        let parent = self.api.get(parent_id).await?;
-        if !self
-            .api
-            .forks(parent_id)
-            .await?
-            .iter()
-            .any(|fork| fork.id == child.id)
-        {
-            return Err(conflict("not a fork of this parent"));
-        }
-        let labels = metadata::provider_labels(&child.labels);
-        if labels == metadata::provider_labels(ours)
-            || labels == metadata::provider_labels(&parent.labels)
-        {
-            Ok(child)
-        } else {
-            Err(conflict("labelled for another request"))
+            adopted: false,
         }
     }
 
@@ -505,8 +426,8 @@ impl RawMachines for DaytonaProvider {
         let contract = Self::contract(request, capabilities)?;
         let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
         body.env = self.core.staged_boot_env(key).unwrap_or_default();
-        let (created, adopted) = self.create_or_adopt(&body).await?;
-        Ok(Self::raw_created(&created, &contract, None, adopted))
+        let created = self.api.create(&body).await?;
+        Ok(Self::raw_created(&created, &contract, None))
     }
 
     async fn raw_observe(
@@ -625,13 +546,8 @@ impl RawMachines for DaytonaProvider {
     ) -> Result<RawCreated, ProviderError> {
         let handle = native.map_or_else(|| checkpoint.to_string(), |native| native.handle.clone());
         let body = map::create_request(&self.config, &handle, key, Some(slot), contract)?;
-        let (created, adopted) = self.create_or_adopt(&body).await?;
-        Ok(Self::raw_created(
-            &created,
-            contract,
-            Some(checkpoint),
-            adopted,
-        ))
+        let created = self.api.create(&body).await?;
+        Ok(Self::raw_created(&created, contract, Some(checkpoint)))
     }
 
     async fn raw_fork_machine(
@@ -647,18 +563,8 @@ impl RawMachines for DaytonaProvider {
         let request = ForkRequest {
             name: Some(name.clone()),
         };
-        let (child, adopted) = match self.api.fork(&handle, &request).await {
-            Ok(child) => (child, false),
-            Err(ProviderError::Conflict(detail)) => (
-                self.adopt_fork_child(
-                    &handle,
-                    &name,
-                    &self.live_fork_labels(key, slot, parent, &handle),
-                    detail,
-                )
-                .await?,
-                true,
-            ),
+        let child = match self.api.fork(&handle, &request).await {
+            Ok(child) => child,
             Err(ProviderError::Invalid(detail)) if map::fork_refused_for_state(&detail) => {
                 return Ok(Dispatch::Refused);
             }
@@ -668,7 +574,6 @@ impl RawMachines for DaytonaProvider {
             &child,
             &parent.contract,
             None,
-            adopted,
         )))
     }
 
@@ -1309,13 +1214,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_adopts_only_its_own_name_holder() {
+    async fn create_name_collisions_never_reconstruct_replay() {
         let key = test_key(3);
-        for (holder, adopted) in [
-            (owned_labels(key, Some("other-tenant")), false),
-            (owned_labels(test_key(4), None), false),
-            (BTreeMap::new(), false),
-            (owned_labels(key, None), true),
+        for holder in [
+            owned_labels(key, Some("other-tenant")),
+            owned_labels(test_key(4), None),
+            BTreeMap::new(),
+            owned_labels(key, None),
         ] {
             let labels = holder.clone();
             let mock = mock::Mock::start(move |request| {
@@ -1332,22 +1237,20 @@ mod tests {
             })
             .await;
             let outcome = mocked(&mock, None).create(request(key)).await;
-            if adopted {
-                assert!(
-                    matches!(outcome, Ok(MutationOutcome::Created(ref m)) if m.id.to_string() == OTHER),
-                    "{outcome:?}"
-                );
-            } else {
-                assert!(
-                    matches!(outcome, Err(ProviderError::Conflict(_))),
-                    "{holder:?} -> {outcome:?}"
-                );
-            }
+            assert!(
+                matches!(outcome, Err(ProviderError::Conflict(_))),
+                "{holder:?} -> {outcome:?}"
+            );
+            assert_eq!(
+                mock.requests().len(),
+                2,
+                "qualification and one create only"
+            );
         }
     }
 
     #[tokio::test]
-    async fn native_fork_never_adopts_another_request_or_parent_child() {
+    async fn native_fork_name_collisions_never_reconstruct_replay() {
         let key = test_key(5);
         let child_name = metadata::sandbox_name(key, Some(0));
         // Child of another parent (not in this parent's forks), and a child of this parent
@@ -1399,6 +1302,13 @@ mod tests {
             assert!(
                 !mock.requests().iter().any(|r| r.method == "PUT"),
                 "a foreign child must never be relabelled"
+            );
+            assert!(
+                !mock.requests().iter().any(|r| {
+                    r.is("GET", &format!("/sandbox/{child_name}"))
+                        || r.is("GET", &format!("/sandbox/{MACHINE}/forks"))
+                }),
+                "collision must not start an adapter recovery lookup"
             );
         }
     }
@@ -1854,9 +1764,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelling_a_replay_never_deletes_the_sandbox_it_adopted() {
-        // A name conflict can expose a sandbox created by another attempt.
-        // Cancelling this attempt must never delete an adopted sandbox.
+    async fn cancelling_a_colliding_create_never_claims_or_deletes_the_name_holder() {
+        // Cancellation races with a native refusal, not an accepted creation.
+        // The colliding resource is never looked up or taken into custody.
         let key = test_key(16);
         let release = gate();
         let hold = Arc::clone(&release);
@@ -1867,10 +1777,8 @@ mod tests {
                     return (200, r#"{"id":"s","sandboxClass":"linux-vm"}"#.to_owned());
                 }
                 if request.is("POST", "/sandbox") {
-                    return (409, "name taken".to_owned());
-                }
-                if request.is("GET", &format!("/sandbox/{OTHER}")) {
                     hold.acquire().await.unwrap().forget();
+                    return (409, "name taken".to_owned());
                 }
                 (200, sandbox(OTHER, "started", &owned_labels(key, None)))
             }
@@ -1881,13 +1789,24 @@ mod tests {
             let provider = Arc::clone(&provider);
             async move { provider.create(request(key)).await }
         });
-        mock.wait_for("GET", &format!("/sandbox/{OTHER}")).await;
+        mock.wait_for("POST", "/sandbox").await;
         provider.cancel(ops::operation_id(key)).await.unwrap();
         release.add_permits(1);
-        assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
+        assert!(
+            matches!(task.await.unwrap(), Err(ProviderError::Indeterminate(actual)) if actual == key)
+        );
+        assert_eq!(
+            provider
+                .inspect_operation(ops::operation_id(key))
+                .await
+                .unwrap()
+                .phase,
+            OperationPhase::Cancelled
+        );
+        assert_eq!(mock.requests().len(), 2);
         assert!(
             !mock.requests().iter().any(|r| r.method == "DELETE"),
-            "an adopted sandbox belongs to the key's outcome, not to the cancelled replay"
+            "a name collision creates no deletion custody"
         );
     }
 

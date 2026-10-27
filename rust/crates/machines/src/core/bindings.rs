@@ -280,19 +280,12 @@ impl OperationRegistry {
                 break pending;
             }
         };
-        if pending {
-            return Ok(());
-        }
-        let resource = NativeResource::Machine(native.handle);
-        match driver.raw_destroy(&resource).await {
-            Ok(at) => {
-                self.acknowledge_deletion(operation, &resource, Some(at))
-                    .await?
-            }
-            Err(ProviderError::NotFound(_)) => self.deleted(operation, &resource).await?,
-            Err(error) => tracing::warn!(%operation, %error,
-                "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with the original operation identity again"),
-        }
-        Err(ProviderError::Cancelled)
+        self.finish_claim(
+            driver,
+            operation,
+            &NativeResource::Machine(native.handle),
+            pending,
+        )
+        .await
     }
 }

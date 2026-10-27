@@ -478,7 +478,7 @@ mod tests {
     use super::*;
     use acyclic_machines::core::metadata::{
         KIND_CREATE, KIND_FORK, LABEL_COUNT, LABEL_INDEX, LABEL_KEY, LABEL_KIND, LABEL_MANAGED,
-        LABEL_READY, LABEL_TENANT, managed_filter, owned_by, provider_labels, relabel,
+        LABEL_TENANT, managed_filter, owned_by, relabel,
     };
 
     fn fixture(name: &str) -> String {
@@ -683,19 +683,6 @@ mod tests {
             create_request(&config, "s", key(1), None, &other),
             Err(ProviderError::Invalid(_))
         ));
-    }
-
-    #[test]
-    fn readiness_does_not_change_native_request_identity() {
-        let mut inherited = labels(
-            key(1),
-            Some(ForkSlot { index: 0, count: 2 }),
-            None,
-            &contract(),
-        );
-        let expected = inherited.clone();
-        inherited.insert(LABEL_READY.to_owned(), "true".to_owned());
-        assert_eq!(provider_labels(&inherited), provider_labels(&expected));
     }
 
     #[test]

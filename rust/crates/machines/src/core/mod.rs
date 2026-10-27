@@ -527,15 +527,8 @@ impl OperationRegistry {
     ) -> Result<(), ProviderError> {
         self.check_driver(operation, driver.name()).await?;
         for resource in self.created(operation).await?.into_iter().rev() {
-            match driver.raw_destroy(&resource).await {
-                Ok(at) => {
-                    self.acknowledge_deletion(operation, &resource, Some(at))
-                        .await?
-                }
-                Err(ProviderError::NotFound(_)) => self.deleted(operation, &resource).await?,
-                Err(error) => tracing::warn!(%operation, resource = resource.handle(), %error,
-                    "Machines native deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
-            }
+            self.delete_owned_resource(driver, operation, &resource)
+                .await?;
         }
         Ok(())
     }
@@ -568,9 +561,18 @@ impl OperationRegistry {
         let pending = self
             .bind_resource(operation, Some(driver.name()), resource, adopted)
             .await?;
-        if pending {
-            return Ok(());
-        }
+        self.finish_claim(driver, operation, resource, pending)
+            .await
+    }
+
+    /// Native deletion and its canonical acknowledgment have one owner, including
+    /// ordinary cancellation and a result that arrives after cancellation.
+    async fn delete_owned_resource(
+        &self,
+        driver: &(impl NativeResources + ?Sized),
+        operation: OperationId,
+        resource: &NativeResource,
+    ) -> Result<(), ProviderError> {
         match driver.raw_destroy(resource).await {
             Ok(at) => {
                 self.acknowledge_deletion(operation, resource, Some(at))
@@ -578,8 +580,23 @@ impl OperationRegistry {
             }
             Err(ProviderError::NotFound(_)) => self.deleted(operation, resource).await?,
             Err(error) => tracing::warn!(%operation, resource = resource.handle(), %error,
-                "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
+                "Machines native deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
         }
+        Ok(())
+    }
+
+    async fn finish_claim(
+        &self,
+        driver: &(impl NativeResources + ?Sized),
+        operation: OperationId,
+        resource: &NativeResource,
+        pending: bool,
+    ) -> Result<(), ProviderError> {
+        if pending {
+            return Ok(());
+        }
+        self.delete_owned_resource(driver, operation, resource)
+            .await?;
         Err(ProviderError::Cancelled)
     }
 

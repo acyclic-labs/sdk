@@ -8,7 +8,7 @@ crosses into the harness, and switching providers changes bindings, not orchestr
 | Trait method            | Daytona REST call (`https://app.daytona.io/api`)                            |
 |-------------------------|-----------------------------------------------------------------------------|
 | `qualify_image`         | digest → registered snapshot; `GET /snapshots/{name}` must report a VM class |
-| `create`                | `POST /sandbox` (`CreateSandbox`), named `acyclic-{key}` so replays collide  |
+| `create`                | `POST /sandbox` (`CreateSandbox`), named `acyclic-{key}`; core owns replay  |
 | `checkpoint`            | `POST /sandbox/{id}/snapshot` with `includeMemory: true` (hot snapshot)       |
 | `fork`                  | `POST /sandbox` from the hot snapshot, once per child                         |
 | `fork_machine` (VM)     | `POST /sandbox/{id}/fork` per child: memory and disk (`LiveFork`)             |
@@ -60,9 +60,10 @@ Safety rules the provider enforces:
   refused instead of falling back to the organization default.
 - **Tenancy.** Every sandbox carries `acyclic.tenant` (or none when no tenant is configured);
   listing and reads ignore sandboxes of any other tenant.
-- **Adoption.** A replayed create or fork adopts the holder of its deterministic name only when
-  the holder carries exactly this request's provider labels (key, kind, fork slot, parent,
-  tenant, contract); a native fork child must also be listed among the parent's forks.
+- **Replay.** The canonical operation registry returns the original settled result without
+  native IO. A native name collision is a conflict, including an identically labelled holder;
+  the adapter never looks it up, reconstructs success, or takes deletion custody. An unknown
+  operation remains indeterminate until its original canonical operation is reconciled.
 - **Cancellation.** `cancel` deletes only sandboxes the operation created, including one whose
   create returned after the cancellation, never the machine a suspend, wake, policy change,
   checkpoint, or destroy acts on.

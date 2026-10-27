@@ -95,17 +95,6 @@ pub fn relabel(
     labels
 }
 
-/// The provider-owned (`acyclic.*`) subset of a label map that identifies which request made
-/// a sandbox; the [`LABEL_READY`] progress marker is left out.
-#[must_use]
-pub fn provider_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
-    labels
-        .iter()
-        .filter(|(name, _)| name.starts_with("acyclic.") && name.as_str() != LABEL_READY)
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect()
-}
-
 /// Whether a sandbox is managed by this provider *for `tenant`*: it carries the managed label
 /// and exactly the configured tenant label (none when no tenant is configured). Sandboxes of
 /// other tenants in a shared organization are invisible to this provider.
