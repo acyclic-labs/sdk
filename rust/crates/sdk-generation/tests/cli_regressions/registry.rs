@@ -36,8 +36,6 @@ fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
                         "docsProducer"
                     }
                 );
-                let _ = fs::remove_dir_all(fixture.root);
-                let _ = fs::remove_dir_all(fixture.output);
             });
         }
     });
@@ -168,8 +166,6 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     discovery[0], discovery[1],
                     "both automatic-config authorities must execute"
                 );
-                let _ = fs::remove_dir_all(fixture.root);
-                let _ = fs::remove_dir_all(fixture.output);
             });
         }
     });
@@ -232,8 +228,6 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
                         .join("releases/1.0.0/sources/demo-1.0.0/unverified-added.json")
                         .exists());
                 }
-                let _ = fs::remove_dir_all(fixture.root);
-                let _ = fs::remove_dir_all(fixture.output);
             });
         }
     });
@@ -334,6 +328,7 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     );
                     let drift = run_historical_drift(
                         &Fixture {
+                            directory: fixture.directory.clone(),
                             root: fixture.root.clone(),
                             rustdoc: output.join(".rustdoc"),
                             output,
@@ -342,8 +337,6 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     );
                     assert!(drift.status.success(), "{}", output_message(&drift));
                 }
-                let _ = fs::remove_dir_all(fixture.root);
-                let _ = fs::remove_dir_all(fixture.output);
             });
         }
     });
@@ -465,6 +458,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     let drift = queries.run(|| {
         run_historical_drift(
             &Fixture {
+                directory: fixture.directory.clone(),
                 root: fixture.root.clone(),
                 rustdoc: output.join(".rustdoc"),
                 output: output.clone(),
@@ -476,10 +470,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     runtime::phase("drifted");
     fs::remove_dir_all(&template.0.root).unwrap();
     fs::remove_dir_all(&template.0.output).unwrap();
-    for (fixture, _) in fixtures {
-        let _ = fs::remove_dir_all(fixture.root);
-        let _ = fs::remove_dir_all(fixture.output);
-    }
+    drop(fixtures);
     runtime::phase("cleaned");
 }
 
@@ -542,6 +533,7 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
                     assert_eq!(fs::read(&lock).unwrap(), captured_lock);
                 }
                 let imported = Fixture {
+                    directory: fixture.directory.clone(),
                     root: fixture.root.clone(),
                     rustdoc: output.join(".rustdoc"),
                     output: output.clone(),
@@ -562,8 +554,6 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
                 }
                 fs::write(output.join("sources/demo-1.0.0/stale-extra.bin"), b"stale").unwrap();
                 assert!(!run_historical_drift(&imported, &support).status.success());
-                let _ = fs::remove_dir_all(fixture.root);
-                let _ = fs::remove_dir_all(fixture.output);
             });
         }
     });
@@ -599,6 +589,7 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
     assert!(anchors.contains(&json!(publisher)));
     assert!(anchors.contains(&json!(declared)));
     let imported = Fixture {
+        directory: fixture.directory.clone(),
         root: fixture.root.clone(),
         rustdoc: output.join(".rustdoc"),
         output: output.clone(),
@@ -626,8 +617,6 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
         !drift.status.success(),
         "changed original publisher export was admitted"
     );
-    let _ = fs::remove_dir_all(fixture.root);
-    let _ = fs::remove_dir_all(fixture.output);
 }
 
 #[test]
@@ -705,8 +694,6 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
         b"changed imported input"
     );
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
-    let _ = fs::remove_dir_all(fixture.root);
-    let _ = fs::remove_dir_all(fixture.output);
 }
 
 #[test]
@@ -756,6 +743,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
     manifest["sourceSha256"] = json!(source_digest(&files));
     write_manifest(&version, &manifest);
     let altered = Fixture {
+        directory: fixture.directory.clone(),
         root: fixture.root.clone(),
         rustdoc: version.join(".rustdoc"),
         output: version.clone(),
@@ -767,8 +755,6 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
         "{}",
         output_message(&drift)
     );
-    let _ = fs::remove_dir_all(fixture.root);
-    let _ = fs::remove_dir_all(fixture.output);
 }
 
 #[test]
@@ -809,8 +795,6 @@ fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog()
                     !fixture.output.join("sdk-docs-versions.v1.json").exists(),
                     "mutated historical source must remain unadmitted"
                 );
-                let _ = fs::remove_dir_all(fixture.root);
-                let _ = fs::remove_dir_all(fixture.output);
             });
         }
     });
@@ -973,6 +957,4 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
         macro_locked_bytes
     );
     assert!(!fixture.root.join("rust/vendor/helper/Cargo.lock").exists());
-    let _ = fs::remove_dir_all(fixture.root);
-    let _ = fs::remove_dir_all(fixture.output);
 }

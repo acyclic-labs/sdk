@@ -305,35 +305,40 @@ impl PromotionSpeculator {
         residency: &[ObjectResidency],
         destinations: &[PromotionDestination],
     ) -> Result<PromotionAdmission, PromotionSpeculatorError> {
-        let mut next = self.clone();
-        let admission = next.plan_in_place(candidate, residency, destinations)?;
-        *self = next;
+        let mut metrics = self.metrics;
+        let admission = self.prepare_plan(candidate, residency, destinations, &mut metrics)?;
+        self.metrics = metrics;
+        if let PromotionAdmission::Planned(plan) = &admission {
+            self.active
+                .insert(plan.candidate.operation_id, plan.clone());
+        }
         Ok(admission)
     }
 
-    fn plan_in_place(
-        &mut self,
+    fn prepare_plan(
+        &self,
         candidate: PromotionCandidate,
         residency: &[ObjectResidency],
         destinations: &[PromotionDestination],
+        metrics: &mut PromotionMetrics,
     ) -> Result<PromotionAdmission, PromotionSpeculatorError> {
-        self.metrics.candidates = checked_increment(self.metrics.candidates)?;
+        metrics.candidates = checked_increment(metrics.candidates)?;
         if let Some(rejection) = self.basic_rejection(&candidate, residency, destinations) {
-            return self.reject(rejection);
+            return Self::reject(metrics, rejection);
         }
         if let Some(current) = best_satisfied(&candidate, residency) {
-            self.metrics.satisfied = checked_increment(self.metrics.satisfied)?;
+            metrics.satisfied = checked_increment(metrics.satisfied)?;
             return Ok(PromotionAdmission::Satisfied(current));
         }
         let Some(source) = best_source(candidate.request.object_id, residency) else {
-            return self.reject(PromotionRejection::MissingSource);
+            return Self::reject(metrics, PromotionRejection::MissingSource);
         };
         let Some(destination) = best_destination(&candidate, source.location_id, destinations)
         else {
-            return self.reject(PromotionRejection::NoDestination);
+            return Self::reject(metrics, PromotionRejection::NoDestination);
         };
         if !self.useful_enough() {
-            return self.reject(PromotionRejection::LowUsefulness);
+            return Self::reject(metrics, PromotionRejection::LowUsefulness);
         }
         let estimated_cost_units = candidate
             .request
@@ -341,18 +346,16 @@ impl PromotionSpeculator {
             .checked_mul(destination.cost_units_per_byte)
             .ok_or(PromotionSpeculatorError::Overflow)?;
         if self.active.len() >= self.options.maximum_active_operations as usize
-            || self
-                .metrics
+            || metrics
                 .active_bytes
                 .checked_add(candidate.request.maximum_bytes)
                 .is_none_or(|bytes| bytes > self.options.maximum_active_bytes)
-            || self
-                .metrics
+            || metrics
                 .active_cost_units
                 .checked_add(estimated_cost_units)
                 .is_none_or(|cost| cost > self.options.maximum_active_cost_units)
         {
-            return self.reject(PromotionRejection::ActiveCapacity);
+            return Self::reject(metrics, PromotionRejection::ActiveCapacity);
         }
         let plan = PromotionPlan {
             candidate,
@@ -360,20 +363,16 @@ impl PromotionSpeculator {
             destination,
             estimated_cost_units,
         };
-        self.metrics.planned = checked_increment(self.metrics.planned)?;
-        self.metrics.active = checked_increment(self.metrics.active)?;
-        self.metrics.active_bytes = self
-            .metrics
+        metrics.planned = checked_increment(metrics.planned)?;
+        metrics.active = checked_increment(metrics.active)?;
+        metrics.active_bytes = metrics
             .active_bytes
             .checked_add(plan.candidate.request.maximum_bytes)
             .ok_or(PromotionSpeculatorError::Overflow)?;
-        self.metrics.active_cost_units = self
-            .metrics
+        metrics.active_cost_units = metrics
             .active_cost_units
             .checked_add(plan.estimated_cost_units)
             .ok_or(PromotionSpeculatorError::Overflow)?;
-        self.active
-            .insert(plan.candidate.operation_id, plan.clone());
         Ok(PromotionAdmission::Planned(plan))
     }
 
@@ -387,46 +386,46 @@ impl PromotionSpeculator {
         operation_id: OperationId,
         useful: bool,
     ) -> Result<(), PromotionSpeculatorError> {
-        let mut next = self.clone();
-        next.finish_in_place(operation_id, useful)?;
-        *self = next;
+        let plan = self
+            .active
+            .get(&operation_id)
+            .ok_or(PromotionSpeculatorError::UnknownPlan)?;
+        self.metrics = Self::finish_metrics(self.metrics, plan, useful)?;
+        self.active.remove(&operation_id);
+        self.record_outcome(useful);
         Ok(())
     }
 
-    fn finish_in_place(
-        &mut self,
-        operation_id: OperationId,
+    fn finish_metrics(
+        mut metrics: PromotionMetrics,
+        plan: &PromotionPlan,
         useful: bool,
-    ) -> Result<(), PromotionSpeculatorError> {
-        let plan = self
-            .active
-            .remove(&operation_id)
-            .ok_or(PromotionSpeculatorError::UnknownPlan)?;
-        self.metrics.active = self
-            .metrics
+    ) -> Result<PromotionMetrics, PromotionSpeculatorError> {
+        metrics.active = metrics
             .active
             .checked_sub(1)
             .ok_or(PromotionSpeculatorError::Overflow)?;
-        self.metrics.active_bytes = self
-            .metrics
+        metrics.active_bytes = metrics
             .active_bytes
             .checked_sub(plan.candidate.request.maximum_bytes)
             .ok_or(PromotionSpeculatorError::Overflow)?;
-        self.metrics.active_cost_units = self
-            .metrics
+        metrics.active_cost_units = metrics
             .active_cost_units
             .checked_sub(plan.estimated_cost_units)
             .ok_or(PromotionSpeculatorError::Overflow)?;
         if useful {
-            self.metrics.useful = checked_increment(self.metrics.useful)?;
+            metrics.useful = checked_increment(metrics.useful)?;
         } else {
-            self.metrics.wasted = checked_increment(self.metrics.wasted)?;
+            metrics.wasted = checked_increment(metrics.wasted)?;
         }
+        Ok(metrics)
+    }
+
+    fn record_outcome(&mut self, useful: bool) {
         self.outcomes.push_back(useful);
         while self.outcomes.len() > self.options.outcome_window as usize {
             self.outcomes.pop_front();
         }
-        Ok(())
     }
 
     /// Preempts every active plan and returns executor cancellation identities.
@@ -435,18 +434,33 @@ impl PromotionSpeculator {
     ///
     /// Fails closed if terminal accounting cannot be represented.
     pub fn preempt_for_foreground(&mut self) -> Result<Vec<OperationId>, PromotionSpeculatorError> {
-        let mut next = self.clone();
-        let operations = next.preempt_in_place()?;
-        *self = next;
-        Ok(operations)
+        let metrics = self.prepare_preemption()?;
+        Ok(self.commit_preemption(metrics, None))
     }
 
-    fn preempt_in_place(&mut self) -> Result<Vec<OperationId>, PromotionSpeculatorError> {
+    pub(super) fn prepare_preemption(&self) -> Result<PromotionMetrics, PromotionSpeculatorError> {
+        self.active
+            .values()
+            .try_fold(self.metrics, |metrics, plan| {
+                Self::finish_metrics(metrics, plan, false)
+            })
+    }
+
+    pub(super) fn commit_preemption(
+        &mut self,
+        metrics: PromotionMetrics,
+        generation: Option<GenerationId>,
+    ) -> Vec<OperationId> {
         let operations: Vec<_> = self.active.keys().copied().collect();
-        for operation_id in &operations {
-            self.finish_in_place(*operation_id, false)?;
+        self.metrics = metrics;
+        self.active.clear();
+        for _ in &operations {
+            self.record_outcome(false);
         }
-        Ok(operations)
+        if let Some(generation_id) = generation {
+            self.generation_id = generation_id;
+        }
+        operations
     }
 
     /// Fences all old plans and selects a new immutable generation.
@@ -458,11 +472,8 @@ impl PromotionSpeculator {
         &mut self,
         generation_id: GenerationId,
     ) -> Result<Vec<OperationId>, PromotionSpeculatorError> {
-        let mut next = self.clone();
-        let preempted = next.preempt_in_place()?;
-        next.generation_id = generation_id;
-        *self = next;
-        Ok(preempted)
+        let metrics = self.prepare_preemption()?;
+        Ok(self.commit_preemption(metrics, Some(generation_id)))
     }
 
     /// Returns exact current and cumulative metrics.
@@ -486,12 +497,12 @@ impl PromotionSpeculator {
         if candidate.request.maximum_bytes == 0
             || candidate.accepted_tiers.is_empty()
             || candidate.accepted_tiers.len() > self.options.maximum_accepted_tiers as usize
-            || has_duplicate_tiers(&candidate.accepted_tiers)
+            || has_duplicate_by(&candidate.accepted_tiers, |tier| *tier)
             || residency
                 .iter()
                 .any(|fact| fact.object_id != candidate.request.object_id)
-            || has_duplicate_residency_locations(residency)
-            || has_duplicate_destination_locations(destinations)
+            || has_duplicate_by(residency, |fact| fact.location_id)
+            || has_duplicate_by(destinations, |destination| destination.location_id)
         {
             return Some(PromotionRejection::InvalidRequest);
         }
@@ -524,10 +535,10 @@ impl PromotionSpeculator {
     }
 
     fn reject(
-        &mut self,
+        metrics: &mut PromotionMetrics,
         rejection: PromotionRejection,
     ) -> Result<PromotionAdmission, PromotionSpeculatorError> {
-        self.metrics.rejected = checked_increment(self.metrics.rejected)?;
+        metrics.rejected = checked_increment(metrics.rejected)?;
         Ok(PromotionAdmission::Rejected(rejection))
     }
 }
@@ -614,18 +625,12 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         let request = plan.candidate.request;
         let read = {
-            let __object_args = (
-                request.object_id,
-                request.maximum_bytes,
-                budget,
-                cancellation,
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = self
+            let mut work = crate::AuthorityWork::new(budget, cancellation);
+            let result = self
                 .source
-                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .read(request.object_id, request.maximum_bytes, &mut work)
                 .await;
-            __object_work.receipt(__object_result)
+            work.receipt(result)
         }?;
         let live_bytes = match read.value.retention {
             ObjectReadRetention::Shared => 0,
@@ -650,13 +655,12 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
         })?;
         let prior = read.work;
         let put = {
-            let __object_args = (request.object_id, read.value.bytes, remaining, cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = self
+            let mut work = crate::AuthorityWork::new(remaining, cancellation);
+            let result = self
                 .destination
-                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .put(request.object_id, read.value.bytes, &mut work)
                 .await;
-            __object_work.receipt(__object_result)
+            work.receipt(result)
         }
         .map_err(|failure| merge_promotion_failure(prior, live_bytes, failure))?;
         let work = merge_promotion_work(prior, live_bytes, put.work)
@@ -774,31 +778,11 @@ fn best_destination(
     })
 }
 
-fn has_duplicate_tiers(tiers: &[StorageTier]) -> bool {
-    tiers
+fn has_duplicate_by<T, K: Eq>(values: &[T], key: impl Fn(&T) -> K) -> bool {
+    values
         .iter()
         .enumerate()
-        .any(|(index, tier)| tiers.get(..index).unwrap_or(&[]).contains(tier))
-}
-
-fn has_duplicate_residency_locations(residency: &[ObjectResidency]) -> bool {
-    residency.iter().enumerate().any(|(index, fact)| {
-        residency
-            .get(..index)
-            .unwrap_or(&[])
-            .iter()
-            .any(|prior| prior.location_id == fact.location_id)
-    })
-}
-
-fn has_duplicate_destination_locations(destinations: &[PromotionDestination]) -> bool {
-    destinations.iter().enumerate().any(|(index, destination)| {
-        destinations
-            .get(..index)
-            .unwrap_or(&[])
-            .iter()
-            .any(|prior| prior.location_id == destination.location_id)
-    })
+        .any(|(index, value)| values[..index].iter().any(|prior| key(prior) == key(value)))
 }
 
 fn checked_increment(value: u64) -> Result<u64, PromotionSpeculatorError> {

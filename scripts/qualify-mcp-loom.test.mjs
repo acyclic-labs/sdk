@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
-import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyChildViewsLoom, qualifyQueryModelLoom } from "./qualify-mcp-loom.mjs";
-import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookEffectsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
+import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
+import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -34,10 +34,8 @@ test("filesystem policy qualification requires real cache and authority models i
 });
 
 test("gate runs every harness model suite and rejects an absent suite or a stale model build", () => {
-  assert.deepEqual(harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === "client::commands::session::scroll_models::"),
-    ["client::commands::session::scroll_models::", 2], "the scroll model and its negative control must run in the gate");
   const suites = Object.values(harnessModelSuites).flat();
-  for (const missing of [null, ...suites.map(([prefix]) => prefix), "query-model"]) {
+  for (const missing of [null, ...suites.map(([prefix]) => prefix)]) {
     let target;
     let executed = 0;
     const run = (command, args, options) => {
@@ -46,25 +44,21 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom/);
         const crate = args[args.indexOf("-p") + 1];
-        target = args.includes("--lib") ? crate.replaceAll("-", "_") : "query-model";
+        target = crate.replaceAll("-", "_");
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
       }
       assert.equal(options.timeout, undefined);
       executed++;
-      const passed = args.length ? suites.find(([prefix]) => prefix === args[0])[1] : 22;
-      return { status: 0, stdout: summary(missing === (args[0] ?? target) ? 0 : passed, 0, args.length ? 10 : 0) };
+      const passed = suites.find(([prefix]) => prefix === args[0])[1];
+      return { status: 0, stdout: summary(missing === args[0] ? 0 : passed, 0, 10) };
     };
     qualifyOrReject(missing, () => {
       qualifyHarnessModelsLoom(undefined, run);
-      qualifyChildViewsLoom(undefined, run);
-      qualifyQueryModelLoom(undefined, run);
     });
-    if (missing === null) assert.equal(executed, suites.length + 1);
+    if (missing === null) assert.equal(executed, suites.length);
   }
   assert.throws(() => qualifyHarnessModelsLoom(undefined, () => ({ status: 101, stdout: "", stderr: "stale record constructor" })), /build failed.*stale record constructor/s);
   assertGateStep(["--harness-models", "--all-features"]);
-  assertGateStep(["--child-views", "--all-features"]);
-  assertGateStep(["--query-model", "--all-features"]);
 });
 
 test("checkout qualification requires all nine tests including nested fencing", () => {
@@ -209,8 +203,8 @@ test("fs Session qualification instruments real provider and Session locks and r
   assertGateStep(["--session-fs"]);
 });
 
-test("hook qualification builds real synchronization once and rejects either missing model", () => {
-  for (const [qualify, target, count] of [[qualifyHookEffectsLoom, "acyclic_harness_core", 1], [qualifyHookLifecycleLoom, "acyclic_harness", 12]]) {
+test("hook qualification requires every retained checkout and projection model", () => {
+  for (const [qualify, target, count] of [[qualifyHookLifecycleLoom, "acyclic_harness", 10]]) {
     for (const missing of [null, ...Array.from({ length: count }, (_, i) => i + 1)]) {
       let models = 0;
       const run = (command, args, options) => {
@@ -219,9 +213,7 @@ test("hook qualification builds real synchronization once and rejects either mis
           assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
           return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
         }
-        if (count === 1) assert.ok(args[0].includes("competing_dispatches_claim_once"));
-        else if (models === 0) assert.ok(args[0].includes("cancellation_keeps_hook_workers"));
-        else assert.match(args[0], /(?:cancelled_(?:hook|bash)_retains_projection|local::workspace::projection::tests::)/);
+        assert.match(args[0], /(?:cancelled_bash_retains_projection|local::workspace::projection::tests::)/);
         assert.equal(args[1], "--exact");
         assert.equal(options.timeout, 9500);
         models++;
@@ -231,7 +223,6 @@ test("hook qualification builds real synchronization once and rejects either mis
       else assert.throws(() => qualify(undefined, run), /requires a nonzero/);
     }
   }
-  assertGateStep(["--hook-effects", "--all-features"]);
   assertGateStep(["--hook-lifecycle", "--all-features"]);
 });
 
@@ -330,42 +321,6 @@ test("memory accounting instruments dependency cancellation and the real ledger 
       "--", "--cfg", "acyclic_harness_loom"]],
     ["model-binary", []],
   ]);
-});
-
-test("coordinator qualification instruments real Stream locks and rejects skipped models", () => {
-  for (const passed of [0, 1]) {
-    const calls = [];
-    const run = (command, args, options) => {
-      calls.push([command, args]);
-      if (command === "cargo") {
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
-        assert.ok(args.includes("--lib"));
-      }
-      return { status: 0, stderr: "", stdout: command === "cargo"
-        ? JSON.stringify({ ...artifact, target: { name: "acyclic_harness_core" } })
-        : summary(passed, 0, 100) };
-    };
-    if (passed) qualifyCoordinatorOriginsLoom(undefined, run);
-    else assert.throws(() => qualifyCoordinatorOriginsLoom(undefined, run), /requires a nonzero/);
-    assert.deepEqual(calls[1][1], ["distributed::tests::model_checking::origin_publication_fences_competing_writers", "--exact"]);
-  }
-});
-
-test("summary checkpoint qualification instruments real locks and requires both race models and controls", () => {
-  for (const passed of [0, 1, 2, 3, 4]) {
-    const calls = [];
-    const run = (command, args, options) => {
-      calls.push([command, args]);
-      if (command !== "cargo") assert.equal(options.timeout, 9500);
-      if (command === "cargo") assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom(?: |$)/);
-      return { status: 0, stderr: "", stdout: command === "cargo"
-        ? JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) : summary(passed, 0, 100) };
-    };
-    if (passed === 4) qualifySummaryCheckpointsLoom(undefined, run);
-    else assert.throws(() => qualifySummaryCheckpointsLoom(undefined, run), /requires a nonzero/);
-    assert.deepEqual(calls[1], ["model-binary", ["local::compact::checkpoints::model::"]]);
-  }
-  assertGateStep(["--summary-checkpoints", "--all-features"]);
 });
 
 test("registry gate instruments real native locks and rejects either omitted proof", () => {

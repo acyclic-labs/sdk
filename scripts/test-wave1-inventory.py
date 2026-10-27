@@ -169,6 +169,22 @@ class EvidencePolicy(unittest.TestCase):
     def test_real_compiled_hst_guard_and_endpoint_refuse_complete_qualification(self):
         POLICY.check_hst_reporting(MANIFEST["hst_reporting"])
 
+    def test_compiled_hst_overrides_replay_exact_captured_bytes(self):
+        base = repository_path(ROOT, MANIFEST["hst_reporting"]["repo_receipt"]).parent
+        admission = json.loads((base / "admission.json").read_bytes())
+        for name in ("positive-compiled-source.json", "mutant-compiled-source.json"):
+            with self.subTest(manifest=name):
+                overlay = json.loads((base / name).read_bytes())
+                self.assertEqual(len(overlay["overrides"]), int(name.startswith("mutant")))
+                capture = next(row for row in admission["captures"] if row["repo_path"].endswith("/" + name))
+                content = POLICY.hst_capture(base, name)
+                self.assertEqual(hashlib.sha256(content).hexdigest(), capture["sha256"])
+                self.assertEqual(len(content), capture["bytes"])
+                source = json.loads((base / "source.json").read_bytes())
+                source["Cargo.lock"] = "0" * 64
+                with patch.object(Path, "read_bytes", lambda path: json.dumps(source).encode() if path == base / "source.json" else json.dumps(overlay).encode()):
+                    self.assertNotEqual(hashlib.sha256(POLICY.hst_capture(base, name)).hexdigest(), capture["sha256"])
+
     def test_historical_hst_receipt_does_not_read_current_execution_inputs(self):
         original_sha256 = POLICY.sha256
         current_inputs = {

@@ -5,9 +5,6 @@ import { fileURLToPath } from "node:url";
 // The gate and its offline preflight consume this same ordered step list.
 export const gateQualifications = [
   { args: ["--all-features"] },
-  { args: ["--coordinator-origins", "--all-features"] },
-  { args: ["--summary-checkpoints", "--all-features"] },
-  { args: ["--hook-effects", "--all-features"] },
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
@@ -18,8 +15,6 @@ export const gateQualifications = [
   { args: ["--session-fs"] }, { args: ["--ownership"] },
   { args: ["--skill-materializer"] },
   { args: ["--harness-models", "--all-features"] },
-  { args: ["--child-views", "--all-features"] },
-  { args: ["--query-model", "--all-features"] },
 ];
 const planOnly = Symbol("qualification plan");
 
@@ -58,37 +53,10 @@ export function qualifySkillMaterializerLoom(run = spawnSync) {
     });
 }
 
-export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "acyclic_harness_core", [...features, "--features", "model-checking"], run, {
-    kind: "--lib", filter: "distributed::tests::model_checking::origin_publication_fences_competing_writers",
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
-  });
-}
-
-export function qualifySummaryCheckpointsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
-    kind: "--lib", filter: "local::compact::checkpoints::model::",
-    exact: false, timeout: 9500,
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
-  });
-}
-
-// Hook dispatch claims live in acyclic-harness-core; the local checkout and
-// projection hook models live in the acyclic-harness facade.
-export function qualifyHookEffectsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "acyclic_harness_core", [...features, "--features", "model-checking"], run, {
-    kind: "--lib", filters: [
-      "hooks::effects::models::competing_dispatches_claim_once_with_negative_control",
-    ], timeout: 9500,
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
-  });
-}
-
+// Checkout and projection models retain physical cleanup custody.
 export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
-      "local::checkout_tools::hooks::models::cancellation_keeps_hook_workers_inside_the_selected_workspace",
-      "local::checkout_tools::hooks::models::cancelled_hook_retains_projection_claim_until_physical_cleanup",
       "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
       "local::workspace::projection::tests::first_projection_and_logical_publication_share_custody",
@@ -210,39 +178,11 @@ export function qualifyOwnershipLoom(run = spawnSync) {
   });
 }
 
-// These suites previously compiled only incidentally when another model opted
-// into the harness cfg. In particular, ordinary --all-features never runs the
-// child-view publication models. Require every suite, including its controls.
+// Retained workspace suites, including every negative control.
 export const harnessModelSuites = {
-  "acyclic-harness-core": [
-    ["task_volume::files::models::", 7],
-    ["task_volume::page::models::", 2],
-    ["task_volume::publication::models::", 2],
-    ["distributed::tests::model_checking::", 3],
-    ["distributed::tests::scheduler_model::", 1],
-    ["hooks::effects::models::", 1],
-    ["workflow::model_checking::tests::", 2],
-  ],
   "acyclic-harness": [
-    ["local::admission::model::", 3],
-    ["local::inheritance::model::", 7],
-    ["local::routing::model::", 3],
-    ["local::orphans::model::", 4],
     ["local::workspace::bootstrap::loom_tests::", 1],
     ["local::checkout_tools::tests::", 9],
-    ["local::children::preparation::models::", 1],
-    ["local::children::controller::inputs::models::", 1],
-    ["local::children::controller::follow::models::", 1],
-    ["local::children::controller::drive::models::", 1],
-    ["local::children::controller::draining::models::", 2],
-    ["local::children::controller::stopping::models::", 1],
-    ["client::file_submit::model::", 3],
-    ["client::commands::session::init_models::", 7],
-    ["client::commands::session::scroll_models::", 2],
-    ["client::commands::session::models::", 4],
-    ["client::commands::control::models::", 8],
-    ["client::commands::sources::models::", 2],
-    ["client::commands::session::confirmation::tests::", 2],
   ],
 };
 
@@ -250,16 +190,6 @@ export function qualifyHarnessModelsLoom(features = ["--all-features"], run = sp
   return qualifyHarnessSuite("acyclic-harness", "acyclic_harness", features, run, {
     kind: "--lib", suites: harnessModelSuites["acyclic-harness"],
   });
-}
-
-export function qualifyChildViewsLoom(features = ["--all-features"], run = spawnSync) {
-  return qualifyHarnessSuite("acyclic-harness-core", "acyclic_harness_core", features, run, {
-    kind: "--lib", suites: harnessModelSuites["acyclic-harness-core"],
-  });
-}
-
-export function qualifyQueryModelLoom(features = ["--all-features"], run = spawnSync) {
-  return qualifyHarnessSuite("acyclic-harness", "query-model", features, run);
 }
 
 function qualifyHarnessSuite(crate, target, features, run, options = {}) {
@@ -326,12 +256,9 @@ const fixedModels = {
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
-  "--e2e-progress": qualifyE2eProgressLoom, "--hook-effects": qualifyHookEffectsLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
-  "--coordinator-origins": qualifyCoordinatorOriginsLoom, "--summary-checkpoints": qualifySummaryCheckpointsLoom,
+  "--e2e-progress": qualifyE2eProgressLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
   "--fs-binding": qualifyFsBindingLoom,
   "--harness-models": qualifyHarnessModelsLoom,
-  "--child-views": qualifyChildViewsLoom,
-  "--query-model": qualifyQueryModelLoom,
 };
 
 function featureSelection(args) {

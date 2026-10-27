@@ -143,6 +143,19 @@ def check_observations(reference):
     require(observations["rbfs-session-transport"]["status"] == "owner_reported_no_raw_receipt", "Cloud report cannot claim raw execution admission")
 
 
+def hst_capture(base, name):
+    """Replay compiled manifests from one captured baseline and sparse overrides."""
+    content = (base / name).read_bytes()
+    if name not in ("positive-compiled-source.json", "mutant-compiled-source.json"):
+        return content
+    overlay = json.loads(content)
+    require(overlay.keys() == {"base", "overrides"} and overlay["base"] == "source.json", "HST compiled manifest must use the captured baseline")
+    source = json.loads((base / "source.json").read_bytes())
+    require(isinstance(overlay["overrides"], dict) and overlay["overrides"].keys() <= source.keys(), "HST compiled manifest overrides unknown input")
+    source.update(overlay["overrides"])
+    return (json.dumps(source, indent=2) + "\n").encode()
+
+
 def check_hst_reporting(reference):
     """Validate captured execution at its historical source identity.
 
@@ -155,11 +168,13 @@ def check_hst_reporting(reference):
     require(sha256(path) == reference["sha256"], "HST reporting admission changed")
     admission = json.loads(path.read_text())
     require(admission["kind"] == "hst_reporting_policy_admission_not_complete_history_proof" and not admission["full_obligation_qualified"] and admission["positive_proofs"] == admission["complete_hst_exports"] == 0, "HST reporting cannot qualify complete histories")
+    base = path.parent
     for capture in admission["captures"]:
         captured = source_path(capture["repo_path"])
-        require(sha256(captured) == capture["sha256"] and captured.stat().st_size == capture["bytes"], "HST reporting capture changed")
-    base = path.parent
-    load = lambda name: json.loads((base / name).read_bytes())
+        require(captured.parent == base, "HST reporting capture outside its baseline")
+        content = hst_capture(base, captured.name)
+        require(hashlib.sha256(content).hexdigest() == capture["sha256"] and len(content) == capture["bytes"], "HST reporting capture changed")
+    load = lambda name: json.loads(hst_capture(base, name))
     producer = load("receipt.json")
     source, positive, mutant = (load(name) for name in ("source.json", "positive-compiled-source.json", "mutant-compiled-source.json"))
     require(source == positive and source.keys() == mutant.keys(), "HST reporting compiled input selection differs")

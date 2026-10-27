@@ -56,7 +56,7 @@ const inputs = () => capture("git", ["ls-tree", "HEAD"]).split("\n").filter(Bool
 // Selections that change what build-wasm.mjs would produce or admit beyond the
 // key. Any of them bypasses the cache: the build's own producer admission and
 // receipt checks stay the single provenance authority.
-const OVERRIDES = /^(RUSTC|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_TARGET|CARGO_TARGET_WASM32_\w+|ACYCLIC_CARGO_BIN|ACYCLIC_WASM_BINDGEN_BIN|ACYCLIC_WASM_GROUPS_PREPARED)$/;
+const OVERRIDES = /^(RUSTC(?:_WORKSPACE_WRAPPER)?|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_TARGET|CARGO_TARGET_WASM32_\w+|ACYCLIC_CARGO_BIN|ACYCLIC_WASM_BINDGEN_BIN|ACYCLIC_WASM_GROUPS_PREPARED)$/;
 // Only the selected WASM profile's settings matter; build hosts routinely set
 // dev/test profile variables (bb2 exports CARGO_PROFILE_DEV_* for every job).
 const profileOverride = environment => new RegExp(`^CARGO_PROFILE_${(environment.ACYCLIC_WASM_PROFILE || "wasm-release").toUpperCase().replaceAll("-", "_")}_\\w+$`);
