@@ -288,15 +288,7 @@ impl BrowserStream {
         dispatch.failed = result.is_err();
         let (count, bytes) = result?;
         let before = publication::Before::capture(&cache.provider, &command).await?;
-        let key = match &command {
-            Command::Append(request) => request.idempotency_key.clone(),
-            Command::Fork(request) => request.idempotency_key.clone(),
-            Command::Commit(request) => Some(request.idempotency_key.clone()),
-        };
-        let existing = match key {
-            Some(key) => cache.provider.inspect_idempotency(key).await?.is_some(),
-            None => false,
-        };
+        let existing = command.has_replay(&cache.provider).await?;
         let millis = BrowserClock.now_unix_millis();
         self.inner.clock.set(millis);
         cache.valid = false;

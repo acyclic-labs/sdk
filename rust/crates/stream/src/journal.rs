@@ -21,6 +21,18 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
 }
 
 impl Command {
+    pub(crate) async fn has_replay(&self, provider: &MemoryStream) -> Result<bool, StreamError> {
+        let key = match self {
+            Self::Append(request) => request.idempotency_key.as_ref(),
+            Self::Fork(request) => request.idempotency_key.as_ref(),
+            Self::Commit(request) => Some(&request.idempotency_key),
+        };
+        match key {
+            Some(key) => provider.has_replay(key).await,
+            None => Ok(false),
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
         match &mut self {
