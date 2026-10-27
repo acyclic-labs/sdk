@@ -97,6 +97,21 @@ fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
         let retired = server
             .join()
             .map_err(|_| "standard guest socket worker panicked")?;
+        let callback_failure = match &retired {
+            Ok(retired) => {
+                let failure = retired.take_callback_failure();
+                eprintln!(
+                    "VIRTIOFS_GUEST vmm={vmm} callback_work={:?} transport={:?} callback_failure={failure:?}",
+                    retired.completed_callback_work(),
+                    retired.transport
+                );
+                failure
+            }
+            Err(error) => {
+                eprintln!("VIRTIOFS_GUEST vmm={vmm} socket_start_failure={error:?}");
+                None
+            }
+        };
         let output = result?;
         eprintln!(
             "VIRTIOFS_GUEST vmm={vmm} status={} provenance={} stdout={} stderr={}",
@@ -113,13 +128,8 @@ fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
                 .any(|bytes| bytes == b"ACYCLIC_VIRTIOFS_PASS"),
             "{vmm} guest did not complete read/write/delete"
         );
-        let retired = retired?;
-        assert!(retired.take_callback_failure().is_none());
-        eprintln!(
-            "VIRTIOFS_GUEST vmm={vmm} callback_work={:?} transport={:?}",
-            retired.completed_callback_work(),
-            retired.transport
-        );
+        let _retired = retired?;
+        assert!(callback_failure.is_none());
         // A serial marker alone cannot prove that the source was exercised.
         // Every guest operation has physically completed before this lookup.
         assert!(source.lookup(&name("qualification"))?.is_none());
