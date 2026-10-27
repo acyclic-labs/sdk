@@ -305,28 +305,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let (path, expected) = self
             .resolve_source_fork_point(authority, generation, work)
             .await?;
-        if let Some(existing) = commit
-            .request
-            .conditions
-            .iter()
-            .find(|condition| match condition {
-                CommitCondition::Head { path: held, .. }
-                | CommitCondition::Tail { path: held, .. }
-                | CommitCondition::Absent { path: held } => *held == path,
-            })
-        {
-            return match existing {
-                CommitCondition::Tail { expected: held, .. } if *held == expected => Ok(()),
-                _ => Err(AuthorityStoreError::RejectedStatic(
-                    "a composed commit requires two heads of one source",
-                )),
-            };
-        }
         grow(&mut commit.request.conditions, 1, work)?;
-        commit
-            .request
-            .conditions
-            .push(CommitCondition::Tail { path, expected });
+        super::policy::merge_condition(
+            &mut commit.request.conditions,
+            CommitCondition::Tail { path, expected },
+            work,
+        )?;
         Ok(())
     }
 

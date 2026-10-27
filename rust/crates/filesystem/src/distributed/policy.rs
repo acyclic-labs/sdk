@@ -69,7 +69,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         let mut conditions = work.vec(request.conditions.len() + 3)?;
         conditions.append(&mut request.conditions);
-        merge_policy_condition(
+        merge_condition(
             &mut conditions,
             CommitCondition::Tail {
                 path: work.path(&self.placement, cut.authority, "/records", None)?,
@@ -82,7 +82,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             },
             work,
         )?;
-        merge_policy_condition(
+        merge_condition(
             &mut conditions,
             CommitCondition::Tail {
                 path: work.path(&self.placement, cut.authority, "/epochs", None)?,
@@ -90,7 +90,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             },
             work,
         )?;
-        merge_policy_condition(
+        merge_condition(
             &mut conditions,
             CommitCondition::Absent {
                 path: work.path(&self.placement, cut.authority, "/retirement", None)?,
@@ -126,39 +126,54 @@ pub(super) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     }
 }
 
-pub(super) fn merge_policy_condition(
+/// Adds `condition` to `conditions`, the one merge of every condition a
+/// commit composes. Each comparison is admitted and charged as examined work.
+/// A condition on a path already held must agree with it: an equal one, or a
+/// `Tail` matching a `Head`'s tail, collapses into the stronger of the two in
+/// either order, releasing the discarded path; any other pairing refuses the
+/// commit and leaves the held conditions unchanged.
+pub(super) fn merge_condition(
     conditions: &mut Vec<CommitCondition>,
-    policy: CommitCondition,
+    condition: CommitCondition,
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
-    for existing in conditions.iter() {
+    for existing in conditions.iter_mut() {
         let examined = WorkCounters {
             items_examined: 1,
             ..WorkCounters::UNCHARGED
         };
         work.admit(examined)?;
         work.charge(examined)?;
-        if condition_path(existing) != condition_path(&policy) {
+        if condition_path(existing) != condition_path(&condition) {
             continue;
         }
-        let compatible = match (existing, &policy) {
+        let (compatible, stronger) = match (&*existing, &condition) {
             (
                 CommitCondition::Head {
                     expected: actual, ..
                 },
                 CommitCondition::Tail { expected, .. },
-            ) => actual == expected,
-            _ => existing == &policy,
+            ) => (actual == expected, false),
+            (
+                CommitCondition::Tail { expected, .. },
+                CommitCondition::Head {
+                    expected: actual, ..
+                },
+            ) => (actual == expected, true),
+            _ => (*existing == condition, false),
         };
         if !compatible {
             return Err(AuthorityStoreError::RejectedStatic(
-                "policy cut conflicts with the publication condition",
+                "a commit condition conflicts with one the commit already holds",
             ));
         }
-        work.release(condition_path(&policy).as_str().len() as u64)?;
+        work.release(condition_path(&condition).as_str().len() as u64)?;
+        if stronger {
+            *existing = condition;
+        }
         return Ok(());
     }
-    conditions.push(policy);
+    conditions.push(condition);
     Ok(())
 }
 
@@ -189,7 +204,7 @@ mod tests {
                     })
                 })
             } else {
-                merge_policy_condition(&mut conditions, candidate, &mut work)
+                merge_condition(&mut conditions, candidate, &mut work)
             };
             assert_eq!(
                 work.spent().items_examined,
@@ -202,6 +217,36 @@ mod tests {
                 "policy comparisons escaped their allowance"
             );
             assert_eq!(conditions.len(), 4);
+        }
+        Ok(())
+    }
+
+    /// A `Head` and a matching `Tail` on one path keep the `Head`, in either
+    /// insertion order; a mismatched tail refuses and keeps what was held.
+    #[test]
+    fn a_matching_tail_and_head_keep_the_head_in_either_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = StreamPath::new("policy/lineage")?;
+        let head = CommitCondition::Head {
+            path: path.clone(),
+            expected: 3,
+            commit_id: acyclic_stream::CommitId::from_bytes([7; 32]),
+        };
+        let tail = |expected| CommitCondition::Tail {
+            path: path.clone(),
+            expected,
+        };
+        for order in [[head.clone(), tail(3)], [tail(3), head.clone()]] {
+            let token = CancellationToken::new();
+            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+            let [first, second] = order;
+            let mut conditions = vec![first];
+            work.hold_opaque(condition_path(&second).as_str().len() as u64)?;
+            merge_condition(&mut conditions, second, &mut work)?;
+            assert_eq!(conditions, [head.clone()]);
+            work.hold_opaque(path.as_str().len() as u64)?;
+            assert!(merge_condition(&mut conditions, tail(4), &mut work).is_err());
+            assert_eq!(conditions, [head.clone()]);
         }
         Ok(())
     }
@@ -236,7 +281,7 @@ mod tests {
         } else {
             // Model the funded candidate path which the production fence owns.
             work.hold_opaque(condition_path(&candidate).as_str().len() as u64)?;
-            merge_policy_condition(&mut conditions, candidate, &mut work)?;
+            merge_condition(&mut conditions, candidate, &mut work)?;
         }
         let outcome = provider
             .commit(CommitRequest {
