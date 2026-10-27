@@ -22,7 +22,8 @@ async function file(): Promise<WasmFileRefWire> {
 
 test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
   const definition = { name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
-    outputSchema: { type: "string" }, projectionSchema: { type: "string" } };
+    outputSchema: { type: "string" },
+    projectionSchema: contracts.jsonToolProjectionSchema({ type: "string" }) };
   const limits = { ...fixtureLimits, render_bytes: 64 };
   const accepted = { kind: "json" as const, value: "x".repeat(38) };
   expect(contracts.encodeCanonicalJson(accepted).length).toBe(64);
