@@ -40,9 +40,9 @@ pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED, MAX_QUEUED_BYTES,
-    OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, SpawnOutcome, SpawnRefusal, Step, TurnDriver,
-    TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
+    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, SpawnOutcome, SpawnRefusal, Step,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,

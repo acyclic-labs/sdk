@@ -330,6 +330,16 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
     }
 }
 
+/// At most [`MAX_VOLUMES`] bindings, each with a valid name.
+pub(super) fn check_volumes(volumes: &[VolumeBinding]) -> Result<(), Error> {
+    if volumes.len() > MAX_VOLUMES {
+        return Err(Error::Record("too many volumes"));
+    }
+    volumes
+        .iter()
+        .try_for_each(|binding| check_text(&binding.name))
+}
+
 /// A name: a binding, principal or host. Like a label, it admits no control
 /// character, so its encoding is at most twice its length.
 fn check_text(text: &str) -> Result<(), Error> {
@@ -345,12 +355,7 @@ impl AgentRecord for InboxRecord {
     fn check(&self) -> Result<(), Error> {
         match self {
             Self::ForkAdopted(adopted) => {
-                if adopted.volumes.len() > MAX_VOLUMES {
-                    return Err(Error::Record("too many volumes"));
-                }
-                for binding in &adopted.volumes {
-                    check_text(&binding.name)?;
-                }
+                check_volumes(&adopted.volumes)?;
                 if adopted
                     .parent
                     .as_ref()

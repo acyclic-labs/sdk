@@ -27,6 +27,7 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
+                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {

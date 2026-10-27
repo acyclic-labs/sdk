@@ -448,6 +448,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Conversation(b"answer".to_vec())],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
@@ -495,6 +496,7 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
         outs: vec![Out::Conversation(b"partial".to_vec())],
         wait: Wait::Continue,
@@ -539,6 +541,7 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Done(AgentOutcome::Failed {
@@ -618,6 +621,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     assert_eq!(state.overflow, Some(33));
     // The awaited response is taken out of order, and remembered as taken.
     let resumed = script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
@@ -894,6 +898,7 @@ impl TurnDriver for ToolSpawner {
         *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
         Box::pin(async move {
             Ok(TurnStep {
+                reserved_children: 0,
                 checkpoint: None,
                 outs: vec![Out::Spawn {
                     intent: intent("spawn:tool"),
@@ -933,5 +938,97 @@ async fn a_client_spawn_counts_against_a_tool_spawn_in_the_same_step() -> Result
         }
     );
     assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> Result {
+    // The turn's tool recorded a spawn into the last slot, then paused.
+    let (root, mut state) = one_below_the_child_limit()?;
+    state.turn = Some(Vec::new());
+    state.phase = Phase::WaitingApproval { id: intent("q") };
+    state.reserved_children = 1;
+    let driver = script(vec![TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: vec![Out::Spawn {
+            intent: intent("spawn:tool"),
+            brief: None,
+            volumes: Vec::new(),
+        }],
+        wait: Wait::Input,
+    }]);
+    // A client's spawn meanwhile is refused rather than taking that slot.
+    let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let (client, _) = requested_child(&root, 1)?;
+    assert!(spawns(&requested.outs).is_empty());
+    assert_eq!(
+        requested.state.spawn_outcome(&client),
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        }
+    );
+    // The resumed turn's spawn opens the child its tool reported.
+    let resumed = step(
+        &driver,
+        &root,
+        Some(requested.state),
+        3,
+        Wake::Inbox {
+            sequence: 2,
+            record: InboxRecord::Approval(Approval { id: intent("q") }),
+        },
+    )
+    .await?;
+    assert_eq!(spawns(&resumed.outs), [intent("spawn:tool")]);
+    assert_eq!(resumed.state.open_children.len(), MAX_OPEN_CHILDREN);
+    assert_eq!(resumed.state.reserved_children, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_it() -> Result {
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
+    let driver = script(vec![TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: vec![
+            Out::Conversation(oversized),
+            Out::Conversation(b"fits".to_vec()),
+        ],
+        wait: Wait::Input,
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: INADMISSIBLE_EFFECT.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    assert!(
+        !stepped
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Conversation(_)))
+    );
+    assert!(stepped.outs.iter().any(|out| matches!(
+        out,
+        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+    )));
     Ok(())
 }
