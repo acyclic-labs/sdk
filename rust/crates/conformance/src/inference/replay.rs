@@ -2,8 +2,12 @@
 //! Only the HTTP boundary is replaced with hash-checked, unmodified captured bytes.
 use super::*;
 use acyclic_harness_core::{
+    Error, Result,
     context::ModelContextCapacity,
-    model::{ModelRequest, ModelRole},
+    conversation::Limits,
+    model::{
+        ModelContent, ModelDispatch, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
+    },
 };
 use acyclic_harness_providers::{
     Adapter, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures, ModelSpec,
@@ -13,6 +17,7 @@ use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use bytes::Bytes;
 use futures::Stream;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -339,8 +344,11 @@ impl Backend for Captured {
             .collect::<Result<_>>()?;
         let (provider, transport) = provider(&self.manifest, captures)?;
         let (request, dispatch) = prepare(&provider, scenario, &self.manifest.context_input)?;
+        let provider = counted(provider);
+        let requests = provider.ledger();
         Ok(Session {
             provider: Arc::new(provider),
+            requests,
             request,
             dispatch,
             released: Arc::new(move || transport.active.load(Ordering::SeqCst) == 0),
@@ -357,6 +365,11 @@ impl Backend for Captured {
 /// Qualifies one complete fixture family with the common verifier.
 pub async fn qualify(path: &Path) -> Result<Vec<&'static str>> {
     verify(&load(path)?).await
+}
+
+/// Fresh adapter for the published suite and benchmark over hash-checked captures.
+pub fn captured(path: &Path) -> Result<impl Backend> {
+    load(path)
 }
 
 struct Local {
@@ -409,8 +422,11 @@ impl Backend for Local {
             manifest.options.clone(),
         )?;
         let (request, dispatch) = prepare(&provider, scenario, &manifest.context_input)?;
+        let provider = counted(provider);
+        let requests = provider.ledger();
         Ok(Session {
             provider: Arc::new(provider),
+            requests,
             request,
             dispatch,
             released: Arc::new(move || active.load(Ordering::SeqCst) == 0),

@@ -14,6 +14,11 @@ keywords = ["objects", "storage", "grpc"]
 categories = ["api-bindings", "filesystem"]
 
 
+[[bench]]
+name = "objects"
+harness = false
+required-features = ["local"]
+
 [features]
 model-checking = ["dep:loom"]
 conformance = ["acyclic-stream/conformance"]
@@ -82,6 +87,7 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["rin
 workspace = true
 
 [dev-dependencies]
+divan.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true

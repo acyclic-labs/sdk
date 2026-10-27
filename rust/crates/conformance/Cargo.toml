@@ -19,7 +19,7 @@ s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum
 
 [dependencies]
 acyclic-agent-host-conformance = { path = "agent-host" }
-acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false, features = ["conformance"] }
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
 rustls = { workspace = true, optional = true }
@@ -77,21 +77,6 @@ required-features = ["local-runner"]
 name = "bench-objects"
 test = false
 path = "src/bin/bench_objects.rs"
-required-features = ["local-runner"]
-
-[[bench]]
-name = "filesystem"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
-name = "filesystem_alloc"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
-name = "objects"
-harness = false
 required-features = ["local-runner"]
 
 [[bench]]
