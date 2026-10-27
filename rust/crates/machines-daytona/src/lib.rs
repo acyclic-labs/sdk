@@ -694,32 +694,6 @@ impl DaytonaProvider {
         labels.insert(map::LABEL_PARENT.to_owned(), parent.id.to_string());
         labels
     }
-
-    /// Refuses to destroy a VM whose native fork children are still alive: Daytona would
-    /// refuse too, but with an unspecified status. Disk-fork children are independent sandboxes
-    /// and never block their source.
-    async fn require_no_live_fork_children(
-        &self,
-        machine: &MachineObservation,
-    ) -> Result<(), ProviderError> {
-        if machine.contract.fork_fidelity() != Some(ForkFidelity::MemoryAndDisk) {
-            return Ok(());
-        }
-        let live = self
-            .api
-            .forks(&machine.id.to_string())
-            .await?
-            .into_iter()
-            .filter(|child| map::machine_state(child.state.as_deref()) != MachineState::Destroyed)
-            .count();
-        if live == 0 {
-            Ok(())
-        } else {
-            Err(ProviderError::Conflict(format!(
-                "machine has {live} live fork children; destroy them first"
-            )))
-        }
-    }
 }
 
 #[async_trait]
@@ -865,6 +839,21 @@ impl RawMachines for DaytonaProvider {
             Some(checkpoint),
             adopted,
         ))
+    }
+
+    async fn raw_fork_children(
+        &self,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<Vec<MachineState>, ProviderError> {
+        let handle = native.map_or_else(|| machine.to_string(), |native| native.handle.clone());
+        Ok(self
+            .api
+            .forks(&handle)
+            .await?
+            .into_iter()
+            .map(|child| map::machine_state(child.state.as_deref()))
+            .collect())
     }
 
     async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
@@ -1121,26 +1110,9 @@ impl MachinesProvider for DaytonaProvider {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(
-            key,
-            &MutationIntent::DestroyMachine(machine),
-            async |operation| {
-                let current = self.fetch_machine(machine).await?;
-                if current.state == MachineState::Destroyed {
-                    return Ok(MutationOutcome::MachineDestroyed(machine));
-                }
-                self.require_no_live_fork_children(&current).await?;
-                let id = machine.to_string();
-                self.ops.bind_target(operation, &id).await?;
-                match self.api.delete(&id).await {
-                    Ok(()) | Err(ProviderError::NotFound(_)) => {}
-                    Err(error) => return Err(error),
-                }
-                self.ops.mark_destroyed(machine, now_unix_ms()).await?;
-                Ok(MutationOutcome::MachineDestroyed(machine))
-            },
-        )
-        .await
+        self.ops
+            .destroy_machine(self, machine, key, now_unix_ms())
+            .await
     }
 
     async fn destroy_checkpoint(
@@ -1148,27 +1120,7 @@ impl MachinesProvider for DaytonaProvider {
         checkpoint: CheckpointId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(
-            key,
-            &MutationIntent::DestroyCheckpoint(checkpoint),
-            async |operation| {
-                // Retain an observation so `inspect_checkpoint` keeps answering after deletion.
-                self.inspect_checkpoint(checkpoint).await?;
-                let handle = self
-                    .ops
-                    .native_checkpoint_binding(checkpoint, "daytona")
-                    .await?
-                    .map_or_else(|| checkpoint.to_string(), |native| native.handle);
-                self.ops.bind_target(operation, &handle).await?;
-                match self.raw_destroy(&NativeResource::Checkpoint(handle)).await {
-                    Ok(()) | Err(ProviderError::NotFound(_)) => {}
-                    Err(error) => return Err(error),
-                }
-                self.ops.mark_checkpoint_destroyed(checkpoint).await?;
-                Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
-            },
-        )
-        .await
+        self.ops.destroy_checkpoint(self, checkpoint, key).await
     }
 
     async fn events(

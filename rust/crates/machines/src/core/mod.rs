@@ -10,6 +10,7 @@ pub use bindings::NativeBinding;
 mod raw;
 pub use raw::{ForkSlot, NativeResource, RawCreated, RawMachines, RawObservation};
 mod checkpoint;
+mod destruction;
 mod fork;
 mod lifecycle;
 pub use fork::{Dispatch, fork_rounds, fork_tree, retry_refused};

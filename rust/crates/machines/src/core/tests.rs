@@ -358,6 +358,7 @@ async fn failed_admission_performs_no_native_dispatch() -> TestResult {
 
 struct NativeLifecycle {
     provider: &'static str,
+    allow_delete: bool,
     expected_handle: Option<&'static str>,
     checkpoint_owner: Option<(OperationRegistry, IdempotencyKey)>,
     value: tokio::sync::Mutex<MachineObservation>,
@@ -501,10 +502,45 @@ impl RawMachines for NativeLifecycle {
             adopted: false,
         })
     }
-    async fn raw_destroy(&self, _: &NativeResource) -> Result<(), ProviderError> {
-        Err(ProviderError::Rejected(
-            "internal lifecycle oracle must never delete an existing target".into(),
-        ))
+    async fn raw_fork_children(
+        &self,
+        _: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<Vec<MachineState>, ProviderError> {
+        self.check_binding(native)?;
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self
+            .children
+            .lock()
+            .await
+            .values()
+            .map(|child| child.state)
+            .collect())
+    }
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+        if !self.allow_delete {
+            return Err(ProviderError::Rejected(
+                "internal lifecycle oracle must never delete an existing target".into(),
+            ));
+        }
+        match resource {
+            NativeResource::Machine(handle) => {
+                self.check_binding(Some(&NativeBinding {
+                    provider: self.provider.into(),
+                    handle: handle.clone(),
+                    endpoint: None,
+                }))?;
+                self.value.lock().await.state = MachineState::Destroyed;
+            }
+            NativeResource::Checkpoint(handle) if handle.starts_with("opaque-checkpoint-") => {}
+            NativeResource::Checkpoint(_) => {
+                return Err(ProviderError::Rejected(
+                    "internal deletion oracle requires the opaque checkpoint address".into(),
+                ));
+            }
+        }
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -518,6 +554,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
     let machine = value.id;
     let native = NativeLifecycle {
         provider: "internal",
+        allow_delete: false,
         expected_handle: Some("opaque-running-vm"),
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value),
@@ -676,6 +713,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
     };
     let native = NativeLifecycle {
         provider: "internal",
+        allow_delete: false,
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
@@ -727,6 +765,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
     );
     let other = NativeLifecycle {
         provider: "other",
+        allow_delete: false,
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
@@ -795,6 +834,7 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
     let key = IdempotencyKey::new();
     let mut native = NativeLifecycle {
         provider: "internal",
+        allow_delete: false,
         expected_handle: None,
         checkpoint_owner: Some((core.clone(), key)),
         value: tokio::sync::Mutex::new(value.clone()),
@@ -890,6 +930,7 @@ async fn creation_reopens_exact_native_binding_and_settlement_without_dispatch()
     };
     let native = NativeLifecycle {
         provider: "internal",
+        allow_delete: false,
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
@@ -972,6 +1013,7 @@ async fn shared_checkpoint_fork_keeps_order_native_addresses_and_exact_replay() 
     };
     let native = NativeLifecycle {
         provider: "internal",
+        allow_delete: false,
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
@@ -1055,6 +1097,7 @@ async fn conflicting_logical_identity_keeps_new_native_cleanup_without_rebinding
     };
     let native = NativeLifecycle {
         provider: "internal",
+        allow_delete: false,
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
@@ -1106,6 +1149,115 @@ async fn conflicting_logical_identity_keeps_new_native_cleanup_without_rebinding
     assert_eq!(
         core.created(operation_id(key)).await?,
         [machine_resource("new-handle-for-duplicate-logical-id")]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) =
+        SimulatedMachines::default().create(request.clone()).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let native = NativeLifecycle {
+        provider: "internal",
+        allow_delete: true,
+        expected_handle: Some("opaque-created-vm"),
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    let interval = Duration::from_millis(1);
+    let timeout = Duration::from_secs(5);
+    core.create_machine(&native, request, interval, timeout)
+        .await?;
+    let MutationOutcome::Checkpointed(checkpoint) = core
+        .create_checkpoint(
+            &native,
+            value.id,
+            IdempotencyKey::new(),
+            interval,
+            timeout,
+            10,
+        )
+        .await?
+    else {
+        return Err("expected checkpoint".into());
+    };
+    let checkpoint_key = IdempotencyKey::new();
+    core.destroy_checkpoint(&native, checkpoint.id, checkpoint_key)
+        .await?;
+    let checkpoint_settlement = core.settled(checkpoint_key).await?;
+    // The target is the opaque creation address, not the logical checkpoint UUID.
+    assert_eq!(
+        core.record_for_key(checkpoint_key)
+            .await?
+            .map(|record| record.targets),
+        Some(vec![
+            core.native_checkpoint_binding(checkpoint.id, "internal")
+                .await?
+                .ok_or("missing checkpoint binding")?
+                .handle
+        ])
+    );
+    let mutations = native.mutations.load(Ordering::SeqCst);
+    let mut live_child = value.clone();
+    live_child.id = MachineId::new();
+    native
+        .children
+        .lock()
+        .await
+        .insert(live_child.id, live_child);
+    assert!(matches!(
+        core.destroy_machine(&native, value.id, IdempotencyKey::new(), 11)
+            .await,
+        Err(ProviderError::Conflict(_))
+    ));
+    assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
+    native.children.lock().await.clear();
+    let machine_key = IdempotencyKey::new();
+    core.destroy_machine(&native, value.id, machine_key, 12)
+        .await?;
+    assert_eq!(
+        core.record_for_key(machine_key)
+            .await?
+            .map(|record| record.targets),
+        Some(vec!["opaque-created-vm".into()])
+    );
+    let machine_settlement = core.settled(machine_key).await?;
+    let mutations = native.mutations.load(Ordering::SeqCst);
+    let reads = native.reads.load(Ordering::SeqCst);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.destroy_checkpoint(&native, checkpoint.id, checkpoint_key)
+            .await?,
+        checkpoint_settlement.outcome
+    );
+    assert_eq!(core.settled(checkpoint_key).await?, checkpoint_settlement);
+    assert_eq!(
+        core.destroy_machine(&native, value.id, machine_key, 13)
+            .await?,
+        machine_settlement.outcome
+    );
+    assert_eq!(core.settled(machine_key).await?, machine_settlement);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
+    assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(
+        core.machine(value.id).await?.map(|machine| machine.state),
+        Some(MachineState::Destroyed)
+    );
+    assert!(
+        !core
+            .inspect_checkpoint(&native, checkpoint.id)
+            .await?
+            .forkable
     );
     Ok(())
 }

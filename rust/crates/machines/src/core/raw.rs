@@ -2,7 +2,7 @@
 use super::NativeBinding;
 use crate::{
     CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, MachineContract, MachineId,
-    MachineObservation, ProviderError, SuspensionPolicy,
+    MachineObservation, MachineState, ProviderError, SuspensionPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +86,14 @@ pub trait RawMachines: Send + Sync {
         slot: ForkSlot,
         key: IdempotencyKey,
     ) -> Result<RawCreated, ProviderError>;
+
+    /// Read the native dependency states once. The core decides whether a live
+    /// fork source may be deleted; native service refusals remain authoritative.
+    async fn raw_fork_children(
+        &self,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<Vec<MachineState>, ProviderError>;
 
     /// Delete one opaque resource once. A missing resource may return NotFound;
     /// a lost native reply remains Unavailable. Retry decisions belong to core.

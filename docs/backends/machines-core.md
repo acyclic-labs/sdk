@@ -67,6 +67,12 @@ original binding.
 A different provider is refused before native IO. This draft's unpublished journal
 schema changes with that projection; it does not implement a legacy journal shim.
 
+Machine and checkpoint destruction share admission, target binding and terminal
+state publication. The core refuses a memory-fork source with live native child
+states; deletion receives the canonical opaque address. Failed native deletion
+cannot publish destroyed state, and an exact retry of a successful deletion
+returns the original settlement without observing or deleting again.
+
 Suspend/wake admission and policy transitions are shared too. Each native mutation
 receives the reopened canonical binding and records its opaque native target;
 the logical machine UUID need not equal a provider resource address. Native readiness is
