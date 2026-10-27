@@ -106,7 +106,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         _ => audience.clone(),
     };
     let issuer = AuthorityRoot::new("conformance", [7; 32], issued.clone());
-    let agent = vectors::adopted().agent;
+    let agent = crate::fixtures::adopted().agent;
     let private = volume(PRIVATE_VOLUME, agent.clone())?;
     let shared = volume("shared", agent.clone())?;
     let mut grants = vec![
