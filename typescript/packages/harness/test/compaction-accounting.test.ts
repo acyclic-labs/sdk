@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
-import type { ModelRequest as ModelRequestWire, ModelTokenCount as ModelTokenCountWire } from "../generated/wasm/acyclic_harness_wasm.js";
-import { initializeModelProviders } from "../src/providers.js";
+import { initializeModelProviders, defaultCompactionPolicy, validateThresholdCompaction,
+  validateModelTokenCount, type ModelRequest as ModelRequestWire,
+  type ModelTokenCount as ModelTokenCountWire } from "../src/providers.js";
 import { MODEL_TEST_LIMITS as limits } from "./support/model-limits.mjs";
 
 await initializeModelProviders();
@@ -26,8 +27,8 @@ test("canonical accounting rejects lossy UTF-16 requests, values and keys", () =
       request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
       input_tokens: BigInt(110 + new TextEncoder().encode(replacement).byteLength), fixed_tokens: 100, message_tokens: [new TextEncoder().encode(replacement).byteLength + 10],
     };
-    expect(contracts.validateModelTokenCount(request, count, limits)).toBeGreaterThan(100n);
-    expect(() => contracts.validateModelTokenCount({ ...request,
+    expect(validateModelTokenCount(request, count, limits)).toBeGreaterThan(100n);
+    expect(() => validateModelTokenCount({ ...request,
       messages: [{ role: "user", content: invalid }] }, count, limits)).toThrow();
   }
 });
@@ -44,22 +45,22 @@ test("generated optional current-input marker matches actual context projection 
 });
 
 test("generated compaction policy validates actual capacity and finite output in Rust", () => {
-  const policy = contracts.defaultCompactionPolicy();
+  const policy = defaultCompactionPolicy();
   expect(policy.kind).toBe("threshold");
   if (policy.kind !== "threshold") throw new Error("expected stock threshold policy");
   expect(policy.config.response_reserve_tokens).toBe(16_384);
   expect(policy.config.recent_tokens).toBe(20_000);
   expect(policy.config.retention).toEqual({ roles: ["system"], native_media: true });
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
-  expect(contracts.validateThresholdCompaction(policy.config, capacity, undefined)).toBe(4_096);
+  expect(validateThresholdCompaction(policy.config, capacity, undefined)).toBe(4_096);
   const replacement = { ...policy.config, response_reserve_tokens: 1_024, recent_tokens: 2_048 };
-  expect(contracts.validateThresholdCompaction(replacement, capacity, undefined)).toBe(1_024);
-  expect(() => contracts.validateThresholdCompaction(policy.config,
+  expect(validateThresholdCompaction(replacement, capacity, undefined)).toBe(1_024);
+  expect(() => validateThresholdCompaction(policy.config,
     { ...capacity, context_tokens: 32_768 }, undefined)).toThrow();
-  expect(() => contracts.validateThresholdCompaction(policy.config,
+  expect(() => validateThresholdCompaction(policy.config,
     { ...capacity, output_tokens: 0 }, undefined)).toThrow();
   for (const output of [0, -1, 0.5, 1.5, 4_097, 4_294_967_296, Infinity, NaN]) {
-    expect(() => contracts.validateThresholdCompaction(policy.config, capacity, output)).toThrow();
+    expect(() => validateThresholdCompaction(policy.config, capacity, output)).toThrow();
   }
 });
 
@@ -77,27 +78,27 @@ test("generated provider accounting binds canonical requests, dimensions and por
     fixed_tokens: 100,
     message_tokens: [new TextEncoder().encode("é🦀").byteLength + 10],
   };
-  expect(contracts.validateModelTokenCount(request, count, limits)).toBe(116n);
-  expect(contracts.validateModelTokenCount(request,
+  expect(validateModelTokenCount(request, count, limits)).toBe(116n);
+  expect(validateModelTokenCount(request,
     { ...count, input_tokens: 8_589_934_590n, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, limits))
     .toBe(8_589_934_590n);
-  expect(() => contracts.validateModelTokenCount(
+  expect(() => validateModelTokenCount(
     { ...request, messages: [{ role: "user", content: "changed" }] }, count, limits)).toThrow();
   for (const messageTokens of [[], [1, 2]]) {
-    expect(() => contracts.validateModelTokenCount(request,
+    expect(() => validateModelTokenCount(request,
       { ...count, message_tokens: messageTokens }, limits)).toThrow();
   }
   const wrongDigest = count.request_digest.slice() as ModelTokenCountWire["request_digest"];
   wrongDigest[0] = (wrongDigest[0] ?? 0) ^ 1;
-  expect(() => contracts.validateModelTokenCount(request,
+  expect(() => validateModelTokenCount(request,
     { ...count, request_digest: wrongDigest }, limits)).toThrow();
   for (const invalid of [-1, 0.5, 4_294_967_296, Infinity, NaN]) {
-    expect(() => contracts.validateModelTokenCount(request,
+    expect(() => validateModelTokenCount(request,
       { ...count, fixed_tokens: invalid }, limits)).toThrow();
-    expect(() => contracts.validateModelTokenCount(request,
+    expect(() => validateModelTokenCount(request,
       { ...count, message_tokens: [invalid] }, limits)).toThrow();
   }
-  expect(() => contracts.validateModelTokenCount(request,
+  expect(() => validateModelTokenCount(request,
     { ...count, unexpected: true } as ModelTokenCountWire, limits)).toThrow();
 });
 

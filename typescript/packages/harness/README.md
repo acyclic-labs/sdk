@@ -27,6 +27,13 @@ Call `initializeBrowserRuntime()` before host composition. `configurePiModel` in
 the admitted request bytes and verified file slices. Frontends should not rebuild
 file authorization, request projection or execution in JavaScript.
 
+Custom model providers can use the exported `ModelRequest`, `ModelContextCapacity`,
+`ModelTokenCount` and compaction policy types directly at that callback boundary.
+After `initializeModelProviders()`, `defaultCompactionPolicy`,
+`validateThresholdCompaction` and `validateModelTokenCount` use Rust's existing
+policy and exact-request accounting checks, including the selected finite output
+ceiling. These helpers grant no file or model-option authority.
+
 For declarative model contracts, call `initializeModelContent()`. The exported
 `validateModelContent`, `validateModelMessages`, `validateUserInput`,
 `prepareModelRequest`, `modelContentInventory` and `admitModelEvent` run the

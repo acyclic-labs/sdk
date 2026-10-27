@@ -6,7 +6,8 @@
 <pre id="result" data-status="pending">Loading generated Rust contracts</pre>
 <script type="module">
 import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
-import { initializeModelProviders } from "../dist/providers.js";
+import { initializeModelProviders, defaultCompactionPolicy,
+  validateThresholdCompaction, validateModelTokenCount } from "../dist/providers.js";
 import { MODEL_TEST_LIMITS as limits } from "./support/model-limits.mjs";
 
 const result = document.querySelector("#result");
@@ -46,21 +47,21 @@ try {
   ]) rejects(() => contracts.decodeExecutionEventJson(contracts.encodeCanonicalJson(malformed)), "invalid checkpoint wire");
   rejects(() => contracts.decodeExecutionEventJson(new TextEncoder().encode(JSON.stringify(checkpoint))),
     "noncanonical checkpoint wire");
-  const policy = contracts.defaultCompactionPolicy();
+  const policy = defaultCompactionPolicy();
   check(policy.kind === "threshold", "stock threshold policy");
   check(policy.config.response_reserve_tokens === 16_384 && policy.config.recent_tokens === 20_000,
     "Rust default budgets");
-  const otherPolicy = contracts.defaultCompactionPolicy();
+  const otherPolicy = defaultCompactionPolicy();
   otherPolicy.config.recent_tokens = 1;
   check(policy.config.recent_tokens === 20_000 &&
-    contracts.defaultCompactionPolicy().config.recent_tokens === 20_000, "Rust policy outputs have separate ownership");
+    defaultCompactionPolicy().config.recent_tokens === 20_000, "Rust policy outputs have separate ownership");
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
-  check(contracts.validateThresholdCompaction(policy.config, capacity, undefined) === 4_096, "finite selected output");
-  check(contracts.validateThresholdCompaction({ ...policy.config, response_reserve_tokens: 1_024,
+  check(validateThresholdCompaction(policy.config, capacity, undefined) === 4_096, "finite selected output");
+  check(validateThresholdCompaction({ ...policy.config, response_reserve_tokens: 1_024,
     recent_tokens: 2_048 }, capacity, undefined) === 1_024, "replaceable reserve");
-  rejects(() => contracts.validateThresholdCompaction(policy.config,
+  rejects(() => validateThresholdCompaction(policy.config,
     { ...capacity, context_tokens: 32_768 }, undefined), "impossible selected capacity");
-  rejects(() => contracts.validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
+  rejects(() => validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
   const request = {
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
     messages: [{ role: "user", content: "é🦀" }], tools: [], max_output_tokens: 1_024,
@@ -85,24 +86,24 @@ try {
     const normalizedCount = { ...count, request_digest: Array.from(contracts.digestCanonicalJson(normalized)),
       input_tokens: BigInt(110 + new TextEncoder().encode(replacement).byteLength),
       message_tokens: [new TextEncoder().encode(replacement).byteLength + 10] };
-    rejects(() => contracts.validateModelTokenCount({ ...request,
+    rejects(() => validateModelTokenCount({ ...request,
       messages: [{ role: "user", content: invalid }] }, normalizedCount, limits),
       "accounting cannot admit a lossy replacement request");
   }
-  check(contracts.validateModelTokenCount(request, count, limits) === 116n,
+  check(validateModelTokenCount(request, count, limits) === 116n,
     "exact prepared request accounting");
-  check(contracts.validateModelTokenCount(request,
+  check(validateModelTokenCount(request,
     { ...count, input_tokens: 8_589_934_590n, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, limits)
     === 8_589_934_590n, "portable exact sum");
-  rejects(() => contracts.validateModelTokenCount({ ...request,
+  rejects(() => validateModelTokenCount({ ...request,
     messages: [{ role: "user", content: "changed" }] }, count, limits), "changed request");
-  rejects(() => contracts.validateModelTokenCount(request,
+  rejects(() => validateModelTokenCount(request,
     { ...count, message_tokens: [] }, limits), "count dimensions");
-  rejects(() => contracts.validateModelTokenCount(request,
+  rejects(() => validateModelTokenCount(request,
     { ...count, fixed_tokens: -1 }, limits), "negative tokens");
-  rejects(() => contracts.validateModelTokenCount(request,
+  rejects(() => validateModelTokenCount(request,
     { ...count, message_tokens: [0.5] }, limits), "fractional tokens");
-  rejects(() => contracts.validateModelTokenCount(request,
+  rejects(() => validateModelTokenCount(request,
     { ...count, unexpected: true }, limits), "unknown accounting fields");
   const source = { instructions: [], skills: [] };
   const standalone = contracts.projectDiscoveredContext(source,
