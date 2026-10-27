@@ -154,6 +154,37 @@ impl AgentClient {
         focused: AgentSelection,
         visible: impl IntoIterator<Item = AgentSelection>,
     ) -> Result<(), AgentClientError> {
+        self.replace_view(focused, visible, None)
+    }
+
+    /// Replace all on-screen agents and tool-output panes in one transaction.
+    /// Scroll-out releases subscriptions and cached records; overlapping panes
+    /// retain their actual cursors. No off-screen agent state is retained.
+    pub fn set_viewport(
+        &mut self,
+        focused: AgentSelection,
+        visible: impl IntoIterator<Item = AgentSelection>,
+        resources: impl IntoIterator<Item = wire::SessionSubscription>,
+    ) -> Result<(), AgentClientError> {
+        let mut requested = Vec::new();
+        for (index, subscription) in resources.into_iter().enumerate() {
+            if index == DemandPolicy::default().selected_capacity() {
+                return Err(WireSessionError::Demand(DemandError::SelectedCapacity).into());
+            }
+            if subscription.credential != self.credential {
+                return Err(WireSessionError::InvalidSubscription.into());
+            }
+            requested.push(subscription);
+        }
+        self.replace_view(focused, visible, Some(requested))
+    }
+
+    fn replace_view(
+        &mut self,
+        focused: AgentSelection,
+        visible: impl IntoIterator<Item = AgentSelection>,
+        resources: Option<Vec<wire::SessionSubscription>>,
+    ) -> Result<(), AgentClientError> {
         let mut selections = Vec::new();
         for (index, selection) in std::iter::once(focused.clone()).chain(visible).enumerate() {
             if index == Self::selected_capacity() {
@@ -183,12 +214,35 @@ impl AgentClient {
                 streams.push((selection.agent.clone(), is_status, path));
             }
         }
-        self.session.replace_streams(subscriptions)?;
+        if let Some(resources) = resources {
+            let names = resources
+                .iter()
+                .map(|subscription| match &subscription.kind {
+                    Some(wire::session_subscription::Kind::Follow(follow)) => {
+                        Ok(follow.resource.clone())
+                    }
+                    _ => Err(WireSessionError::InvalidSubscription),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.session.replace_interests(subscriptions, resources)?;
+            self.resources = names;
+        } else {
+            self.session.replace_streams(subscriptions)?;
+        }
         self.agent = focused.agent;
         self.conversation = conversation;
         self.streams = streams;
         self.next_stream %= self.streams.len() + self.resources.len();
         Ok(())
+    }
+
+    /// Read-only production residency, independent of total tree cardinality.
+    pub fn residency(&self) -> (usize, usize, usize) {
+        (
+            self.session.followed_interests(),
+            self.session.retained_views(),
+            self.session.retained_bytes(),
+        )
     }
 
     /// Borrow just the explicit selected agents, with focus first. No all-agent

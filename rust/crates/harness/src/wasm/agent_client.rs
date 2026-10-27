@@ -228,29 +228,7 @@ impl WasmAgentClient {
         conversation_from: js_sys::BigUint64Array,
         status_from: js_sys::BigUint64Array,
     ) -> Result<(), JsValue> {
-        let length = agents.length();
-        if length == 0
-            || length as usize > AgentClient::selected_capacity()
-            || conversation_from.length() != length
-            || status_from.length() != length
-        {
-            return Err(error(
-                "selected_capacity",
-                "view requires 1..=8 agents and matching cursor arrays",
-            ));
-        }
-        let mut selections = Vec::with_capacity(length as usize);
-        for index in 0..length {
-            let agent = agents
-                .get(index)
-                .dyn_into::<JsString>()
-                .map_err(|_| error("invalid_agent_path", "agent path is not a string"))?;
-            selections.push(AgentSelection {
-                agent: agent_path(agent)?,
-                conversation_from: conversation_from.get_index(index),
-                status_from: status_from.get_index(index),
-            });
-        }
+        let selections = selections(agents, conversation_from, status_from)?;
         let mut selections = selections.into_iter();
         let focused = selections
             .next()
@@ -267,6 +245,57 @@ impl WasmAgentClient {
         if let Some(waker) = waker {
             waker.wake();
         }
+        Ok(())
+    }
+
+    /// One viewport transaction: omitted tool-output panes are cancelled and
+    /// evicted together with off-screen agents. Pass an empty resource array
+    /// when no output pane is visible. Encoded values are SessionSubscription.
+    #[wasm_bindgen(js_name = setViewport)]
+    pub fn set_viewport(
+        &self,
+        agents: js_sys::Array,
+        conversation_from: js_sys::BigUint64Array,
+        status_from: js_sys::BigUint64Array,
+        resources: js_sys::Array,
+    ) -> Result<(), JsValue> {
+        let selections = selections(agents, conversation_from, status_from)?;
+        if resources.length() as usize
+            > acyclic_harness_client::DemandPolicy::default().selected_capacity()
+        {
+            return Err(error("selected_capacity", "too many output panes"));
+        }
+        let mut subscriptions = Vec::with_capacity(resources.length() as usize);
+        for value in resources.iter() {
+            let encoded = value
+                .dyn_into::<js_sys::Uint8Array>()
+                .map_err(|_| error("invalid_subscription", "expected encoded subscription"))?;
+            let (bytes, ()) = super::bytes::snapshot(&encoded, |length| {
+                if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+                    Err(error(
+                        "client_subscription_capacity",
+                        "subscription exceeds byte bound",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })?;
+            subscriptions.push(
+                acyclic_stream::wire::SessionSubscription::decode(bytes.as_slice())
+                    .map_err(|cause| error("invalid_subscription", cause))?,
+            );
+        }
+        let mut selections = selections.into_iter();
+        let focused = selections
+            .next()
+            .ok_or_else(|| error("selected_capacity", "view is empty"))?;
+        self.client
+            .borrow_mut()
+            .as_mut()
+            .ok_or_else(|| error("client_closed", "agent client is closed"))?
+            .set_viewport(focused, selections, subscriptions)
+            .map_err(client_error)?;
+        self.wake_reader();
         Ok(())
     }
 
@@ -433,4 +462,35 @@ impl WasmAgentClient {
             .ok_or_else(|| error("client_closed", "agent client is closed"))?;
         Ok(read(client))
     }
+}
+
+fn selections(
+    agents: js_sys::Array,
+    conversation_from: js_sys::BigUint64Array,
+    status_from: js_sys::BigUint64Array,
+) -> Result<Vec<AgentSelection>, JsValue> {
+    let length = agents.length();
+    if length == 0
+        || length as usize > AgentClient::selected_capacity()
+        || conversation_from.length() != length
+        || status_from.length() != length
+    {
+        return Err(error(
+            "selected_capacity",
+            "view requires 1..=8 agents and matching cursor arrays",
+        ));
+    }
+    let mut selections = Vec::with_capacity(length as usize);
+    for index in 0..length {
+        let agent = agents
+            .get(index)
+            .dyn_into::<JsString>()
+            .map_err(|_| error("invalid_agent_path", "agent path is not a string"))?;
+        selections.push(AgentSelection {
+            agent: agent_path(agent)?,
+            conversation_from: conversation_from.get_index(index),
+            status_from: status_from.get_index(index),
+        });
+    }
+    Ok(selections)
 }
