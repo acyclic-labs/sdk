@@ -115,6 +115,33 @@ No private Firecracker variant is supplied. References:
 
 ## Validation
 
+After rebasing onto main `d8224faf`, runtime source
+`708c878c16db5e78e1f4ee0a5f7a7492d5d33860` uses the current public
+`Bound::local_root` producer with the original issuer, canonical `Fs` placement
+and real local turn executors. The filesystem/harness/harness-core test and binary
+compile gate passed. The complete Bound agent suite passed **30/30**, 0.70 s.
+The public daemon suite passed **2/2**, 1.51 s: both actual QEMU and
+cloud-hypervisor guests mounted the canonical volume, wrote/read/deleted,
+unmounted and powered off with exit 0. Both daemons exited 0 and retired their
+owned sockets. Frontends still emitted teardown disconnect warnings.
+
+The unfiltered filesystem run, including ignored integration cases, ended
+**2496 pass / 15 fail / 0 ignored / 0 filtered**, 30.33 s. All tests under
+`native_mount::fuse` and the Linux mount behavior cases passed. Five failures
+remain elsewhere under `native_mount`: pending mutation revocation, rejected
+composition retry, source-guard cancellation identity, held-parent fence location
+and cumulative publication conflict budget. These recur from the earlier
+owner-routed receipt; their files have no lane edits. Ten additional failures
+cover device drain, live/publication generation fences, canonical history,
+source authority fences, stream error categories and exact staging work. This is
+not a passing complete filesystem suite or proof of baseline equivalence.
+
+Current bb2 job `1793094000109-149673-a133e23b`, log
+`/home/var/log/buildbox/1793093988453-149673-84bd0baa.log`, overall rc 101,
+canonical wall 1017.811 s including compilation. All four cleanup fields are
+true. This job did not rerun the harness library suite; its historical failures
+below remain source-specific.
+
 The initial complete bb2 run uses signed source
 `41955b03d096e0c8d7a180619dbba35dae40905a`:
 
@@ -125,7 +152,7 @@ pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'bash scripts/validate-virtiofs.sh
 All three compile gates passed. Complete runtime results at that source:
 
 - Filesystem: **2483 pass / 22 fail / 0 ignored / 0 filtered**, 30.35 s.
-  Every FUSE-module test, Linux mount behavior case and private fixture-source
+  Every `native_mount::fuse` test, Linux mount behavior case and private fixture-source
   VMM passed, including revoked/missing-guard/identity/metadata refusals.
 - Harness library: **133 pass / 2 fail**, 1.73 s. The failures are oversized
   command-result omission and restrictive checkout-policy setup.
