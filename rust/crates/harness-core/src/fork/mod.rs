@@ -58,8 +58,8 @@ pub(crate) use seed::copy_seed;
 pub use seed::{ForkSeed, ForkSeedVolume};
 pub(in crate::fork) use selection::validate_child_result_generation;
 pub use selection::{
-    AttestedBoundary, ForkCaptureProvider, ForkHistoryPolicy, ForkPreparation, ForkPreparer,
-    ForkSelection, ResourceRevision,
+    AttestedBoundary, ForkCaptureProvider, ForkHistoryPolicy, ForkPreparation, ForkSelection,
+    ResourceRevision,
 };
 pub use verification::CompositeForkVerifier;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
