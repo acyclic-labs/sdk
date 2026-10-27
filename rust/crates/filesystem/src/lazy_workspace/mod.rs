@@ -53,11 +53,9 @@ impl<A: 'static, O: 'static, D, S: Clone> LazyWorkspace<A, O, D, S> {
     /// Funds the shared handle before allocating it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn share(&self, ctx: &mut KernelAccounting<'_>) -> Result<Arc<Self>, LazyWorkspaceError> {
-        let layout = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
-            .extend(std::alloc::Layout::new::<Self>())
-            .map_err(|_| crate::WorkError::Overflow)?
-            .0;
-        let allocation = match ctx.claim_owned(layout.pad_to_align().size() as u64, 1)? {
+        let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>())
+            .map_err(|_| crate::WorkError::Overflow)?;
+        let allocation = match ctx.claim_owned(bytes as u64, 1)? {
             KernelOwnedAllocation::NativeOriginal(guard) => Some(guard),
             KernelOwnedAllocation::Standalone => None,
         };
