@@ -10,6 +10,7 @@ const GRAPHCODER_PROMPT: &str = "You are GraphCoder, a coding agent working in t
 /// The defaults an agent runs with: its model, prompt, tool selection, limits
 /// and approvals.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct Preset {
     /// Model selection (`provider/model`). `None` takes the host's configured

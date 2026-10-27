@@ -33,6 +33,7 @@ pub use selectors::ApprovalSelector;
 
 /// Ordered escalation chain. An `ask` advances to the next approver.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalPolicy {
     /// First decisive verdict settles the request. Exhaustion refuses the action.
@@ -63,6 +64,7 @@ impl ApprovalPolicy {
 
 /// One independently identified approver in the chain.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Approver {
     /// Tool/argument selectors, with an explicit fallback.
@@ -94,11 +96,13 @@ pub enum Approver {
 
 /// Conjunctive rule. Omitted selectors match every admitted tool call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRule {
     /// Optional exact tool name.
     pub tool: Option<String>,
     /// Optional exact arguments, including all object fields.
+    #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
     pub arguments: Option<Value>,
     /// Additional argument selectors, all of which must match.
     #[serde(default)]
@@ -109,6 +113,7 @@ pub struct ApprovalRule {
 
 /// Policy and model results use the same escalation semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum RuleVerdict {
     /// Submit an approving decision.
