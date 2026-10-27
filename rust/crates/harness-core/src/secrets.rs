@@ -145,16 +145,30 @@ impl SecretSource for FileSecrets {
         reference: &'a SecretRef,
     ) -> BoxProviderFuture<'a, crate::Result<Option<Secret>>> {
         // A validated name is one path component, so it never leaves the directory.
-        let value = match std::fs::read_to_string(self.directory.join(reference.as_str())) {
-            Ok(mut value) => {
-                let kept = value.trim_end_matches(['\r', '\n']).len();
-                value.truncate(kept);
-                Ok(Some(Secret::new(value)))
+        let path = self.directory.join(reference.as_str());
+        Box::pin(async move {
+            // A slow mount blocks a blocking worker, never the caller's thread.
+            match tokio::runtime::Handle::try_current() {
+                Ok(runtime) => runtime
+                    .spawn_blocking(move || read_secret(&path))
+                    .await
+                    .map_err(|_| crate::Error::Storage("secret read did not complete".into()))?,
+                Err(_) => read_secret(&path),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err(crate::Error::Storage("secret file is unreadable".into())),
-        };
-        Box::pin(std::future::ready(value))
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_secret(path: &std::path::Path) -> crate::Result<Option<Secret>> {
+    match std::fs::read_to_string(path) {
+        Ok(mut value) => {
+            let kept = value.trim_end_matches(['\r', '\n']).len();
+            value.truncate(kept);
+            Ok(Some(Secret::new(value)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(crate::Error::Storage("secret file is unreadable".into())),
     }
 }
 
