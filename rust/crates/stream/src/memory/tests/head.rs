@@ -28,6 +28,9 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     };
     assert_eq!(append.records[0].value.as_ref(), &[42; 4096]);
     assert_eq!(append.records[0].committed_at_micros, receipt.committed_at_micros);
+    let wire = crate::wire_codec::receipt_to_wire(receipt.clone());
+    assert!(wire.encoded_len() < append.records[0].value.len());
+    assert_eq!(crate::wire_codec::receipt_from_wire(wire)?, *receipt);
     let fork = CommitRequest {
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Fork {
