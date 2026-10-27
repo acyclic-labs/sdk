@@ -20,19 +20,26 @@
 //! within the admitted tree. The session carrier, not this module, owns
 //! admission, credit and fragmentation; no backend-specific route exists.
 
-pub use acyclic_harness_core::filesystem::hosting::{
-    Bound, Placement, Prepared, RootRequest, RootSubmission, Turns, VerifiedCaller,
+pub use acyclic_harness_core::filesystem::{
+    attestation::{Attempt, Attestation, Attested, AttestedProvider, Attestor},
+    hosting::{Bound, Placement, Prepared, RootRequest, RootSubmission, Turns, VerifiedCaller},
 };
 
-use crate::agent::{
-    AgentPath, AgentRecord, Control, Error, InboxRecord, IntentId, Message, Sender, StatusRecord,
+use crate::{
+    agent::{
+        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId,
+        MAX_OPEN_CHILDREN, Message, Sender, SpawnRequest, StatusRecord, requested_child,
+    },
+    approvals::ApprovalResponder,
+    interaction::Interaction,
+    model::ModelContent,
 };
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
-use acyclic_harness_client::{AgentCall, AgentCommand, AgentReply, ChildAgent};
+use acyclic_harness_client::{AgentCall, AgentCommand, AgentReply, ChildAgent, PendingApproval};
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, ProviderPlatform, ReadRequest, StreamError,
-    StreamPath,
+    StreamPath, StreamProvider as _,
     session::{CallAuthorization, CallProvider},
 };
 use bytes::Bytes;
@@ -215,13 +222,9 @@ where
             }),
             AgentCommand::Prompt { agent, id, body } => {
                 let agent = self.within_tree(agent)?;
-                let text = match body {
-                    crate::model::ModelContent::Text(text) => text,
-                    _ => return Err(Error::Unsupported("prompt content other than text")),
-                };
                 let body = self
                     .bound
-                    .stage_text(agent, "message", by, id, text)
+                    .stage_text(agent, "message", by, id, text(body)?)
                     .await?;
                 let record = InboxRecord::Message(Message {
                     from: by.clone(),
@@ -284,11 +287,117 @@ where
                         .map(|after| children_cursor(&listed.hierarchy_version, &after)),
                 })
             }
-            AgentCommand::Spawn { .. } => Err(Error::Unsupported("client spawn")),
-            AgentCommand::Approvals { .. } | AgentCommand::Decide { .. } => {
-                Err(Error::Unsupported("served approvals"))
+            AgentCommand::Spawn { parent, id, brief } => {
+                let parent = self.within_tree(parent)?;
+                let record = InboxRecord::Spawn(SpawnRequest {
+                    by: by.clone(),
+                    id: id.clone(),
+                    brief: text(brief)?.to_owned(),
+                });
+                let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
+                    return Err(Error::Record("the parent is archived"));
+                };
+                let child = requested_child(parent, inbox)?.1;
+                // The parent's step consumes a request it cannot honour (it is
+                // archived or has its open-children limit) without creating
+                // the child, so a recorded refusal is reported, not a path
+                // that never appears. A child already created, as on a retry,
+                // is spawned whatever the parent's state now.
+                let state = agents.state(parent).await?;
+                if !state.open_children.contains(&child)
+                    && (state.closed || state.open_children.len() >= MAX_OPEN_CHILDREN)
+                    && !matches!(agents.state(&child).await, Ok(_))
+                {
+                    return Err(Error::Record("the parent refused the spawn"));
+                }
+                Ok(AgentReply::Spawned {
+                    agent: child,
+                    delivery: Delivered::Committed { inbox },
+                })
+            }
+            AgentCommand::Approvals { agent, page } => {
+                let agent = self.within_tree(agent)?;
+                // An agent waits on at most one approval: one page holds it.
+                let pending = match page.cursor() {
+                    Some(_) => None,
+                    None => self.pending(agent).await?,
+                };
+                Ok(AgentReply::Approvals {
+                    items: pending
+                        .filter(|_| page.items() > 0)
+                        .map(|(id, request)| PendingApproval { id, request })
+                        .into_iter()
+                        .collect(),
+                    next: None,
+                })
+            }
+            AgentCommand::Decide {
+                agent,
+                id,
+                binding,
+                approved,
+                reason,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let Sender::User { principal } = by else {
+                    return Err(Error::Record("a decision needs a human principal"));
+                };
+                // The decision binds the exact action the caller was shown:
+                // the pending approval, or, for an identical retry after the
+                // agent resumed, the request this principal already decided.
+                let binds = |shown: Option<Interaction>| {
+                    matches!(
+                        shown,
+                        Some(Interaction::Approval { operation_id, action_digest, .. })
+                            if operation_id == binding.operation_id
+                                && action_digest == binding.action_digest
+                    )
+                };
+                let pending = self
+                    .pending(agent)
+                    .await?
+                    .and_then(|(pending, shown)| (&pending == id).then_some(shown));
+                let shown = if pending.is_some() {
+                    binds(pending)
+                } else {
+                    let state = self.bound.agents().state(agent).await?;
+                    binds(
+                        self.bound
+                            .turns()
+                            .decided_approval(&state, id, principal)
+                            .await
+                            .map_err(|error| Error::Turn(Box::new(error)))?,
+                    )
+                };
+                if !shown {
+                    return Err(Error::Record("approval is not pending with this binding"));
+                }
+                Ok(AgentReply::Delivered {
+                    delivery: self
+                        .bound
+                        .turns()
+                        .respond(
+                            agents,
+                            agent,
+                            id,
+                            ApprovalResponder::Human(principal),
+                            *approved,
+                            reason.clone(),
+                        )
+                        .await?,
+                })
             }
         }
+    }
+
+    /// The approval `agent` waits on.
+    async fn pending(&self, agent: &AgentPath) -> Result<Option<(IntentId, Interaction)>, Error> {
+        let state = self.bound.agents().state(agent).await?;
+        self.bound
+            .turns()
+            .pending_approval(&state)
+            .await
+            .map_err(|error| Error::Turn(Box::new(error)))
     }
 
     /// `agent`'s last published status, if any.
@@ -315,6 +424,14 @@ where
             Some(record) => Ok(Some(StatusRecord::decode(&record.value)?)),
             None => Ok(None),
         }
+    }
+}
+
+/// The text of a prompt or brief; hosted agents take text input.
+fn text(content: &ModelContent) -> Result<&str, Error> {
+    match content {
+        ModelContent::Text(text) => Ok(text.as_str()),
+        _ => Err(Error::Record("agent input must be text")),
     }
 }
 

@@ -15,6 +15,7 @@ browser = ["acyclic-stream/wasm"]
 acyclic-actors = { path = "../../actors" }
 acyclic-harness-core = { path = "../../harness-core", features = ["filesystem", "oidc"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory"] }
+acyclic-objects = { path = "../../objects", default-features = false }
 acyclic-stream = { path = "../../stream", default-features = false }
 async-trait.workspace = true
 bytes.workspace = true

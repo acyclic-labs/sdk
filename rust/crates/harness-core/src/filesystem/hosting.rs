@@ -33,6 +33,8 @@ use acyclic_fs::{
 use std::sync::Arc;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+/// The turn host of a binding's agents.
+pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
 mod guest;
@@ -146,6 +148,7 @@ pub struct Bound<P: AuthorityProvider + 'static, O: 'static> {
     within: ActorReference,
     maximum_bytes: u64,
     agents: Arc<AgentHost<P>>,
+    turns: Arc<Turner<P, O>>,
     volumes: Arc<Host<P, O>>,
 }
 
@@ -203,14 +206,15 @@ where
         let stream = filesystem.stream_provider();
         let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
         let maximum_bytes = turns.limits.maximum_bytes;
-        let driver = ExecutorDriver::new(Arc::new(FilesystemTurnHost::new(
+        let turner = Arc::new(FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
             issuer.clone(),
             admission.clone(),
             turns.executors,
             turns.limits,
-        )));
+        ));
+        let driver = ExecutorDriver::new(Arc::clone(&turner));
         let spawns = Arc::new(FilesystemSpawnVolumes::new(
             Arc::clone(&volumes),
             issuer.clone(),
@@ -231,6 +235,7 @@ where
             within,
             maximum_bytes,
             agents,
+            turns: turner,
             volumes,
         })
     }
@@ -247,6 +252,12 @@ where
     #[must_use]
     pub const fn agents(&self) -> &Arc<AgentHost<P>> {
         &self.agents
+    }
+
+    /// The turns of this binding's agents: their approvals and decisions.
+    #[must_use]
+    pub const fn turns(&self) -> &Arc<Turner<P, O>> {
+        &self.turns
     }
 
     /// Account and namespace of this binding's agent actors.

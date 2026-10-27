@@ -24,7 +24,9 @@ pub type ApproverModels = std::collections::BTreeMap<
         std::sync::Arc<dyn crate::model::ModelProvider>,
     ),
 >;
-pub use agent::{AgentApprovalPolicy, AgentApprovals, decide, request_id as agent_request_id};
+pub use agent::{
+    AgentApprovalPolicy, AgentApprovals, decide, decided_request, request_id as agent_request_id,
+};
 mod automatic;
 pub use automatic::automatic_review as automatic_agent_review;
 

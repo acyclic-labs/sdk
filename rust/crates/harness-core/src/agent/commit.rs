@@ -66,6 +66,7 @@ pub fn send(
         InboxRecord::ApprovalRequested(_) => "approval-requested",
         InboxRecord::Cancel(_) => "cancel",
         InboxRecord::Hook(_) => "hook",
+        InboxRecord::Spawn(_) => "spawn",
     };
     let intent = intent_of(record);
     existing(inbox_tail)?;
@@ -118,6 +119,7 @@ fn intent_of(record: &InboxRecord) -> String {
         }
         InboxRecord::ChildDone(done) => done.child.as_str().to_owned(),
         InboxRecord::Hook(hook) => hook.id.as_str().to_owned(),
+        InboxRecord::Spawn(spawn) => spawn.id.as_str().to_owned(),
         InboxRecord::ForkAdopted(adopted) => adopted.agent.as_str().to_owned(),
     }
 }
