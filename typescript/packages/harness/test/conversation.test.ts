@@ -1,36 +1,31 @@
 import { expect, test } from "bun:test";
-import {
-  descriptorFor,
-  DEFAULT_LIMITS, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_LIMITS, MAX_PATH_BYTES,
-  type ConversationMessage, type ConversationMessageId, type FileRef, type TaskOutcomeRecord,
-} from "../src/conversation.js";
-import type { AgentId } from "../src/index.js";
-import { NativeContracts } from "../src/native-contracts.js";
+import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmFileRefWire } from "../generated/wasm/acyclic_harness_wasm.js";
+import { initializeClientQueries } from "../src/client.js";
+import { MODEL_TEST_LIMITS as fixtureLimits } from "./support/model-limits.mjs";
 
-const contracts = await NativeContracts.create();
-const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
+await initializeClientQueries();
+const agent = "01010101-0101-0101-0101-010101010101";
 
-test("Rust-owned limits contract preserves defaults, ceilings, and number semantics", () => {
-  expect(DEFAULT_LIMITS.path_bytes).toBe(2 ** 32 - 1);
-  expect(contracts.validate("limits", DEFAULT_LIMITS)).toEqual(DEFAULT_LIMITS);
-  expect(MAX_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
-  expect(MAX_EXACT_JS_INTEGER).toBe(MAX_LIMITS.file_bytes);
-  expect(MAX_LABEL_BYTES).toBeGreaterThan(0);
-  expect(Object.values(DEFAULT_LIMITS).every(value => typeof value === "number")).toBe(true);
-  expect(() => contracts.validate("limits", {
-    ...MAX_LIMITS, file_bytes: MAX_EXACT_JS_INTEGER + 1,
-  })).toThrow();
-  expect(() => contracts.validate("limits", {
-    ...MAX_LIMITS, path_bytes: MAX_PATH_BYTES + 1,
-  })).toThrow();
+// The removed facade's effectively infinite defaults are not frontend policy.
+// These finite inputs are fixture bounds; Rust still owns numeric admission.
+test("finite fixture limits use Rust admission and reject inexact numbers", () => {
+  expect(contracts.validateContract("limits", fixtureLimits, undefined)).toEqual(fixtureLimits);
+  expect(Object.values(fixtureLimits).every(value => typeof value === "number")).toBe(true);
+  expect(() => contracts.validateContract("limits", {
+    ...fixtureLimits, file_bytes: Number.MAX_SAFE_INTEGER + 1,
+  }, undefined)).toThrow();
+  expect(() => contracts.validateContract("limits", {
+    ...fixtureLimits, path_bytes: 2 ** 32,
+  }, undefined)).toThrow();
 });
 
-function fixtureMessage(value: unknown): ConversationMessage {
+function fixtureMessage(value: unknown) {
   if (value === null || typeof value !== "object" || !("sequence" in value)
     || typeof value.sequence !== "number" || !Number.isSafeInteger(value.sequence)) {
     throw new TypeError("fixture conversation sequence must be an exact JSON integer");
   }
-  return { ...value, sequence: BigInt(value.sequence) } as ConversationMessage;
+  return { ...value, sequence: BigInt(value.sequence) };
 }
 
 function fixtureJson(value: unknown): string {
@@ -42,16 +37,16 @@ function fixtureJson(value: unknown): string {
   });
 }
 
-async function content(owner = agent): Promise<FileRef> {
+async function content(owner = agent): Promise<WasmFileRefWire> {
   const bytes = new TextEncoder().encode("payload");
-  return contracts.validate("file_ref", {
+  return contracts.validateContract("file_ref", {
     volume: {
       provider: { namespace: "test", family: "filesystem", version: "2" },
       id: "scratch", class: "agent_private", owner: { kind: "agent", id: owner },
     },
     path: "messages/input.txt", version: "pinned-generation",
-    descriptor: await descriptorFor(bytes, "text/plain"), display_name: "input.txt",
-  });
+    descriptor: contracts.fileDescriptor(bytes, "text/plain"), display_name: "input.txt",
+  }, undefined);
 }
 
 test("file references reject traversal and verify exact bytes", async () => {
@@ -62,15 +57,15 @@ test("file references reject traversal and verify exact bytes", async () => {
     ...reference,
     descriptor: { ...reference.descriptor, sha256: [...reference.descriptor.sha256, 0] },
   }, new TextEncoder().encode("payload"))).toThrow();
-  expect(() => contracts.validate("file_ref", { ...reference, path: "../escape" })).toThrow();
-  expect(() => contracts.validate("file_ref", { ...reference, unexpected: true } as FileRef)).toThrow();
-  expect(() => contracts.validate("conversation_message", {
-    id: ("not-a-uuid" as ConversationMessageId), sequence: 1n, kind: "user", content: reference,
+  expect(() => contracts.validateContract("file_ref", { ...reference, path: "../escape" }, undefined)).toThrow();
+  expect(() => contracts.validateContract("file_ref", { ...reference, unexpected: true }, undefined)).toThrow();
+  expect(() => contracts.validateContract("conversation_message", {
+    id: "not-a-uuid", sequence: 1n, kind: "user", content: reference,
     attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: null, extensions: {},
-  }, DEFAULT_LIMITS)).toThrow();
+  }, fixtureLimits)).toThrow();
 });
 
-test("canonical message identity is branded only after Rust UUID validation", () => {
+test("canonical message spelling is admitted only after Rust UUID validation", () => {
   expect(String(contracts.validateConversationMessageId("01010101-0101-0101-0101-010101010101")))
     .toBe("01010101-0101-0101-0101-010101010101");
   expect(() => contracts.validateConversationMessageId("not-a-uuid")).toThrow();
@@ -78,20 +73,20 @@ test("canonical message identity is branded only after Rust UUID validation", ()
 
 test("manifest-backed attachment lists require a pinned typed file and exact count", async () => {
   const base = await content();
-  const manifest = contracts.validate("file_ref", {
+  const manifest = contracts.validateContract("file_ref", {
     ...base,
     descriptor: { ...base.descriptor, media_type: "application/vnd.acyclic.harness.attachments+json" },
-  });
-  expect(contracts.validate("attachments", { kind: "manifest", manifest, item_count: 200 }).kind).toBe("manifest");
-  expect(() => contracts.validate("attachments", { kind: "manifest", manifest, item_count: -1 })).toThrow();
-  expect(() => contracts.validate("attachments", { kind: "manifest", manifest: base, item_count: 1 })).toThrow();
+  }, undefined);
+  expect(contracts.validateContract("attachments", { kind: "manifest", manifest, item_count: 200 }, undefined).kind).toBe("manifest");
+  expect(() => contracts.validateContract("attachments", { kind: "manifest", manifest, item_count: -1 }, undefined)).toThrow();
+  expect(() => contracts.validateContract("attachments", { kind: "manifest", manifest: base, item_count: 1 }, undefined)).toThrow();
 });
 
 test("native manifest decoding preserves exact TypeScript file-length types", async () => {
   const file = await content();
   const bytes = contracts.encodeAttachmentManifest([{ file, label: null }]);
-  const manifest = contracts.validate("file_ref", { ...file, path: "attachments/list.json",
-    descriptor: await descriptorFor(bytes, "application/vnd.acyclic.harness.attachments+json") });
+  const manifest = contracts.validateContract("file_ref", { ...file, path: "attachments/list.json",
+    descriptor: contracts.fileDescriptor(bytes, "application/vnd.acyclic.harness.attachments+json") }, undefined);
   const items = contracts.decodeAttachmentManifest(manifest, bytes, 1);
   expect(items).toHaveLength(1);
   expect(items[0]?.file.descriptor.byte_length).toBe(7);
@@ -100,73 +95,75 @@ test("native manifest decoding preserves exact TypeScript file-length types", as
 
 test("configured limits reject oversized references before admission", async () => {
   const reference = await content();
-  const message: ConversationMessage = {
-    id: ("03030303-0303-0303-0303-030303030303" as ConversationMessageId), sequence: 1n, kind: "user",
+  const message = {
+    id: "03030303-0303-0303-0303-030303030303", sequence: 1n, kind: "user",
     content: reference, attachments: { kind: "inline", items: [] },
     reply_to: null, tool_call_id: null, extensions: {},
   };
-  const limits = contracts.validate("limits", { ...DEFAULT_LIMITS, file_bytes: 6, render_bytes: 6 });
-  expect(() => contracts.validate("conversation_message", message, limits)).toThrow();
-  expect(() => contracts.validate("limits", { ...limits, attachments: 0 })).toThrow();
+  const limits = contracts.validateContract("limits", { ...fixtureLimits, file_bytes: 6, render_bytes: 6 }, undefined);
+  expect(() => contracts.validateContract("conversation_message", message, limits)).toThrow();
+  expect(() => contracts.validateContract("limits", { ...limits, attachments: 0 }, undefined)).toThrow();
 });
 
 test("Rust WASM preserves conversation positions beyond JavaScript's exact-number range", async () => {
   const reference = await content();
   const sequence = (1n << 53n) + 1n;
-  const message: ConversationMessage = {
-    id: ("04040404-0404-0404-0404-040404040404" as ConversationMessageId), sequence, kind: "user",
+  const message = {
+    id: "04040404-0404-0404-0404-040404040404", sequence, kind: "user",
     content: reference, attachments: { kind: "inline", items: [] },
     reply_to: null, tool_call_id: null, extensions: {},
   };
-  const admitted = (await NativeContracts.create()).validate("conversation_message", message, DEFAULT_LIMITS);
+  const admitted = contracts.validateContract("conversation_message", message, fixtureLimits);
   expect(admitted.sequence).toBe(sequence);
   expect(typeof admitted.sequence).toBe("bigint");
-  const limits = (await NativeContracts.create()).validate("limits", DEFAULT_LIMITS);
+  const limits = contracts.validateContract("limits", fixtureLimits, undefined);
   expect(typeof limits.file_bytes).toBe("number");
   expect(typeof limits.context_messages).toBe("number");
-  const admittedFile = (await NativeContracts.create()).validate("file_ref", reference);
+  const admittedFile = contracts.validateContract("file_ref", reference, undefined) as WasmFileRefWire;
   expect(typeof admittedFile.descriptor.byte_length).toBe("number");
   expect(admittedFile.descriptor.sha256).toHaveLength(32);
   expect(admittedFile.descriptor.sha256.every(byte => typeof byte === "number"
     && Number.isInteger(byte) && byte >= 0 && byte <= 255)).toBe(true);
 });
 
-test("Rust JSON boundaries encode full-width integers and reject inexact model values", async () => {
+test("Rust JSON boundaries retain exact full-width integers and reject overflow", async () => {
   const exact = (1n << 53n) + 1n;
   const encoded = contracts.encodeCanonicalJson({ sequence: exact });
   expect(new TextDecoder().decode(encoded)).toBe('{"sequence":9007199254740993}');
-  expect(contracts.decodeCanonicalJson(encoded)).toEqual({ sequence: exact });
+  expect(contracts.decodeCanonicalJson(encoded)).toEqual(new Map([["sequence", exact]]));
   const fullU64 = (1n << 64n) - 1n;
   expect(contracts.decodeCanonicalJson(new TextEncoder().encode('{"sequence":18446744073709551615}')))
-    .toEqual({ sequence: fullU64 });
+    .toEqual(new Map([["sequence", fullU64]]));
   expect(() => contracts.decodeCanonicalJson(new TextEncoder().encode('{"sequence":18446744073709551617}')))
     .toThrow();
-  expect(() => contracts.decodeModelJson(new TextEncoder().encode('{"value":18446744073709551617}')))
+  expect(() => contracts.decodeJson(new TextEncoder().encode('{"value":18446744073709551617}')))
     .toThrow();
   const rustStructJson = new TextEncoder().encode('{"sequence":9007199254740993,"kind":"user"}');
   expect(() => contracts.decodeCanonicalJson(rustStructJson)).toThrow();
-  expect(contracts.decodeModelJson(new TextEncoder().encode(' { "value": 7 } '))).toEqual({ value: 7 });
-  expect(() => contracts.decodeModelJson(new TextEncoder().encode('{"value":9007199254740993}')))
-    .toThrow();
+  expect(contracts.decodeJson(new TextEncoder().encode(' { "value": 7 } '))).toEqual(new Map([["value", 7n]]));
+  // Raw Rust JSON retains this exact integer; the removed model facade's
+  // conversion to portable JS Number is intentionally not reproduced.
+  expect(contracts.decodeJson(new TextEncoder().encode('{"value":9007199254740993}')))
+    .toEqual(new Map([["value", exact]]));
 });
 
 test("Rust and TypeScript share the canonical v2 message fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/conversation-message.json", import.meta.url)).text()).trim();
   const decoded = fixtureMessage(JSON.parse(fixture) as unknown);
-  expect(fixtureJson((await NativeContracts.create()).validate("conversation_message", decoded, DEFAULT_LIMITS))).toBe(fixture);
+  expect(fixtureJson(contracts.validateContract("conversation_message", decoded, fixtureLimits))).toBe(fixture);
 });
 
 test("every v2 conversation kind shares one ordered cross-language fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/conversation-kinds.json", import.meta.url)).text()).trim();
   const messages = (JSON.parse(fixture) as unknown[]).map(fixtureMessage);
-  const canonical = messages.map(message => contracts.validate("conversation_message", message, DEFAULT_LIMITS));
+  const canonical = messages.map(message => contracts.validateContract("conversation_message", message, fixtureLimits));
   expect(messages).toHaveLength(9);
   expect(fixtureJson(canonical)).toBe(fixture);
 });
 
 test("Rust and TypeScript share the canonical v2 file reference fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/file-ref.json", import.meta.url)).text()).trim();
-  expect(JSON.stringify(contracts.validate("file_ref", JSON.parse(fixture) as FileRef))).toBe(fixture);
+  expect(JSON.stringify(contracts.validateContract("file_ref", JSON.parse(fixture), undefined))).toBe(fixture);
 });
 
 test("Rust and TypeScript reject the same malformed file references and forged content", async () => {
@@ -182,9 +179,9 @@ test("Rust and TypeScript reject the same malformed file references and forged c
     for (const segment of segments.slice(0, -1)) parent = parent[segment] as Record<string, unknown>;
     parent[segments.at(-1)!] = value;
     if (check === "decode") {
-      expect(() => contracts.validate("file_ref", modified as unknown as FileRef)).toThrow();
+      expect(() => contracts.validateContract("file_ref", modified, undefined)).toThrow();
     } else {
-      const reference = contracts.validate("file_ref", modified as unknown as FileRef);
+      const reference = contracts.validateContract("file_ref", modified, undefined);
       expect(() => contracts.verifyFileBytes(reference, new TextEncoder().encode("hello"))).toThrow();
     }
   }
@@ -192,12 +189,12 @@ test("Rust and TypeScript reject the same malformed file references and forged c
 
 test("Rust and TypeScript share the canonical private directory page fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/private-directory-page.json", import.meta.url)).text()).trim();
-  const page = (await NativeContracts.create()).validate("private_directory_page", JSON.parse(fixture));
+  const page = contracts.validateContract("private_directory_page", JSON.parse(fixture), undefined);
   expect(JSON.stringify(page)).toBe(fixture);
 });
 
 test("Rust and TypeScript share the canonical v2 task outcome fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-outcome.json", import.meta.url)).text()).trim();
-  const outcome = (await NativeContracts.create()).validate("task_outcome", JSON.parse(fixture) as TaskOutcomeRecord);
+  const outcome = contracts.validateContract("task_outcome", JSON.parse(fixture), undefined);
   expect(JSON.stringify(outcome)).toBe(fixture);
 });
