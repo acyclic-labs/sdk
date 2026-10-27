@@ -7,7 +7,7 @@
 
 use crate::{
     Error, Result,
-    agent::{AgentPath, AgentState, IntentId, TurnEffect, TurnEffects},
+    agent::{AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnEffect, TurnEffects},
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
     tool::{
@@ -123,9 +123,14 @@ impl AgentTool {
                         "name must be short printable ASCII without spaces",
                     ));
                 };
-                if let Some(limit) = turn.max_children
-                    && !self.within(&intent, limit).await?
-                {
+                // The configured bound, never past the agent's hard limit:
+                // a spawn the step would refuse is refused here, before the
+                // model is told it succeeded.
+                let limit = turn.max_children.map_or(MAX_OPEN_CHILDREN, |limit| {
+                    usize::try_from(limit)
+                        .map_or(MAX_OPEN_CHILDREN, |limit| limit.min(MAX_OPEN_CHILDREN))
+                });
+                if !self.within(&intent, limit).await? {
                     return Ok(rejected(format!(
                         "at most {limit} open children; archive one or wait for one to finish"
                     )));
@@ -197,7 +202,7 @@ impl AgentTool {
     /// Whether spawning `intent` keeps at most `limit` open children: those
     /// open when the turn started plus this turn's recorded spawns. A spawn
     /// already recorded (a replayed call) is within its own limit.
-    async fn within(&self, intent: &IntentId, limit: u32) -> Result<bool> {
+    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
         let turn = &*self.turn;
         let mut open = turn.children.clone();
         for effect in turn.effects.recorded().await? {
@@ -206,7 +211,7 @@ impl AgentTool {
             }
         }
         let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
-        Ok(open.contains(&child) || open.len() < limit as usize)
+        Ok(open.contains(&child) || open.len() < limit)
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
@@ -260,8 +265,8 @@ fn definition<T: JsonSchema>(name: &str, description: &str) -> Result<ToolDefini
 /// `effects` and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool.
-/// `max_children` bounds the agent's open children; `spawn` refuses a child
-/// beyond it.
+/// `max_children`, capped at [`MAX_OPEN_CHILDREN`], bounds the agent's open
+/// children; `spawn` refuses a child beyond it.
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
