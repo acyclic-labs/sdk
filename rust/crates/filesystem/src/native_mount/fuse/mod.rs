@@ -40,6 +40,9 @@ static TEST_WRITE_GATE: OnceLock<
     >,
 > = OnceLock::new();
 
+#[cfg(test)]
+pub(super) use tests::packets::trace_kernel_packets;
+
 /// Pauses one FUSE write after handle admission.
 #[cfg(test)]
 pub(super) fn pause_next_write_after_admission() -> (

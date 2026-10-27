@@ -104,7 +104,7 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
         "linux_concurrent_truncates_do_not_fence_unrelated_files",
         "rustc_compiles_inside_a_linux_mount",
     ] {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let run = || -> Result<(), Box<dyn std::error::Error>> {
             let source = Arc::new(source(FilesystemProfile::Posix)?);
             let temporary = tempfile::tempdir()?;
             let mut mount = mount_source(&source, temporary.path())?;
@@ -314,7 +314,12 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
             }
             assert!(mount.stop()?);
             Ok(())
-        })();
+        };
+        let result = if case == "linux_fsync_on_clean_descriptor_publishes_other_descriptor_write" {
+            super::super::fuse::trace_kernel_packets(case, run)
+        } else {
+            run()
+        };
         if let Err(cause) = result {
             return Err(format!(
                 "step=Linux mount case {case}; cause={cause:?}; recovery: ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture"
