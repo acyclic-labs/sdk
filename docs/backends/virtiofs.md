@@ -113,7 +113,7 @@ No private Firecracker variant is supplied. References:
 
 ## Validation
 
-The current bb2 run uses signed source
+The initial complete bb2 run uses signed source
 `41955b03d096e0c8d7a180619dbba35dae40905a`:
 
 ```powershell
@@ -138,8 +138,7 @@ harness failures are owner-routed, without claiming main-baseline equivalence.
 Canonical cleanup confirms home, targets, outer targets and outer temporary
 storage removed. bb2 job `1793086189051-119691-9ce6908e`, log
 `/home/var/log/buildbox/1793086155710-119691-79f2abab.log`; canonical wall time
-1851.215 s includes compilation. No runtime replay is claimed after later
-documentation-only edits.
+1851.215 s includes compilation.
 The script compiles first, then runs complete relevant suites without name
 filters, including real host FUSE/kernel replay and both actual VMMs through
 the public standalone daemon. Refusal vectors check revoked guards, wrong
@@ -148,6 +147,21 @@ Captured kernel packets and their provenance are in `filesystem/fixtures/fuse`;
 negative vectors explicitly perturb those real packets rather than invent
 provider/kernel fixtures. Guest artifact preparation records actual distribution
 kernel/module, static BusyBox, initramfs and official VMM release digests.
+
+Review correction `1cf95a1d3355b55a521b7216ee651068a5d7e61b` separates kernel
+INIT/DESTROY/reference retirement from caller filesystem identity checks. A
+non-root-only enrollment can negotiate the root-tagged kernel INIT without
+granting root filesystem access; negotiation still checks the original guard.
+Its bb2 compile gate passed, and the complete default filesystem library run
+ended **2456 pass / 21 fail / 30 ignored / 0 filtered**, 30.35 s. All five guest
+admission vectors passed, including non-root negotiation, root lookup refusal
+without source IO and revocation before INIT. Job
+`1793088963510-132230-c703d139`, log
+`/home/var/log/buildbox/1793088947516-132230-fb799c14.log`, overall rc 101,
+canonical wall 632.757 s and all four cleanup fields true. Ignored host/guest
+integration tests were not rerun at that correction; the actual VMM results
+above remain specific to `41955b03`. Artifact-preparation repeatability is
+tracked in [#1679](https://github.com/acyclic-labs/sdk/issues/1679).
 
 Historical `cb33ccdecaac7dd39faa19c0573bcb1dfa99339b` passed the FUSE vectors and
 both fixture-source guests, but its complete filesystem suite was **2480 pass /
