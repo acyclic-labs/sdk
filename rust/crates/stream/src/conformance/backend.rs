@@ -105,6 +105,7 @@ macro_rules! stream_conformance_suite {
 pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
     verify_contract(backend.provider()).await?;
     histories::wave1::verify(backend.provider(), &StreamPath::new("wave1")?).await?;
+    super::atomic::verify(backend.provider()).await?;
     workload(backend, 3, "budget").await?;
     Ok(())
 }

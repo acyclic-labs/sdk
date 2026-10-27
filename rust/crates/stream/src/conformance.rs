@@ -1,5 +1,6 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
+mod atomic;
 mod backend;
 #[path = "conformance"]
 mod histories {
