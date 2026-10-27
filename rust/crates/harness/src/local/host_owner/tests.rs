@@ -230,11 +230,10 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
         )
         .await?;
     let turn = fixture.session("active", SessionAction::Next).await?;
-    let task = serde_json::from_value(turn["task"].clone()).map_err(storage)?;
-    let intent = fixture
-        .owner
-        .dispatch(OperationId::new(), HostAction::Cancel { task })
-        .await?;
+    let interrupt = SessionAction::Control {
+        control: Control::Interrupt,
+    };
+    let intent = fixture.session("active", interrupt).await?;
     assert_eq!(intent["control"], "interrupt");
     assert_eq!(intent.pointer("/status/settled"), Some(&json!(false)));
     // Recovery settles the orphaned claim once; the original claim then replays.
@@ -375,5 +374,79 @@ async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -
         "checkout cleanup traversed a live native view"
     );
     assert!(!state.exists(), "native state outlived fixture shutdown");
+    Ok(())
+}
+
+fn prompt(value: &Value) -> Result<SessionAction> {
+    Ok(SessionAction::Reply {
+        id: serde_json::from_value(value["id"].clone()).map_err(storage)?,
+        inbox: value["inbox"]
+            .as_u64()
+            .ok_or_else(|| Error::Invalid("fixture prompt has no inbox".into()))?,
+    })
+}
+
+/// Every prompt, the spawn's first included, is awaited through the shared
+/// committed reply: pending until its own turn settles, answered with that
+/// turn's outcome, and dropped when a cancel clears it from the queue.
+#[tokio::test]
+async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
+    let mut fixture = Fixture::for_host("codex").await?;
+    let spawn = || SessionAction::Spawn {
+        prompt: "first".into(),
+    };
+    let spawned = fixture.session("child", spawn()).await?;
+    let replayed = fixture.session("child", spawn()).await?;
+    assert_eq!(
+        (&spawned["id"], &spawned["inbox"]),
+        (&replayed["id"], &replayed["inbox"]),
+        "a replayed spawn names the same prompt"
+    );
+    let first = prompt(&spawned)?;
+    let send = SessionAction::Send {
+        prompt: "second".into(),
+    };
+    let second = prompt(&fixture.session("child", send).await?)?;
+    assert_eq!(
+        fixture.session("child", first.clone()).await?["reply"]["kind"],
+        "pending"
+    );
+    let turn = fixture.session("child", SessionAction::Next).await?;
+    assert_eq!(turn["prompt"], "first");
+    let complete = SessionAction::Complete {
+        claim: claim(&turn)?,
+        outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
+            text: "done".into(),
+            metadata: Value::Null,
+            steps: 1,
+            attachments: Vec::new(),
+        }),
+    };
+    fixture.session("child", complete).await?;
+    let answered = fixture.session("child", first).await?;
+    assert_eq!(answered["reply"]["kind"], "answered");
+    assert_eq!(
+        answered.pointer("/reply/outcome/Succeeded/text"),
+        Some(&json!("done"))
+    );
+    let send = SessionAction::Send {
+        prompt: "third".into(),
+    };
+    let third = prompt(&fixture.session("child", send).await?)?;
+    assert_eq!(
+        fixture.session("child", second).await?["reply"]["kind"],
+        "pending"
+    );
+    let running = fixture.session("child", SessionAction::Next).await?;
+    assert_eq!(running["prompt"], "second");
+    // A cancel drops the prompt queued behind the claimed turn at once.
+    let cancel = SessionAction::Control {
+        control: Control::Cancel,
+    };
+    fixture.session("child", cancel).await?;
+    assert_eq!(
+        fixture.session("child", third).await?["reply"]["kind"],
+        "dropped"
+    );
     Ok(())
 }

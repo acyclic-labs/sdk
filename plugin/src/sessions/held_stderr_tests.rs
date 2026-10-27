@@ -66,7 +66,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
         parent: parent.clone(),
         flags: Vec::new(),
         children: BTreeMap::new(),
-        after: None,
+        prompts: BTreeMap::new(),
         _ownership: ownership,
         _root: held,
     };
@@ -115,8 +115,11 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
         !running.process.drain_stderr()?,
         "negative input must withhold stderr EOF"
     );
-    let result = sessions.refresh_running("held", &observed, &mut running)?;
-    let completed = result.ok_or("exited native session still waits for inherited stderr EOF")?;
+    assert!(
+        sessions.refresh_running("held", &mut running)?,
+        "exited native session still waits for inherited stderr EOF"
+    );
+    let completed = sessions.request("held", SessionAction::Observe)?;
     assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
     let failure = completed["results"][0]["outcome"]["Failed"]["message"]
         .as_str()

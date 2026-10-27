@@ -217,24 +217,19 @@ fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
             task,
             command: "log".into(),
         },
-        Some("cancel") if args.len() == 2 => HostAction::Cancel {
-            task: parse_task(args.get(1).ok_or("missing task ID")?)?,
-        },
         Some("reopen") if args.len() == 2 => HostAction::Reopen {
             task: parse_task(args.get(1).ok_or("missing task ID")?)?,
         },
         Some("capture") => HostAction::Capture { task },
         _ => {
-            return Err(
-                "use fs, discard, agents, log, capture, cancel or reopen; see --help".into(),
-            );
+            return Err("use fs, discard, agents, log, capture or reopen; see --help".into());
         }
     })
 }
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | cancel ID | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())

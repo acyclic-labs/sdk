@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 test("Anthropic qualification commands explicitly select the approved model", () => {
   // Inspect the launch array without executing a host or accessing a login.
   const approved = /'--model',\s*'claude-haiku-5-5'/;
-  for (const name of ["shared-mount-scale.py", "settled-session.py"]) {
+  for (const name of ["shared-mount-scale.py"]) {
     const source = readFileSync(new URL(name, import.meta.url), "utf8");
     assert.match(source, approved, name);
     assert.doesNotMatch(source.replace("'--model',", ""), approved,

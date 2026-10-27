@@ -45,9 +45,9 @@ Pi's native CLI receives its saved native session file when resuming.
 The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
 `resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
 `prompt`. They use the same child request, inbox, control, status, delivered
-and result files as GraphCoder. Wait completes after the accepted inputs settle.
-Live observations return the latest completed result; earlier results remain in
-the shared child files.
+and result files as GraphCoder. Spawn and send return the prompt's committed
+`id` and `inbox`; wait answers through the harness's shared committed reply
+once that prompt's turn settles, is dropped, or can no longer run.
 Cancel stops and reaps the native child process tree before capturing partial
 writes. Resume re-launches the saved native session in the recreated view.
 Archive freezes the shared child reference permanently.
@@ -206,15 +206,3 @@ python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
 
 It checks CRLF, buffered requests and an oversized peer that keeps its input
 pipe open without sending a newline. Framing uses the shared harness MCP codec.
-
-The mailbox regression runs the production MCP shim for every host against a
-local protocol fixture, without launching a native session:
-
-```sh
-python3 plugin/tests/hosts/settled-session.py ACYCLIC
-```
-
-Settled empty and stopped sessions must remain read-only. Queued messages must
-reach the next-input claim; orphaned turns must recover before claiming.
-Pending waits reuse the refresh or completion observation for that child;
-responding to a waiter must not issue a second observation request.

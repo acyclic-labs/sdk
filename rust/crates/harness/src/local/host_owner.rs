@@ -28,12 +28,10 @@ pub enum HostAction {
         /// Prior N snapshot: population, descriptors, threads and mounts.
         previous: Option<[u64; 4]>,
     },
-    /// Discover spawned native children from the parent's conversation.
+    /// The parent's open spawned children, by parent-local name.
     Sessions {
         /// Owning parent agent.
         parent: AgentPath,
-        /// Last conversation sequence observed; pages are bounded.
-        after: Option<u64>,
     },
     /// Native session lifecycle as the child agent's inbox records.
     Session {
@@ -81,11 +79,6 @@ pub enum HostAction {
         task: AgentPath,
         /// Ordinary shared filesystem command.
         command: String,
-    },
-    /// Publish an interrupt for the plugin that owns the native process tree.
-    Cancel {
-        /// Agent whose session is interrupted.
-        task: AgentPath,
     },
     /// The agent's open children and their sessions.
     Agents {
@@ -182,9 +175,9 @@ impl HostWorkspaceOwner {
                 agents,
                 previous,
             } => self.resource_probe(&task, agents, previous).await,
-            HostAction::Sessions { parent, after } => {
+            HostAction::Sessions { parent } => {
                 self.attach(&parent).await?;
-                self.sessions(&parent, after).await
+                self.sessions(&parent).await
             }
             HostAction::Session {
                 parent,
@@ -206,24 +199,6 @@ impl HostWorkspaceOwner {
             }
             HostAction::Capture { task } => self.capture_native(operation, &task).await,
             HostAction::Fs { task, command } => self.native_fs(operation, &task, &command).await,
-            HostAction::Cancel { task } => {
-                if task.parent().is_none() {
-                    return Err(Error::Unsupported(
-                        "stop the native root through its host".into(),
-                    ));
-                }
-                self.attach(&task).await?;
-                self.native
-                    .request(
-                        &task,
-                        operation,
-                        &agents::Event::Control {
-                            control: Control::Interrupt,
-                        },
-                    )
-                    .await?;
-                self.session_value(&task).await
-            }
             HostAction::Agents { task } => {
                 self.attach(&task).await?;
                 let (state, _) = self.native.session(&task).await?;
