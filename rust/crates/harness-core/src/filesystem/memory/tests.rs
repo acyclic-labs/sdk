@@ -18,7 +18,7 @@ where
     F: Fn(crate::runtime::TaskContext) -> Fut + acyclic_stream::ProviderPlatform + 'static,
     Fut: std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'static,
 {
-    use crate::runtime::{Bindings, ContentBindings};
+    use crate::runtime::Bindings;
     let mut bindings = Bindings::local();
     bindings.scope = RuntimeScope::new(
         Capabilities::new([
@@ -31,10 +31,7 @@ where
         ]),
         limits,
     )?;
-    let content = ContentBindings {
-        reader: storage.content_verifier.clone(),
-        writer: Some(storage.publisher.clone()),
-    };
+    let content = storage.content_bindings();
     bindings.content = Some(content.clone());
     let context = bindings
         .build()?

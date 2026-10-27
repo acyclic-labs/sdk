@@ -12,8 +12,7 @@ enum Fault {
 
 async fn read_workspace(storage: &MemoryHarnessStorage, path: &str) -> Option<Vec<u8>> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    // Read the backend namespace independently of both the publisher's binding
-    // and MemoryStore's retained-reference shortcut.
+    // Read the backend namespace independently of the publisher's binding.
     let workspace = storage
         .host
         .filesystem
