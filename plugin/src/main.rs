@@ -1,5 +1,4 @@
 //! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
-mod codex;
 mod install;
 mod sessions;
 #[cfg(test)]
@@ -87,7 +86,9 @@ fn internal(args: &[String]) -> Result<bool> {
             sessions::serve(args.get(1).map_or("codex", String::as_str))?;
         }
         "host" => {
-            codex::launch(args.get(1..).unwrap_or_default())?;
+            acyclic_harness::local::host_process::launch::launch(
+                args.get(1..).unwrap_or_default(),
+            )?;
         }
         "__hook" => {
             let [_, host, event] = args else {

@@ -7,6 +7,9 @@ use super::*;
 use crate::agent::AgentPath;
 use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTreeStorage};
 
+pub mod children;
+pub mod launch;
+
 /// Runs the interactive native root with its inherited console and process
 /// group. Native hosts retain terminal/job control; managed children use the
 /// separate, custodied session API below. Turn-end hooks capture root turns.
