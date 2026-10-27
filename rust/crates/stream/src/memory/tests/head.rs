@@ -3,7 +3,9 @@ use super::super::*;
 #[tokio::test]
 async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reopen()
 -> Result<(), StreamError> {
-    let provider = MemoryStream::default();
+    let clock = Arc::new(super::TestClock::default());
+    clock.0.store(3, std::sync::atomic::Ordering::SeqCst);
+    let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
     let source = StreamPath::new("receipt/source")?;
     let request = CommitRequest {
         conditions: Vec::new(),
@@ -28,9 +30,11 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     };
     assert_eq!(append.records[0].value.as_ref(), &[42; 4096]);
     assert_eq!(append.records[0].committed_at_micros, receipt.committed_at_micros);
+    assert_eq!(receipt.committed_at_micros, 3_000);
     let wire = crate::wire_codec::receipt_to_wire(receipt.clone());
     assert!(wire.encoded_len() < append.records[0].value.len());
     assert_eq!(crate::wire_codec::receipt_from_wire(wire)?, *receipt);
+    clock.0.store(9, std::sync::atomic::Ordering::SeqCst);
     let fork = CommitRequest {
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Fork {
@@ -45,7 +49,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     };
     assert!(fork_receipt.appends.is_empty());
     assert_eq!(fork_receipt.forks.len(), 1);
-    assert!(fork_receipt.committed_at_micros >= receipt.committed_at_micros);
+    assert_eq!(fork_receipt.committed_at_micros, 9_000);
     let fork_facts = provider.read_commit(fork_receipt.commit_id).await?;
     assert!(fork_receipt.matches_envelope(&fork_facts));
     let reopened = MemoryStream::default();
