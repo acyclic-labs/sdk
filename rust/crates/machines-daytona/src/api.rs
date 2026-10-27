@@ -11,7 +11,10 @@
 
 use std::collections::BTreeMap;
 
-use acyclic_machines::ProviderError;
+use acyclic_machines::{
+    ProviderError,
+    core::{NativePage, collect_pages},
+};
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -23,8 +26,6 @@ use crate::DaytonaConfig;
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
 const LIST_PAGE_LIMIT: u32 = 200;
-/// Upper bound on list pages followed, so a cursor loop cannot run forever.
-const MAX_LIST_PAGES: usize = 256;
 
 /// One Daytona sandbox (`Sandbox` and `SandboxListItem` in the specification).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -385,28 +386,24 @@ impl DaytonaApi {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|error| ProviderError::Invalid(format!("label filter: {error}")))?;
-        let mut sandboxes = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_LIST_PAGES {
+        let encoded = &encoded;
+        collect_pages(|cursor| async move {
             let mut query = vec![("limit", LIST_PAGE_LIMIT.to_string())];
-            if let Some(encoded) = &encoded {
+            if let Some(encoded) = encoded {
                 query.push(("labels", encoded.clone()));
             }
-            if let Some(cursor) = cursor.take() {
+            if let Some(cursor) = cursor {
                 query.push(("cursor", cursor));
             }
             let page: SandboxPage = self
                 .json("list", self.request(Method::GET, "/sandbox").query(&query))
                 .await?;
-            sandboxes.extend(page.items);
-            match page.next_cursor.filter(|value| !value.is_empty()) {
-                Some(next) => cursor = Some(next),
-                None => return Ok(sandboxes),
-            }
-        }
-        Err(ProviderError::Rejected(
-            "Daytona sandbox listing did not terminate".into(),
-        ))
+            Ok(NativePage {
+                items: page.items,
+                next: page.next_cursor.filter(|value| !value.is_empty()),
+            })
+        })
+        .await
     }
 
     /// Starts a stopped or archived sandbox, or resumes a paused one:

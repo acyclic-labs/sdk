@@ -15,7 +15,11 @@ profile and assurance at composition. Its staged boot input is ephemeral and
 redacted; completed create attempts clear it, including replay and refusal.
 Call `backend.core().stage_boot_env(key, env)` when boot input is needed, with
 `Backend` in scope. Raw list and usage return decoded observations; only core
-publishes their canonical state and events. Usage identity/interval and console
+publishes their canonical state and events. Native pagination is collected once
+by `core::collect_pages`, retaining the existing 256-page bound and refusing
+a repeated cursor without another request. Provider cursor decoding stays in the
+wire adapter. Native labels cannot reconstruct a fork result after a restart.
+Usage identity/interval and console
 read bounds are admitted there before transport. Guest transport binding still
 needs the shared execution owner from the adapter prerequisite; merely exposing
 raw guest calls is not streaming/cancellation qualification.

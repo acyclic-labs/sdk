@@ -27,8 +27,7 @@ pub const LABEL_KEY: &str = "acyclic.key";
 pub const LABEL_KIND: &str = "acyclic.kind";
 /// Label holding the child index within a fork.
 pub const LABEL_INDEX: &str = "acyclic.index";
-/// Label holding the number of children the fork requested, so label recovery can tell a
-/// complete fork from a partial one.
+/// Label holding the number of children in the admitted native request.
 pub const LABEL_COUNT: &str = "acyclic.count";
 /// Label holding the tenant the sandbox was created for.
 pub const LABEL_TENANT: &str = "acyclic.tenant";
@@ -40,9 +39,7 @@ pub const KIND_CREATE: &str = "create";
 pub const KIND_FORK: &str = "fork";
 /// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
 pub const KIND_LIVE_FORK: &str = "live-fork";
-/// Label a live-fork child carries, set to `true`, once it is a complete copy (native fork:
-/// as soon as it exists; disk fork: after its workspace is unpacked). Label recovery only
-/// returns a live fork whose every child is ready.
+/// Native live-fork metadata marker. It is not an operation settlement.
 pub const LABEL_READY: &str = "acyclic.ready";
 /// Label holding the sandbox a live-fork child was actually forked from: the requested machine
 /// or, in a doubling fan-out, an earlier child of the same fork.
@@ -337,45 +334,6 @@ pub fn fork_refused_for_state(detail: &str) -> bool {
     detail.contains("state") && detail.contains("fork")
 }
 
-/// The children of one fork in index order, only when they form the complete fork: every
-/// sandbox is a child of the same fork kind (checkpoint or live fork) and parent recording the
-/// same requested count, their indices are exactly `0..count`, and (for a live fork) every
-/// child is marked [`LABEL_READY`]. `None` for a partial, unfinished, or inconsistent set.
-#[must_use]
-pub fn complete_fork(sandboxes: &[Sandbox]) -> Option<Vec<&Sandbox>> {
-    let parse = |sandbox: &Sandbox, label: &str| {
-        sandbox
-            .labels
-            .get(label)
-            .and_then(|value| value.parse::<u32>().ok())
-    };
-    let first = sandboxes.first()?;
-    let count = parse(first, LABEL_COUNT)?;
-    let kind = first.labels.get(LABEL_KIND)?;
-    if kind != KIND_FORK && kind != KIND_LIVE_FORK {
-        return None;
-    }
-    let parent = first.labels.get(LABEL_PARENT);
-    let mut slots = BTreeMap::new();
-    for sandbox in sandboxes {
-        let unready = kind == KIND_LIVE_FORK
-            && sandbox.labels.get(LABEL_READY).map(String::as_str) != Some("true");
-        if unready
-            || sandbox.labels.get(LABEL_KIND) != Some(kind)
-            || sandbox.labels.get(LABEL_PARENT) != parent
-            || parse(sandbox, LABEL_COUNT) != Some(count)
-        {
-            return None;
-        }
-        let index = parse(sandbox, LABEL_INDEX).filter(|index| *index < count)?;
-        if slots.insert(index, sandbox).is_some() {
-            return None;
-        }
-    }
-    let complete = u32::try_from(slots.len()).ok()? == count;
-    complete.then(|| slots.into_values().collect())
-}
-
 /// Reads the contract stored by [`labels`], if present and well-formed.
 #[must_use]
 pub fn contract_from_labels(labels: &BTreeMap<String, String>) -> Option<MachineContract> {
@@ -402,16 +360,6 @@ pub(crate) fn legacy_dedicated_cpu(
             "invalid legacy CPU usage classification".into(),
         )),
     }
-}
-
-/// Label filter selecting every sandbox created or forked under `key` for `tenant`.
-///
-/// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
-#[must_use]
-pub fn key_filter(key: IdempotencyKey, tenant: Option<&str>) -> BTreeMap<String, String> {
-    let mut filter = managed_filter(tenant);
-    filter.insert(LABEL_KEY.to_owned(), key.to_string());
-    filter
 }
 
 /// Label filter selecting every sandbox this provider manages for `tenant`.
@@ -865,71 +813,16 @@ mod tests {
     }
 
     #[test]
-    fn only_a_complete_fork_is_recovered() {
-        let child = |index: u32, count: u32| Sandbox {
-            id: format!("child-{index}"),
-            labels: labels(key(1), Some(ForkSlot { index, count }), None, &contract()),
-            ..Sandbox::default()
-        };
-        let full = [child(2, 3), child(0, 3), child(1, 3)];
-        let ordered = complete_fork(&full).unwrap();
-        let ids: Vec<&str> = ordered.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["child-0", "child-1", "child-2"]);
-        assert!(
-            complete_fork(&[child(0, 3), child(2, 3)]).is_none(),
-            "missing index"
+    fn readiness_does_not_change_native_request_identity() {
+        let mut inherited = labels(
+            key(1),
+            Some(ForkSlot { index: 0, count: 2 }),
+            None,
+            &contract(),
         );
-        assert!(
-            complete_fork(&[child(0, 2), child(0, 2)]).is_none(),
-            "duplicate index"
-        );
-        assert!(
-            complete_fork(&[child(0, 1), child(1, 2)]).is_none(),
-            "mixed counts"
-        );
-        assert!(complete_fork(&[]).is_none());
-        let mut uncounted = child(0, 1);
-        uncounted.labels.remove(LABEL_COUNT);
-        assert!(complete_fork(&[uncounted]).is_none(), "count unknown");
-    }
-
-    #[test]
-    fn a_live_fork_is_recovered_only_once_every_child_is_ready() {
-        let child = |index: u32, ready: bool| {
-            let mut labels = labels(
-                key(1),
-                Some(ForkSlot { index, count: 2 }),
-                None,
-                &contract(),
-            );
-            labels.insert(LABEL_KIND.to_owned(), KIND_LIVE_FORK.to_owned());
-            labels.insert(LABEL_PARENT.to_owned(), "p".to_owned());
-            if ready {
-                labels.insert(LABEL_READY.to_owned(), "true".to_owned());
-            }
-            Sandbox {
-                id: format!("child-{index}"),
-                labels,
-                ..Sandbox::default()
-            }
-        };
-        assert!(complete_fork(&[child(0, true), child(1, false)]).is_none());
-        assert_eq!(
-            complete_fork(&[child(1, true), child(0, true)])
-                .unwrap()
-                .len(),
-            2
-        );
-        let mut other_parent = child(1, true);
-        other_parent
-            .labels
-            .insert(LABEL_PARENT.to_owned(), "q".to_owned());
-        assert!(complete_fork(&[child(0, true), other_parent]).is_none());
-        assert_eq!(
-            provider_labels(&child(0, true).labels),
-            provider_labels(&child(0, false).labels),
-            "readiness does not change which request a sandbox belongs to"
-        );
+        let expected = inherited.clone();
+        inherited.insert(LABEL_READY.to_owned(), "true".to_owned());
+        assert_eq!(provider_labels(&inherited), provider_labels(&expected));
     }
 
     #[test]
@@ -977,7 +870,6 @@ mod tests {
         assert!(owned_by(&sandbox, None));
         assert!(!owned_by(&sandbox, Some("a")));
         assert_eq!(managed_filter(Some("a"))[LABEL_TENANT], "a");
-        assert_eq!(key_filter(key(1), Some("a"))[LABEL_KEY], key(1).to_string());
     }
 
     #[test]

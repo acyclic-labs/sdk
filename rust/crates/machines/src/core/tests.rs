@@ -1689,3 +1689,56 @@ async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult
     assert!(serde_json::to_vec(&record)?.len() <= acyclic_stream::MAX_RECORD_BYTES);
     Ok(())
 }
+
+#[tokio::test]
+async fn native_paging_owns_cursors_bounds_and_never_retries() -> TestResult {
+    let mut calls = Vec::new();
+    let values = collect_pages(|cursor| {
+        calls.push(cursor.clone());
+        std::future::ready(Ok(if cursor.is_none() {
+            NativePage {
+                items: vec![],
+                next: Some("second".into()),
+            }
+        } else {
+            NativePage {
+                items: vec![7, 9],
+                next: None,
+            }
+        }))
+    })
+    .await?;
+    assert_eq!(values, [7, 9]);
+    assert_eq!(calls, [None, Some("second".into())]);
+    let mut calls = 0;
+    let result = collect_pages(|_| {
+        calls += 1;
+        std::future::ready(Ok(NativePage::<u8> {
+            items: vec![],
+            next: Some("repeated".into()),
+        }))
+    })
+    .await;
+    assert!(matches!(result, Err(ProviderError::Rejected(_))));
+    assert_eq!(calls, 2);
+    let mut calls = 0;
+    let result = collect_pages(|_| {
+        calls += 1;
+        std::future::ready(Ok(NativePage::<u8> {
+            items: vec![],
+            next: Some(calls.to_string()),
+        }))
+    })
+    .await;
+    assert!(matches!(result, Err(ProviderError::Rejected(_))));
+    assert_eq!(calls, 256);
+    let mut calls = 0;
+    let result = collect_pages(|_| {
+        calls += 1;
+        std::future::ready(Err::<NativePage<u8>, _>(ProviderError::Unavailable))
+    })
+    .await;
+    assert!(matches!(result, Err(ProviderError::Unavailable)));
+    assert_eq!(calls, 1);
+    Ok(())
+}

@@ -15,6 +15,7 @@ mod limits;
 mod pages;
 pub use bindings::NativeBinding;
 pub use limits::RegistryLimits;
+pub use pages::{NativePage, collect_pages};
 mod raw;
 pub use raw::{ForkSlot, NativeResource, NativeResources, RawCreated, RawMachines, RawObservation};
 #[cfg(not(target_arch = "wasm32"))]

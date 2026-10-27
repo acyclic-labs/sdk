@@ -1132,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_calls_emit_spans_without_paths_or_bodies() {
-        use std::{num::NonZeroU32, sync::Mutex};
+        use std::sync::Mutex;
         use tracing_subscriber::layer::{Context, SubscriberExt as _};
 
         type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
@@ -1732,16 +1732,21 @@ mod tests {
             assert_eq!(child.labels[map::LABEL_READY], "true");
             assert_eq!(child.labels[map::LABEL_COUNT], "16");
         }
-        // The children form one complete fork for label recovery after a restart.
-        let listed: Vec<Sandbox> = children
-            .iter()
-            .map(|child| Sandbox {
-                id: child.id.to_string(),
-                labels: fake.boxes[&child.id.to_string()].labels.clone(),
-                ..Sandbox::default()
-            })
-            .collect();
-        assert_eq!(map::complete_fork(&listed).unwrap().len(), 16);
+        drop(fake);
+        let requests = mock.requests().len();
+        assert_eq!(
+            provider.recover(key).await.unwrap(),
+            MutationOutcome::MachineForked {
+                source,
+                fidelity,
+                children
+            }
+        );
+        assert_eq!(
+            mock.requests().len(),
+            requests,
+            "recovery reads only canonical settlement"
+        );
     }
 
     #[tokio::test]

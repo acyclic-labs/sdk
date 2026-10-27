@@ -50,3 +50,33 @@ impl OperationRegistry {
         })
     }
 }
+
+/// One native page. An opaque cursor is transport data, not a public machine ID.
+pub struct NativePage<T> {
+    pub items: Vec<T>,
+    pub next: Option<String>,
+}
+
+/// Collect native pages once, without retries. This retains the existing
+/// 256-page bound and refuses a repeated cursor before issuing another request.
+pub async fn collect_pages<T, F, O>(mut read: F) -> Result<Vec<T>, ProviderError>
+where
+    T: acyclic_stream::ProviderTask,
+    F: FnMut(Option<String>) -> O + acyclic_stream::ProviderTask,
+    O: std::future::Future<Output = Result<NativePage<T>, ProviderError>>
+        + acyclic_stream::ProviderTask,
+{
+    let mut items = Vec::new();
+    let mut cursor = None;
+    let mut seen = BTreeSet::new();
+    for _ in 0..256 {
+        let page = read(cursor.take()).await?;
+        items.extend(page.items);
+        match page.next {
+            None => return Ok(items),
+            Some(next) if seen.insert(next.clone()) => cursor = Some(next),
+            Some(_) => return Err(ProviderError::Rejected("native list cursor repeated; recovery: correct the provider pagination response, then call MachinesProvider::list_machines again".into())),
+        }
+    }
+    Err(ProviderError::Rejected("native list exceeded 256 pages; recovery: narrow the native account filter, then call MachinesProvider::list_machines again".into()))
+}
