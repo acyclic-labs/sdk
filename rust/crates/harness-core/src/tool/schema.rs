@@ -34,6 +34,14 @@ enum JsonProjection<T> {
     Json { value: T },
 }
 
+/// The bytes the full JSON projection adds around a result's own encoding,
+/// so a bound on the result can leave room for the model envelope.
+pub(crate) fn json_envelope_bytes() -> Result<usize> {
+    let empty = serde_json::to_string(&JsonProjection::Json { value: () })
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    Ok(empty.len() - "null".len())
+}
+
 pub(crate) fn project_json<T: Serialize>(
     value: &T,
     work: crate::NativeWork<'_>,

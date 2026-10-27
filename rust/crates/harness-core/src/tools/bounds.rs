@@ -28,10 +28,14 @@ pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usiz
     Ok(())
 }
 
-/// The result within `maximum` encoded JSON bytes. A shell result keeps its
-/// fields and shortens `stdout` then `stderr`; any other result becomes the
-/// leading text of its own encoding. Either way it is marked `truncated`.
+/// The result within `maximum` encoded JSON bytes once the model projection
+/// wraps it. A shell result keeps its fields and shortens `stdout` then
+/// `stderr`; any other result becomes the leading text of its own encoding.
+/// Either way it is marked `truncated`.
 pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
+    let maximum = maximum
+        .checked_sub(crate::tool::schema::json_envelope_bytes()? as u64)
+        .ok_or_else(|| bound_too_small(name))?;
     let encoded = encoded(&result.value)?;
     if encoded.len() as u64 <= maximum {
         return Ok(result);
@@ -122,6 +126,28 @@ mod tests {
 
     const BOUND: u64 = 256;
 
+    /// Bytes the model sees: the result inside its full JSON projection.
+    fn projected_len(result: &ToolResult) -> u64 {
+        encoded_len(&json!({"kind": "json", "value": result.value})).unwrap() as u64
+    }
+
+    // ASCII output that would exactly fill the bound on its own still fits
+    // once the projection wraps it.
+    #[test]
+    fn a_result_filling_the_bound_fits_its_projection() {
+        let flooded = ToolResult {
+            value: json!({"success": true, "exit_code": 0, "stop": null,
+                "stdout": "o".repeat(4096), "stderr": ""}),
+        };
+        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
+        assert!(
+            projected_len(&bounded) <= BOUND,
+            "{}",
+            projected_len(&bounded)
+        );
+        assert!(projected_len(&bounded) > BOUND - 8);
+    }
+
     // A shell that floods both streams still returns its exit status, within
     // the bound, marked truncated.
     #[test]
@@ -133,7 +159,7 @@ mod tests {
             }),
         };
         let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
-        assert!(encoded_len(&bounded.value).unwrap() as u64 <= BOUND);
+        assert!(projected_len(&bounded) <= BOUND);
         assert_eq!(bounded.value["exit_code"], 3);
         assert_eq!(bounded.value["truncated"], true);
         assert!(!bounded.value["stdout"].as_str().unwrap().is_empty());
@@ -148,7 +174,7 @@ mod tests {
             value: json!({"Paths": (0..512).map(|n| format!("dir/\"{n}\".bin")).collect::<Vec<_>>()}),
         };
         let bounded = result("fs", listing, BOUND).unwrap();
-        assert!(encoded_len(&bounded.value).unwrap() as u64 <= BOUND);
+        assert!(projected_len(&bounded) <= BOUND);
         assert_eq!(bounded.value["truncated"], true);
         assert!(
             bounded.value["text"]
