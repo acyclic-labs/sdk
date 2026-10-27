@@ -108,6 +108,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
     /// Opens a bounded finite read pinned to one immutable history snapshot.
+    /// Opening a missing path returns NotFound; a start beyond that snapshot's
+    /// tail returns OutOfRange. Neither refusal is deferred to the first item.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and remains live without a handoff gap. The history fence is checked
     /// atomically before subscription and on replacement. Ordered progress never
