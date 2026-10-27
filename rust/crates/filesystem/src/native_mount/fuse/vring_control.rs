@@ -5,6 +5,7 @@ use super::vring_event::CounterId;
 use super::vring_memory::GuestRam;
 use super::*;
 use crate::NativeMaterializationWork;
+use acyclic_native_runtime::ProcessWake;
 use std::net::Shutdown;
 use std::num::NonZeroU16;
 use std::os::fd::{FromRawFd, IntoRawFd};
@@ -47,6 +48,7 @@ pub(super) struct VringControl {
     pub(super) memory: RwLock<Option<GuestRam>>,
     pub(super) queues: [Mutex<PacketVring>; QUEUE_COUNT],
     pub(super) work: NativeMaterializationWork,
+    pub(super) changes: [ProcessWake; QUEUE_COUNT],
     features: AtomicU64,
     stopped: AtomicBool,
     failure: Mutex<Option<NativeMountError>>,
@@ -60,7 +62,13 @@ impl VringControl {
         maximum: NonZeroU16,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>, NativeMountError> {
-        let allocation = work.claim(arc_size::<Self>()?, 1, crate::WorkCounters::UNCHARGED)?;
+        let allocation = work.claim(
+            arc_size::<Self>()?
+                .checked_add((QUEUE_COUNT * ProcessWake::allocation_bytes()) as u64)
+                .ok_or(libc::EOVERFLOW)?,
+            1 + QUEUE_COUNT as u64,
+            crate::WorkCounters::UNCHARGED,
+        )?;
         Ok(Arc::new(Self {
             memory: RwLock::new(None),
             queues: [
@@ -68,6 +76,7 @@ impl VringControl {
                 Mutex::new(PacketVring::new(maximum)?),
             ],
             work: work.clone(),
+            changes: [ProcessWake::new()?, ProcessWake::new()?],
             features: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
             failure: Mutex::new(None),
@@ -77,10 +86,10 @@ impl VringControl {
     }
 
     pub(super) fn check(&self) -> Result<(), NativeMountError> {
+        self.work.admit(crate::WorkCounters::UNCHARGED)?;
         if self.stopped.load(Ordering::Acquire) {
             return Err(libc::ECANCELED.into());
         }
-        self.work.admit(crate::WorkCounters::UNCHARGED)?;
         Ok(())
     }
 
@@ -91,7 +100,14 @@ impl VringControl {
         if failure.is_none() {
             *failure = Some(error);
         }
+        self.stop();
+    }
+
+    fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
+        for change in &self.changes {
+            let _ = change.stop();
+        }
         // This only interrupts control I/O; it does not acknowledge or release
         // active callbacks. The session owner still joins the actual workers.
         let _ = self.connection.shutdown(Shutdown::Both);
@@ -111,6 +127,14 @@ impl VringControl {
             event_idx: features & EVENT_IDX != 0,
             indirect: features & INDIRECT != 0,
         }
+    }
+
+    pub(super) fn changed(&self, index: u32) -> Result<(), NativeMountError> {
+        self.changes
+            .get(index as usize)
+            .ok_or(libc::EINVAL)?
+            .notify()?;
+        Ok(())
     }
 
     pub(super) fn set_features(&self, features: u64) -> Result<(), NativeMountError> {
@@ -233,6 +257,7 @@ impl VringControl {
         let queue = queues.get_mut(index as usize).ok_or(libc::EINVAL)?;
         queue.configurable()?;
         queue.kick = replacement;
+        self.changed(index)?;
         Ok(())
     }
 
@@ -267,6 +292,7 @@ impl VringControl {
         let queue = queues.get_mut(index as usize).ok_or(libc::EINVAL)?;
         queue.configurable()?;
         queue.call = replacement;
+        self.changed(index)?;
         Ok(())
     }
 
@@ -283,7 +309,18 @@ impl VringControl {
             queue.enabled = false;
             queue.configurable()?;
         }
+        self.changed(index)?;
         Ok(())
+    }
+}
+
+impl std::task::Wake for VringControl {
+    fn wake(self: Arc<Self>) {
+        self.stop();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.stop();
     }
 }
 

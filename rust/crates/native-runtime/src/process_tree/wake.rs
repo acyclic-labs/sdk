@@ -19,6 +19,18 @@ struct Signal {
 }
 
 impl ProcessWake {
+    /// Heap storage of one signal, including its shared ownership header.
+    /// Callers with an original allocation ledger admit this before `new` and
+    /// retain it through the last clone. Descriptors are owned by the signal.
+    #[must_use]
+    pub const fn allocation_bytes() -> usize {
+        // Both atomics in Arc's header have usize alignment. Signal's native
+        // descriptors and AtomicBool cannot require a larger alignment.
+        let align = std::mem::align_of::<usize>();
+        let bytes = 2 * std::mem::size_of::<usize>() + std::mem::size_of::<Signal>();
+        bytes.next_multiple_of(align)
+    }
+
     /// Creates one close-on-exec signal shared by producers and its consumer.
     pub fn new() -> io::Result<Self> {
         #[cfg(unix)]
@@ -89,6 +101,12 @@ impl ProcessWake {
         self.notify()
     }
 
+    /// Whether irreversible stop has been recorded before signalling.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.0.stopped.load(Ordering::Acquire)
+    }
+
     #[cfg(unix)]
     pub(super) fn raw(&self) -> std::os::fd::RawFd {
         use std::os::fd::AsRawFd;
@@ -102,7 +120,9 @@ impl ProcessWake {
     }
 
     #[cfg(unix)]
-    pub(super) fn consume(&self) -> io::Result<()> {
+    /// Acknowledges a coalesced notification. A stop remains readable for all
+    /// borrowers, including those that begin waiting after this call.
+    pub fn consume(&self) -> io::Result<()> {
         if self.0.stopped.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -124,7 +144,8 @@ impl ProcessWake {
     }
 
     #[cfg(windows)]
-    pub(super) fn consume(&self) -> io::Result<()> {
+    /// Acknowledges a notification, preserving irreversible stop readiness.
+    pub fn consume(&self) -> io::Result<()> {
         if self.0.stopped.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -136,6 +157,13 @@ impl ProcessWake {
             self.notify()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsFd for ProcessWake {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.0.reader)
     }
 }
 
