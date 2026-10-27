@@ -117,18 +117,32 @@ fn command_bounds_are_checked_before_dispatch() {
 #[tokio::test]
 async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
     let (machine, io, shutdown, task) = fixture().await;
-    let mut output = machine.exec(command(1)).await.unwrap();
+    let mut output = machine
+        .exec(command(1).with_expiry(u64::MAX))
+        .await
+        .unwrap();
     let sender = io.sender();
     sender
         .send(Ok(frame(
             machine.id(),
-            wire::exec_output::Output::Data(vec![0, 255]),
+            wire::exec_output::Output::Stdout(vec![0, 255]),
         )))
         .await
         .unwrap();
     assert_eq!(
         output.next().await.unwrap().unwrap(),
-        ExecOutput::Data(vec![0, 255])
+        ExecOutput::Stdout(vec![0, 255])
+    );
+    sender
+        .send(Ok(frame(
+            machine.id(),
+            wire::exec_output::Output::Stderr(vec![255, 0]),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        output.next().await.unwrap().unwrap(),
+        ExecOutput::Stderr(vec![255, 0])
     );
     sender
         .send(Ok(frame(
@@ -151,6 +165,7 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         assert_eq!(command.machine, Some(encode_machine(machine.id())));
         assert_eq!(command.argv, ["printf", "hello"]);
         assert_eq!(command.timeout_ms, 1);
+        assert_eq!(command.expiry_unix_ms, Some(u64::MAX));
         assert_eq!(command.protocol, Some(protocol()));
     }
     drop(output);
@@ -160,7 +175,11 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
 #[tokio::test]
 async fn exec_drop_and_bad_frame_release_only_their_rpc() {
     let (machine, io, shutdown, task) = fixture().await;
-    let active = machine.exec(command(60_000)).await.unwrap();
+    let active = machine.exec(command(60_000).with_expiry(0)).await.unwrap();
+    assert_eq!(
+        io.commands.lock().unwrap().first().unwrap().expiry_unix_ms,
+        Some(0)
+    );
     let active_sender = io.sender();
     let stopped = machine.exec(command(60_000)).await.unwrap();
     let stopped_sender = io.sender();
@@ -177,10 +196,15 @@ async fn exec_drop_and_bad_frame_release_only_their_rpc() {
             machine: Some(encode_machine(machine.id())),
             output: None,
         },
-        frame(machine.id(), wire::exec_output::Output::Data(vec![])),
+        frame(machine.id(), wire::exec_output::Output::Stdout(vec![])),
+        frame(machine.id(), wire::exec_output::Output::Stderr(vec![])),
         frame(
             machine.id(),
-            wire::exec_output::Output::Data(vec![0; 65_537]),
+            wire::exec_output::Output::Stderr(vec![0; 65_537]),
+        ),
+        frame(
+            machine.id(),
+            wire::exec_output::Output::Stdout(vec![0; 65_537]),
         ),
         frame(
             MachineId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
@@ -222,7 +246,7 @@ async fn exec_rejects_extra_frames_and_reports_lost_outcomes_without_retry() {
     sender
         .send(Ok(frame(
             machine.id(),
-            wire::exec_output::Output::Data(vec![1]),
+            wire::exec_output::Output::Stdout(vec![1]),
         )))
         .await
         .unwrap();
@@ -279,8 +303,8 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
                 )
             } else {
                 (
-                    wire::exec_output::Output::Data(vec![1]),
-                    ExecOutput::Data(vec![1]),
+                    wire::exec_output::Output::Stdout(vec![1]),
+                    ExecOutput::Stdout(vec![1]),
                 )
             };
             sender
@@ -303,6 +327,39 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
         }
     }
     assert_eq!(io.commands.lock().unwrap().len(), 6);
+    stop(shutdown, task).await;
+}
+
+#[tokio::test]
+async fn exec_transports_zero_output_allowance_and_a_terminal_stop() {
+    let (machine, io, shutdown, task) = fixture().await;
+    let mut output = machine
+        .exec(command(60_000).with_output_limit(0))
+        .await
+        .unwrap();
+    assert_eq!(io.commands.lock().unwrap()[0].maximum_output_bytes, Some(0));
+    let sender = io.sender();
+    sender
+        .send(Ok(frame(
+            machine.id(),
+            wire::exec_output::Output::Stopped(wire::ExecStop {
+                kind: wire::ExecStopKind::OutputLimit as i32,
+                message: "output allowance exceeded".into(),
+                cleanup_completed: false,
+            }),
+        )))
+        .await
+        .unwrap();
+    drop(sender);
+    assert_eq!(
+        output.next().await.unwrap().unwrap(),
+        ExecOutput::Stopped(ExecStop {
+            kind: ExecStopKind::OutputLimit,
+            message: "output allowance exceeded".into(),
+            cleanup_completed: false,
+        })
+    );
+    assert!(output.next().await.is_none());
     stop(shutdown, task).await;
 }
 

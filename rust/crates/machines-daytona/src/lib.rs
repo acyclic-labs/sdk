@@ -18,15 +18,15 @@ use std::{
 };
 
 use acyclic_machines::{
-    Capability, CheckpointId, CheckpointObservation, CreateMachine, ExecCommand, ExecStream,
-    IdempotencyKey, Image, ImageQualification, MachineContract, MachineId, MachineObservation,
-    MachineOutput, MachineState, ProviderAssurance, ProviderError, SuspensionPolicy,
+    Capability, CheckpointId, CheckpointObservation, CreateMachine, ExecCommand, IdempotencyKey,
+    Image, ImageQualification, MachineContract, MachineId, MachineObservation, MachineOutput,
+    MachineState, ProviderAssurance, ProviderError, SuspensionPolicy,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
-    Backend, BackendCore, Dispatch, NativeBinding, NativeResource, NativeResources,
+    Backend, BackendCore, Dispatch, ExecSession, NativeBinding, NativeResource, NativeResources,
     OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage,
 };
 #[cfg(test)]
@@ -717,12 +717,12 @@ impl Backend for DaytonaProvider {
     fn now_unix_ms(&self) -> u64 {
         now_unix_ms()
     }
-    async fn raw_exec(
+    fn raw_exec(
         &self,
         _machine: MachineId,
         _native: Option<&NativeBinding>,
         _command: ExecCommand,
-    ) -> Result<ExecStream, ProviderError> {
+    ) -> Result<ExecSession, ProviderError> {
         Err(ProviderError::Unsupported(
             "Daytona guest command streaming is not bound".into(),
         ))

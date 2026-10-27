@@ -10,6 +10,13 @@ pub use admission::admit_contract;
 mod backend;
 #[cfg(not(target_arch = "wasm32"))]
 pub use backend::{Backend, BackendCore, RawUsage};
+#[cfg(not(target_arch = "wasm32"))]
+mod execution;
+#[cfg(not(target_arch = "wasm32"))]
+pub use execution::{
+    ConsoleHistory, ExecSession, cleanup_before_exit, collect_success, expiration_deadline,
+    now_unix_ms, owned_exec,
+};
 mod bindings;
 mod custody;
 mod journal;

@@ -20,9 +20,19 @@ by `core::collect_pages`, retaining the existing 256-page bound and refusing
 a repeated cursor without another request. Provider cursor decoding stays in the
 wire adapter. Native labels cannot reconstruct a fork result after a restart.
 Usage identity/interval and console
-read bounds are admitted there before transport. Guest transport binding still
-needs the shared execution owner from the adapter prerequisite; merely exposing
-raw guest calls is not streaming/cancellation qualification.
+read bounds are admitted there before transport. Image identity, required
+capabilities and the effective suspension contract are admitted once in core.
+An image without SuspendResume records Manual, including in the simulator.
+
+Guest adapters prepare one lazy `ExecSession`: an output stream and one stop
+future. Preparation performs no guest IO. Core checks the admitted machine and
+fixed lifetime, then registers the shared WallAlarm/drop owner before polling
+that session. Stdout and stderr remain distinct; output backpressure cannot
+prevent cancellation or expiry. The output allowance, terminal exit/stop and
+bounded ephemeral console history use the same owner extracted from #1690.
+An unsupported raw transport still refuses before guest IO. Transport binding
+and provider captures remain separate qualification work; internal owner vectors
+do not establish a live provider pass.
 
 Admission precedes native dispatch. A keyed conditional commit publishes the point
 projection and account operation log (`machines/<account>/ops`) together.

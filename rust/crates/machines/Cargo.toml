@@ -46,6 +46,10 @@ rcgen = "0.14.10"
 tokio-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "macros"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true

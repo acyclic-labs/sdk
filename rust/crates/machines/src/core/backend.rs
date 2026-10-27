@@ -9,6 +9,7 @@ pub struct BackendCore {
     poll_interval: Duration,
     ready_timeout: Duration,
     assurance: ProviderAssurance,
+    console: ConsoleHistory,
     boot_env: Mutex<BTreeMap<IdempotencyKey, BTreeMap<String, String>>>,
 }
 
@@ -42,11 +43,16 @@ impl BackendCore {
             poll_interval,
             ready_timeout,
             assurance,
+            console: ConsoleHistory::default(),
             boot_env: Mutex::default(),
         })
     }
     pub fn operations(&self) -> &OperationRegistry {
         &self.operations
+    }
+    /// Ephemeral observed output, never an operation recovery source.
+    pub fn console(&self) -> &ConsoleHistory {
+        &self.console
     }
     /// Stage input for one create; every completed create attempt clears it.
     pub fn stage_boot_env(&self, key: IdempotencyKey, env: BTreeMap<String, String>) {
@@ -83,12 +89,14 @@ pub trait Backend: RawMachines {
     fn now_unix_ms(&self) -> u64;
     async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError>;
     async fn raw_list(&self) -> Result<Vec<MachineObservation>, ProviderError>;
-    async fn raw_exec(
+    /// Prepare a lazy command session without dispatching IO. Core registers its
+    /// cancellation and WallAlarm owner before polling the first request.
+    fn raw_exec(
         &self,
         machine: MachineId,
         native: Option<&NativeBinding>,
         command: ExecCommand,
-    ) -> Result<ExecStream, ProviderError>;
+    ) -> Result<ExecSession, ProviderError>;
     async fn raw_read_output(
         &self,
         machine: MachineId,
@@ -116,12 +124,31 @@ impl<D: Backend> MachinesProvider for D {
         machine: MachineId,
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
-        let native = self
+        let (known, native) = self
             .core()
             .operations
-            .native_binding(machine, self.name())
+            .bound_machine(machine, self.name())
             .await?;
-        self.raw_exec(machine, native.as_ref(), command).await
+        let session = self.raw_exec(machine, native.as_ref(), command.clone())?;
+        let known = known.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        if known.state != MachineState::Running {
+            return Err(ProviderError::Conflict(
+                "guest command requires a running machine; recovery: inspect and wake the machine before dispatch".into(),
+            ));
+        }
+        // Idle expiration is enforced by the native provider's activity policy;
+        // fixed deadlines also bound this command's shared wall-clock owner.
+        let expiry = match known.contract.expiration {
+            ExpirationPolicy::Idle(_) => None,
+            policy => expiration_deadline(policy, known.created_at_unix_ms)?,
+        };
+        owned_exec(
+            machine,
+            &command,
+            expiry,
+            self.core().console.clone(),
+            session,
+        )
     }
     async fn read_output(
         &self,

@@ -58,6 +58,8 @@ machine_mutations! {
                     machine: Some(encode_machine(machine)),
                     argv: command.argv,
                     timeout_ms: command.timeout_ms,
+                    expiry_unix_ms: command.expiry_unix_ms,
+                    maximum_output_bytes: command.maximum_output_bytes,
                 });
                 request.set_timeout(timeout);
                 let output = client.exec(request)
