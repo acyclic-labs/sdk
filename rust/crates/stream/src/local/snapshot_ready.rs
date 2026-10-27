@@ -1,4 +1,4 @@
-#![cfg(all(feature = "local", not(acyclic_loom)))]
+#![cfg(all(feature = "local", not(loom)))]
 
 use crate::*;
 use futures::{

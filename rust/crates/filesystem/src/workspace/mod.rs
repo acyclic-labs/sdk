@@ -79,7 +79,7 @@ pub use extents::{WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan}
 pub use fork_options::ForkOptions;
 pub use generation::Generation;
 pub use handle::Workspace;
-#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
 #[doc(hidden)]
 pub use identity::check_workspace_name;
 pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
@@ -140,7 +140,7 @@ pub(crate) use reverse_traversal::{
     namespace_records_bytes, namespace_records_to_file_root_with_accounting,
 };
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(all(test, loom))]
 mod access_read_model;
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(all(test, loom))]
 mod access_write_model;

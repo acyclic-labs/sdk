@@ -24,7 +24,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             child.check()?;
             // Preserve the replay boundary's retirement and admission checks
             // even though its authenticated record no longer needs another read.
-            if RECHECK || !cfg!(all(test, acyclic_fs_loom)) {
+            if RECHECK || !cfg!(all(test, loom)) {
                 self.authority_require_live(authority, &mut child).await?;
             }
             child.check()?;
@@ -34,7 +34,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     &child,
                 ));
             }
-            #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+            #[cfg(all(test, loom, loom))]
             let replacement = if super::head_payload_loom_tests::resample_payload() {
                 Some(
                     Box::pin(super::head_payload_loom_tests::resampled_payload(
@@ -45,9 +45,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             } else {
                 None
             };
-            #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+            #[cfg(all(test, loom, loom))]
             let payload = replacement.as_deref().unwrap_or(&record.value[offset..]);
-            #[cfg(not(all(test, acyclic_fs_loom, acyclic_loom)))]
+            #[cfg(not(all(test, loom, loom)))]
             let payload = &record.value[offset..];
             if payload.len() as u64 > maximum_payload_bytes {
                 return Err(AuthorityStoreError::ReplayRecordTooLarge {

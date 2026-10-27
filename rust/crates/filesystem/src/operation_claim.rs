@@ -3,7 +3,7 @@
 use acyclic_stream::OperationClaims;
 
 #[cfg(test)]
-#[cfg(all(feature = "memory", not(acyclic_fs_loom)))]
+#[cfg(all(feature = "memory", not(loom)))]
 mod tests {
     use super::*;
     use std::cell::Cell;
@@ -137,7 +137,7 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod models {
     use super::*;
     use loom::sync::{

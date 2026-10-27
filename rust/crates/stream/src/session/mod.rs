@@ -19,7 +19,7 @@ mod authority;
 pub use authority::testing;
 pub use authority::{Authority, AuthorityState, TrustSnapshot};
 mod sources;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 
 mod calls;
@@ -33,7 +33,7 @@ mod client;
 mod connection;
 mod local;
 pub use connection::Connections;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use connection::verify_connections;
 mod gate;
 mod interest;
@@ -48,7 +48,7 @@ mod sync;
 pub(crate) use client::Cache;
 pub use client::Client;
 pub use client::transport;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use client::{
     verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_cancel_before_open,
     verify_follow_data, verify_initial_retry_yield, verify_interest_accounting,
@@ -58,7 +58,7 @@ pub use client::{
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use client::verify_latest_progress;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

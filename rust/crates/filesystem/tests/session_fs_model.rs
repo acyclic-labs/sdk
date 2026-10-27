@@ -1,6 +1,6 @@
 //! Exhaustive checked change-stream cut and wake schedules. Policy/publication
 //! races use the production observation models in `access::projection::model`.
-#![cfg(acyclic_loom)]
+#![cfg(loom)]
 use acyclic_stream::{verification, *};
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt};

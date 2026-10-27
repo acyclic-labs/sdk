@@ -1,5 +1,5 @@
 //! Exhaustive checks of the production replay durability handoff.
-#![cfg(all(acyclic_loom, feature = "local"))]
+#![cfg(loom)]
 
 #[test]
 fn replay_and_flush_preserve_durability() {

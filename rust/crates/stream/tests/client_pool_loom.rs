@@ -1,5 +1,5 @@
 //! Runs the production session pool with crate-local Loom synchronization.
-#![cfg(all(acyclic_stream_loom, feature = "grpc"))]
+#![cfg(loom)]
 
 #[test]
 fn provider_source_publication_cannot_lose_its_wake() {

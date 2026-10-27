@@ -146,9 +146,9 @@ impl LocalStream {
                 synced: watch::channel(progress).0,
                 failed,
                 revision: watch::channel(0).0,
-                #[cfg(acyclic_loom)]
+                #[cfg(loom)]
                 omit_follow_wake: false,
-                #[cfg(acyclic_loom)]
+                #[cfg(loom)]
                 retain_pending_read: false,
                 durable_tails: Mutex::new(Default::default()),
                 #[cfg(feature = "test-support")]
@@ -292,7 +292,7 @@ impl LocalStream {
     // Native builds reduce this to drop. The modeled old variant returns the
     // guard so the caller retains it through maintenance, exposing the stall.
     fn release_publication<G>(&self, publication: G) -> Option<G> {
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         if crate::verification::fault_is(
             crate::verification::Fault::HoldPublicationDuringMaintenance,
         ) {

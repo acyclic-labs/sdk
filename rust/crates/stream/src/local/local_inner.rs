@@ -20,9 +20,9 @@ struct LocalInner {
     // Borrow-only admission fence: record/discovery cursors never subscribe.
     revision: watch::Sender<u64>,
     // Model-only control: omit the accepted-path wait registration.
-    #[cfg(acyclic_loom)]
+    #[cfg(loom)]
     omit_follow_wake: bool,
-    #[cfg(acyclic_loom)]
+    #[cfg(loom)]
     retain_pending_read: bool,
     // Lock order: publication -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
@@ -40,10 +40,10 @@ impl LocalInner {
     }
 
     fn poison(&self) -> StreamError {
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         let notify =
             !crate::verification::fault_is(crate::verification::Fault::OmitPoisonPublication);
-        #[cfg(not(acyclic_loom))]
+        #[cfg(not(loom))]
         let notify = true;
         if notify {
             self.failed.send_replace(true);
@@ -71,7 +71,7 @@ impl LocalInner {
 
     /// Publishes only the strength completed by the device operation.
     fn publish_synced(&self, journal: &mut Journal, target: u64, completion: SyncCompletion) {
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         let completion =
             if crate::verification::fault_is(crate::verification::Fault::BarrierAsFlushed) {
                 SyncCompletion::Flushed(DeviceFlushed)

@@ -1,8 +1,8 @@
 //! Durable wake tokens shared by synchronous native completion owners.
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 use loom::sync::{Condvar, Mutex};
 use std::sync::Arc;
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 use std::sync::{Condvar, Mutex};
 
 /// A coalescing notification retained until one waiter consumes it.
@@ -63,7 +63,7 @@ impl std::task::Wake for NativeWake {
     }
 }
 
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 

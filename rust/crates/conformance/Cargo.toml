@@ -153,3 +153,8 @@ divan.workspace = true
 tempfile = "3.27.0"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[[test]]
+name = "inference"
+path = "tests/inference.rs"
+required-features = ["inference"]

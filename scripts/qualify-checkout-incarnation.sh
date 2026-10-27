@@ -77,8 +77,8 @@ model)
     # read/rename/flush operations used by HeldRoot::read_or_publish.
     artifacts=$(mktemp)
     trap 'rm -f "$artifacts"' EXIT
-    timed model-build env RUSTFLAGS="${RUSTFLAGS:-} --cfg acyclic_fs_native_loom" \
-        cargo test --locked -p acyclic-fs --lib --no-run --message-format=json >"$artifacts"
+    timed model-build env RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
+        cargo test --locked -p acyclic-fs --features model-checking --lib --no-run --message-format=json >"$artifacts"
     run_built acyclic_fs rust/crates/filesystem native_host::held_files::models
     ;;
 windows)

@@ -1,5 +1,5 @@
-//! Run this target with --cfg acyclic_e2e_progress_loom; ordinary gates use real locks.
-#![cfg(acyclic_e2e_progress_loom)]
+//! Run this target with --cfg loom; ordinary gates use real locks.
+#![cfg(loom)]
 #[path = "support/progress_registry.rs"]
 mod registry;
 use registry::Registry;

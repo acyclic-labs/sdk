@@ -294,7 +294,7 @@ impl StreamProvider for MemoryStream {
                         .clone()
                         .map(crate::wire_codec::record_wire),
                 };
-                #[cfg(all(acyclic_loom, feature = "local"))]
+                #[cfg(all(loom, feature = "local"))]
                 let size = if crate::verification::fault_is(
                     crate::verification::Fault::IgnorePageRecordBytes,
                 ) {
@@ -302,7 +302,7 @@ impl StreamProvider for MemoryStream {
                 } else {
                     prost::Message::encoded_len(&encoded)
                 };
-                #[cfg(not(all(acyclic_loom, feature = "local")))]
+                #[cfg(not(all(loom, feature = "local")))]
                 let size = prost::Message::encoded_len(&encoded);
                 page_bytes = page_bytes.saturating_add(size).saturating_add(10);
                 if page_bytes > crate::MAX_COMMAND_BYTES {

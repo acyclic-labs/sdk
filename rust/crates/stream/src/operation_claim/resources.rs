@@ -82,7 +82,7 @@ impl Drop for Resources {
     }
 }
 
-#[cfg(all(test, not(acyclic_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use std::sync::{

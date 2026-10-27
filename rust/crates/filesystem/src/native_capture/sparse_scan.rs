@@ -39,10 +39,10 @@ pub(super) fn block_has_data(
 }
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 #[path = "sparse_scan_loom.rs"]
 mod model_checking;
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 #[path = "sparse_scan_tests.rs"]
 mod tests;

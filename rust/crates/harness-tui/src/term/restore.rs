@@ -192,7 +192,7 @@ impl<W: Write> RestoreGuard<W> {
 
     /// Input cannot mutate the displayed state. Keep this operation narrow:
     /// exposing the writer here would also permit untracked output changes.
-    #[cfg(all(unix, not(acyclic_harness_tui_loom)))]
+    #[cfg(all(unix, not(loom)))]
     pub(crate) fn receive(
         &mut self,
         bytes: &mut [u8],
@@ -213,7 +213,7 @@ impl<W: Write> RestoreGuard<W> {
         Ok(())
     }
 
-    #[cfg(any(unix, acyclic_harness_tui_loom))]
+    #[cfg(any(unix, loom))]
     pub(crate) fn reapply(&mut self) -> io::Result<()> {
         for mode in self.desired.clone() {
             self.enable_mode(mode)?;
@@ -390,7 +390,7 @@ impl<W: Write> super::Present for RestoreGuard<W> {
 struct OnAlternateScreen(());
 
 #[cfg(test)]
-#[cfg(all(unix, not(acyclic_harness_tui_loom)))]
+#[cfg(all(unix, not(loom)))]
 #[test]
 fn resume_reapplies_the_latest_exclusive_selection() {
     let mut caps = Capabilities::default();

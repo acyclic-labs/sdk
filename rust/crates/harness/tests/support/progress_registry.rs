@@ -1,7 +1,7 @@
 //! Runner-owned scenario registrations. This is also the code included by the Loom model.
-#[cfg(acyclic_e2e_progress_loom)]
+#[cfg(loom)]
 use loom::sync::{Mutex, MutexGuard};
-#[cfg(not(acyclic_e2e_progress_loom))]
+#[cfg(not(loom))]
 use std::sync::{Mutex, MutexGuard};
 use std::{
     collections::BTreeMap,

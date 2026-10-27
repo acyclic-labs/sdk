@@ -1,8 +1,8 @@
 //! Single-threaded polling of the original owned futures, in seeded ready order.
 use super::*;
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 use loom::sync::Condvar;
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 use std::sync::Condvar;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,10 +16,10 @@ type Work = Pin<Box<dyn Future<Output = ()> + Send>>;
 tokio::task_local! { static POLLING_EXECUTOR: Arc<Executor>; }
 
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 mod models;
 #[cfg(test)]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod tests;
 
 struct State {

@@ -1,8 +1,8 @@
 //! A real host worker yields only at an original blocking future's Pending.
 use super::*;
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 use loom::sync::Condvar;
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 use std::sync::Condvar;
 use std::task::{Context as PollContext, Wake};
 mod pool;
@@ -78,7 +78,7 @@ impl Host {
             .flatten()
     }
     #[cfg(test)]
-    #[cfg(acyclic_native_runtime_loom)]
+    #[cfg(loom)]
     pub(super) fn new(threads: usize) -> Arc<Self> {
         Self::with_pool(Pool::new(threads))
     }
@@ -217,7 +217,7 @@ impl Drop for Driver {
         // Loom destroys suspended coroutine stacks after reporting a modeled
         // deadlock. Its synchronization primitives are no longer usable in
         // that cleanup. Ordinary panic unwinding must still detach the host.
-        #[cfg(acyclic_native_runtime_loom)]
+        #[cfg(loom)]
         if std::thread::panicking() {
             return;
         }
@@ -320,8 +320,8 @@ pub fn blocking_on<F: Future>(future: F) -> F::Output {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 mod models;
 #[cfg(test)]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod tests;

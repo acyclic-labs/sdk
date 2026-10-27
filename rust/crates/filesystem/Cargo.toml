@@ -72,12 +72,12 @@ required-features = ["native-mount"]
 [[test]]
 name = "native_stage_loom"
 path = "tests/native_stage_loom.rs"
-required-features = ["native-mount"]
+required-features = ["native-mount", "model-checking"]
 
 [[test]]
 name = "native_view_table_loom"
 path = "tests/native_view_table_loom.rs"
-required-features = ["native-mount"]
+required-features = ["native-mount", "model-checking"]
 
 [[bench]]
 name = "filesystem"
@@ -211,7 +211,7 @@ windows = { version = "0.62.2", features = [
 session = ["distributed", "acyclic-stream/session"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
 fuzzing = []
-model-checking = ["dep:loom"]
+model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile"]
 memory = ["distributed"]
@@ -278,4 +278,4 @@ required-features = ["memory"]
 [[test]]
 name = "session_fs_model"
 path = "tests/session_fs_model.rs"
-required-features = ["memory", "session"]
+required-features = ["memory", "session", "model-checking"]

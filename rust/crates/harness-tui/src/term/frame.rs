@@ -661,6 +661,6 @@ fn repair_wide_trails(previous: &Buffer, next: &mut Buffer, repaired: &mut Vec<u
 mod tests;
 
 #[cfg(test)]
-#[cfg(acyclic_harness_tui_loom)]
+#[cfg(loom)]
 #[path = "frame_model.rs"]
 mod frame_model;

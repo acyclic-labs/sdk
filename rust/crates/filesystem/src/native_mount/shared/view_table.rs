@@ -102,7 +102,7 @@ impl<C> ViewTable<C> {
     }
 
     /// Adds a view and returns its only owner.
-    #[cfg(any(test, acyclic_fs_loom))]
+    #[cfg(any(test, loom))]
     pub(crate) fn insert(table: &Arc<Self>, core: C) -> Result<ViewOwner<C>, ViewSerialsExhausted> {
         let serial = table.reserve()?;
         Ok(Self::insert_reserved(table, serial, core))
@@ -179,7 +179,7 @@ impl<C> ViewTable<C> {
     }
 
     /// Serials of the live views, in issue order.
-    #[cfg(any(test, acyclic_fs_loom))]
+    #[cfg(any(test, loom))]
     pub(crate) fn serials(&self) -> Vec<ViewSerial> {
         let views = self.views.read().unwrap_or_else(PoisonError::into_inner);
         let mut serials: Vec<_> = views.live.keys().copied().map(ViewSerial).collect();
@@ -187,7 +187,7 @@ impl<C> ViewTable<C> {
         serials
     }
 
-    #[cfg(any(test, acyclic_fs_loom))]
+    #[cfg(any(test, loom))]
     pub(crate) fn len(&self) -> usize {
         self.views
             .read()
@@ -208,9 +208,9 @@ impl<C> ViewTable<C> {
         };
         let mut state = drain.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.retiring = true;
-        #[cfg(acyclic_fs_loom)]
+        #[cfg(loom)]
         let skip = faults::RETIRE_WITHOUT_DRAIN.with(std::cell::Cell::get);
-        #[cfg(not(acyclic_fs_loom))]
+        #[cfg(not(loom))]
         let skip = false;
         if !skip {
             while state.leases != 0 {
@@ -298,7 +298,7 @@ impl Drop for LeaseCount {
     }
 }
 
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 pub(crate) mod faults {
     use std::cell::Cell;
 
@@ -308,7 +308,7 @@ pub(crate) mod faults {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -29,7 +29,7 @@ impl crate::snapshot::Snapshot for Box<FollowState> {
 impl FollowState {
     async fn wait(&mut self) -> Result<(), StreamError> {
         let publication = self.changed.changed.changed();
-        #[cfg(acyclic_loom)]
+        #[cfg(loom)]
         let publication = async {
             if self.provider.inner.omit_follow_wake {
                 std::future::pending::<()>().await;

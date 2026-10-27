@@ -871,7 +871,7 @@ pub(super) fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
 }
 
 #[cfg(test)]
-#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(all(loom, target_os = "linux"))]
 mod models;
 
 #[cfg(test)]

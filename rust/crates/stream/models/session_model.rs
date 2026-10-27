@@ -1,6 +1,6 @@
-#[cfg(not(acyclic_stream_loom))]
+#[cfg(not(loom))]
 compile_error!(
-    "stream models require Loom synchronization: run RUSTFLAGS='--cfg acyclic_stream_loom' cargo test --manifest-path rust/crates/stream/models/Cargo.toml --test session_model"
+    r#"STEP_FAILED stream-models: Loom synchronization is disabled; recovery: RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --manifest-path rust/crates/stream/models/Cargo.toml --features model-checking --test session_model"#
 );
 
 mod error {

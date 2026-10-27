@@ -31,16 +31,16 @@
 pub(super) mod callback_gate;
 // Only the shared instances of these OSes are built on the core yet; the
 // macOS NFS adapter plugs into the same modules.
-#[cfg(any(target_os = "linux", windows, acyclic_fs_loom))]
+#[cfg(any(target_os = "linux", windows, loom))]
 pub(super) mod instances;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod metering;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod outcome;
 mod root;
-#[cfg(any(target_os = "linux", windows, acyclic_fs_loom))]
+#[cfg(any(target_os = "linux", windows, loom))]
 pub(super) mod view_table;
-#[cfg(any(target_os = "linux", windows, acyclic_fs_loom))]
+#[cfg(any(target_os = "linux", windows, loom))]
 pub(super) mod views;
 
 #[cfg(windows)]

@@ -50,3 +50,8 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "http_codec"
+path = "tests/http_codec.rs"
+required-features = ["http-codec"]

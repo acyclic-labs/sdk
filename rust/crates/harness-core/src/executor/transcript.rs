@@ -8,20 +8,10 @@ pub(crate) use projection::load_projection;
 
 pub(crate) const REQUEST_MEDIA: &str = "application/vnd.acyclic.request-segments+json";
 
-#[cfg(all(
-    test,
-    feature = "filesystem",
-    not(target_arch = "wasm32"),
-    not(acyclic_harness_loom)
-))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
-#[cfg(all(
-    test,
-    feature = "filesystem",
-    not(target_arch = "wasm32"),
-    not(acyclic_harness_loom)
-))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
 mod metadata_tests;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]

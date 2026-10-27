@@ -1,7 +1,7 @@
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 pub use loom::sync::Mutex;
 use std::collections::BTreeMap;
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 pub use std::sync::Mutex;
 
 pub type Versions<K, S, T = String> = Mutex<BTreeMap<K, (S, T)>>;
@@ -29,6 +29,6 @@ pub fn query<K: Ord, S: Eq, T: Clone, E>(
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 #[path = "concrete_versions/tests.rs"]
 mod tests;

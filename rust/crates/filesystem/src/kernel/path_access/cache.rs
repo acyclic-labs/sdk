@@ -276,7 +276,7 @@ fn probe_slots_with_charge<const CHARGE: bool>(
         let examine = || {
             // Observe the actual inspection, including deliberately uncharged
             // probes, after admission and independently of accounting.
-            #[cfg(all(test, not(acyclic_fs_loom)))]
+            #[cfg(all(test, not(loom)))]
             tests::record_slot_access();
             match slot {
                 Some(entry) if entry.object_id == object_id => (
@@ -319,8 +319,8 @@ pub(super) fn compare_object_id(left: &ObjectId, right: &ObjectId) -> Ordering {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod loom_tests;
 #[cfg(test)]
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod tests;

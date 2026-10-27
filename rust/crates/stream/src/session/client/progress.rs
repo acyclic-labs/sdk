@@ -18,11 +18,11 @@ pub(super) struct Progress {
     cancelled: AtomicU64,
 }
 impl Progress {
-    #[cfg(any(test, acyclic_stream_loom))]
+    #[cfg(any(test, loom))]
     pub(super) fn new(from: u64) -> Self {
         Self::with_preceding(from, None)
     }
-    #[cfg(any(test, acyclic_stream_loom))]
+    #[cfg(any(test, loom))]
     pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
         Self::from_cursor(
             &crate::wire::SessionCursor {
@@ -153,12 +153,12 @@ pub(super) fn allocate(counter: &AtomicU64) -> Result<u64, StreamError> {
         .map_err(|_| StreamError::Capacity)
 }
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 #[path = "progress/model.rs"]
 mod model;
 #[cfg(test)]
-#[cfg(not(acyclic_stream_loom))]
+#[cfg(not(loom))]
 #[path = "progress/tests.rs"]
 mod tests;
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 pub use model::verify_latest_progress;

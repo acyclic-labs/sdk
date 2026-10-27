@@ -1,5 +1,5 @@
 //! Persistent namespace and successful retry recovery through the local journal.
-#![cfg(all(feature = "local", not(acyclic_loom)))]
+#![cfg(not(loom))]
 use acyclic_stream::{
     IdempotencyKey, LocalStream, LocalStreamLimits, StreamError, StreamPath, StreamProvider,
     conformance,

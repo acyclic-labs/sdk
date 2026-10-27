@@ -23,16 +23,14 @@ doc = false
 bench = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]
-runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+runtime = ["dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
-filesystem-local = []
-native-execution = []
 
 
 [dependencies]

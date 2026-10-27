@@ -1,5 +1,5 @@
 //! Model the production journal owner, including its pre-fix negative control.
-#![cfg(acyclic_harness_loom)]
+#![cfg(loom)]
 
 #[path = "../src/sync/owned.rs"]
 pub(crate) mod owned;

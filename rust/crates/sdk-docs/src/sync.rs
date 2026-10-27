@@ -1,6 +1,6 @@
-#[cfg(acyclic_sdk_docs_loom)]
+#[cfg(loom)]
 pub use loom::sync::{Arc, Mutex};
-#[cfg(not(acyclic_sdk_docs_loom))]
+#[cfg(not(loom))]
 pub use std::sync::{Arc, Mutex};
 
 // Lock order: each initialization slot is a leaf. An initializer must not

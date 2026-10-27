@@ -294,7 +294,7 @@ impl Drop for Wait {
 }
 
 /// The number of armed waits the hub holds, for scale tests.
-#[cfg(all(test, feature = "test-support", not(acyclic_native_runtime_loom)))]
+#[cfg(all(test, feature = "test-support", not(loom)))]
 pub(super) fn armed_waits() -> usize {
     hub().map_or(0, |hub| hub.registry().armed.len())
 }

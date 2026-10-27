@@ -1,6 +1,6 @@
-//! The dedicated model command sets RUSTFLAGS="--cfg acyclic_harness_loom".
+//! The dedicated model command sets RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh.
 //! Both instrumented modules below are production source.
-#![cfg(acyclic_harness_loom)]
+#![cfg(loom)]
 
 pub use acyclic_harness_core::{Error, ProcessError, Result};
 

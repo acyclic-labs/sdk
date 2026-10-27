@@ -14,7 +14,7 @@ struct State<T> {
     next_id: u64,
     senders: BTreeMap<u64, Option<Waker>>,
     receiver: Option<Waker>,
-    #[cfg(acyclic_harness_loom)]
+    #[cfg(loom)]
     omit_wake: bool,
 }
 // Lock order: this lock is never nested. No guard crosses await or calls a waker.
@@ -28,7 +28,7 @@ pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
         next_id: 0,
         senders: BTreeMap::new(),
         receiver: None,
-        #[cfg(acyclic_harness_loom)]
+        #[cfg(loom)]
         omit_wake: false,
     }));
     (Sender(state.clone()), Receiver(state))
@@ -176,14 +176,14 @@ impl<T> Receiver<T> {
             }
         };
         drop(retired);
-        #[cfg(acyclic_harness_loom)]
+        #[cfg(loom)]
         {
             let omitted = self.0.lock().expect("mailbox lock").omit_wake;
             if !omitted {
                 wake(notify);
             }
         }
-        #[cfg(not(acyclic_harness_loom))]
+        #[cfg(not(loom))]
         wake(notify);
         value
     }
@@ -216,8 +216,8 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-#[cfg(acyclic_harness_loom)]
+#[cfg(loom)]
 #[path = "mailbox_model.rs"]
 mod model;
-#[cfg(acyclic_harness_loom)]
+#[cfg(loom)]
 pub use model::verify_mailbox;

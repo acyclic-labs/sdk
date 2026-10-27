@@ -1,5 +1,5 @@
-//! Instrument Stream's actual append/recovery locks with `RUSTFLAGS=--cfg acyclic_loom`.
-#![cfg(acyclic_loom)]
+//! Instrument Stream's actual append/recovery locks with `RUSTFLAGS=--cfg loom`.
+#![cfg(loom)]
 use acyclic_actors::timers::{TimerRecord, fire};
 use acyclic_stream::{AppendRequest, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt as _;

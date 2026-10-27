@@ -45,7 +45,7 @@ mod browser;
 mod journal_provider;
 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
 pub use journal_provider::{JournalStream, JournalStreamLimits};
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod change;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
@@ -53,7 +53,7 @@ mod change;
 ))]
 mod http_codec;
 mod http_validation;
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod interest;
 #[cfg(any(
     feature = "local",
@@ -89,16 +89,16 @@ pub use wasm::{WasmSessionAuthority, WasmStream};
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
-#[cfg(all(acyclic_loom, feature = "local"))]
+#[cfg(all(loom, feature = "local"))]
 #[path = "memory/recovery_model.rs"]
 /// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
-#[cfg(all(acyclic_loom, feature = "local"))]
+#[cfg(all(loom, feature = "local"))]
 #[doc(hidden)]
 pub use local::replay_model::{
     negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
 };
-#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+#[cfg(all(loom, feature = "local"))]
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 

@@ -136,9 +136,9 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
 }
 
 #[cfg(test)]
-#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 mod model_checking;
 
 #[cfg(test)]
-#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod tests;

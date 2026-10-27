@@ -278,11 +278,11 @@ pub fn durable_operation<T>(
 }
 
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 mod models;
 #[cfg(test)]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod native;
 #[cfg(test)]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod tests;

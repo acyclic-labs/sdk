@@ -21,11 +21,12 @@ test("every production gate step supplies its artifact and complete test selecti
   }
   // These two different target shapes were absent from the old fake cargo.
   assert.ok(plans.some(plan => plan.target === "e2e-progress-model" && plan.tests.length === 4));
-  assert.ok(plans.some(plan => plan.target === "acyclic_native_runtime" && plan.tests.length === 13));
+  assert.ok(plans.some(plan => plan.target === "acyclic_native_runtime" && plan.tests.length === 18));
   assert.match(plans.find(plan => plan.target === "memory-accounting-model").rustflags, /-Dwarnings/);
   const sessionFs = plans.find(plan => plan.target === "session_fs_model");
   assert.equal(sessionFs.tests.length, 7);
-  assert.match(sessionFs.rustflags, /--cfg acyclic_stream_loom/);
+  assert.match(sessionFs.wrapper, /loom-rustc\.(?:sh|cmd)$/);
+  for (const plan of plans) assert.ok(plan.args.includes("model-checking"));
 });
 
 test("omitted or duplicated required model results fail, independent of scheduling order", () => {

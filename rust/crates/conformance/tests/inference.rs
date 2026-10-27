@@ -1,5 +1,4 @@
 //! The real bb2 llama.cpp recording must pass every shared inference vector.
-#![cfg(feature = "inference")]
 
 #[tokio::test]
 async fn captured_llamacpp_passes_the_complete_inference_suite() {

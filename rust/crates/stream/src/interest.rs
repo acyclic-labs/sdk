@@ -57,6 +57,7 @@ impl<K: Ord + Clone> Interests<K> {
         }
         Ok(())
     }
+    #[cfg(any(not(loom), test))]
     pub(crate) fn notify_all(&self) -> Result<(), StreamError> {
         let changed = self
             .entries
@@ -104,16 +105,19 @@ impl<K: Ord + Clone> Drop for Interest<K> {
     }
 }
 
+#[cfg(any(not(loom), test))]
 pub(crate) struct Refresh {
     // One lock, never nested with the registry, Change or provider cache.
     state: Mutex<RefreshState>,
 }
 #[derive(Default)]
+#[cfg(any(not(loom), test))]
 struct RefreshState {
     running: bool,
     dirty: bool,
     force: bool,
 }
+#[cfg(any(not(loom), test))]
 impl Refresh {
     pub(crate) fn new() -> Self {
         Self {
@@ -140,6 +144,6 @@ impl Refresh {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 #[path = "../publication-models/interest.rs"]
 mod models;

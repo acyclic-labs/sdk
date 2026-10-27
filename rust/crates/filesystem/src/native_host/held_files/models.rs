@@ -1,7 +1,7 @@
 //! Model the kernel's atomic read, no-replace rename and directory flush
 //! around the real publication path, using real files for contents. The one
 //! kernel lock never nests; no Rust synchronization is added to production.
-//! Enabled only by the dedicated `--cfg acyclic_fs_native_loom` command.
+//! Enabled only by the dedicated `--cfg loom` command.
 use super::*;
 use crate::sync::native::Mutex;
 use std::{cell::RefCell, sync::Arc};

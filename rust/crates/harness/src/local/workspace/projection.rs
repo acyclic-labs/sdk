@@ -233,5 +233,5 @@ impl MountedVolume {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_harness_loom)]
+#[cfg(loom)]
 mod tests;

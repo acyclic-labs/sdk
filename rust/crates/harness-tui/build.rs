@@ -33,7 +33,7 @@ fn variant(name: &str) -> BuildResult<String> {
 }
 
 fn main() -> BuildResult<()> {
-    println!("cargo::rustc-check-cfg=cfg(acyclic_harness_tui_loom)");
+    println!("cargo::rustc-check-cfg=cfg(loom)");
     println!("cargo:rerun-if-changed=data");
     let out = PathBuf::from(env::var("OUT_DIR")?);
     keymap(&out)?;

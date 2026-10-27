@@ -1,5 +1,5 @@
 //! Uses the production provider's crate-local `query_sync` loom shim.
-#![cfg(all(acyclic_loom, feature = "local"))]
+#![cfg(loom)]
 
 #[test]
 fn session_registration_fences_recovery() {

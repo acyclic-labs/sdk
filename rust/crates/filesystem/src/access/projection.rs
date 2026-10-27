@@ -56,9 +56,9 @@ pub(crate) fn observe(
     owner: &crate::OperationClaims,
     volume: crate::VolumeId,
 ) -> Result<PolicyWatch, crate::FsError> {
-    #[cfg(not(acyclic_fs_loom))]
+    #[cfg(not(loom))]
     let policies = POLICIES.get_or_init(ProjectionPolicies::default);
-    #[cfg(acyclic_fs_loom)]
+    #[cfg(loom)]
     let policies = &*POLICIES;
     let volume = registry::Volume {
         owner: owner.owner_identity(),
@@ -91,9 +91,9 @@ pub(crate) struct Registration<'a> {
     key: registry::Key,
 }
 
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 static POLICIES: std::sync::OnceLock<ProjectionPolicies> = std::sync::OnceLock::new();
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 loom::lazy_static! { static ref POLICIES: ProjectionPolicies = ProjectionPolicies::default(); }
 
 fn register(
@@ -101,9 +101,9 @@ fn register(
     volume: crate::VolumeId,
     projection: bool,
 ) -> Result<(Lease, bool), crate::FsError> {
-    #[cfg(not(acyclic_fs_loom))]
+    #[cfg(not(loom))]
     let policies = POLICIES.get_or_init(ProjectionPolicies::default);
-    #[cfg(acyclic_fs_loom)]
+    #[cfg(loom)]
     let policies = &*POLICIES;
     ProjectionPolicies::enter(
         policies,
@@ -223,7 +223,7 @@ impl Drop for Registration<'_> {
         drop(removed);
     }
 }
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(all(test, loom))]
 mod model {
     use super::*;
     fn run(omit_publication_lease: bool, late_admission: bool) {
@@ -342,7 +342,7 @@ mod model {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 mod properties {
     use super::*;
     use proptest::prelude::*;
@@ -422,7 +422,7 @@ mod properties {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 mod observation_tests {
     use super::*;
     use std::{

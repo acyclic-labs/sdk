@@ -10,7 +10,7 @@ mod events;
 mod sessions;
 pub use agents::{Control, TurnClaim};
 pub use sessions::SessionAction;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 /// Workspace operations only. Native hosts retain every agent and tool process.

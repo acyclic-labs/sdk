@@ -119,7 +119,7 @@ impl Drop for CallbackPass<'_> {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use std::sync::Arc;

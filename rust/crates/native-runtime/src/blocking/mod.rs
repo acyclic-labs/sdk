@@ -100,11 +100,11 @@ pub(crate) fn task_completion<T: Send + 'static>(
         panic: None,
         waker: None,
         _allocation: allocation,
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         broken_wake: false,
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         broken_accounting: false,
-        #[cfg(all(test, acyclic_native_runtime_loom))]
+        #[cfg(all(test, loom))]
         broken_charge: false,
     }));
     let completion = Arc::clone(&state);

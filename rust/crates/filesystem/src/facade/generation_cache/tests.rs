@@ -8,7 +8,7 @@ fn key(volume: u8, generation: u8) -> Key {
     )
 }
 
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 mod ordinary {
     use super::*;
     use proptest::prelude::*;
@@ -57,7 +57,7 @@ mod ordinary {
     }
 }
 
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod model {
     use super::*;
     use loom::{sync::Arc, thread};

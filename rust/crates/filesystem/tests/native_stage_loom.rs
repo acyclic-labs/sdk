@@ -1,5 +1,5 @@
-//! Dedicated command: cargo rustc --test native_stage_loom ... -- --cfg acyclic_fs_loom.
-#![cfg(acyclic_fs_loom)]
+//! Dedicated command: cargo rustc --test native_stage_loom ... --features model-checking -- --cfg loom.
+#![cfg(loom)]
 
 mod stage_state {
     include!("../src/materializer/stage_state.rs");

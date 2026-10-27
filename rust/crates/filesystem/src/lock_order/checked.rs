@@ -4,13 +4,13 @@
 ))]
 use crate::sync::{Condvar as RawCondvar, WaitTimeoutResult};
 use crate::sync::{Mutex as RawMutex, MutexGuard as RawMutexGuard};
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 use loom::thread_local;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 use std::thread_local;
 #[cfg(any(
     all(test, not(target_arch = "wasm32")),
@@ -18,12 +18,12 @@ use std::thread_local;
 ))]
 use std::time::Duration;
 
-#[cfg(not(acyclic_fs_loom))]
+#[cfg(not(loom))]
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
 }
 
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = RefCell::new(Vec::new());
 }
@@ -37,7 +37,7 @@ struct Held(u16, &'static Location<'static>);
 impl Held {
     #[track_caller]
     fn check(rank: u16) {
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(all(test, loom))]
         if model::fault() == model::Fault::MissingCheck {
             return;
         }
@@ -127,11 +127,11 @@ pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
     )
 ))]
 impl<T, const RANK: u16> Mutex<T, RANK> {
-    #[cfg(not(acyclic_fs_loom))]
+    #[cfg(not(loom))]
     pub(crate) const fn new(value: T) -> Self {
         Self(RawMutex::new(value))
     }
-    #[cfg(acyclic_fs_loom)]
+    #[cfg(loom)]
     pub(crate) fn new(value: T) -> Self {
         Self(RawMutex::new(value))
     }
@@ -154,21 +154,21 @@ pub(crate) struct Condvar(RawCondvar);
     all(feature = "native-mount", target_os = "linux")
 ))]
 impl Condvar {
-    #[cfg(not(acyclic_fs_loom))]
+    #[cfg(not(loom))]
     pub(crate) const fn new() -> Self {
         Self(RawCondvar::new())
     }
-    #[cfg(acyclic_fs_loom)]
+    #[cfg(loom)]
     pub(crate) fn new() -> Self {
         Self(RawCondvar::new())
     }
 
-    #[cfg(any(acyclic_fs_loom, all(feature = "native-mount", target_os = "linux")))]
+    #[cfg(any(loom, all(feature = "native-mount", target_os = "linux")))]
     pub(crate) fn notify_all(&self) {
         self.0.notify_all();
     }
 
-    #[cfg(any(acyclic_fs_loom, all(feature = "native-mount", target_os = "linux")))]
+    #[cfg(any(loom, all(feature = "native-mount", target_os = "linux")))]
     #[track_caller]
     pub(crate) fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         wait_plain(guard, |inner| self.0.wait(inner))
@@ -185,10 +185,7 @@ impl Condvar {
 }
 
 #[track_caller]
-#[cfg(any(
-    all(test, acyclic_fs_loom),
-    all(feature = "native-mount", target_os = "linux")
-))]
+#[cfg(any(all(test, loom), all(feature = "native-mount", target_os = "linux")))]
 fn wait_plain<G>(
     guard: TrackedGuard<G>,
     operation: impl FnOnce(G) -> LockResult<G>,
@@ -219,13 +216,13 @@ fn wait<G, R>(
     Held::check(rank);
     let wrap = |(inner, timeout)| {
         let held = Held(rank, site);
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(all(test, loom))]
         let held = if model::fault() == model::Fault::MissingRestore {
             held
         } else {
             held.enter()
         };
-        #[cfg(not(all(test, acyclic_fs_loom)))]
+        #[cfg(not(all(test, loom)))]
         let held = held.enter();
         (TrackedGuard { inner, _held: held }, timeout)
     };
@@ -236,5 +233,5 @@ fn wait<G, R>(
 }
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 mod model;

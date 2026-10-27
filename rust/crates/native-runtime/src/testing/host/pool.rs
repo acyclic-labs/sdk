@@ -1,11 +1,11 @@
 //! Physical startup yields when every worker is parked or occupied outside DST.
 use super::*;
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 use loom::sync::{
     MutexGuard,
     atomic::{AtomicUsize, Ordering},
 };
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 use std::sync::{
     MutexGuard,
     atomic::{AtomicUsize, Ordering},

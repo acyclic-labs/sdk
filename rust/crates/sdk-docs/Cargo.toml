@@ -9,6 +9,7 @@ description = "Deterministic Rust-owned versioned SDK documentation data"
 [workspace]
 
 [features]
+model-checking = []
 test-support = []
 
 [dependencies]
@@ -29,4 +30,4 @@ proptest = "=1.11.0"
 
 [lints.rust]
 unsafe_code = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_sdk_docs_loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

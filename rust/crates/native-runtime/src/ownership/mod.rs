@@ -137,5 +137,5 @@ impl OwnershipReleaseBarrier {
 }
 
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 mod model;

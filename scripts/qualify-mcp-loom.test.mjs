@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
+import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
@@ -16,9 +16,8 @@ test("filesystem policy qualification requires real cache and authority models i
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.deepEqual(args, ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run",
-          "--no-default-features", "--features", "memory,model-checking"]);
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom(?: |$)/);
+          "--no-default-features", "--features", "memory,model-checking", "--features", "model-checking"]);
+        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
       }
       const [prefix, count] = suites[executed++];
@@ -40,9 +39,7 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
     let executed = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom/);
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom/);
+        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         const crate = args[args.indexOf("-p") + 1];
         target = crate.replaceAll("-", "_");
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
@@ -88,7 +85,7 @@ test("skill materializer qualification requires the production owner model and i
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.deepEqual(args.slice(-3), ["--", "--cfg", "acyclic_harness_loom"]);
+        assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
         assert.ok(args.includes("skill-materializer-loom"));
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "skill-materializer-loom" } }) };
       }
@@ -123,7 +120,7 @@ test("ownership qualification requires every dedicated real-lock model and compi
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.deepEqual(args.slice(0, 7), ["test", "--locked", "--message-format=json", "-p", "acyclic-native-runtime", "--lib", "--no-run"]);
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_native_runtime_loom(?: |$)/);
+        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         return {status: 0, stderr: "", stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
       assert.deepEqual(args, ["ownership::model::"]);
@@ -153,7 +150,7 @@ test("progress qualification requires the cleanup and runnable-wake models and c
     let models = 0;
     const run = (command, args) => {
       if (command === "cargo") {
-        assert.deepEqual(args.slice(-3), ["--", "--cfg", "acyclic_e2e_progress_loom"]);
+        assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "e2e-progress-model"}})};
       }
       assert.equal(args[0], names[models++]);
@@ -169,7 +166,7 @@ test("native progress qualification instruments the real mutex and requires ever
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_native_runtime_loom/);
+        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("--lib") && args.includes("--no-run"));
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
@@ -186,8 +183,7 @@ test("fs Session qualification instruments real provider and Session locks and r
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_stream_loom/);
+        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("memory,session,acyclic-stream/local"));
         assert.ok(args.includes("session_fs_model"));
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "session_fs_model" } }) };
@@ -209,8 +205,8 @@ test("hook qualification requires every retained checkout and projection model",
       let models = 0;
       const run = (command, args, options) => {
         if (command === "cargo") {
-          assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom/);
-          assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
+          assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+          assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
           return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
         }
         assert.match(args[0], /(?:cancelled_bash_retains_projection|local::workspace::projection::tests::)/);
@@ -229,12 +225,12 @@ test("hook qualification requires every retained checkout and projection model",
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
   const calls = [];
   qualifyMcpLoom(["--all-features"], (command, args, options) => {
-    if (command === "cargo") assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom(?: |$)/);
+    if (command === "cargo") assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
     calls.push([command, args]);
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "mcp-loom", "--all-features", "--features", "model-checking"]],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "mcp-loom", "--all-features", "--features", "model-checking", "--features", "model-checking"]],
     ["model-binary", []],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
@@ -245,15 +241,15 @@ test("qualification opts into the crate cfg only for the model build and execute
   assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
 });
 
-test("timer qualification instruments production Stream locks only through RUSTFLAGS", () => {
+test("timer qualification instruments production Stream locks through the workspace wrapper", () => {
   const calls = [];
   qualifyTimerLoom((command, args, options) => {
-    calls.push([command, args, options.env?.RUSTFLAGS]);
+    calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
     const timer = { ...artifact, target: { name: "timer_loom" } };
     return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(1) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom")], "--cfg acyclic_loom"],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"), "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
     ["model-binary", [], undefined],
   ]);
 });
@@ -266,7 +262,7 @@ test("guest qualification instruments only the guest target and runs its models"
     return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "guest_loom", "--", "--cfg", "loom"]],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "guest_loom", "--features", "model-checking", "--", "--cfg", "loom"]],
     ["model-binary", []],
   ]);
 });
@@ -297,7 +293,7 @@ test("filesystem qualification models the production mutex only in its dedicated
     return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(3) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "native_binding_model", "--all-features", "--", "--cfg", "acyclic_fs_loom"]],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "native_binding_model", "--all-features", "--features", "model-checking", "--", "--cfg", "loom"]],
     ["model-binary", []],
   ]);
   assertGateStep(["--fs-binding", "--all-features"]);
@@ -309,8 +305,8 @@ test("memory accounting instruments dependency cancellation and the real ledger 
   qualifyMemoryAccountingLoom((command, args, options) => {
     calls.push([command, args]);
     if (command === "cargo") {
-      assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
-      assert.doesNotMatch(options.env.RUSTFLAGS, /acyclic_harness_loom/);
+      assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+      assert.doesNotMatch(options.env.RUSTFLAGS ?? "", /--cfg loom/);
     }
     const memory = { ...artifact, target: { name: "memory-accounting-model" } };
     return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(memory) : summary(6) };
@@ -318,7 +314,7 @@ test("memory accounting instruments dependency cancellation and the real ledger 
   assert.deepEqual(calls, [
     ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "memory-accounting-model",
       "--features", "filesystem,acyclic-fs/model-checking", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
-      "--", "--cfg", "acyclic_harness_loom"]],
+      "--features", "model-checking", "--", "--cfg", "loom"]],
     ["model-binary", []],
   ]);
 });
@@ -328,7 +324,7 @@ test("registry gate instruments real native locks and rejects either omitted pro
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_native_loom/);
+        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("--lib"));
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
       }

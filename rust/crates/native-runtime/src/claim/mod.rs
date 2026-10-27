@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(all(test, acyclic_native_runtime_loom))]
+#[cfg(all(test, loom))]
 mod model;
 mod process;
 mod protocol;

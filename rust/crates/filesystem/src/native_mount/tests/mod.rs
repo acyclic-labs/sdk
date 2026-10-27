@@ -105,6 +105,6 @@ pub(super) fn destination_reclaim_child_waits_for_external_release()
 
 mod capture;
 pub(super) mod fence;
-#[cfg(all(target_os = "linux", not(acyclic_fs_native_loom)))]
+#[cfg(all(target_os = "linux", not(loom)))]
 mod recovery_bootstrap;
 pub(in crate::native_mount) mod retirement;

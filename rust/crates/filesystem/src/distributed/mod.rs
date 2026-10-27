@@ -129,10 +129,10 @@ mod changes;
 mod head_payload;
 mod policy;
 #[cfg(test)]
-#[cfg(all(acyclic_fs_loom, not(acyclic_loom)))]
-compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --cfg acyclic_loom'");
+#[cfg(all(loom, not(loom)))]
+compile_error!("head-payload models require RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh");
 #[cfg(test)]
-#[cfg(all(acyclic_fs_loom, acyclic_loom))]
+#[cfg(all(loom, loom))]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;

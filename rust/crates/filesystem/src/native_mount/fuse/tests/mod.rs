@@ -63,7 +63,7 @@ fn projection_core(
     )
 }
 
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 pub(super) mod model_checking;
 
 mod cache;

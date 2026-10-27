@@ -72,7 +72,7 @@ impl AccessView {
 
     // Negative control: checking before the publication lock lets a stale
     // writer replace a newer revision. This is never compiled into the library.
-    #[cfg(all(test, acyclic_fs_loom))]
+    #[cfg(all(test, loom))]
     pub(super) fn publish_unfenced(&self, view: PathTrie) -> Result<(), InvalidPolicy> {
         let current = self.current()?;
         if !can_replace(&current, &view) {

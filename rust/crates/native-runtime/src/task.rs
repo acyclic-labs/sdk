@@ -134,7 +134,7 @@ mod native {
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod tests {
     #[cfg(feature = "test-support")]
     use std::time::Duration;

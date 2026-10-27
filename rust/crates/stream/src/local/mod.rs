@@ -10,22 +10,22 @@ use std::sync::{Arc, PoisonError};
 use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
-#[cfg(all(not(acyclic_loom), feature = "test-support"))]
+#[cfg(all(not(loom), feature = "test-support"))]
 use acyclic_native_runtime::testing::{spawn, spawn_blocking};
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::mpsc;
-#[cfg(all(not(acyclic_loom), not(feature = "test-support")))]
+#[cfg(all(not(loom), not(feature = "test-support")))]
 use tokio::{spawn, task::spawn_blocking};
 
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod parking_model;
 #[cfg(test)]
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 mod snapshot_ready;
 #[cfg(test)]
 use tracing::Instrument as _;
@@ -56,15 +56,15 @@ const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod compaction_model;
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod follow_model;
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod query_model;
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod receipt_model;
-#[cfg(acyclic_loom)]
+#[cfg(loom)]
 pub(crate) mod replay_model;
 
 #[cfg(test)]
@@ -137,5 +137,5 @@ include!("snapshot.rs");
 
 include!("frame_checksum.rs");
 
-#[cfg(all(feature = "test-support", not(acyclic_loom)))]
+#[cfg(all(feature = "test-support", not(loom)))]
 mod publication_barrier;

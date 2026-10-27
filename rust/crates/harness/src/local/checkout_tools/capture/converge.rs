@@ -27,10 +27,10 @@ impl Cursor {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, WatchBatch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let rescan = self.watcher.begin_rescan().map_err(storage)?;
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             self.inject("begin")?;
             self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             self.inject("watch-tree")?;
             let captured = capture_baseline(
                 checkout,
@@ -53,10 +53,10 @@ impl Cursor {
                     return Err(storage(failure));
                 }
             }
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             self.inject("baseline")?;
             let batch = self.watcher.finish_rescan(rescan).map_err(storage)?;
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             self.inject("finish")?;
             Ok(batch)
         })
@@ -82,7 +82,7 @@ pub(super) fn capture<'a>(
         baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         if !baseline {
             cursor.watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             cursor.inject("fence")?;
         }
         let mut rescans = 0;
@@ -162,7 +162,7 @@ fn drain<'a>(
                 Some(batch) => batch,
                 None => cursor.poll(cancellation)?,
             };
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             cursor.inject("poll")?;
             let empty = match &batch {
                 WatchBatch::Changes { changes, .. } => {
@@ -216,7 +216,7 @@ pub(super) fn replay<'a>(
             .watcher
             .watch_arrivals(&batch, policy, MAXIMUM_PATHS)
             .map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(all(test, not(loom)))]
         cursor.inject("register")?;
         let result = capture_watch_batch(
             checkout,
@@ -227,7 +227,7 @@ pub(super) fn replay<'a>(
             cancellation,
         )
         .await;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(all(test, not(loom)))]
         cursor.inject("replay")?;
         match result {
             Ok(_) => Ok(true),

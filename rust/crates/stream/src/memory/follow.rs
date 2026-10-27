@@ -71,11 +71,11 @@ impl MemoryStream {
                 return None;
             }
             let result = loop {
-                #[cfg(acyclic_loom)]
+                #[cfg(loom)]
                 let retain_pending = state.provider.retain_pending_read;
                 let (next, record) = crate::snapshot::read(
                     state,
-                    #[cfg(acyclic_loom)]
+                    #[cfg(loom)]
                     retain_pending,
                 )
                 .await;

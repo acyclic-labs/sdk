@@ -39,7 +39,7 @@ mod configuration;
 mod content;
 mod durability;
 mod indexed_publication;
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod inline_tests;
 mod interactions;
 mod observations;
@@ -51,7 +51,7 @@ mod replay;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod replay_capacity_tests;
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod request_segments_tests;
 mod selected;
 mod step_index;

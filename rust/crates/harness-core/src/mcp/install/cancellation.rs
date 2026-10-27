@@ -53,7 +53,7 @@ fn run_checked<T, const CHECK_COMPLETION: bool>(
 }
 
 #[cfg(test)]
-#[cfg(acyclic_harness_loom)]
+#[cfg(loom)]
 mod tests {
     use super::*;
     use loom::sync::{atomic::AtomicUsize, mpsc};

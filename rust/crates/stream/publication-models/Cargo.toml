@@ -22,4 +22,7 @@ members = ["."]
 opt-level = 1
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_stream_loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[features]
+model-checking = []

@@ -1,5 +1,5 @@
-//! Run with `RUSTFLAGS="--cfg acyclic_loom"` and `--features local,http`.
-#![cfg(all(acyclic_loom, feature = "local"))]
+//! Run with `RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh` and `--features local,http`.
+#![cfg(loom)]
 
 #[test]
 fn executor_shutdown_returns_unpolled_snapshot_ownership() {

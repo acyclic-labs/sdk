@@ -16,6 +16,12 @@ export const gateQualifications = [
   { args: ["--skill-materializer"] },
   { args: ["--harness-models", "--all-features"] },
 ];
+// Cargo's workspace wrapper leaves registry dependencies (including Tokio's own
+// independent cfg(loom) mode) untouched. One opt-in compiles each SDK model crate.
+export function loomEnvironment(env = process.env) {
+  return { ...env, RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
+    process.platform === "win32" ? "./loom-rustc.cmd" : "./loom-rustc.sh", import.meta.url)) };
+}
 const planOnly = Symbol("qualification plan");
 
 export function qualificationPlan(args) {
@@ -41,14 +47,14 @@ function qualifyGate(run) {
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
   return qualifyLoom("acyclic-harness-core", "mcp-loom", [...features, "--features", "model-checking"], run, {
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+    env: loomEnvironment(), targetCfg: [],
   });
 }
 
 export function qualifySkillMaterializerLoom(run = spawnSync) {
   return qualifyLoom("acyclic-harness-core", "skill-materializer-loom",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
-      targetCfg: ["--", "--cfg", "acyclic_harness_loom"], timeout: 9500,
+      targetCfg: ["--", "--cfg", "loom"], timeout: 9500,
       filters: ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"],
     });
 }
@@ -68,7 +74,7 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
       "local::workspace::projection::tests::execution_guard_covers_physical_cleanup_and_unpublished_retirement",
     ], timeout: 9500,
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+    env: loomEnvironment(), targetCfg: [],
   });
 }
 
@@ -78,7 +84,7 @@ export function qualifyNativeRegistryLoom(run = spawnSync) {
       "native_mount::fence::models::registry_contention_retires_with_original_credit_and_missing_wait_control",
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
     ], timeout: 9500,
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_native_loom` }, targetCfg: [],
+    env: loomEnvironment(), targetCfg: [],
   });
 }
 
@@ -86,7 +92,7 @@ export function qualifyTimerLoom(run = spawnSync) {
   return qualifyLoom("acyclic-actors", "timer_loom", [
     "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
   ], run, {
-    env: { ...process.env, RUSTFLAGS: "--cfg acyclic_loom" }, targetCfg: [],
+    env: loomEnvironment(), targetCfg: [],
   });
 }
 
@@ -96,7 +102,7 @@ export function qualifyGuestLoom(run = spawnSync) {
 
 export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "e2e-progress-model", features, run, {
-    targetCfg: ["--", "--cfg", "acyclic_e2e_progress_loom"],
+    targetCfg: ["--", "--cfg", "loom"],
     filters: ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "forgotten_cleanup_is_detected_on_the_real_registration",
       "polling_wake_and_reporting_never_lose_runnability", "an_unobserved_wake_fails_the_same_runnability_oracle"],
     timeout: 9500,
@@ -106,7 +112,7 @@ export function qualifyE2eProgressLoom(features = ["--features", "filesystem-loc
 export function qualifyNativeProgressLoom(run = spawnSync) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
-    env: {...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_native_runtime_loom`},
+    env: loomEnvironment(),
     filters: [
       "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
       "testing::model::missing_native_cleanup_is_detected_on_the_actual_tracker",
@@ -132,7 +138,7 @@ export function qualifyNativeProgressLoom(run = spawnSync) {
 
 export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   return qualifyLoom("acyclic-fs", "native_binding_model", features, run, {
-    targetCfg: ["--", "--cfg", "acyclic_fs_loom"],
+    targetCfg: ["--", "--cfg", "loom"],
   });
 }
 
@@ -141,7 +147,7 @@ export function qualifyFsPolicyLoom(run = spawnSync) {
     "--no-default-features", "--features", "memory,model-checking",
   ], run, {
     kind: "--lib", targetCfg: [],
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` },
+    env: loomEnvironment(),
     suites: [["facade::policy_cache::loom_tests::", 2], ["distributed::head_payload_loom_tests::", 8]],
   });
 }
@@ -151,8 +157,8 @@ export function qualifyMemoryAccountingLoom(run = spawnSync) {
     "--features", "filesystem,acyclic-fs/model-checking",
     "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
   ], run, {
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom` },
-    targetCfg: ["--", "--cfg", "acyclic_harness_loom"],
+    env: loomEnvironment(),
+    targetCfg: ["--", "--cfg", "loom"],
   });
 }
 
@@ -160,7 +166,7 @@ export function qualifySessionFsLoom(run = spawnSync) {
   return qualifyLoom("acyclic-fs", "session_fs_model", [
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
   ], run, {
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_loom --cfg acyclic_stream_loom` },
+    env: loomEnvironment(),
     targetCfg: [], timeout: 9500,
     filters: ["checked_resume_exhausts_append_registration_and_wakeup",
       "checked_resume_exhausts_independent_history_replacement", "resumed_buffered_delivery_exhausts_revocation",
@@ -174,7 +180,7 @@ export function qualifySessionFsLoom(run = spawnSync) {
 export function qualifyOwnershipLoom(run = spawnSync) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
     kind: "--lib", filter: "ownership::model::", exact: false, passed: 8, timeout: 9500,
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_native_runtime_loom` }, targetCfg: [],
+    env: loomEnvironment(), targetCfg: [],
   });
 }
 
@@ -195,7 +201,7 @@ export function qualifyHarnessModelsLoom(features = ["--all-features"], run = sp
 function qualifyHarnessSuite(crate, target, features, run, options = {}) {
   return qualifyLoom(crate, target, [...features, "--features", "model-checking"], run, {
     ...options,
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom --cfg acyclic_fs_loom` },
+    env: loomEnvironment(),
     targetCfg: [],
   });
 }
@@ -204,14 +210,14 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   const args = [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
     ...(options.kind === "--lib" ? ["--lib", "--no-run"] : ["--test", target]),
-    ...features, ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
+    ...features, "--features", "model-checking", ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ];
   const tests = options.suites?.map(([filter, passed]) => ({ args: [filter], passed })) ?? (options.filters ?? [options.filter]).map(filter => ({
     args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
     passed: options.exact === false ? (options.passed ?? 4) : filter ? 1 : null,
   }));
   const env = options.env ?? process.env;
-  const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "" };
+  const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
   if (run === planOnly) return plan;
   const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
   if (build.error) throw build.error;

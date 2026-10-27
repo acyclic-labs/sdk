@@ -1,11 +1,11 @@
 use super::*;
 
 #[cfg(test)]
-#[cfg(acyclic_fs_native_loom)]
+#[cfg(loom)]
 pub(in crate::native_mount) mod kernel;
 mod linux;
 #[cfg(test)]
-#[cfg(acyclic_fs_native_loom)]
+#[cfg(loom)]
 mod models;
 
 // Detection, owner acquisition and detach all operate on the one pinned object.

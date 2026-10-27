@@ -55,10 +55,10 @@ pub(super) fn contention(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::WouldBlock, reason)
 }
 
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 const SHARDS: usize = 64;
 /// Models keep the table small; sharding is not what they check.
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 const SHARDS: usize = 2;
 
 /// Claimed files of one process, sharded so unrelated claims never contend.
@@ -388,7 +388,7 @@ impl<H: Host> Claim<H> {
     }
 
     /// The claimed file's identity.
-    #[cfg(all(test, acyclic_native_runtime_loom))]
+    #[cfg(all(test, loom))]
     pub(super) fn key(&self) -> &H::Key {
         &self.key
     }

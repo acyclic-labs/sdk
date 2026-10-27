@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{io::Read as _, time::Duration};
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 /// Reserved inside the host's existing writable workspace; never a state path.

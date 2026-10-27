@@ -167,5 +167,5 @@ where
     }
 }
 
-#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+#[cfg(all(test, feature = "memory", not(loom)))]
 mod tests;

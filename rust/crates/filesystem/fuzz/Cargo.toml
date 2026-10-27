@@ -9,6 +9,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [features]
+model-checking = []
 fuzz-targets = ["dep:libfuzzer-sys"]
 
 [dependencies]
@@ -32,6 +33,7 @@ loom = "0.7"
 [[test]]
 name = "model"
 path = "tests/model.rs"
+required-features = ["model-checking"]
 
 [[bin]]
 name = "access"

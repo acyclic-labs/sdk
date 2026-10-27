@@ -31,13 +31,13 @@ pub mod scale;
 pub mod snapshot;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 mod model;
 #[cfg(test)]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod queue;
 #[cfg(test)]
-#[cfg(acyclic_native_runtime_loom)]
+#[cfg(loom)]
 mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }

@@ -3,7 +3,7 @@ use crate::native_mount::run_native_mount_handler_on_meter;
 use crate::{NativeMaterializationWork as Work, WorkCounters};
 
 #[cfg(test)]
-#[cfg(acyclic_fs_loom)]
+#[cfg(loom)]
 pub(super) mod model_checking;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -352,7 +352,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
             if let Some(key) = ready_invalidation(core, &mut state, blocked) {
                 break key;
             }
-            #[cfg(all(test, acyclic_fs_loom))]
+            #[cfg(all(test, loom))]
             model_checking::before_invalidator_wait();
             state = core
                 .invalidation

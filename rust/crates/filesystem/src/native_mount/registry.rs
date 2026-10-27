@@ -50,7 +50,7 @@ pub(super) fn path() -> Result<PathBuf, NativeMountError> {
 pub(super) fn with_directory<T>(
     operation: impl FnOnce(&Path) -> Result<T, NativeMountError>,
 ) -> Result<T, NativeMountError> {
-    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+    #[cfg(all(test, loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {
@@ -126,7 +126,7 @@ impl Registry {
     where
         NativeMountError: From<W::Error>,
     {
-        #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+        #[cfg(all(test, loom, target_os = "linux"))]
         let admitted = (!super::disconnected::kernel::current()
             .is_some_and(|kernel| kernel.registry_admission_disabled()))
         .then(|| {
@@ -134,7 +134,7 @@ impl Registry {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
         });
-        #[cfg(not(all(test, acyclic_fs_native_loom, target_os = "linux")))]
+        #[cfg(not(all(test, loom, target_os = "linux")))]
         let admitted = Some(
             self.admission
                 .lock()
@@ -189,14 +189,14 @@ pub(super) fn shared<W: crate::native_host::NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
-    #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
+    #[cfg(loom)]
     {
         let (directory, file) = open_with_directory(work)?;
         return Ok(crate::sync::native::Arc::new(Registry::new(
             directory, file,
         )));
     }
-    #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+    #[cfg(not(loom))]
     {
         static SHARED: std::sync::Mutex<Option<std::sync::Arc<Registry>>> =
             std::sync::Mutex::new(None);

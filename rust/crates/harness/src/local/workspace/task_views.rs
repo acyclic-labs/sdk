@@ -101,9 +101,9 @@ impl LocalWorkspace {
         // detach a replacement owner's mount at the same path.
         owner.verify().await?;
         let mut workspace = LocalWorkspace {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             state: StateArc::new(AsyncMutex::new(State::new(
                 view.workspace().id(),
@@ -200,9 +200,9 @@ impl LocalWorkspace {
             .map_err(storage)?;
         let mounts = self.mounts_at(&path).await?;
         let workspace = Arc::new(LocalWorkspace {
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(acyclic_harness_loom)))]
+            #[cfg(all(test, not(loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             context_line: mounts.context_line(),
             processes: self.processes.clone(),

@@ -170,7 +170,7 @@ impl<H> Drop for OperationClaim<'_, H> {
 }
 
 #[cfg(test)]
-#[cfg(not(acyclic_loom))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
 

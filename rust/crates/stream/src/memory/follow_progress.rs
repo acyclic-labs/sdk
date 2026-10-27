@@ -78,11 +78,11 @@ impl MemoryStream {
         });
         Ok(stream::try_unfold(state, |mut state| async move {
             loop {
-                #[cfg(acyclic_loom)]
+                #[cfg(loom)]
                 let retain_pending = state.provider.retain_pending_read;
                 let (next, update) = crate::snapshot::read(
                     state,
-                    #[cfg(acyclic_loom)]
+                    #[cfg(loom)]
                     retain_pending,
                 )
                 .await;

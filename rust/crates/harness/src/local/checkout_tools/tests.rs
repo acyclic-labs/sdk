@@ -33,7 +33,7 @@ fn complete<F: Future>(future: F) -> F::Output {
     }
 }
 
-// Both variants call the production serialization function and its cfg(acyclic_harness_loom)
+// Both variants call the production serialization function and its cfg(loom)
 // mutex shim. The negative control releases ownership before publication.
 fn publication(broken: bool) {
     let state = StateArc::new(AsyncMutex::new((0, Some(0))));

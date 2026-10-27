@@ -80,7 +80,7 @@ mod platform;
 mod platform;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
-#[cfg(not(acyclic_native_runtime_loom))]
+#[cfg(not(loom))]
 mod scale_tests;
 #[cfg(test)]
 mod tests;

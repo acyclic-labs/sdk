@@ -1,5 +1,4 @@
 //! Production negotiation under reordered replies, failed sends and short reads.
-#![cfg(feature = "tui")]
 
 use acyclic_harness_tui::term::Multiplexer;
 use alacritty_terminal::event::EventListener;

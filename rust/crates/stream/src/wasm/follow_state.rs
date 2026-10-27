@@ -48,6 +48,6 @@ impl FollowState {
     }
 }
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(loom)]
 #[path = "../../publication-models/cursor.rs"]
 mod models;
