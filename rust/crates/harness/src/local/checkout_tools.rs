@@ -12,7 +12,6 @@ pub(super) mod access;
 pub(super) mod capture;
 mod git;
 mod output;
-pub(super) mod publisher;
 pub(super) mod reconciliation;
 pub(super) mod shell;
 #[cfg(test)]
