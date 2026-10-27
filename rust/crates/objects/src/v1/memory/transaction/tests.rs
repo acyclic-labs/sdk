@@ -106,7 +106,7 @@ proptest! {
                     if phase == 2 { return Err(Unavailable.into()); }
                     Ok((identity.idempotency_key.clone().into(), Receipt {
                         digest, response: response.encode_to_vec().into(), put_info: Some(response.clone().into()),
-                        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+                        #[cfg(all(any(feature = "local", feature = "s3"), not(target_arch = "wasm32")))]
                         kind: 2,
                     }))
                 },

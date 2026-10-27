@@ -32,7 +32,7 @@ pub(in crate::v1::memory) fn timestamp() -> Option<prost_types::Timestamp> {
     })
 }
 
-pub(super) fn encoded() {
+pub(in crate::v1::memory) fn encoded() {
     let mut visits = VISITS.get();
     visits.encoded += 1;
     VISITS.set(visits);

@@ -5,6 +5,7 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
 #[cfg(any(
     feature = "grpc",
     feature = "local",
+    feature = "postgres",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
@@ -227,6 +228,7 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
 #[cfg(any(
     feature = "grpc",
     feature = "local",
+    feature = "postgres",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
@@ -247,6 +249,7 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
 #[cfg(any(
     feature = "grpc",
     feature = "local",
+    feature = "postgres",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]

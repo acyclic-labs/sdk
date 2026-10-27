@@ -1,7 +1,8 @@
 //! One canonical wire conversion for ordinary deltas and streamed checkpoints.
+use super::bodies::bodies;
 use super::*;
 
-pub(super) fn bucket_record(
+pub(in crate::v1::memory) fn bucket_record(
     name: &str,
     bucket: &Bucket,
     publication: &mut Publication,
@@ -25,7 +26,7 @@ pub(super) fn bucket_record(
     })
 }
 
-pub(super) fn object_record(
+pub(in crate::v1::memory) fn object_record(
     name: &str,
     key: &str,
     value: &Stored,
@@ -39,7 +40,7 @@ pub(super) fn object_record(
     })
 }
 
-pub(super) fn upload_record(
+pub(in crate::v1::memory) fn upload_record(
     id: &str,
     upload: &Upload,
     publication: &mut Publication,
@@ -58,7 +59,7 @@ pub(super) fn upload_record(
     })
 }
 
-pub(super) fn part_record(
+pub(in crate::v1::memory) fn part_record(
     id: &str,
     number: u32,
     receipt: &wire::UploadedPart,
@@ -78,7 +79,7 @@ pub(super) fn part_record(
     })
 }
 
-pub(super) fn receipt_record(
+pub(in crate::v1::memory) fn receipt_record(
     key: &str,
     receipt: &Receipt,
     publication: &mut Publication,

@@ -114,7 +114,10 @@ fn write(core: &MemoryObjects, cancelled: &AtomicBool, mode: Mode, fault: Fault)
                     digest: [9; 32],
                     response: info.encode_to_vec().into(),
                     put_info: Some(info.clone().into()),
-                    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+                    #[cfg(all(
+                        any(feature = "local", feature = "s3"),
+                        not(target_arch = "wasm32")
+                    ))]
                     kind: 2,
                 },
             ))

@@ -1,56 +1,5 @@
 use super::*;
 
-pub(super) fn bodies(
-    body: &StoredBody,
-    publication: &mut Publication,
-) -> Result<Vec<BodyRecord>, NativeObjectsError> {
-    fn ordered(
-        body: &StoredBody,
-        out: &mut Vec<BodyRecord>,
-        publication: &mut Publication,
-    ) -> Result<(), NativeObjectsError> {
-        #[cfg(test)]
-        work::encoded();
-        match body {
-            StoredBody::Local {
-                digest,
-                length,
-                location,
-                ..
-            } => {
-                let (segment, offset, journal) = match location {
-                    LocalBodyLocation::Segment { id, offset } => {
-                        (publication.bytes(id)?, *offset, false)
-                    }
-                    LocalBodyLocation::Journal { offset } => (Vec::new(), *offset, true),
-                };
-                let digest = publication.bytes(digest)?;
-                publication.push(
-                    out,
-                    BodyRecord {
-                        segment,
-                        digest,
-                        length: *length as u64,
-                        offset,
-                        journal,
-                    },
-                )?;
-                Ok(())
-            }
-            StoredBody::Composite { parts, .. } => {
-                for part in parts.value.iter() {
-                    ordered(part, out, publication)?;
-                }
-                Ok(())
-            }
-            _ => Err(Error::from(Unavailable).into()),
-        }
-    }
-    let mut output = Vec::new();
-    ordered(body, &mut output, publication)?;
-    Ok(output)
-}
-
 pub(super) fn changed_keys(
     before: Option<&Bucket>,
     next: &Bucket,

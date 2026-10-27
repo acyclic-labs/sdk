@@ -25,6 +25,8 @@ pub mod grpc;
 mod head_tests;
 pub mod http_response;
 pub mod persistence;
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub mod postgres;
 pub mod preparation;
 pub mod request;
 pub mod runtime;
@@ -49,7 +51,11 @@ mod http_codec;
 mod http_validation;
 #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
 mod interest;
-#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 mod journal;
 #[cfg(feature = "local")]
 mod local;

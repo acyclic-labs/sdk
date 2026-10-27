@@ -5,6 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::v1::{Error, wire::ErrorCode::Unavailable};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+mod remote;
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub(crate) use remote::{ImmutableBodies, RemoteBody};
 
 #[cfg(test)]
 thread_local! {
@@ -121,6 +125,8 @@ where
 #[derive(Clone, PartialEq)]
 pub(crate) enum StoredBody {
     Memory(acyclic_stream::OwnedBytes),
+    #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+    Remote(RemoteBody),
     Composite {
         parts: Arc<crate::v1::Guarded<Vec<StoredBody>>>,
         length: usize,
@@ -179,6 +185,8 @@ impl StoredBody {
         LENGTH_READS.with(|count| count.set(count.get() + 1));
         match self {
             Self::Memory(body) => body.len(),
+            #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+            Self::Remote(body) => body.length,
             Self::Composite { length, .. } => *length,
             #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             Self::Local { length, .. } => *length,
@@ -189,6 +197,8 @@ impl StoredBody {
     pub(crate) fn local_references(&self, output: &mut BTreeSet<LocalBodyReference>) {
         match self {
             Self::Memory(_) => {}
+            #[cfg(feature = "s3")]
+            Self::Remote(_) => {}
             Self::Composite { parts, .. } => {
                 for part in parts.value.iter() {
                     part.local_references(output);
@@ -228,6 +238,8 @@ impl StoredBody {
     fn backend(&self) -> &'static str {
         match self {
             Self::Memory(_) => "memory",
+            #[cfg(feature = "s3")]
+            Self::Remote(_) => "remote",
             Self::Composite { .. } => "composite",
             #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             Self::Local { location, .. } => match location {
@@ -276,6 +288,8 @@ impl StoredBody {
         }
         match self {
             Self::Memory(_) => unreachable!("memory reads use the direct path"),
+            #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+            Self::Remote(body) => body.read(start, end, mode).await,
             Self::Composite { parts, .. } => {
                 let mut offset = 0usize;
                 for part in parts.value.iter() {

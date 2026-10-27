@@ -1,4 +1,3 @@
-use super::super::response;
 use super::*;
 use crate::LocalObjectsLimits;
 use crate::body::LocalBodyLocation;
@@ -10,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAGIC: &[u8] = b"ACYCLIC-OBJECTS-V1-LOCAL\0\x01";
-pub(super) const RECORD_LIMIT: usize = 2 * 1024 * 1024;
+pub(super) use super::durable::RECORD_LIMIT;
 const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Failure to open or recover local Objects storage.
@@ -56,7 +55,6 @@ pub(super) struct Journal {
     fault_checkpoint: std::sync::atomic::AtomicU64,
 }
 
-mod changes;
 mod checkpoint;
 mod delta;
 mod inline;
@@ -71,11 +69,11 @@ mod tests;
 #[cfg(test)]
 pub(super) mod work;
 
-use changes::*;
+pub(crate) use super::durable::Publication;
+use super::durable::{bodies::bodies, changes::*, protocol::*};
 use delta::*;
 pub(crate) use opening::open;
 use protocol::*;
-pub(crate) use publication::Publication;
 use publication::{composite_publication, unpersisted};
 use replay::*;
 
@@ -96,19 +94,6 @@ fn open_error(error: NativeObjectsError) -> LocalOpenError {
             _ => LocalOpenError::Unavailable,
         },
         _ => LocalOpenError::Unavailable,
-    }
-}
-
-pub(super) fn response_kind<R>() -> Result<u32, Error> {
-    match std::any::type_name::<R>().rsplit("::").next() {
-        Some("Bucket") => Ok(1),
-        Some("ObjectInfo") => Ok(2),
-        Some("DeleteBucketResponse") => Ok(3),
-        Some("DeleteObjectResponse") => Ok(4),
-        Some("MultipartUpload") => Ok(5),
-        Some("UploadedPart") => Ok(6),
-        Some("AbortMultipartResponse") => Ok(7),
-        _ => Err(Unavailable.into()),
     }
 }
 

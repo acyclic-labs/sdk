@@ -62,7 +62,7 @@ pub(super) fn publish(
                 etag: next_id(state)?,
                 size,
                 metadata,
-                last_modified: Some(timestamp()?),
+                last_modified: Some(state.publication_time.clone().map_or_else(timestamp, Ok)?),
             };
             Ok((info.clone().into(), info))
         },

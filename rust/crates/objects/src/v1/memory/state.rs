@@ -6,8 +6,27 @@ pub(in crate::v1) struct State {
     pub(super) uploads: OrdMap<SharedInfo<String>, Upload>,
     pub(super) receipts: OrdMap<SharedInfo<String>, Receipt>,
     pub(super) sequence: u64,
+    /// A durable command's sampled time; ordinary providers sample the clock.
+    pub(super) publication_time: Option<prost_types::Timestamp>,
     /// Body bytes of current objects and staged parts, maintained by [`stored_bytes`].
     pub(super) body_bytes: usize,
+}
+impl State {
+    pub(super) fn entry_count(&self) -> usize {
+        self.buckets.len()
+            + self.uploads.len()
+            + self.receipts.len()
+            + self
+                .buckets
+                .values()
+                .map(|bucket| bucket.objects.len())
+                .sum::<usize>()
+            + self
+                .uploads
+                .values()
+                .map(|upload| upload.parts.len())
+                .sum::<usize>()
+    }
 }
 #[derive(Clone)]
 pub(super) struct Bucket {
@@ -31,7 +50,7 @@ pub(super) struct Receipt {
     pub(super) digest: [u8; 32],
     pub(super) response: OwnedBytes,
     pub(super) put_info: Option<SharedInfo>,
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(feature = "local", feature = "s3"), not(target_arch = "wasm32")))]
     pub(super) kind: u32,
 }
 
