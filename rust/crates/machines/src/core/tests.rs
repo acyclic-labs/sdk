@@ -120,6 +120,7 @@ async fn cancellation_retains_cleanup_until_each_delete_is_acknowledged() -> Tes
     core.bind_target(id, "existing-parent").await?;
     core.fail(id, &ProviderError::Unavailable).await?;
     core.cancel(id).await?;
+    let cancelled = core.join_settlement(key, id).await?;
     drop(core);
     let core = open(dir.path()).await?;
     assert_eq!(core.created(id).await?, [machine_resource("child-0")]);
@@ -133,6 +134,7 @@ async fn cancellation_retains_cleanup_until_each_delete_is_acknowledged() -> Tes
     core.deleted(id, &machine_resource("late-child")).await?;
     assert!(core.created(id).await?.is_empty());
     let terminal = core.join_settlement(key, id).await?;
+    assert_eq!(terminal, cancelled);
     assert_eq!(
         terminal.operation,
         OperationObservation {
@@ -178,6 +180,7 @@ async fn failed_operation_retains_cleanup_and_never_replays() -> TestResult {
     ));
     core.deleted(id, &machine_resource("child")).await?;
     assert!(core.created(id).await?.is_empty());
+    assert_eq!(terminal, core.join_settlement(key, id).await?);
     Ok(())
 }
 

@@ -81,6 +81,23 @@ struct StoredOperation {
     outcome: Option<journal::Blob>,
 }
 
+/// Immutable terminal publication. Later cleanup acknowledgments may change the
+/// custody point, but cannot change the operation's settled result or CommitId.
+#[derive(Serialize, Deserialize)]
+struct StoredSettlement {
+    id: OperationId,
+    key: IdempotencyKey,
+    phase: OperationPhase,
+    outcome: Option<journal::Blob>,
+}
+
+fn terminal(phase: OperationPhase) -> bool {
+    matches!(
+        phase,
+        OperationPhase::Succeeded | OperationPhase::Failed | OperationPhase::Cancelled
+    )
+}
+
 impl StoredOperation {
     const fn observation(&self) -> OperationObservation {
         OperationObservation {
@@ -235,13 +252,28 @@ impl OperationRegistry {
         mut f: impl FnMut(&mut StoredOperation) -> R + acyclic_stream::ProviderTask,
     ) -> Result<R, ProviderError> {
         self.journal
-            .update(
+            .update_with(
                 &format!("ops/{id}"),
-                move |entry: &mut Option<StoredOperation>| {
-                    entry
+                |entry: &mut Option<StoredOperation>| {
+                    let record = entry
                         .as_mut()
-                        .map(&mut f)
-                        .ok_or_else(|| ProviderError::NotFound(id.to_string()))
+                        .ok_or_else(|| ProviderError::NotFound(id.to_string()))?;
+                    let was_terminal = terminal(record.phase);
+                    let result = f(record);
+                    let mutations = if !was_terminal && terminal(record.phase) {
+                        vec![self.journal.append(
+                            &format!("ops/{id}/settlement"),
+                            &StoredSettlement {
+                                id: record.id,
+                                key: record.key,
+                                phase: record.phase,
+                                outcome: record.outcome.clone(),
+                            },
+                        )?]
+                    } else {
+                        Vec::new()
+                    };
+                    Ok((result, mutations))
                 },
             )
             .await
@@ -542,16 +574,26 @@ impl OperationRegistry {
         let record = row
             .value
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))?;
-        if !matches!(
-            record.phase,
-            OperationPhase::Succeeded | OperationPhase::Failed | OperationPhase::Cancelled
-        ) {
+        if !terminal(record.phase) {
             return Err(ProviderError::Indeterminate(key));
+        }
+        let row = self
+            .journal
+            .load::<StoredSettlement>(&format!("ops/{id}/settlement"))
+            .await?;
+        let record = row
+            .value
+            .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?;
+        if record.id != id || record.key != key || !terminal(record.phase) {
+            return Err(storage(acyclic_stream::StreamError::InvalidResponse));
         }
         let settlement = row
             .anchor
             .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?;
-        let observation = record.observation();
+        let observation = OperationObservation {
+            id: record.id,
+            phase: record.phase,
+        };
         let outcome = match record.outcome {
             Some(outcome) if record.phase == OperationPhase::Succeeded => {
                 Some(self.journal.outcome(id, &outcome).await?)
