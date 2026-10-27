@@ -39,8 +39,11 @@ mod error_code_tests {
         for (code, error) in [
             ("unimplemented", StreamError::Unsupported),
             ("permission_denied", StreamError::AccessDenied),
+            ("forbidden", StreamError::AccessDenied),
             ("revoked", StreamError::AccessDenied),
+            ("credential_expired", StreamError::AccessDenied),
             ("unauthenticated", StreamError::AccessDenied),
+            ("filter_invalid", StreamError::InvalidArgument),
             ("resource_exhausted", StreamError::Capacity),
             ("invalid_argument", StreamError::InvalidArgument),
             ("not_found", StreamError::NotFound),

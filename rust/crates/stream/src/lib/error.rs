@@ -96,14 +96,16 @@ impl StreamError {
         Self::ALL.into_iter().find(|error| error.code() == code)
     }
 
-    /// Decodes a Session channel's close code: one of [`Self::code`], or the
-    /// gRPC canonical name a server's channel status carries, mapped as the
-    /// unary status mapping maps that status. A refusal such as
+    /// Decodes a Session channel's close code: one of [`Self::code`], an
+    /// authority rejection, or a gRPC canonical status name mapped as the unary
+    /// status mapping maps that status. A refusal such as
     /// `unimplemented` stays a refusal; only an unknown code is unavailability.
     #[must_use]
     pub fn from_session_close(code: &str) -> Self {
         Self::from_code(code).unwrap_or(match code {
-            "permission_denied" | "unauthenticated" | "revoked" => Self::AccessDenied,
+            "permission_denied" | "unauthenticated" | "forbidden" | "revoked"
+            | "credential_expired" => Self::AccessDenied,
+            "filter_invalid" => Self::InvalidArgument,
             "resource_exhausted" => Self::Capacity,
             "unimplemented" => Self::Unsupported,
             _ => Self::Unavailable,
