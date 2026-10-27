@@ -131,6 +131,17 @@ pub struct Queued {
     pub input: TurnInput,
 }
 
+/// A turn in progress: the inbox sequence of the input that started it and
+/// the turn driver's checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Progress {
+    /// Inbox sequence of the turn's starting input.
+    pub inbox: u64,
+    /// Turn driver checkpoint for the next step.
+    pub checkpoint: Vec<u8>,
+}
+
 /// Durable agent state, carried in the actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,8 +181,8 @@ pub struct AgentState {
     pub closed: bool,
     /// `ChildDone` has been sent to the parent.
     pub reported: bool,
-    /// Turn driver checkpoint while a turn is in progress.
-    pub turn: Option<Vec<u8>>,
+    /// The turn in progress.
+    pub turn: Option<Progress>,
     /// While a turn is in progress, the children its recorded spawns open
     /// when it settles, beyond those already open: slots a spawn requested
     /// meanwhile cannot take, so every spawn a tool reported succeeds.
@@ -674,6 +685,11 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
+    // A resumed turn keeps the input that started it.
+    let started = match (&state.turn, &input) {
+        (Some(turn), _) => Some(turn.inbox),
+        (None, input) => input.as_ref().map(|input| input.inbox),
+    };
     let mut turn = driver.step(state, cursor, input).await?;
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
@@ -701,7 +717,10 @@ async fn run<T: TurnDriver + ?Sized>(
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
     let (next, send) = kernel::settle(control(state), wait);
-    state.turn = next.turn.then(|| turn.checkpoint.unwrap_or_default());
+    state.turn = started.filter(|_| next.turn).map(|inbox| Progress {
+        inbox,
+        checkpoint: turn.checkpoint.unwrap_or_default(),
+    });
     state.reserved_children = match state.turn {
         Some(_) => u16::try_from(turn.reserved_children.min(MAX_OPEN_CHILDREN)).unwrap_or(u16::MAX),
         None => 0,

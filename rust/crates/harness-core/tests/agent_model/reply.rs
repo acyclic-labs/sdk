@@ -97,7 +97,16 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
     // m2 was consumed without an entry: a cancel cleared it.
     assert_eq!(ask(state.clone(), "m2", 2).await?, Reply::Dropped);
     assert_eq!(ask(state.clone(), "m6", 6).await?, Reply::Dropped);
-    state.turn = Some(Vec::new());
+    // Another prompt's running turn leaves a dropped prompt dropped.
+    state.turn = Some(Progress {
+        inbox: 7,
+        checkpoint: Vec::new(),
+    });
+    assert_eq!(ask(state.clone(), "m6", 6).await?, Reply::Dropped);
+    state.turn = Some(Progress {
+        inbox: 6,
+        checkpoint: Vec::new(),
+    });
     assert_eq!(ask(state, "m6", 6).await?, Reply::Pending);
 
     // A forked agent searches only its own entries above the inherited base.

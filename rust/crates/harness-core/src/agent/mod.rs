@@ -42,7 +42,7 @@ pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, S
 pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Queued, SpawnOutcome, SpawnRefusal, Step,
+    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome, SpawnRefusal, Step,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{

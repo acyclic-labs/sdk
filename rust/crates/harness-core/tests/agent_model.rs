@@ -591,7 +591,10 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
     state.phase = Phase::WaitingApproval { id: intent("q") };
-    state.turn = Some(Vec::new());
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
     let request = |n: u64| -> Result<InboxRecord> {
         Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
             child: path.child(&id(2))?,
@@ -961,7 +964,10 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
 async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> Result {
     // The turn's tool recorded a spawn into the last slot, then paused.
     let (root, mut state) = one_below_the_child_limit()?;
-    state.turn = Some(Vec::new());
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
     state.phase = Phase::WaitingApproval { id: intent("q") };
     state.reserved_children = 1;
     let driver = script(vec![TurnStep {

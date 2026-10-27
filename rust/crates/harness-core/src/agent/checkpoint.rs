@@ -62,6 +62,9 @@ struct Encoded {
     /// Turn driver checkpoint.
     #[prost(bytes = "vec", optional, tag = "5")]
     turn: Option<Vec<u8>>,
+    /// Inbox sequence of the input that started the turn.
+    #[prost(uint64, optional, tag = "6")]
+    turn_inbox: Option<u64>,
 }
 
 /// `state`, after consuming the inbox records before `cursor`, as checkpoint
@@ -108,7 +111,8 @@ pub(crate) fn encode(state: &AgentState, cursor: u64) -> Result<Vec<u8>, Error> 
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         open_children: ids,
         archive_pending: bitmap,
-        turn,
+        turn_inbox: turn.as_ref().map(|turn| turn.inbox),
+        turn: turn.map(|turn| turn.checkpoint),
     }
     .encode_to_vec())
 }
@@ -143,7 +147,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(AgentState, u64), Error> {
     }
     state.open_children = open_children;
     state.archive_pending = archive_pending;
-    state.turn = encoded.turn;
+    state.turn = match (encoded.turn, encoded.turn_inbox) {
+        (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
+        (None, None) => None,
+        _ => return Err(malformed()),
+    };
     Ok((state, encoded.cursor))
 }
 
@@ -389,6 +397,7 @@ mod tests {
                     path: path.clone(),
                     volumes: adopted.volumes.clone(),
                     policy: adopted.policy.clone(),
+                    conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },
