@@ -20,11 +20,13 @@ use acyclic_harness::{
     executor::{ExecutionEvent, Executor, TurnInput},
     model::ModelContent,
 };
-use acyclic_harness_codex::{CodexConfig, CodexExecutor, Upstream};
-use serde_json::json;
+use acyclic_harness_codex::{
+    CodexConfig, CodexEvent, CodexExecutor, CodexObserver, ItemKind, Upstream,
+};
+use serde_json::{Value, json};
 use std::{
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use support::{
@@ -170,6 +172,87 @@ async fn real_codex_uses_our_tool_edits_the_workspace_and_is_metered() {
         .filter(|e| matches!(e, ExecutionEvent::ToolCompleted { .. }))
         .count();
     assert!(completed >= 2, "the MCP call and the command: {events:?}");
+
+    // Each metered call is journaled with the provider's id for its response, which the meter
+    // was told too: the key that joins a reply to its call.
+    let ids: Vec<Value> = events
+        .iter()
+        .filter_map(|event| match event {
+            ExecutionEvent::Model { event, .. } => Some(journal.json(event)),
+            _ => None,
+        })
+        .filter(|event| event["kind"] == "completed" && event["metadata"].get("usage").is_some())
+        .filter(|event| event["metadata"].get("harness").is_none())
+        .map(|event| event["metadata"]["id"].clone())
+        .collect();
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    assert!(
+        ids.iter()
+            .all(|id| id.as_str().is_some_and(|id| id.starts_with("resp_"))),
+        "{ids:?}"
+    );
+    let told = meter.response_ids.lock().expect("meter").clone();
+    assert_eq!(
+        told.iter().map(|id| json!(id)).collect::<Vec<_>>(),
+        ids,
+        "the meter was told the same ids"
+    );
+}
+
+/// A reasoning summary the model returns reaches the observer as a reasoning item: what a swarm
+/// agent records in its transcript, since the journal keeps no reasoning.
+#[tokio::test]
+#[ignore = "needs ACYCLIC_CODEX_BIN (the pinned codex 0.155.1)"]
+async fn real_codex_reports_reasoning_summaries() {
+    #[derive(Default)]
+    struct Reasoning(Mutex<Vec<String>>);
+    impl CodexObserver for Reasoning {
+        fn event(&self, event: &CodexEvent) {
+            if let CodexEvent::ItemCompleted(item) = event
+                && let ItemKind::Reasoning { text } = &item.kind
+            {
+                self.0.lock().expect("observer").push(text.clone());
+            }
+        }
+    }
+    let upstream = FakeUpstream::start(|n, _| {
+        let reasoning = json!({"type": "reasoning", "id": format!("rs_{n}"),
+            "summary": [{"type": "summary_text", "text": "**Plan** Answer directly."}]});
+        let mut events = message_turn(n, "done");
+        events.insert(
+            1,
+            json!({"type": "response.output_item.added", "output_index": 0, "item": reasoning}),
+        );
+        events.insert(
+            2,
+            json!({"type": "response.output_item.done", "output_index": 0, "item": reasoning}),
+        );
+        for event in &mut events[3..] {
+            if let Some(index) = event.get_mut("output_index") {
+                *index = json!(1);
+            }
+        }
+        sse(events)
+    })
+    .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let observer = Arc::new(Reasoning::default());
+    let output = executor(
+        &upstream,
+        dir.path(),
+        Arc::new(RecordingMeter::default()),
+        4,
+    )
+    .with_observer(observer.clone())
+    .execute(input(4), &Journal::default())
+    .await
+    .expect("turn succeeds");
+    assert_eq!(output.text, "done");
+    let seen = observer.0.lock().expect("observer").clone();
+    assert!(
+        seen.iter().any(|text| text.contains("Answer directly.")),
+        "{seen:?}"
+    );
 }
 
 #[tokio::test]
