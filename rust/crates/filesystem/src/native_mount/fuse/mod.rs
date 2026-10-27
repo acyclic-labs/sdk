@@ -143,6 +143,7 @@ mod packet_publication;
 mod packet_router;
 mod packet_session;
 mod vhost_control;
+mod vhost_session;
 mod vring;
 mod vring_control;
 mod vring_worker;
