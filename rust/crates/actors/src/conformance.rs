@@ -14,7 +14,7 @@ use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, FollowFilter, IdempotencyKey,
-    ProviderPlatform, StreamError, StreamPath, StreamProvider,
+    ProviderPlatform, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt};
@@ -474,7 +474,8 @@ async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Fai
 pub struct Measurement {
     /// Committed inbox deliveries and corresponding outbox publications.
     pub deliveries: usize,
-    /// Time from the first measured send to the final observed publication.
+    /// Wall-clock time from the first measured send to the final observed
+    /// publication, at millisecond resolution on native and Wasm hosts.
     pub elapsed: std::time::Duration,
     /// Provider calls during the measured steady-state workload.
     pub requests: Requests,
@@ -492,12 +493,13 @@ pub async fn bench<T: Backend + ?Sized>(target: &T) -> Result<Measurement, Failu
     }
     let ledger = target.requests();
     let before = ledger.requests();
-    let started = std::time::Instant::now();
+    let clock = acyclic_stream::SystemUnixMillisClock;
+    let started = clock.now_unix_millis();
     for _ in 0..DELIVERIES {
         fixture.send("emit").await?;
     }
     let observed = fixture.observe(DELIVERIES + 1, BUDGET_MS).await?;
-    let elapsed = started.elapsed();
+    let elapsed = std::time::Duration::from_millis(clock.now_unix_millis().saturating_sub(started));
     let expected = (0..=DELIVERIES)
         .map(|i| format!("r{i}"))
         .collect::<Vec<_>>();
