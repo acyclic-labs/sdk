@@ -1,0 +1,207 @@
+
+running 1 test
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:73:30:
+write attestation changed the original admission
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10992) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:2:1:
+Test failed: write attestation changed the original admission.
+minimal failing input: payload = [
+    0,
+], identity = [
+    0,
+]
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+test filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence ... FAILED
+
+failures:
+
+failures:
+    filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 940 filtered out; finished in 0.03s
+

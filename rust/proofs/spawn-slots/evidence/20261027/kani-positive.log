@@ -1,0 +1,356 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling agent-spawn-slot-proofs v0.0.0 (/mnt/bb/verify-1697/cac82c7/source/rust/proofs/spawn-slots)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized] target(s) in 0.76s
+Checking harness replay_and_untrusted_reservation_counts_do_not_overflow...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/bb/jobs/job-s5zcj9q4/target/kani/x86_64-unknown-linux-gnu/debug/build/agent-spawn-slot-proofs/e2a0c25f0b3745d3/out/agent_spawn_slot_proofs-e2a0c25f0b3745d3__RNvCscfC6hGcgYzU_23agent_spawn_slot_proofs55replay_and_untrusted_reservation_counts_do_not_overflow.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.0153455s
+size of program expression: 234 steps
+slicing removed 117 assignments
+Generated 6 VCC(s), 4 remaining after simplification
+Runtime Postprocess Equation: 7.6841e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00380135s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 0.000464894s
+Solving with CaDiCaL 3.0.0
+751 variables, 1725 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000566965s
+Runtime decision procedure: 0.00466207s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+752 variables, 1726 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00202614s
+Runtime decision procedure: 0.00247147s
+
+RESULTS:
+Check 1: replay_and_untrusted_reservation_counts_do_not_overflow.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: slots::client_ceiling(true, reserved) <= slots::MAX_OPEN_CHILDREN"
+	 - Location: src/lib.rs:46:5 in function replay_and_untrusted_reservation_counts_do_not_overflow
+
+Check 2: replay_and_untrusted_reservation_counts_do_not_overflow.assertion.2
+	 - Status: SUCCESS
+	 - Description: "assertion failed: slots::admits(open, 0, true)"
+	 - Location: src/lib.rs:47:5 in function replay_and_untrusted_reservation_counts_do_not_overflow
+
+Check 3: replay_and_untrusted_reservation_counts_do_not_overflow.assertion.3
+	 - Status: SUCCESS
+	 - Description: "assertion failed: slots::client_ceiling(false, reserved) == slots::MAX_OPEN_CHILDREN"
+	 - Location: src/lib.rs:48:5 in function replay_and_untrusted_reservation_counts_do_not_overflow
+
+
+SUMMARY:
+ ** 0 of 3 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.095088035s
+
+Checking harness completing_a_child_does_not_release_a_paused_turns_slot...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/bb/jobs/job-s5zcj9q4/target/kani/x86_64-unknown-linux-gnu/debug/build/agent-spawn-slot-proofs/e2a0c25f0b3745d3/out/agent_spawn_slot_proofs-e2a0c25f0b3745d3__RNvCscfC6hGcgYzU_23agent_spawn_slot_proofs55completing_a_child_does_not_release_a_paused_turns_slot.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.00535356s
+size of program expression: 247 steps
+slicing removed 96 assignments
+Generated 22 VCC(s), 10 remaining after simplification
+Runtime Postprocess Equation: 6.4511e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00105328s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 5.27e-06s
+Solving with CaDiCaL 3.0.0
+1208 variables, 3419 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.01031s
+Runtime decision procedure: 0.0114735s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1209 variables, 3420 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000309913s
+Runtime decision procedure: 0.000353683s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1210 variables, 3421 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00159359s
+Runtime decision procedure: 0.00160978s
+
+RESULTS:
+Check 1: completing_a_child_does_not_release_a_paused_turns_slot.assertion.1
+	 - Status: SUCCESS
+	 - Description: "attempt to subtract with overflow"
+	 - Location: src/lib.rs:37:43 in function completing_a_child_does_not_release_a_paused_turns_slot
+
+Check 2: completing_a_child_does_not_release_a_paused_turns_slot.assertion.2
+	 - Status: SUCCESS
+	 - Description: "attempt to subtract with overflow"
+	 - Location: src/lib.rs:39:13 in function completing_a_child_does_not_release_a_paused_turns_slot
+
+Check 3: completing_a_child_does_not_release_a_paused_turns_slot.assertion.3
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:39:13 in function completing_a_child_does_not_release_a_paused_turns_slot
+
+Check 4: completing_a_child_does_not_release_a_paused_turns_slot.assertion.4
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:39:46 in function completing_a_child_does_not_release_a_paused_turns_slot
+
+Check 5: completing_a_child_does_not_release_a_paused_turns_slot.assertion.5
+	 - Status: SUCCESS
+	 - Description: "assertion failed: open - 1 + usize::from(after) == open + usize::from(reserved)"
+	 - Location: src/lib.rs:39:5 in function completing_a_child_does_not_release_a_paused_turns_slot
+
+Check 6: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 7: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 8: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 9: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 10: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 11: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 12: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 13: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 14: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 15: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 16: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+Check 17: std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u16>::lt
+
+
+SUMMARY:
+ ** 0 of 17 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.04648243s
+
+Checking harness every_recorded_child_fits_after_client_admission...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/bb/jobs/job-s5zcj9q4/target/kani/x86_64-unknown-linux-gnu/debug/build/agent-spawn-slot-proofs/e2a0c25f0b3745d3/out/agent_spawn_slot_proofs-e2a0c25f0b3745d3__RNvCscfC6hGcgYzU_23agent_spawn_slot_proofs48every_recorded_child_fits_after_client_admission.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.0035849s
+size of program expression: 264 steps
+slicing removed 103 assignments
+Generated 16 VCC(s), 16 remaining after simplification
+Runtime Postprocess Equation: 5.057e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00140997s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 5.26e-06s
+Solving with CaDiCaL 3.0.0
+1807 variables, 6300 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000207831s
+Runtime decision procedure: 0.00169756s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1808 variables, 6301 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.00305165s
+Runtime decision procedure: 0.00309005s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1809 variables, 6302 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00732095s
+Runtime decision procedure: 0.00734919s
+
+RESULTS:
+Check 1: every_recorded_child_fits_after_client_admission.assertion.1
+	 - Status: SUCCESS
+	 - Description: "attempt to subtract with overflow"
+	 - Location: src/lib.rs:22:30 in function every_recorded_child_fits_after_client_admission
+
+Check 2: every_recorded_child_fits_after_client_admission.assertion.2
+	 - Status: SUCCESS
+	 - Description: "attempt to subtract with overflow"
+	 - Location: src/lib.rs:23:29 in function every_recorded_child_fits_after_client_admission
+
+Check 3: every_recorded_child_fits_after_client_admission.assertion.3
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:24:25 in function every_recorded_child_fits_after_client_admission
+
+Check 4: every_recorded_child_fits_after_client_admission.assertion.4
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:25:13 in function every_recorded_child_fits_after_client_admission
+
+Check 5: every_recorded_child_fits_after_client_admission.assertion.5
+	 - Status: SUCCESS
+	 - Description: "assertion failed: after_clients + reserved <= slots::MAX_OPEN_CHILDREN"
+	 - Location: src/lib.rs:25:5 in function every_recorded_child_fits_after_client_admission
+
+Check 6: every_recorded_child_fits_after_client_admission.assertion.6
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:28:31 in function every_recorded_child_fits_after_client_admission
+
+Check 7: every_recorded_child_fits_after_client_admission.assertion.7
+	 - Status: SUCCESS
+	 - Description: "attempt to subtract with overflow"
+	 - Location: src/lib.rs:28:31 in function every_recorded_child_fits_after_client_admission
+
+Check 8: every_recorded_child_fits_after_client_admission.assertion.8
+	 - Status: SUCCESS
+	 - Description: "assertion failed: slots::admits(after_clients + reserved - 1, slots::MAX_OPEN_CHILDREN, false)"
+	 - Location: src/lib.rs:28:9 in function every_recorded_child_fits_after_client_admission
+
+
+SUMMARY:
+ ** 0 of 8 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.042727407s
+
+Checking harness client_cannot_take_a_recorded_slot...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/bb/jobs/job-s5zcj9q4/target/kani/x86_64-unknown-linux-gnu/debug/build/agent-spawn-slot-proofs/e2a0c25f0b3745d3/out/agent_spawn_slot_proofs-e2a0c25f0b3745d3__RNvCscfC6hGcgYzU_23agent_spawn_slot_proofs34client_cannot_take_a_recorded_slot.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.0025387s
+size of program expression: 176 steps
+slicing removed 69 assignments
+Generated 8 VCC(s), 8 remaining after simplification
+Runtime Postprocess Equation: 3.908e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00107139s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 4.98e-06s
+Solving with CaDiCaL 3.0.0
+1408 variables, 4328 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000133321s
+Runtime decision procedure: 0.00126985s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1409 variables, 4329 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 5.839e-05s
+Runtime decision procedure: 7.72e-05s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1410 variables, 4330 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.0026132s
+Runtime decision procedure: 0.00262664s
+
+RESULTS:
+Check 1: client_cannot_take_a_recorded_slot.assertion.1
+	 - Status: SUCCESS
+	 - Description: "attempt to subtract with overflow"
+	 - Location: src/lib.rs:9:30 in function client_cannot_take_a_recorded_slot
+
+Check 2: client_cannot_take_a_recorded_slot.assertion.2
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:12:17 in function client_cannot_take_a_recorded_slot
+
+Check 3: client_cannot_take_a_recorded_slot.assertion.3
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:12:17 in function client_cannot_take_a_recorded_slot
+
+Check 4: client_cannot_take_a_recorded_slot.assertion.4
+	 - Status: SUCCESS
+	 - Description: "assertion failed: open + 1 + reserved <= slots::MAX_OPEN_CHILDREN"
+	 - Location: src/lib.rs:12:9 in function client_cannot_take_a_recorded_slot
+
+
+SUMMARY:
+ ** 0 of 4 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.02783461s
+
+Manual Harness Summary:
+Complete - 4 successfully verified harnesses, 0 failures, 4 total.

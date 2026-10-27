@@ -1,0 +1,17 @@
+
+running 1 test
+
+thread 'slot_schedules::a_child_finishing_during_pause_cannot_strand_a_recorded_replay' (10590) panicked at rust/crates/harness-core/tests/agent_model/slot_schedules.rs:23:5:
+assertion `left == right` failed: vacated slot still belongs to the paused turn
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test slot_schedules::a_child_finishing_during_pause_cannot_strand_a_recorded_replay ... FAILED
+
+failures:
+
+failures:
+    slot_schedules::a_child_finishing_during_pause_cannot_strand_a_recorded_replay
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+

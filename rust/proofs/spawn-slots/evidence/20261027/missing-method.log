@@ -1,0 +1,723 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+   Compiling serde_core v1.0.229
+    Checking cfg-if v1.0.5
+   Compiling serde v1.0.229
+    Checking once_cell v1.21.4
+    Checking memchr v2.8.3
+    Checking pin-project-lite v0.2.17
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+    Checking futures-core v0.3.34
+   Compiling anyhow v1.0.104
+    Checking futures-sink v0.3.34
+   Compiling either v1.19.0
+    Checking futures-io v0.3.34
+    Checking futures-task v0.3.34
+    Checking slab v0.4.12
+    Checking itoa v1.0.18
+   Compiling version_check v0.9.5
+    Checking smallvec v1.16.2
+    Checking typenum v1.20.1
+   Compiling autocfg v1.5.1
+   Compiling bitflags v2.13.2
+   Compiling heck v0.5.0
+    Checking equivalent v1.0.2
+   Compiling rustix v1.1.5
+   Compiling getrandom v0.4.3
+   Compiling bytes v1.12.1
+   Compiling pulldown-cmark v0.13.4
+   Compiling prettyplease v0.2.37
+   Compiling unicase v2.10.0
+   Compiling hashbrown v0.17.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling foldhash v0.1.5
+   Compiling regex-syntax v0.8.11
+    Checking subtle v2.6.1
+   Compiling fastrand v2.5.0
+    Checking allocator-api2 v0.2.21
+    Checking foldhash v0.2.0
+   Compiling fixedbitset v0.5.7
+   Compiling log v0.4.34
+    Checking stable_deref_trait v1.2.1
+   Compiling multimap v0.10.1
+    Checking percent-encoding v2.3.2
+   Compiling protoc-bin-vendored-macos-x86_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.3.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.3.0
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.3.0
+   Compiling protoc-bin-vendored-linux-s390_64 v3.3.0
+   Compiling protoc-bin-vendored-win32 v3.3.0
+   Compiling icu_properties_data v2.3.0
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.3.0
+    Checking writeable v0.6.4
+    Checking litemap v0.8.3
+    Checking scopeguard v1.2.0
+    Checking tower-service v0.3.3
+    Checking cpufeatures v0.3.1
+    Checking utf8_iter v1.0.4
+    Checking untrusted v0.9.0
+   Compiling thiserror v2.0.21
+   Compiling icu_normalizer_data v2.3.0
+   Compiling zmij v1.0.23
+   Compiling httparse v1.10.1
+    Checking ipnet v2.12.2
+   Compiling serde_json v1.0.151
+    Checking base64 v0.23.1
+    Checking atomic-waker v1.1.2
+   Compiling rustls v0.23.46
+    Checking try-lock v0.2.5
+   Compiling rustversion v1.0.23
+    Checking fnv v1.0.7
+   Compiling pkg-config v0.3.34
+    Checking httpdate v1.0.3
+   Compiling getrandom v0.3.4
+    Checking tower-layer v0.3.3
+   Compiling wasm-bindgen-shared v0.2.117
+   Compiling semver v1.0.28
+    Checking rand_core v0.10.1
+    Checking const-oid v0.10.2
+    Checking cpufeatures v0.2.17
+   Compiling icu_casemap_data v2.3.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling io-uring v0.7.15
+    Checking mime v0.3.17
+   Compiling cfg_aliases v0.2.2
+    Checking base64 v0.22.1
+    Checking matchit v0.8.4
+    Checking lazy_static v1.5.1
+   Compiling io-lifetimes v2.0.4
+    Checking signature v3.0.0
+   Compiling io-lifetimes v3.0.1
+   Compiling termcolor v1.4.1
+   Compiling prettyplease v0.3.0
+    Checking mod_use v0.2.3
+   Compiling ref-cast v1.0.27
+   Compiling parking_lot_core v0.9.12
+    Checking arrayvec v0.7.8
+   Compiling io-extras v0.19.0
+   Compiling zerocopy v0.8.60
+   Compiling pastey v0.2.3
+    Checking constant_time_eq v0.4.2
+    Checking bytemuck v1.25.2
+   Compiling cap-primitives v4.0.3
+   Compiling acyclic-host-platform v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/host-platform)
+    Checking twox-hash v2.1.5
+   Compiling bumpalo v3.20.3
+    Checking bitflags v1.3.2
+    Checking simdutf8 v0.1.5
+   Compiling cc v1.6.0
+   Compiling itertools v0.14.0
+    Checking futures-channel v0.3.34
+   Compiling num-traits v0.2.19
+    Checking tracing-core v0.1.36
+   Compiling hashbrown v0.15.5
+   Compiling indexmap v2.14.2
+   Compiling generic-array v0.14.7
+   Compiling protoc-bin-vendored v3.3.0
+    Checking lock_api v0.4.14
+    Checking want v0.3.2
+    Checking sync_wrapper v1.0.2
+    Checking hybrid-array v0.4.15
+   Compiling rustc_version v0.4.1
+    Checking form_urlencoded v1.2.2
+   Compiling compio-driver v0.12.5
+    Checking chacha20 v0.10.2
+    Checking sharded-slab v0.1.7
+    Checking ed25519 v3.0.0
+    Checking thread_local v1.1.10
+    Checking compio-send-wrapper v0.7.2
+   Compiling ahash v0.8.12
+    Checking aho-corasick v1.1.5
+    Checking rand_core v0.9.5
+   Compiling cap-std v4.0.3
+    Checking ambient-authority v0.0.2
+   Compiling option-ext v0.2.0
+    Checking maybe-owned v0.3.4
+    Checking core_detect v1.0.0
+    Checking openssl-probe v0.2.1
+    Checking ryu v1.0.23
+   Compiling unicode-general-category v1.1.0
+    Checking borrow-or-share v0.2.4
+   Compiling cap-fs-ext v4.0.3
+    Checking imbl-sized-chunks v0.2.0
+   Compiling multiversion_no_op v1.0.0
+   Compiling jsonschema-value v0.58.6
+    Checking archery v1.2.3
+    Checking bit-vec v0.8.0
+    Checking micromap v0.3.0
+   Compiling rmcp v3.5.1
+    Checking anstyle v1.0.14
+    Checking hex v0.4.3
+    Checking tinyvec v1.13.3
+    Checking num-cmp v0.1.0
+    Checking outref v0.5.2
+    Checking bytecount v0.6.9
+    Checking vsimd v0.8.0
+    Checking unicode-width v0.2.2
+    Checking arraydeque v0.5.1
+    Checking virtio-bindings v0.2.7
+    Checking acyclic-tonic-web-wasm-client v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/vendor/tonic-web-wasm-client-0.9.2)
+    Checking dyn-clone v1.0.20
+    Checking data-encoding v2.11.1
+   Compiling regex-automata v0.4.18
+   Compiling petgraph v0.8.3
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+   Compiling curve25519-dalek v5.0.0
+    Checking spin v0.9.9
+    Checking ruzstd v0.9.1
+    Checking safe_arch v0.7.4
+    Checking rand_xoshiro v0.7.0
+    Checking diffy v0.5.2
+    Checking tracing-subscriber v0.3.23
+    Checking bit-set v0.8.0
+    Checking annotate-snippets v0.12.16
+    Checking unicode-normalization v0.1.25
+    Checking granit-parser v1.3.0
+    Checking jsonschema-regex v0.58.6
+    Checking uuid-simd v0.8.0
+    Checking flume v0.12.0
+    Checking crossbeam-queue v0.3.14
+   Compiling encoding_rs v0.8.42
+   Compiling wasm-bindgen v0.2.117
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+    Checking wide v0.7.33
+   Compiling ring v0.17.14
+   Compiling libdbus-sys v0.2.7
+   Compiling blake3 v1.8.7
+    Checking digest v0.11.3
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking block-padding v0.3.3
+    Checking sha2 v0.11.0
+    Checking socket2 v0.6.5
+    Checking errno v0.3.14
+    Checking mio v1.2.4
+    Checking getrandom v0.2.17
+    Checking linux-keyutils v0.2.5
+    Checking vmm-sys-util v0.15.0
+   Compiling dirs-sys v0.5.0
+    Checking num-integer v0.1.47
+    Checking num-complex v0.4.6
+    Checking digest v0.10.7
+    Checking ordered-float v2.10.1
+    Checking acyclic-fs-base v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/filesystem-base)
+   Compiling pulldown-cmark-to-cmark v22.0.3
+    Checking inout v0.1.4
+    Checking signal-hook-registry v1.4.8
+    Checking rand v0.10.3
+    Checking parking_lot v0.12.5
+   Compiling dirs v6.0.0
+    Checking cipher v0.4.4
+    Checking hmac v0.12.1
+    Checking num-bigint v0.4.8
+    Checking num-iter v0.1.46
+    Checking sha2 v0.10.9
+    Checking hkdf v0.12.4
+    Checking cbc v0.1.2
+    Checking aes v0.8.4
+   Compiling tempfile v3.27.0
+   Compiling regex v1.13.1
+    Checking serde_bytes v0.11.19
+    Checking uuid v1.27.0
+    Checking imbl v7.0.2
+    Checking encoding_rs_io v0.1.8
+    Checking serde-saphyr v1.3.0
+    Checking num-rational v0.4.2
+    Checking num v0.4.3
+    Checking fraction v0.17.0
+    Checking fancy-regex v0.19.2
+   Compiling wasm-bindgen-macro-support v0.2.117
+    Checking rustix-linux-procfs v0.1.1
+    Checking fs-set-times v0.20.3
+   Compiling synstructure v0.14.0
+   Compiling serde_derive_internals v0.30.0
+   Compiling prost-derive v0.14.4
+   Compiling zeroize_derive v1.5.0
+   Compiling tracing-attributes v0.1.31
+   Compiling pin-project-internal v1.1.13
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling ts-rs-macros v12.0.1
+   Compiling strum_macros v0.28.0
+   Compiling tonic-build v0.14.6
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling futures-macro v0.3.34
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.21
+   Compiling async-trait v0.1.92
+   Compiling ref-cast-impl v1.0.27
+   Compiling acyclic-contract-derive v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/contract-derive)
+   Compiling acyclic-grpc-observability v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/grpc-observability)
+   Compiling schemars_derive v1.2.2
+    Checking zeroize v1.9.1
+    Checking rustls-pki-types v1.15.1
+    Checking pin-project v1.1.13
+    Checking futures-util v0.3.34
+    Checking tracing v0.1.44
+    Checking zerofrom v0.1.8
+    Checking webpki-roots v1.0.9
+    Checking rustls-native-certs v0.8.4
+    Checking rustls-webpki v0.103.15
+   Compiling yoke v0.8.3
+    Checking compio-log v0.2.1
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+    Checking ts-rs v12.0.1
+    Checking vm-memory v0.17.1
+   Compiling prost v0.14.4
+    Checking ed25519-dalek v3.0.0
+    Checking strum v0.28.0
+   Compiling prost-types v0.14.4
+    Checking virtio-queue v0.17.0
+    Checking vhost v0.16.0
+   Compiling wasm-bindgen-macro v0.2.117
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking icu_collections v2.3.0
+    Checking icu_locale_core v2.3.0
+   Compiling prost-build v0.14.4
+   Compiling prost-reflect v0.16.5
+    Checking fluent-uri v0.4.1
+    Checking serde-value v0.7.0
+    Checking serde_urlencoded v0.7.1
+    Checking email_address v0.2.9
+    Checking chrono v0.4.45
+    Checking schemars v1.2.2
+    Checking icu_provider v2.3.1
+   Compiling tonic-prost-build v0.14.6
+   Compiling acyclic-harness-core v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/harness-core)
+    Checking icu_properties v2.3.0
+    Checking icu_normalizer v2.3.0
+    Checking tokio v1.53.2
+    Checking http v1.5.0
+    Checking compio-buf v0.8.3
+    Checking referencing v0.58.6
+    Checking synchrony v0.1.9
+    Checking futures-executor v0.3.34
+    Checking js-sys v0.3.94
+    Checking futures v0.3.34
+    Checking thin-cell v0.2.1
+    Checking dbus v0.9.12
+    Checking jsonschema v0.58.6
+    Checking http-body v1.1.0
+    Checking http-body-util v0.1.5
+    Checking idna_adapter v1.2.2
+    Checking icu_casemap v2.3.0
+    Checking rustls-platform-verifier v0.7.1
+   Compiling acyclic-proto-build v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/compatibility)
+    Checking axum-core v0.5.6
+    Checking sse-stream v0.3.0
+    Checking idna v1.1.0
+    Checking url v2.5.8
+   Compiling acyclic-auth v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/auth)
+   Compiling acyclic-stream v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/stream)
+   Compiling acyclic-objects v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/objects)
+   Compiling acyclic-fs-wire v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/filesystem-wire)
+   Compiling acyclic-actors v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/actors)
+   Compiling acyclic-fs v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/filesystem)
+    Checking dbus-secret-service v4.1.0
+    Checking keyring v3.6.3
+    Checking tokio-util v0.7.19
+    Checking tokio-rustls v0.26.6
+    Checking tokio-stream v0.1.19
+    Checking h2 v0.4.20
+    Checking tower v0.5.3
+    Checking acyclic-native-runtime v0.2.0 (/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method/rust/crates/native-runtime)
+    Checking wasm-bindgen-futures v0.4.67
+    Checking axum v0.8.9
+    Checking tower-http v0.6.11
+warning: method `arm_exit` is never used
+   --> rust/crates/native-runtime/src/process_tree/mod.rs:891:8
+    |
+117 | impl ProcessTree {
+    | ---------------- method in this implementation
+...
+891 |     fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
+    |        ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `waiting_byte` is never used
+  --> rust/crates/native-runtime/src/process_tree/capture.rs:76:19
+   |
+74 | impl<'a> PendingStdin<'a> {
+   | ------------------------- method in this implementation
+75 |     #[cfg(unix)]
+76 |     pub(super) fn waiting_byte(&self) -> Option<u8> {
+   |                   ^^^^^^^^^^^^
+
+warning: `acyclic-native-runtime` (lib) generated 2 warnings
+    Checking hyper v1.12.0
+    Checking hyper-util v0.1.21
+    Checking hyper-timeout v0.5.2
+    Checking hyper-rustls v0.27.10
+    Checking tonic v0.14.6
+    Checking reqwest v0.12.28
+    Checking tonic-prost v0.14.6
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawAlarmInfo"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawHandle"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawCaller"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawHandle"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | other 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "UncheckedGuestEventResult"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | other 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: unused imports: `RetryError` and `observe_policy`
+  --> rust/crates/filesystem/src/access/mod.rs:17:24
+   |
+17 | pub(crate) use retry::{RetryError, observe_policy};
+   |                        ^^^^^^^^^^  ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `TARGET_PAGE_BYTES` and `within_bounds`
+  --> rust/crates/filesystem/src/kernel/persistent_btree.rs:23:45
+   |
+23 |     Error, Format, Mutation, Page, PageRef, TARGET_PAGE_BYTES, children_within, leaf_within,
+   |                                             ^^^^^^^^^^^^^^^^^
+24 |     within_bounds,
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Write as _`
+ --> rust/crates/filesystem/src/native_host/held_files.rs:5:5
+  |
+5 | use std::io::Write as _;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: method `confirms_disclosure` is never used
+ --> rust/crates/filesystem/src/access/disclosure.rs:4:19
+  |
+3 | impl AccessView {
+  | --------------- method in this implementation
+4 |     pub(crate) fn confirms_disclosure(
+  |                   ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: enum `RetryError` is never used
+ --> rust/crates/filesystem/src/access/retry.rs:5:17
+  |
+5 | pub(crate) enum RetryError<E> {
+  |                 ^^^^^^^^^^
+
+warning: function `observe_policy` is never used
+  --> rust/crates/filesystem/src/access/retry.rs:11:15
+   |
+11 | pub(crate) fn observe_policy<T, E, F: Future<Output = Result<Option<T>, E>>>(
+   |               ^^^^^^^^^^^^^^
+
+warning: function `retry` is never used
+  --> rust/crates/filesystem/src/access/retry.rs:28:10
+   |
+28 | async fn retry<const CHECK_MOUNT: bool, T, E, F: Future<Output = Result<Option<T>, E>>>(
+   |          ^^^^^
+
+warning: struct `PolicyWatch` is never constructed
+  --> rust/crates/filesystem/src/access/projection.rs:28:19
+   |
+28 | pub(crate) struct PolicyWatch {
+   |                   ^^^^^^^^^^^
+
+warning: methods `valid` and `changed` are never used
+  --> rust/crates/filesystem/src/access/projection.rs:33:19
+   |
+32 | impl PolicyWatch {
+   | ---------------- methods in this implementation
+33 |     pub(crate) fn valid(&self) -> bool {
+   |                   ^^^^^
+...
+39 |     pub(crate) async fn changed(&self) {
+   |                         ^^^^^^^
+
+warning: function `observe` is never used
+  --> rust/crates/filesystem/src/access/projection.rs:55:15
+   |
+55 | pub(crate) fn observe(
+   |               ^^^^^^^
+
+warning: method `insert_observer` is never used
+  --> rust/crates/filesystem/src/access/projection/registry.rs:52:19
+   |
+33 | impl Registry {
+   | ------------- method in this implementation
+...
+52 |     pub(super) fn insert_observer(
+   |                   ^^^^^^^^^^^^^^^
+
+warning: methods `volume` and `policy_view` are never used
+  --> rust/crates/filesystem/src/access/trie.rs:72:19
+   |
+71 | impl PinnedPath {
+   | --------------- methods in this implementation
+72 |     pub(crate) fn volume(&self) -> &str {
+   |                   ^^^^^^
+...
+76 |     pub(crate) fn policy_view(&self) -> &PathTrie {
+   |                   ^^^^^^^^^^^
+
+warning: method `permits_relocation` is never used
+   --> rust/crates/filesystem/src/access/trie.rs:568:19
+    |
+249 | impl PathTrie {
+    | ------------- method in this implementation
+...
+568 |     pub(crate) fn permits_relocation(
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: constant `RETAINED_SLOTS` is never used
+  --> rust/crates/filesystem/src/watch_queue.rs:15:7
+   |
+15 | const RETAINED_SLOTS: usize = 64;
+   |       ^^^^^^^^^^^^^^
+
+warning: struct `State` is never constructed
+  --> rust/crates/filesystem/src/watch_queue.rs:17:8
+   |
+17 | struct State<T> {
+   |        ^^^^^
+
+warning: methods `reserve_slot` and `release_backing` are never used
+  --> rust/crates/filesystem/src/watch_queue.rs:25:8
+   |
+24 | impl<T> State<T> {
+   | ---------------- methods in this implementation
+25 |     fn reserve_slot(&mut self, maximum: usize) -> bool {
+   |        ^^^^^^^^^^^^
+...
+63 |     fn release_backing(&mut self) {
+   |        ^^^^^^^^^^^^^^^
+
+warning: struct `Shared` is never constructed
+  --> rust/crates/filesystem/src/watch_queue.rs:72:8
+   |
+72 | struct Shared<T> {
+   |        ^^^^^^
+
+warning: method `lock` is never used
+  --> rust/crates/filesystem/src/watch_queue.rs:78:8
+   |
+77 | impl<T> Shared<T> {
+   | ----------------- method in this implementation
+78 |     fn lock(&self) -> MutexGuard<'_, State<T>> {
+   |        ^^^^
+
+warning: struct `QueueSender` is never constructed
+  --> rust/crates/filesystem/src/watch_queue.rs:84:19
+   |
+84 | pub(crate) struct QueueSender<T>(Arc<Shared<T>>);
+   |                   ^^^^^^^^^^^
+
+warning: struct `QueueReceiver` is never constructed
+  --> rust/crates/filesystem/src/watch_queue.rs:87:19
+   |
+87 | pub(crate) struct QueueReceiver<T>(Arc<Shared<T>>);
+   |                   ^^^^^^^^^^^^^
+
+warning: function `bounded` is never used
+  --> rust/crates/filesystem/src/watch_queue.rs:90:15
+   |
+90 | pub(crate) fn bounded<T>(
+   |               ^^^^^^^
+
+warning: method `try_send` is never used
+   --> rust/crates/filesystem/src/watch_queue.rs:109:19
+    |
+106 | impl<T> QueueSender<T> {
+    | ---------------------- method in this implementation
+...
+109 |     pub(crate) fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+    |                   ^^^^^^^^
+
+warning: method `try_recv` is never used
+   --> rust/crates/filesystem/src/watch_queue.rs:137:19
+    |
+135 | impl<T> QueueReceiver<T> {
+    | ------------------------ method in this implementation
+136 |     /// Removes the oldest queued item.
+137 |     pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
+    |                   ^^^^^^^^
+
+warning: function `stream_key` is never used
+  --> rust/crates/filesystem/src/distributed/records.rs:39:15
+   |
+39 | pub(super) fn stream_key(
+   |               ^^^^^^^^^^
+
+warning: method `current_access_policy_revision_accounted` is never used
+   --> rust/crates/filesystem/src/facade/access_policy.rs:326:25
+    |
+325 | impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
+    | -------------------------------------------------------------- method in this implementation
+326 |     pub(crate) async fn current_access_policy_revision_accounted(
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `volume_handle` is never used
+   --> rust/crates/filesystem/src/facade/checkout.rs:354:19
+    |
+353 | impl<A, O> Checkout<A, O> {
+    | ------------------------- method in this implementation
+354 |     pub(crate) fn volume_handle(&self) -> Volume<A, O> {
+    |                   ^^^^^^^^^^^^^
+
+warning: methods `authority_actor_scope` and `has_process_policy_owner` are never used
+  --> rust/crates/filesystem/src/facade/fs.rs:75:19
+   |
+64 | impl<A, O> Fs<A, O> {
+   | ------------------- methods in this implementation
+...
+75 |     pub(crate) fn authority_actor_scope(&self) -> [u8; 16]
+   |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+82 |     pub(crate) fn has_process_policy_owner(&self) -> bool
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `without_derived_stamps` and `only_advanced_derived_stamps` are never used
+  --> rust/crates/filesystem/src/kernel/metadata.rs:81:25
+   |
+68 | impl FileMetadata {
+   | ----------------- methods in this implementation
+...
+81 |     pub(crate) const fn without_derived_stamps(self) -> Self {
+   |                         ^^^^^^^^^^^^^^^^^^^^^^
+...
+93 |     pub(crate) fn only_advanced_derived_stamps(&self, prior: &Self) -> bool {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `VIEW` is never used
+  --> rust/crates/filesystem/src/lock_order.rs:15:18
+   |
+15 | pub(crate) const VIEW: u16 = 20;
+   |                  ^^^^
+
+warning: field `directory` is never read
+ --> rust/crates/filesystem/src/native_host/root.rs:9:5
+  |
+8 | pub struct CachedRoot {
+  |            ---------- field in this struct
+9 |     directory: std::sync::Arc<acyclic_native_runtime::CachedFile>,
+  |     ^^^^^^^^^
+  |
+  = note: `CachedRoot` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `new` and `held` are never used
+  --> rust/crates/filesystem/src/native_host/root.rs:24:19
+   |
+22 | impl CachedRoot {
+   | --------------- associated items in this implementation
+23 |     /// Caches `root`, opened at `path`.
+24 |     pub(crate) fn new<W: NativeHostWork>(
+   |                   ^^^
+...
+45 |     pub(crate) fn held<W: NativeHostWork>(&self, work: &mut W) -> Result<HostRoot, W::Error> {
+   |                   ^^^^
+
+warning: function `charging` is never used
+  --> rust/crates/filesystem/src/native_host/root.rs:63:4
+   |
+63 | fn charging<W: NativeHostWork, T>(
+   |    ^^^^^^^^
+
+warning: field `origin` is never read
+   --> rust/crates/filesystem/src/native_host/root.rs:102:16
+    |
+ 95 | pub struct HostRoot {
+    |            -------- field in this struct
+...
+102 |     pub(crate) origin: Option<CachedRoot>,
+    |                ^^^^^^
+
+warning: methods `origin`, `incarnation`, and `directory_fd` are never used
+   --> rust/crates/filesystem/src/native_host/root.rs:123:25
+    |
+104 | impl HostRoot {
+    | ------------- methods in this implementation
+...
+123 |     pub(crate) const fn origin(&self) -> Option<&CachedRoot> {
+    |                         ^^^^^^
+...
+129 |     pub(crate) fn incarnation<W: NativeHostWork<Error = DemandError>>(
+    |                   ^^^^^^^^^^^
+...
+178 |     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
+    |                   ^^^^^^^^^^^^
+
+warning: function `durable_volume` is never used
+   --> rust/crates/filesystem/src/native_host/root.rs:609:4
+    |
+609 | fn durable_volume<W: NativeHostWork<Error = DemandError>>(
+    |    ^^^^^^^^^^^^^^
+
+warning: methods `open_directory`, `sync_directory`, `sync_record_file`, `try_clone`, and `create_directories` are never used
+   --> rust/crates/filesystem/src/native_host/held_files.rs:117:19
+    |
+ 19 | impl HostRoot {
+    | ------------- methods in this implementation
+...
+117 |     pub(crate) fn open_directory<W: NativeHostWork>(
+    |                   ^^^^^^^^^^^^^^
+...
+147 |     pub(crate) fn sync_directory<W: NativeHostWork>(&self, work: &mut W) -> Result<(), W::Error> {
+    |                   ^^^^^^^^^^^^^^
+...
+151 |     pub(crate) fn sync_record_file<W: NativeHostWork>(
+    |                   ^^^^^^^^^^^^^^^^
+...
+160 |     pub(crate) fn try_clone<W: NativeHostWork>(&self, work: &mut W) -> Result<Self, W::Error> {
+    |                   ^^^^^^^^^
+...
+171 |     pub(crate) fn create_directories<W: NativeHostWork>(
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: function `root_file_handle` is never used
+   --> rust/crates/filesystem/src/native_host/unix_stat.rs:234:15
+    |
+234 | pub(super) fn root_file_handle<W: NativeHostWork>(
+    |               ^^^^^^^^^^^^^^^^
+
+warning: `acyclic-fs` (lib) generated 37 warnings (run `cargo fix --lib -p acyclic-fs` to apply 3 suggestions)
+error[E0046]: not all trait items implemented, missing: `durability_barrier`
+   --> rust/crates/harness-core/src/filesystem/attestation.rs:140:1
+    |
+140 | impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for Attested<P> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `durability_barrier` in implementation
+    |
+    = help: implement the missing item: `fn durability_barrier<'life0: 'async_trait, 'async_trait>(&'life0 self) -> std::pin::Pin<Box<(dyn futures::Future<Output = std::result::Result<(), acyclic_stream::StreamError>> + std::marker::Send + 'async_trait)>> { todo!() }`
+
+For more information about this error, try `rustc --explain E0046`.
+error: could not compile `acyclic-harness-core` (lib) due to 1 previous error

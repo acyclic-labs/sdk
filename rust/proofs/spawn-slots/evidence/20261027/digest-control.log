@@ -1,0 +1,334 @@
+
+running 1 test
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x83S\x81\xe4\xbcy\xf7\x80;q\xee\xfd\xcf\xa3\xa4\xd8D\xf6B&\x11\xcc\x90M\x06H\xeeS\x8a\x17\xec\xcb"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b";\x03\x1a\xaam\xca\x07\x13\x13/\r\xd6\x05\xfa#\xca>\xe9\xbal\x8e\xe2G]\x96\xfe\x81\xd6l\x9b\xab\xbe"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x91 \xb8\x05Z3H\x86\xb2l\xf2^U\x11&`\xa3\xf7\xef\xe732\xe6dHD\xa8\x18\xbb\xab\x16r"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xa6:\xbf\x15\x96\xd1\x04\xec9\xb1\x17\xc4\x9f\x95\xb0O}\x80\x8f\x1eC\x83zQ\x88\x90\xb0\xbb\xd5\xda\n\x8a"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xaf\xb0\xeeP\x01+\xd4\x08\rO\xeaO\x9b\xa0\xea\xdf\x81\xd2M\x99\xe0\x9c\xfc\x01cA\xae\xc6\x9a\xffp\x08"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"u}~\xaf(\x8c\x946\x7f\xd5{=Fi\xe7\xc6K\xf4\xe1Qw\x90$\x869\xe3->L\xcaVj"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xa4]\x82x\x8f?-\x91\xf6\xb5\xe4\x9b\xd0\xd6\x14u\xef\x02\x13\x10\x9f\xaa?\xdd\xfe\x95\x89\x06\x83\n\x1a\xb0"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xd1\xd1\nA\xa8\x08rYk\xd8\x12\x8a\xe55W\xf3l\x86\xd9\xf2G\xc4GJm\r\xf9\x90wu\xd8\xf9"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x18n}?\x13\xef\xc4\x80\xfe\xfd\x16+\x17\x0e\xb4\x8c$\x91s\xd4\xb3N{\xdd\x1b\xda\xf8\xf4\xad\xb3\x89\x96"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xf2b\xce\x91\x9f\xd1vB\n\x03\xe4^\x9e\x8d\x8d\0N\xd0\xc8\xb1p\xc2GU\xc28c\xad\x01\xda\xf6\xeb"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x8b\xed\r\x15\07Y\xa4R\xad\xc8\xc5\xcc1m\xcb\xea\x18f\x02T'd\xc55\xde\x95B\x8a\xa8\x08\xa2"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"f\x17\xf8f\xd4\xe1@5\xd1Pb18\x98\0\xb4b\xe6\x7f\xb1\xb9+\x8b\xde\x98\x88\\\x80\xf8\xd9\xf6\xf0"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xdc:\0\x04\xa9\xf6c\xd1\x07\x81\0\x1e\xaf\xc8\x02\xb7o\x88rJ\x12\n\x99\r\xa3\xab\xb0q\x1f8\xe0\xed"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"Y\xecr\xf7\xa7\xca\xee\x0b>F\xbcfz\xc1\xd7\x9d\x95\xdc\xe9\xadW5\x87<\xef\xe5\x03(\xb6\xb3\x06\xd3"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xee\xcc\xd0\x0b\xc1-hw\r<\x19\xdd\xb8\xd8\x7f\xf6$g\x1c\xfc\xb6\x9d\xd3\x83L\xfc\xde\x99f\x97\xaa\x90"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xdb!\xbf\x15[\xb8\xf6N\xb6\xf9\xf2\xd62\x83{$\xd2\xc1b*\xb9\xdb\xb6!l\x07\xbf}\x11\xbd'\x9f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x04\x97T^dt\x84\xf1?\xdb\xc0H:\xd9\xed\xebpc\x9a\xac\x9a_b*\xc2\x80\xbe\x10\x9c\x12\x8a\xed"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"P\xb7)\x9a\x13\nfPD\xa8\xb53\xc4\xda\x12u\xbd0d\xab\x9flL(\x97\x98\x91H\xf0\x0e\\\xa7"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x96\xcaA\x08\x86\xa0\xfb\xb5\xd3\x06\xb63\xd8\x91\xfa/\xc0Er&\x0f\x15\xa4\0\xe7\xc8~\xeaP@\x9a\xdc"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xf4\xb1`F5\x81\xb0\xf5\xa13\xa4\xe3\x0c\xa6]B  .\x15x\x1c\x95\x8bl/,\x94\x1b\xef\xe9^"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\\W@[\xe9\xf6CsM\x89\xd4\x98\xb8\x8d\xfdW\x9c}*K\x9e(\x05\xe3\x91\x80\xa4\xd9\xb1E\xbe\xc3"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"&%\xd5x0x\xcd\xf96),\xb3\xb2dn$\x8e]\xe18I\xb2\x0c\xe3!\xd7'M\x16'9j"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xd3\xf6\xdfg\xeb\xdb\xae\x93\x05\xd0\x7f\x08v \xa8\xb6[\xbd\xa8\xd3\xccS\x99k\xae/\xd0\xf17\xbc\x18W"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xe3\xc1g[\x0f\xd7N\n\xdf\x1d=[m\xff_:4\x04\xce\x18\xb0\x84\xc7\xcaTy\x1b\xa86\x0c}\xd6"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x9e\x95\x95\xd6!l\xbc\x13B\x99\xe6\0<\xe3\xc8)\xba\xa3d\xc1\xae\xfa\x8bl\x9dd4\x9f\xe2-\x18\xc1"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"p\x10\x1e\x13\xa1sXE&S\x95\xbc\xf4\n1&\xa5)\x80\tJ\x8d\x94\xbe\xb6\x83C\xf4\xbe\x1c\x041"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xa4c=ZS\x8c\x0es\x97\x96\xd0%cD\xbd\xf3\xe4S-v\x10\xd6\x88O\xf3^\xf2\xacP\xe4G\xc4"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"x\x06\x05\xd0\xd2\xad\x93$`G\xd6\xf0}\x8fO\xb3\xa9\xd5}o\xd4t?\x9a\xc8\xca\xec\xe70\x12By"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xc2}\xe9\xbe\x91@\xe1\xaa\xe0\xf0\xc1\xd7j|\xd2\xbau\xa8\xcdw\x1b\n\xfc75\xc0\x99 F\x13W3"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x83\xc3\xda_\xb6\xe3\xb1q\xe6$.>\xde\xb2\xbd\x9ad\xd2i\x97\x0e\xce\x16\xe9\xb9\r\xe8_\x87\x1dmk"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xd2\xd6xEB\xda\x0f4=I\xed\xf8k\x0e\x9f9\xd9\xc0oF\x1d\xcfA\x8dH\x8cF\x9cg\xe9{="))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xcde\xb1/\xb4J\x9c'+8\xe5\xd1\xeb\xb6\xf5F\x0e8\xf3\x8a\xf5e\xeb\xeceO\xc8\x9d_\xf5'\xdf"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb5\xbeW\xe5\xb2\xf7~J\xac\xcdV\xd5\x13s\x14\xaf\x99\x9b\xd0\xee\xaf.\"% `\x07\xb6\xc1\xa2\xb4\x97"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"f^w&\xa3PyiOc\n\xed\xcb\n\x08 L\xc7Q50\x0c!&\xd1Y-J>\"ps"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"y.\xeb\x18\xc6\x17$\xc9?\xeb\xa6E7\xd1\xb6\x10\xf0\xfa\r\n\xbbh&\x12K\x11\x9f*\xabV\x94\xe5"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xa5{\xab\xbf\x82\x98\x0b\xfd\xbe\xe9\x88\xb1f\n\x90\xe7c\xad\xc3\n9d\\\xd2D3\\\xbe\xa3b\xa3\x16"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb4\xb8\xa2\xc4\x16Co\xfaq\x92\xebQ8\0\x99y\xcb\xfdsEx\x19m\xc0\xa8\x1d\xfb\x9a9\x05R\x13"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"c\xdb\r\xd0\x84\xdc\xb5XA\xfc\xa9O\xd0\x86sH\x91\x0bQ\xbeS\x0b6H\x81\xb1\xbe\x08\"\xf8\x9c\x0c"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x997ky\x12(\xc9B\xde1\xb9t\xb0Y\xa1\xac:G\xc5?\x12\xaf\xc3u\xb57W\xc6\x1c,\xa9L"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x85o\xf9>FWSS\xf4%\xc0N\xda<-^\x9c\x1f\x86m\x10=\xbd\x8c\xbd\xbbS0\x02\xa9\xc53"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xbb\x86C\x1a\xef\xe6\xd3\xb0\xc5p\x94JZ\xfb\xd4^\xff\x0c Y\xa7+}\x10%\xf7'\xe74{\xc2\x91"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xcc%*_` \x15\n\xf5\xe0\xc5\"^\xf2\xd6\xc8w\xf9\xa2\x15\xd0\xfd\xf7\x13\xe4\x91\x9b\x8f\xe7\xdb\\\x83"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\x9c\x16\xa3i\xb2\xa7Z\x8cKO\xefs\x11\x1c!\xf9\n\x19A\xdf\xa3\xf7\x81\x90\x82\xa5\x835_\x9f8~"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb25^n\x02)\xae)\x9a\xa5\x02W\xf3`\xedX\x11\xf5x\xe7\xf4:Z\xe1N\xab\x174^\xc5\xb3\xb4"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xdcCN\x1e\xeb\xc0\x7f9\x08\xe6\xa5\xa5\xd8\x01R\xa0\x7ff\xec2!A\xda\xd0\xc7\xfe\x84}\xe4\xeb\xf3+"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation.rs:399:13:
+assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f"))
+proptest: Saving this and future failures in /mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations/rust/crates/harness-core/proptest-regressions/filesystem/attestation_proofs.txt
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
+cc 473439a6c841546c5de866e04eb2b4a866df9e9279d95539c9dd2d2198ebd272
+
+thread 'filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence' (10791) panicked at rust/crates/harness-core/src/filesystem/attestation_proofs.rs:2:1:
+Test failed: assertion `left == right` failed: write must reach the binding for its own canonical digest
+  left: Some(Attestation(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"))
+ right: Some(Attestation(b"\xb2\x94\xe9\xda\xb1\xff\x87\xb11\xff\r\x92\xc8H\xe2\x80\xfd\x85\xe6\xc9;\x10n\x90#fj\xcbC\xf0~\x1f")).
+minimal failing input: payload = [
+    0,
+], identity = [
+    0,
+]
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+test filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence ... FAILED
+
+failures:
+
+failures:
+    filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 940 filtered out; finished in 0.01s
+
