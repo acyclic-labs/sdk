@@ -148,7 +148,7 @@ pub struct OperationObservation {
 
 /// Bounded-memory stream of correlated operation observations.
 pub type OperationStream =
-    Pin<Box<dyn Stream<Item = Result<OperationObservation, ProviderError>> + Send + 'static>>;
+    acyclic_stream::BoxProviderStream<'static, Result<OperationObservation, ProviderError>>;
 
 /// One bounded guest command, dispatched once without an idempotency key.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,8 +193,7 @@ pub enum ExecOutput {
 }
 
 /// Disposable guest output view. Dropping it cancels the RPC, never retries it.
-pub type ExecStream =
-    Pin<Box<dyn Stream<Item = Result<ExecOutput, ProviderError>> + Send + 'static>>;
+pub type ExecStream = acyclic_stream::BoxProviderStream<'static, Result<ExecOutput, ProviderError>>;
 
 /// Bounded retained console bytes. A later offset exposes discarded bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]

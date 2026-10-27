@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 #[derive(Clone)]
 pub(super) struct Journal {
     pub provider: Arc<dyn StreamProvider>,
-    pub root: StreamPath,
+    pub root: String,
 }
 
 pub(super) struct Row<T> {
@@ -122,11 +122,19 @@ impl Journal {
         if account.is_empty() || account.contains('/') {
             return Err(ProviderError::Invalid("Machines account admission failed; recovery: supply one canonical account path segment".into()));
         }
-        Ok(Self { provider, root })
+        Ok(Self {
+            provider,
+            root: root.to_string(),
+        })
     }
 
     pub fn path(&self, suffix: &str) -> Result<StreamPath, ProviderError> {
-        StreamPath::new(format!("{}/{suffix}", self.root.as_str())).map_err(storage)
+        let path = if suffix.is_empty() {
+            self.root.clone()
+        } else {
+            format!("{}/{suffix}", self.root)
+        };
+        StreamPath::new(path).map_err(storage)
     }
 
     pub async fn load<T: DeserializeOwned>(&self, suffix: &str) -> Result<Row<T>, ProviderError> {
@@ -308,10 +316,11 @@ impl Journal {
     pub async fn update<T, R>(
         &self,
         suffix: &str,
-        mut change: impl FnMut(&mut Option<T>) -> Result<R, ProviderError> + Send,
+        mut change: impl FnMut(&mut Option<T>) -> Result<R, ProviderError>
+        + acyclic_stream::ProviderTask,
     ) -> Result<R, ProviderError>
     where
-        T: Serialize + DeserializeOwned + Send,
+        T: Serialize + DeserializeOwned + acyclic_stream::ProviderTask,
     {
         self.update_with(suffix, move |entry| {
             change(entry).map(|result| (result, Vec::new()))
@@ -322,10 +331,11 @@ impl Journal {
     pub async fn update_with<T, R>(
         &self,
         suffix: &str,
-        mut change: impl FnMut(&mut Option<T>) -> Result<(R, Vec<CommitMutation>), ProviderError> + Send,
+        mut change: impl FnMut(&mut Option<T>) -> Result<(R, Vec<CommitMutation>), ProviderError>
+        + acyclic_stream::ProviderTask,
     ) -> Result<R, ProviderError>
     where
-        T: Serialize + DeserializeOwned + Send,
+        T: Serialize + DeserializeOwned + acyclic_stream::ProviderTask,
     {
         loop {
             let row = self.load::<T>(suffix).await?;

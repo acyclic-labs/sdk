@@ -7,14 +7,13 @@
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 use async_trait::async_trait;
-use futures::{Stream, StreamExt, stream};
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     num::NonZeroU32,
-    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -59,7 +58,6 @@ pub use contract::*;
 mod provider;
 pub use provider::*;
 /// Shared Machines lifecycle authority on the caller's canonical Streams backend.
-#[cfg(all(feature = "core", not(target_arch = "wasm32")))]
 pub mod core;
 mod simulation;
 pub use simulation::*;

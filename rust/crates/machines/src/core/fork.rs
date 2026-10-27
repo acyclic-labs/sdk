@@ -1,6 +1,8 @@
 //! Shared fork ordering and definite-refusal handling. Unknown dispatch is never retried.
 use crate::{IdempotencyKey, ProviderError};
-use std::{future::Future, time::Duration};
+use std::future::Future;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 /// Every existing node forks at most once per round. Node zero is the parent;
 /// node n+1 is child n. All starts in a round are joined before reporting failure.
@@ -57,6 +59,7 @@ pub enum Dispatch<T> {
     Refused,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn retry_refused<T, F, O>(
     key: IdempotencyKey,
     interval: Duration,
@@ -99,12 +102,15 @@ where
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::{ForkSlot, OperationRegistry, RawMachines};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{
     ForkFidelity, MAX_FORK_CHILDREN, MachineId, MachineState, MutationIntent, MutationOutcome,
     NonZeroU32,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 impl OperationRegistry {
     /// One shared tree owns native fork admission, refused-only retry, custody,
     /// metadata sequencing, readiness and the exact ordered terminal outcome.

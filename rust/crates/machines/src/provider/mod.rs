@@ -1,8 +1,9 @@
 use super::*;
 
 /// Public provider interface shared by deterministic and managed implementations.
-#[async_trait]
-pub trait MachinesProvider: Send + Sync {
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
     /// Describes the provider's actual security/durability boundary.
     fn assurance(&self) -> ProviderAssurance;
     /// Dispatches once. Lost replies and cancellation never authorize redispatch.

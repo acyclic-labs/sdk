@@ -1,5 +1,7 @@
 use super::*;
+use futures::Stream;
 use futures::stream;
+use std::pin::Pin;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::Server;
@@ -19,7 +21,6 @@ enum JoinReply {
     Stream(Vec<Result<wire::OperationSettlement, Code>>),
     Silent,
     Script(Arc<std::sync::Mutex<JoinScript>>),
-    #[cfg(feature = "core")]
     Core(crate::core::OperationRegistry),
 }
 
@@ -133,8 +134,7 @@ operation_service! {
             JoinReply::Stream(values) => Ok(Response::new(Box::pin(stream::iter(values.into_iter().map(|value| value.map_err(|code| Status::new(code, "join body interrupted"))))))),
             JoinReply::Silent => Ok(Response::new(Box::pin(stream::pending()))),
             JoinReply::Script(_) => Err(Status::internal("nested join script")),
-            #[cfg(feature = "core")]
-            JoinReply::Core(core) => {
+                    JoinReply::Core(core) => {
                 let key = self.expected_key;
                 let operation = self.expected_operation;
                 Ok(Response::new(Box::pin(stream::once(async move {

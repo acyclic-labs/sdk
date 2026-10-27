@@ -1,6 +1,6 @@
 # Machines core on Streams (G29)
 
-Enable `acyclic-machines/core`. Supply the application's canonical authenticated
+Supply the application's canonical authenticated
 `StreamProvider` and one account path segment. The supplied Streams session
 continues to enforce its existing scope; the account string grants no authority.
 
@@ -87,6 +87,13 @@ That adds one metadata read per native child compared with the previous adapter;
 no second lifecycle observer is retained. Fork rounds join every started sibling
 before reporting failure, retaining cleanup ownership. Only an explicit definite
 native refusal permits dispatch backoff; a lost reply never does. Machine/event page construction belongs to this core.
+The operation registry is available without a Cargo feature on native and browser
+targets. Public provider ownership and stream aliases use Streams' existing
+platform bounds: native calls remain Send/Sync, while browser calls retain their
+own event-loop handles. The native readiness helpers still require the native
+Tokio runtime; the shared registry itself introduces no browser timer or scheduler.
+The simulator's replay/events migration is still in progress; making the registry
+available does not claim that its separate maps have already been deleted.
 The raw backend migration is in progress; the operation authority alone does not
 establish that all adapters meet the approximately 300-line budget.
 

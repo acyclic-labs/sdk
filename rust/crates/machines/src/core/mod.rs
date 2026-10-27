@@ -9,14 +9,21 @@ mod journal;
 pub use bindings::NativeBinding;
 mod raw;
 pub use raw::{ForkSlot, NativeResource, RawCreated, RawMachines, RawObservation};
+#[cfg(not(target_arch = "wasm32"))]
 mod checkpoint;
+#[cfg(not(target_arch = "wasm32"))]
 mod destruction;
 mod fork;
+#[cfg(not(target_arch = "wasm32"))]
 mod lifecycle;
-pub use fork::{Dispatch, fork_rounds, fork_tree, retry_refused};
+#[cfg(not(target_arch = "wasm32"))]
+pub use fork::retry_refused;
+pub use fork::{Dispatch, fork_rounds, fork_tree};
+#[cfg(not(target_arch = "wasm32"))]
 mod settle;
+#[cfg(not(target_arch = "wasm32"))]
 pub use settle::settle;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 use journal::{Journal, storage};
 
@@ -165,7 +172,7 @@ impl OperationRegistry {
     async fn change<R>(
         &self,
         id: OperationId,
-        mut f: impl FnMut(&mut StoredOperation) -> R + Send,
+        mut f: impl FnMut(&mut StoredOperation) -> R + acyclic_stream::ProviderTask,
     ) -> Result<R, ProviderError> {
         self.journal
             .update(
@@ -524,7 +531,7 @@ impl OperationRegistry {
             .observation();
         let first = futures::stream::once(async move { Ok(current) });
         if current.phase != OperationPhase::Pending {
-            return Ok(first.boxed());
+            return Ok(Box::pin(first));
         }
         let records = self
             .journal
@@ -555,7 +562,7 @@ impl OperationRegistry {
                 }
                 Err(storage(acyclic_stream::StreamError::Unavailable))
             });
-        Ok(first.chain(changes).boxed())
+        Ok(Box::pin(first.chain(changes)))
     }
 
     /// The observation and its public state event have the same commit identity.
@@ -614,7 +621,7 @@ impl OperationRegistry {
                 .journal
                 .provider
                 .children_page(acyclic_stream::ChildrenPageRequest {
-                    parent: Some(self.journal.root.clone()),
+                    parent: Some(self.journal.path("")?),
                     after,
                     hierarchy_version,
                     tail_stream: None,

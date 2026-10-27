@@ -292,7 +292,6 @@ async fn join_rejects_substituted_operation_outcome_and_commit_shape()
     Ok(())
 }
 
-#[cfg(feature = "core")]
 #[tokio::test]
 async fn grpc_join_returns_original_settlement_after_resource_change_and_journal_reopen()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

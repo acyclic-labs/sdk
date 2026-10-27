@@ -24,8 +24,9 @@ use async_trait::async_trait;
 
 /// Native machine adapter. The remaining lifecycle primitives are being migrated
 /// into this same boundary; implementations must never add their own operation registry.
-#[async_trait]
-pub trait RawMachines: Send + Sync {
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait RawMachines: acyclic_stream::ProviderPlatform {
     fn name(&self) -> &str;
 
     /// Dispatch one creation and retain its accepted address even when decoding
@@ -140,6 +141,7 @@ pub struct RawCreated {
 
 impl RawCreated {
     /// Admission validation shares the same retained-handle path as wire decoding.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn checked(
         mut self,
         check: impl FnOnce(&MachineObservation) -> Result<(), ProviderError>,
