@@ -22,8 +22,10 @@ if [ -f "$src/bb-janitor.py" ]; then
 fi
 systemctl daemon-reload
 systemctl enable -q bb-nvme.service
-systemctl enable -q --now bbjobs.slice bbsync.slice bb-sshd-watchdog.timer bb-target-prune.timer
+systemctl enable -q --now bbjobs.slice bbjobs-controllers.slice bbsync.slice bb-sshd-watchdog.timer bb-target-prune.timer
 [ ! -f /etc/systemd/system/bb-janitor.timer ] || systemctl enable -q --now bb-janitor.timer
+# Job scopes (Cloud's lease.mjs reads its own cpu.max) need cpu+cpuset delegated by bbjobs.slice.
+systemd-run --scope -q --slice=bbjobs.slice --uid=1000 --gid=1000 -- sh -c   'test -r "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.max"' || { echo "host-install: job scopes lack cpu.max"; exit 1; }
 
 # Tool generation: verify every manifest hash, then expose the store by one rename.
 if [ ! -e /opt/buildbox/bin/installed-tools.json ]; then
