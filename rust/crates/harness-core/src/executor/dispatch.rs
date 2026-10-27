@@ -345,10 +345,7 @@ impl StockExecution<'_> {
             preparation_format(format_args!("{purpose_key}:{step}:request"), work)
         })?;
         let claim_key = with_history_io(io, |work| {
-            preparation_format(
-                format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()),
-                work,
-            )
+            preparation_format(format_args!("{purpose_key}:{step}:claim"), work)
         })?;
         let reference = if purpose == ModelPurpose::Response {
             self.stage_response_request(journal, input, step, &request_key, request)

@@ -98,7 +98,10 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
         result: &ToolResult,
-        completion: (&mut Vec<ModelMessage>, crate::executor::phase::PreparedPhase<'_>),
+        completion: (
+            &mut Vec<ModelMessage>,
+            crate::executor::phase::PreparedPhase<'_>,
+        ),
     ) -> Result<ToolInvocationOutcome> {
         let (_hook_context, completion) = completion;
         let (projection, content) = match self
@@ -276,11 +279,7 @@ impl StockExecution<'_> {
             }
             let key = with_history_io(self.io, |work| {
                 preparation_format(
-                    format_args!(
-                        "tool:{step}:{}:claim:{}",
-                        invocation.call_id,
-                        OperationId::new()
-                    ),
+                    format_args!("tool:{step}:{}:claim", invocation.call_id),
                     work,
                 )
             })?;
@@ -424,10 +423,7 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(operation_id));
         }
         let key = with_history_io(self.io, |work| {
-            preparation_format(
-                format_args!("tool:{step}:{}:completed:{}", call_id, OperationId::new()),
-                work,
-            )
+            preparation_format(format_args!("tool:{step}:{call_id}:completed"), work)
         })?;
         let event = ExecutionEvent::ToolCompleted {
             step,
