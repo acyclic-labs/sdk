@@ -75,7 +75,7 @@ impl VhostSession {
     pub(super) fn run(self) -> VhostRetired {
         let result = packet_workers::run(
             &self,
-            NonZeroU32::new(QUEUE_COUNT as u32 + 1).expect("two queues and their control owner"),
+            NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32),
             &self.control.work,
         );
         // Only the owner reaches this point, after the actual control and data
