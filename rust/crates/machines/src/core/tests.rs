@@ -340,10 +340,23 @@ async fn failed_admission_performs_no_native_dispatch() -> TestResult {
 
 struct NativeLifecycle {
     provider: &'static str,
+    expected_handle: Option<&'static str>,
     checkpoint_owner: Option<(OperationRegistry, IdempotencyKey)>,
     value: tokio::sync::Mutex<MachineObservation>,
     mutations: AtomicUsize,
     reads: AtomicUsize,
+}
+
+impl NativeLifecycle {
+    fn check_binding(&self, native: Option<&NativeBinding>) -> Result<(), ProviderError> {
+        if self
+            .expected_handle
+            .is_some_and(|expected| native.is_none_or(|value| value.handle != expected))
+        {
+            return Err(ProviderError::Rejected("internal mutation oracle received a logical machine UUID instead of its native address".into()));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -364,12 +377,22 @@ impl RawMachines for NativeLifecycle {
             settled: true,
         })
     }
-    async fn raw_suspend(&self, _: MachineId) -> Result<(), ProviderError> {
+    async fn raw_suspend(
+        &self,
+        _: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<(), ProviderError> {
+        self.check_binding(native)?;
         self.mutations.fetch_add(1, Ordering::SeqCst);
         self.value.lock().await.state = MachineState::Suspended;
         Ok(())
     }
-    async fn raw_wake(&self, _: MachineId) -> Result<(), ProviderError> {
+    async fn raw_wake(
+        &self,
+        _: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<(), ProviderError> {
+        self.check_binding(native)?;
         self.mutations.fetch_add(1, Ordering::SeqCst);
         self.value.lock().await.state = MachineState::Running;
         Ok(())
@@ -377,8 +400,10 @@ impl RawMachines for NativeLifecycle {
     async fn raw_set_suspension_policy(
         &self,
         _: MachineId,
+        native: Option<&NativeBinding>,
         policy: SuspensionPolicy,
     ) -> Result<(), ProviderError> {
+        self.check_binding(native)?;
         self.mutations.fetch_add(1, Ordering::SeqCst);
         self.value.lock().await.contract.suspension = policy;
         Ok(())
@@ -433,6 +458,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
     let machine = value.id;
     let native = NativeLifecycle {
         provider: "internal",
+        expected_handle: Some("opaque-running-vm"),
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value),
         mutations: AtomicUsize::new(0),
@@ -441,6 +467,25 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
     let dir = tempfile::tempdir()?;
     let key = IdempotencyKey::new();
     let core = open(dir.path()).await?;
+    let created = native.value.lock().await.clone();
+    let creation = fresh(
+        core.admit(IdempotencyKey::new(), &"internal creation")
+            .await?,
+    )?;
+    core.claim_machine(
+        &native,
+        creation,
+        created.clone(),
+        NativeBinding {
+            provider: "internal".into(),
+            handle: "opaque-running-vm".into(),
+            endpoint: None,
+        },
+        false,
+    )
+    .await?;
+    core.complete(creation, MutationOutcome::Created(created))
+        .await?;
     assert_eq!(
         core.transition(
             &native,
@@ -487,9 +532,21 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
         .await?,
         MutationOutcome::Woken(machine)
     );
-    core.mark_destroyed(machine, 6).await?;
+    let policy_key = IdempotencyKey::new();
     assert_eq!(
-        core.inspect_machine(&native, machine, 7).await?.state,
+        core.set_suspension_policy(&native, machine, SuspensionPolicy::Manual, policy_key, 6)
+            .await?,
+        MutationOutcome::SuspensionPolicySet(machine, SuspensionPolicy::Manual),
+    );
+    assert_eq!(
+        core.record_for_key(policy_key)
+            .await?
+            .map(|record| record.targets),
+        Some(vec!["opaque-running-vm".into()])
+    );
+    core.mark_destroyed(machine, 7).await?;
+    assert_eq!(
+        core.inspect_machine(&native, machine, 8).await?.state,
         MachineState::Destroyed
     );
     Ok(())
@@ -558,6 +615,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
     };
     let native = NativeLifecycle {
         provider: "internal",
+        expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
         mutations: AtomicUsize::new(0),
@@ -607,6 +665,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
     );
     let other = NativeLifecycle {
         provider: "other",
+        expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
         mutations: AtomicUsize::new(0),
@@ -673,6 +732,7 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
     let key = IdempotencyKey::new();
     let mut native = NativeLifecycle {
         provider: "internal",
+        expected_handle: None,
         checkpoint_owner: Some((core.clone(), key)),
         value: tokio::sync::Mutex::new(value.clone()),
         mutations: AtomicUsize::new(0),

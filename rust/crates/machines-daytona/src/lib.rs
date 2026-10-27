@@ -759,19 +759,35 @@ impl RawMachines for DaytonaProvider {
             )?,
         })
     }
-    async fn raw_suspend(&self, machine: MachineId) -> Result<(), ProviderError> {
-        self.api.pause(&machine.to_string()).await
+    async fn raw_suspend(
+        &self,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<(), ProviderError> {
+        self.api
+            .pause(&native.map_or_else(|| machine.to_string(), |value| value.handle.clone()))
+            .await
     }
-    async fn raw_wake(&self, machine: MachineId) -> Result<(), ProviderError> {
-        self.api.start(&machine.to_string()).await
+    async fn raw_wake(
+        &self,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<(), ProviderError> {
+        self.api
+            .start(&native.map_or_else(|| machine.to_string(), |value| value.handle.clone()))
+            .await
     }
     async fn raw_set_suspension_policy(
         &self,
         machine: MachineId,
+        native: Option<&NativeBinding>,
         policy: SuspensionPolicy,
     ) -> Result<(), ProviderError> {
         self.api
-            .set_autopause(&machine.to_string(), map::autopause_minutes(policy))
+            .set_autopause(
+                &native.map_or_else(|| machine.to_string(), |value| value.handle.clone()),
+                map::autopause_minutes(policy),
+            )
             .await
     }
 

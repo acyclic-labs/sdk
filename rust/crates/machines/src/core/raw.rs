@@ -37,11 +37,20 @@ pub trait RawMachines: Send + Sync {
         known: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError>;
 
-    async fn raw_suspend(&self, machine: MachineId) -> Result<(), ProviderError>;
-    async fn raw_wake(&self, machine: MachineId) -> Result<(), ProviderError>;
+    async fn raw_suspend(
+        &self,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<(), ProviderError>;
+    async fn raw_wake(
+        &self,
+        machine: MachineId,
+        native: Option<&NativeBinding>,
+    ) -> Result<(), ProviderError>;
     async fn raw_set_suspension_policy(
         &self,
         machine: MachineId,
+        native: Option<&NativeBinding>,
         policy: SuspensionPolicy,
     ) -> Result<(), ProviderError>;
 

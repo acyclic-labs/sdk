@@ -43,7 +43,9 @@ debt. If a deletion reply is lost and its name subsequently disappears, cleanup
 conservatively remains indeterminate; no absence poll manufactures an acknowledgment.
 Checkpoint results and their original settlement replay after reopening.
 
-Suspend/wake admission and policy transitions are shared too. Native readiness is
+Suspend/wake admission and policy transitions are shared too. Each native mutation
+receives the reopened canonical binding and records its opaque native target;
+the logical machine UUID need not equal a provider resource address. Native readiness is
 separate from public state: a Running VM may still be busy with a fork or snapshot.
 A destroyed canonical observation cannot be replaced by a stale native read.
 Fork rounds join every started sibling before reporting failure, retaining cleanup

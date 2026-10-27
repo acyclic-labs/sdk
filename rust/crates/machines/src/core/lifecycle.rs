@@ -183,11 +183,13 @@ impl OperationRegistry {
                     "machine transition requires {from:?}; recovery: inspect the machine before retrying"
                 )));
             }
-            self.bind_target(operation, &machine.to_string()).await?;
+            let native = self.native_binding(machine, driver.name()).await?;
+            let handle = native.as_ref().map_or_else(|| machine.to_string(), |value| value.handle.clone());
+            self.bind_target(operation, &handle).await?;
             if wake {
-                driver.raw_wake(machine).await?;
+                driver.raw_wake(machine, native.as_ref()).await?;
             } else {
-                driver.raw_suspend(machine).await?;
+                driver.raw_suspend(machine, native.as_ref()).await?;
             }
             if self.wait_machine(driver, machine, key, interval, timeout).await?.state != to {
                 return Err(ProviderError::Failed);
@@ -217,8 +219,14 @@ impl OperationRegistry {
                             .into(),
                     ));
                 }
-                self.bind_target(operation, &machine.to_string()).await?;
-                driver.raw_set_suspension_policy(machine, policy).await?;
+                let native = self.native_binding(machine, driver.name()).await?;
+                let handle = native
+                    .as_ref()
+                    .map_or_else(|| machine.to_string(), |value| value.handle.clone());
+                self.bind_target(operation, &handle).await?;
+                driver
+                    .raw_set_suspension_policy(machine, native.as_ref(), policy)
+                    .await?;
                 current.contract.suspension = policy;
                 current.changed_at_unix_ms = at;
                 self.observe_machine(current, at).await?;
