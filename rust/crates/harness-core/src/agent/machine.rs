@@ -42,10 +42,6 @@ pub enum TurnInput {
         /// Body.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         body: Box<FileRef>,
-        /// Inbox sequence of the message record, as returned
-        /// by `Delivered::Committed`; it correlates a settled turn with
-        /// its prompt, including a replayed send.
-        inbox: u64,
     },
     /// A child finished.
     ChildDone {
@@ -80,6 +76,18 @@ pub enum TurnInput {
     },
 }
 
+/// One input held for the turn, at the inbox sequence of the record that
+/// carried it (a brief: its `ForkAdopted`). The turn it starts settles one
+/// conversation entry at the same sequence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Queued {
+    /// Inbox sequence of the carrying record, as `Delivered::Committed` returned it.
+    pub inbox: u64,
+    /// The input.
+    pub input: TurnInput,
+}
+
 /// Durable agent state, carried in the actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +102,9 @@ pub struct AgentState {
     pub policy: Option<FileRef>,
     /// Exact conversation tail; the agent is its only writer.
     pub conversation_tail: u64,
+    /// Inherited conversation tail at adoption: this agent's own entries are
+    /// `[conversation_base, conversation_tail)`, in increasing inbox order.
+    pub conversation_base: u64,
     /// Exact status tail; the agent is its only writer.
     pub status_tail: u64,
     /// Last published phase.
@@ -103,7 +114,7 @@ pub struct AgentState {
     /// Open children that still have to receive `Archive`.
     pub archive_pending: BTreeSet<AgentPath>,
     /// Inputs waiting for the turn, in inbox order.
-    pub queued: VecDeque<TurnInput>,
+    pub queued: VecDeque<Queued>,
     /// Inbox sequence of the first input not held in `queued`. It and every
     /// later input are read back from the inbox, in order, as `queued` drains.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +141,7 @@ impl AgentState {
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             conversation_tail: adopted.conversation_tail,
+            conversation_base: adopted.conversation_tail,
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
@@ -259,7 +271,7 @@ pub trait TurnDriver: acyclic_stream::ProviderPlatform {
         &'a self,
         agent: &'a AgentState,
         cursor: u64,
-        input: Option<TurnInput>,
+        input: Option<Queued>,
     ) -> TurnFuture<'a>;
 }
 
@@ -326,11 +338,12 @@ pub async fn step<T: TurnDriver + ?Sized>(
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
             let mut state = AgentState::adopted(path.clone(), &adopted);
-            state
-                .queued
-                .extend(adopted.brief.map(|brief| TurnInput::Brief {
+            state.queued.extend(adopted.brief.map(|brief| Queued {
+                inbox: adopted.forked_at,
+                input: TurnInput::Brief {
                     brief: Box::new(brief),
-                }));
+                },
+            }));
             state
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
@@ -421,7 +434,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         // the window is full or already overflowed, stays in the inbox to be
         // read back in order. No admitted input is ever dropped.
         let awaited = matches!(
-            (&state.phase, &input),
+            (&state.phase, &input.input),
             (Phase::WaitingApproval { id }, TurnInput::Approval { id: response }) if id == response
         );
         if awaited {
@@ -439,13 +452,12 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
 }
 
 /// The turn input an inbox record at `sequence` carries.
-fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
-    match record {
+fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
+    let input = match record {
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,
             body: message.body,
-            inbox: sequence,
         }),
         InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
@@ -459,7 +471,11 @@ fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
             event: hook.event,
         }),
         InboxRecord::ForkAdopted(_) | InboxRecord::Cancel(_) | InboxRecord::Archive(_) => None,
-    }
+    };
+    input.map(|input| Queued {
+        inbox: sequence,
+        input,
+    })
 }
 
 /// Position of the queued response to the approval the turn waits for.
@@ -467,10 +483,9 @@ fn approval_position(state: &AgentState) -> Option<usize> {
     let Phase::WaitingApproval { id } = &state.phase else {
         return None;
     };
-    state
-        .queued
-        .iter()
-        .position(|input| matches!(input, TurnInput::Approval { id: queued } if queued == id))
+    state.queued.iter().position(
+        |queued| matches!(&queued.input, TurnInput::Approval { id: queued } if queued == id),
+    )
 }
 
 /// Runs at most one turn step, as chosen by [`kernel::pick`].

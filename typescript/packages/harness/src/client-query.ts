@@ -19,6 +19,7 @@ export {
   type AgentWindow,
   type AgentEvent,
   type ConversationEntry,
+  type Reply,
   type TurnInput,
   type Sender,
   type Phase,

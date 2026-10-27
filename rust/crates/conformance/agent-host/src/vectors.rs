@@ -77,10 +77,14 @@ impl TurnDriver for Driver {
         &'a self,
         _agent: &'a AgentState,
         _cursor: u64,
-        input: Option<TurnInput>,
+        input: Option<Queued>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let Some(TurnInput::ApprovalRequested { id, .. }) = input else {
+            let Some(Queued {
+                input: TurnInput::ApprovalRequested { id, .. },
+                ..
+            }) = input
+            else {
                 return Err(Error::Record("unexpected conformance input"));
             };
             let mut outs = vec![Out::Conversation(id.as_str().as_bytes().to_vec())];

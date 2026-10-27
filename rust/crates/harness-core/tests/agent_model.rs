@@ -13,6 +13,8 @@ mod driver;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
+#[path = "agent_model/reply.rs"]
+mod reply;
 #[path = "agent_model/runtime.rs"]
 mod runtime;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
@@ -424,7 +426,7 @@ impl TurnDriver for Scripted {
         &'a self,
         _agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<TurnInput>,
+        _input: Option<Queued>,
     ) -> TurnFuture<'a> {
         let next = self.0.lock().expect("script lock").pop_front();
         Box::pin(async move { next.ok_or(Error::Record("script exhausted")) })
@@ -504,7 +506,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         state
             .queued
             .iter()
-            .filter_map(|input| match input {
+            .filter_map(|queued| match &queued.input {
                 TurnInput::ApprovalRequested { id, .. } => Some(id.as_str().to_owned()),
                 _ => None,
             })

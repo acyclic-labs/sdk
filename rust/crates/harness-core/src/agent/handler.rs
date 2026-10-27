@@ -184,21 +184,23 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
         .map_err(|_| Error::Path("agent id is not an actor id"))
     }
 
+    /// The committed agent state and the inbox cursor its last step consumed
+    /// before; before the first step, the adoption at its own cursor.
     pub(super) async fn state(
         &self,
         actor: &ActorReference,
         agent: &AgentPath,
-    ) -> Result<AgentState, Error> {
+    ) -> Result<(AgentState, u64), Error> {
         let snapshot = self
             .store
             .load(actor)
             .await
             .map_err(|error| Error::Actor(Box::new(error)))?;
         let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
-        let observed = if let Some(checkpoint) = state.checkpoint() {
-            serde_json::from_slice::<Saved>(&checkpoint.bytes)
-                .map_err(|_| Error::Record("agent checkpoint is malformed"))?
-                .state
+        let (observed, cursor) = if let Some(checkpoint) = state.checkpoint() {
+            let saved = serde_json::from_slice::<Saved>(&checkpoint.bytes)
+                .map_err(|_| Error::Record("agent checkpoint is malformed"))?;
+            (saved.state, saved.cursor)
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
@@ -220,12 +222,12 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
-            AgentState::adopted(agent.clone(), adopted)
+            (AgentState::adopted(agent.clone(), adopted), from)
         };
         if &observed.path != agent || observed.parent != agent.parent() {
             return Err(Error::Record("agent state binding differs"));
         }
-        Ok(observed)
+        Ok((observed, cursor))
     }
 
     /// Inbox records `[from, end)`, at most `limit`, in sequence order.

@@ -2,7 +2,7 @@
 
 use crate::{AgentCommand, CommandError, MAX_AGENT_COMMAND_BYTES};
 use acyclic_harness_core::{
-    agent::{AgentPath, Delivered, Error as AgentError, IntentId, StatusRecord},
+    agent::{AgentPath, Delivered, Error as AgentError, IntentId, Reply, StatusRecord, TurnInput},
     interaction::Interaction,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
@@ -68,6 +68,8 @@ pub enum AgentReply {
         items: Vec<PendingApproval>,
         next: Option<String>,
     },
+    /// The committed reply to one accepted message.
+    Reply { reply: Reply },
 }
 
 /// Remote failures preserve uncertain custody as a typed original request.
@@ -212,6 +214,18 @@ fn validate_reply(
             AgentReply::Delivered { .. },
             AgentCommand::Prompt { .. } | AgentCommand::Cancel { .. } | AgentCommand::Decide { .. },
         ) => return Ok(()),
+        (AgentReply::Reply { reply }, AgentCommand::Reply { id, inbox, .. }) => {
+            // An answer is the entry of exactly the requested message.
+            return match reply {
+                Reply::Answered { entry, .. }
+                    if entry.inbox != *inbox
+                        || !matches!(&entry.input, TurnInput::Message { id: settled, .. } if settled == id) =>
+                {
+                    Err(CommandError::Invalid)
+                }
+                _ => Ok(()),
+            };
+        }
         (AgentReply::Spawned { agent, .. }, AgentCommand::Spawn { parent, .. }) => {
             return if agent.parent().as_ref() == Some(parent) {
                 Ok(())

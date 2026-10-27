@@ -30,8 +30,8 @@ use std::{convert::Infallible, sync::Arc};
 pub enum Delivered {
     /// Committed exactly once (an exact replay also reports this) at inbox
     /// sequence `inbox`. A message's settled turn carries the same sequence in
-    /// its [`super::TurnInput::Message`]; `StatusRecord::cursor > inbox` means
-    /// the agent has consumed it.
+    /// its [`super::ConversationEntry`], and [`AgentHost::reply`] finds it;
+    /// `StatusRecord::cursor > inbox` means the agent has consumed it.
     Committed {
         /// Inbox sequence of the delivered record, identical on replay.
         inbox: u64,
@@ -150,7 +150,19 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// Observes the committed agent state, or its adoption before its first turn.
     /// This is an observation; effect admission still requires its own commit fence.
     pub async fn state(&self, agent: &AgentPath) -> Result<super::AgentState, Error> {
-        self.agents.state(&self.actor(agent)?, agent).await
+        Ok(self.agents.state(&self.actor(agent)?, agent).await?.0)
+    }
+
+    /// The committed reply to `agent`'s message `id` at inbox sequence `inbox`
+    /// (see [`super::reply`]), from its committed checkpoint.
+    pub async fn reply(
+        &self,
+        agent: &AgentPath,
+        id: &IntentId,
+        inbox: u64,
+    ) -> Result<super::Reply, Error> {
+        let (state, cursor) = self.agents.state(&self.actor(agent)?, agent).await?;
+        super::reply(&*self.provider, &state, cursor, id, inbox).await
     }
 
     /// Prepares, without IO, the one commit creating root agent

@@ -27,7 +27,7 @@ impl TurnDriver for Idle {
         &'a self,
         _agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<TurnInput>,
+        _input: Option<Queued>,
     ) -> TurnFuture<'a> {
         Box::pin(async {
             Ok(TurnStep {
