@@ -501,29 +501,6 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
 }
 
 #[tokio::test]
-async fn delivery_acknowledgements_validate_their_token() -> TestResult {
-    let acknowledgements = Arc::new(AtomicUsize::new(0));
-    let mut service = Service::new(Arc::new(MemoryStream::default()));
-    service.test_delivery = Some((Bytes::from(vec![9; 32]), Arc::clone(&acknowledgements)));
-    let direct = Client::from_channel(channel(service), authorization("fixture")?);
-    direct
-        .acknowledge_delivery(Bytes::from(vec![9; 32]))
-        .await?;
-    assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        direct.acknowledge_delivery(Bytes::new()).await,
-        Err(StreamError::InvalidArgument)
-    );
-    assert_eq!(
-        client(MemoryStream::default())?
-            .acknowledge_delivery(Bytes::from(vec![9; 32]))
-            .await,
-        Err(StreamError::Unsupported)
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn source_eof_never_discards_records_queued_before_terminal_close() -> TestResult {
     let provider = EndingFollow {
         inner: MemoryStream::default(),

@@ -95,7 +95,6 @@ pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
     use prost::Message;
     let data = wire::RecordBatch { records }.encode_to_vec();
     wire::ReadResponse {
-        delivery_token: Bytes::new(),
         codec: wire::Codec::None as i32,
         decoded_length: data.len() as u64,
         data: data.into(),
@@ -147,7 +146,6 @@ fn zstd(mut input: &[u8], length: usize) -> Option<Vec<u8>> {
 pub(crate) fn zstd_read_response(records: Vec<wire::Record>) -> wire::ReadResponse {
     let plain = read_response_wire(records);
     wire::ReadResponse {
-        delivery_token: Bytes::new(),
         codec: wire::Codec::Zstd as i32,
         decoded_length: plain.decoded_length,
         data: ruzstd::encoding::compress_to_vec(

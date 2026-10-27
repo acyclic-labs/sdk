@@ -33,7 +33,6 @@ fn compressed_frame_decodes_to_the_same_records() {
 #[test]
 fn empty_zstd_data_is_refused_and_an_empty_plain_frame_is_accepted() {
     let empty = wire::ReadResponse {
-        delivery_token: Default::default(),
         codec: wire::Codec::Zstd as i32,
         data: Default::default(),
         decoded_length: 0,
@@ -72,7 +71,6 @@ fn oversized_declared_length_is_refused_before_decompressing() {
     for length in [maximum + 1, u64::MAX] {
         for codec in [wire::Codec::None, wire::Codec::Zstd] {
             let frame = wire::ReadResponse {
-                delivery_token: Default::default(),
                 codec: codec as i32,
                 data: vec![0xff; 16].into(),
                 decoded_length: length,

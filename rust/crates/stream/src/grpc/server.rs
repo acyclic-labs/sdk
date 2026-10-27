@@ -26,7 +26,6 @@ fn check_command_size<T: Message>(request: &Request<T>) -> Result<(), Status> {
 #[async_trait]
 impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P> {
     type ReadStream = Body<wire::ReadResponse>;
-    type FollowStream = Body<wire::ReadResponse>;
 
     async fn inspect_idempotency(
         &self,
@@ -163,65 +162,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 .read(request)
                 .await
                 .map_err(|error| error_status(&error))?;
-            #[cfg(test)]
-            let records = {
-                let delivery = self.test_delivery.clone();
-                records.map(move |record| {
-                    record_frame(record).map(|mut frame| {
-                        if let Some((token, _)) = &delivery {
-                            frame.delivery_token = token.clone();
-                        }
-                        frame
-                    })
-                })
-            };
-            #[cfg(not(test))]
             let records = records.map(record_frame);
             Ok(observe_body(&span, records).boxed())
         })
         .await
-    }
-
-    async fn follow(
-        &self,
-        request: Request<wire::FollowRequest>,
-    ) -> Result<Response<Self::FollowStream>, Status> {
-        let span = serve_span!("follow");
-        streaming(span.clone(), async {
-            check_command_size(&request)?;
-            let request = request.into_inner();
-            let path = path(request.path).map_err(|error| error_status(&error))?;
-            let records = self
-                .provider
-                .follow(
-                    path,
-                    request.from,
-                    crate::FollowFilter::new(request.filter.unwrap_or_default())
-                        .map_err(|error| error_status(&error))?,
-                )
-                .await
-                .map_err(|error| error_status(&error))?;
-            Ok(observe_body(&span, records.map(record_frame)).boxed())
-        })
-        .await
-    }
-
-    async fn acknowledge_delivery(
-        &self,
-        request: Request<wire::AcknowledgeDeliveryRequest>,
-    ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
-        if request.get_ref().delivery_token.len() != 32 {
-            return Err(error_status(&StreamError::InvalidArgument));
-        }
-        #[cfg(test)]
-        if let Some((token, acknowledgements)) = &self.test_delivery {
-            if request.get_ref().delivery_token != *token {
-                return Err(error_status(&StreamError::InvalidArgument));
-            }
-            acknowledgements.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return Ok(Response::new(wire::AcknowledgeDeliveryResponse {}));
-        }
-        Err(error_status(&StreamError::Unsupported))
     }
 
     async fn children_page(

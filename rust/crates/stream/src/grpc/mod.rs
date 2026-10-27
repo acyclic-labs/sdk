@@ -81,8 +81,6 @@ pub struct Client {
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
     provider: Arc<P>,
-    #[cfg(test)]
-    test_delivery: Option<(Bytes, Arc<std::sync::atomic::AtomicUsize>)>,
 }
 
 impl<P> Service<P> {
@@ -91,8 +89,6 @@ impl<P> Service<P> {
     pub fn new(provider: Arc<P>) -> Self {
         Self {
             provider,
-            #[cfg(test)]
-            test_delivery: None,
         }
     }
 }
@@ -101,8 +97,6 @@ impl<P> Clone for Service<P> {
     fn clone(&self) -> Self {
         Self {
             provider: Arc::clone(&self.provider),
-            #[cfg(test)]
-            test_delivery: self.test_delivery.clone(),
         }
     }
 }

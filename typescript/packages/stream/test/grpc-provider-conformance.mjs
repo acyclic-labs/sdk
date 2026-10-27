@@ -19,7 +19,7 @@ const { createStreamGrpcClient, GrpcStreamProvider } = await import(grpcUrl.href
 const { idempotencyKey, commitId, StreamError } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream")).href : new URL("../dist/types.js", import.meta.url).href);
 const { ensureStreamWasm } = await import(new URL("dist/contract.js", packageUrl).href);
 const { WasmStream } = await import(new URL("generated/wasm/acyclic_stream_wasm.js", packageUrl).href);
-const { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
+const { Codec, ReadResponseSchema, RecordBatchSchema, FollowRequestSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
 const sessionWire = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/session/proto")).href : new URL("../generated/proto/stream/v1/session_pb.js", import.meta.url).href);
 
 const file = fileURLToPath(import.meta.url);
@@ -49,23 +49,6 @@ async function validateFrames(options, prefix) {
   const open = (mode, client = provider, follow = false, signal) => (follow
     ? client.follow(`frame-test/${prefix}/${mode}`, { from: 0n, ...(signal === undefined ? {} : { signal }) })
     : client.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: mode === "pressure" ? 64 : 2 }))[Symbol.asyncIterator]();
-  const receive = async (client, mode) => {
-    const records = [];
-    for await (const record of client.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 2 })) records.push(record.sequence);
-    assert.deepEqual(records, [0n, 1n]);
-  };
-  await receive(provider, "ack");
-  assert.equal(await state("ack", "attempts"), 1n);
-  await receive(new GrpcStreamProvider({ ...options, acknowledgeDeliveries: false }), "ack");
-  assert.equal(await state("ack", "attempts"), 1n);
-  await receive(provider, "ackFail");
-  assert.equal(await state("ackFail", "attempts"), 1n);
-  await receive(provider, "ackMalformed");
-  assert.equal(await state("ackMalformed", "attempts"), 0n);
-  await assert.rejects(receive(provider, "ackInvalid"), error => error.code === "invalid_response");
-  assert.equal(await state("ackInvalid", "attempts"), 0n);
-  await assert.rejects(provider.acknowledgeDelivery(new Uint8Array(31)), error => error.code === "invalid_argument");
-  await assert.rejects(provider.acknowledgeDelivery(new Uint8Array(32)), error => error.code === "unsupported");
   for (const mode of ["cursor", "identity", "count", "codec"]) {
     const iterator = mode === "count"
       ? provider.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 1 })[Symbol.asyncIterator]()
@@ -206,10 +189,9 @@ function canonicalError(error) {
 
 const frameStates = new Map();
 const stateFollowers = new Map();
-const deliveryTokens = new Map();
 function frameState(prefix, mode) {
   const key = `${prefix}/${mode}`;
-  if (!frameStates.has(key)) frameStates.set(key, new Proxy({ started: 0n, cancelled: 0n, attempts: 0n }, {
+  if (!frameStates.has(key)) frameStates.set(key, new Proxy({ started: 0n, cancelled: 0n }, {
     set(target, field, value) {
       target[field] = value;
       for (const push of stateFollowers.get(`${key}/${field}`) ?? []) push(value);
@@ -259,8 +241,7 @@ async function* sessionRecords(subscription, signal) {
     } finally { if (signal.aborted) state.cancelled++; }
     return;
   }
-  const method = StreamService.methods.find(method => method.localName === "follow");
-  const handle = await memory.open_follow(toBinary(method.input, create(method.input, { path, from: subscription.resume.next })));
+  const handle = await memory.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: subscription.resume.next })));
   const close = () => handle.close();
   signal.addEventListener("abort", close, { once: true });
   try {
@@ -289,19 +270,15 @@ function createAdapter() { return connectNodeAdapter({ routes(router) {
           try {
             const records = [0n, 1n].map(sequence => ({ sequence, value: body("frame"), commitId: new Uint8Array(32).fill(7), committedAtMicros: 1n }));
             if (mode === "cursor") records[1].sequence = 9n;
-            if (mode === "identity" || mode === "ackInvalid") records[1].commitId = new Uint8Array(31);
+            if (mode === "identity") records[1].commitId = new Uint8Array(31);
             if (mode === "pressure") {
               for (let index = 0; index < 64; index++) yield readFrame([{ ...records[0], sequence: BigInt(index) }], true);
             } else {
               const frame = readFrame(records, true);
               if (mode === "codec") frame.codec = 3;
-              if (mode.startsWith("ack")) {
-                frame.deliveryToken = new Uint8Array(mode === "ackMalformed" ? 31 : 32).fill(mode.charCodeAt(3) || 9);
-                deliveryTokens.set(Buffer.from(frame.deliveryToken).toString("hex"), { state, mode });
-              }
               yield frame;
             }
-            if (mode === "ordinary" || mode.startsWith("ack")) return;
+            if (mode === "ordinary") return;
             await aborted(context.signal);
           } finally { if (context.signal.aborted) state.cancelled++; }
           return;
@@ -316,13 +293,7 @@ function createAdapter() { return connectNodeAdapter({ routes(router) {
           yield readFrame([{ sequence: request.path === "malformed" ? 1n : 0n, value: new Uint8Array(request.path === "oversize" ? 256 : 1), commitId: new Uint8Array(32) }], false);
           return;
         }
-        if (method.localName === "follow") {
-          const handle = await memory.open_follow(toBinary(method.input, request));
-          const close = () => handle.close();
-          context.signal.addEventListener("abort", close, { once: true });
-          try { for (;;) { const bytes = await handle.next(); if (bytes === null) return; yield fromBinary(method.output, bytes); } }
-          finally { context.signal.removeEventListener("abort", close); handle.close(); handle.free(); }
-        } else if (method.localName === "read") {
+        if (method.localName === "read") {
           // Regroup into one compressed batch followed by plain single-record frames.
           let records;
           try { records = (await memory.read(toBinary(method.input, request))).flatMap(bytes => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, bytes).data).records); }
@@ -338,13 +309,6 @@ function createAdapter() { return connectNodeAdapter({ routes(router) {
     } else {
       implementation[method.localName] = async (request, context) => {
         authenticate(context);
-        if (method.localName === "acknowledgeDelivery") {
-          const delivery = deliveryTokens.get(Buffer.from(request.deliveryToken).toString("hex"));
-          if (!delivery) throw new ConnectError("unsupported_capability", Code.Unimplemented);
-          delivery.state.attempts++;
-          if (delivery.mode === "ackFail") throw new ConnectError("lost ACK", Code.Unavailable);
-          return {};
-        }
         if (method.localName === "tail" && request.path.startsWith("frame-state/")) {
           const [, prefix, mode, field] = request.path.split("/");
           return { tail: frameState(prefix, mode)[field] };

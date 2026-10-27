@@ -1107,22 +1107,3 @@ test("path ordering matches Unicode code point order, the order of UTF-8 bytes",
     expect(Math.sign(compareStreamPaths(right, left)) + ordered).toBe(0);
   }), { numRuns: 100 });
 });
-
-
-test("delivery acknowledgements use Rust token bounds and the authenticated HTTP endpoint", async () => {
-  await ensureStreamWasm();
-  const token = new Uint8Array(32).fill(9);
-  const calls: { url: string; body: unknown; authorization: string | null }[] = [];
-  const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "fixture",
-    fetcher: async (url, init) => {
-      calls.push({ url: String(url), body: JSON.parse(String(init?.body)), authorization: new Headers(init?.headers).get("authorization") });
-      return new Response("{}");
-    } });
-  await provider.acknowledgeDelivery(token);
-  expect(calls).toEqual([{ url: "https://example.test/v1/stream/delivery/acknowledge",
-    body: { deliveryToken: Buffer.from(token).toString("base64") }, authorization: "Bearer fixture" }]);
-  await expect(provider.acknowledgeDelivery(token.subarray(1))).rejects.toMatchObject({ code: "invalid_argument" });
-  expect(calls.length).toBe(1);
-  expect(decodeHttpResponse("delivery/acknowledge", "{}")).toBeUndefined();
-  expect(() => decodeHttpResponse("delivery/acknowledge", '{"unexpected":true}')).toThrow();
-});

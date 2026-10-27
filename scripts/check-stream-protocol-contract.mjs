@@ -28,14 +28,13 @@ try {
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
-    "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow", "AcknowledgeDelivery",
+    "InspectIdempotency", "Append", "Tail", "Fork", "Read",
     "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
-  assert.equal(service.method.find(method => method.name === "Follow").serverStreaming, true);
 
   for (const name of ["ChildrenRequest", "ChildrenResponse", "TrimRequest", "TrimReceipt", "DeleteRequest", "DeleteReceipt",
-    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict"]) {
+    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict", "AcknowledgeDeliveryRequest", "AcknowledgeDeliveryResponse"]) {
     assert.equal(messages.has(name), false, `${name} must not be published`);
   }
 
@@ -58,10 +57,8 @@ try {
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
   assertFields("TailRequest", [["path", 1], ["accepted", 2]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3]]);
-  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["delivery_token", 5]]);
-  assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
-  assertFields("AcknowledgeDeliveryResponse", []);
-  assertReserved("ReadResponse", [[1, 2]], ["record"]);
+  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4]]);
+  assertReserved("ReadResponse", [[1, 2], [5, 6]], ["record", "delivery_token"]);
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4], ["keys", 5], ["attributes", 6]]);
   assertReserved("TailResponse", [[2, 3]], ["trim_point"]);

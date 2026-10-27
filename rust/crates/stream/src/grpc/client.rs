@@ -45,28 +45,6 @@ impl Client {
         self.acknowledge_deliveries = false;
         self
     }
-
-    /// Acknowledges an opaque token at this client's authenticated endpoint.
-    pub async fn acknowledge_delivery(&self, token: Bytes) -> Result<(), StreamError> {
-        if token.len() != 32 {
-            return Err(StreamError::InvalidArgument);
-        }
-        let mut service = self.service();
-        tokio::time::timeout(Duration::from_millis(500), async {
-            service
-                .acknowledge_delivery(
-                    self.request(wire::AcknowledgeDeliveryRequest {
-                        delivery_token: token,
-                    })
-                    .await?,
-                )
-                .await
-        })
-        .await
-        .map_err(|_| StreamError::Unavailable)?
-        .map_err(|error| status(&error))?;
-        Ok(())
-    }
 }
 
 #[async_trait]

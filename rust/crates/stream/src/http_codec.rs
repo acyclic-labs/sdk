@@ -221,14 +221,6 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         return Err("limit_exceeded");
     }
     match route {
-        "delivery/acknowledge" => {
-            let request =
-                wire::AcknowledgeDeliveryRequest::decode(input).map_err(|_| "invalid_argument")?;
-            if request.delivery_token.len() != 32 {
-                return Err("invalid_argument");
-            }
-            Ok(json!({ "deliveryToken": STANDARD.encode(request.delivery_token) }))
-        }
         "idempotency/inspect" => {
             let request =
                 wire::InspectIdempotencyRequest::decode(input).map_err(|_| "invalid_argument")?;

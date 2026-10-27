@@ -4,7 +4,7 @@ import { webSocketSession, type SessionWebSocketFactory } from "./session-websoc
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
 import { toBinary } from "@bufbuild/protobuf";
-import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -17,11 +17,6 @@ export interface HttpStreamProviderOptions extends CredentialOptions { readonly 
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
-  /** Acknowledges an opaque hosted transport receipt. */
-  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
-    const input = toBinary(AcknowledgeDeliveryRequestSchema, { $typeName: "acyclic.stream.v1.AcknowledgeDeliveryRequest", deliveryToken: deliveryToken.slice() });
-    await this.#request("delivery/acknowledge", await encodeHttpRequest("delivery/acknowledge", input));
-  }
   readonly #sessions: StreamSessions;
   readonly #endpoint: string;
   readonly #credential: CredentialProvider;
