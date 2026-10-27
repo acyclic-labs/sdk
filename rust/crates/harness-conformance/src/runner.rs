@@ -11,7 +11,6 @@ use std::{
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,9 +129,8 @@ pub async fn run(
         filter.map(str::to_owned),
         capabilities,
     ));
-    // One corpus deadline, including queued cases. A stalled host still produces
-    // a failing record for every case instead of hanging or truncating JSON.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(55);
+    // Execution fuel belongs to each recipe's shared harness executor. Queue
+    // and host scheduling consume no model steps, so they cannot fail a case.
     let mut records = run_cases(
         paths.into_iter().map(|path| {
             let inputs = Arc::clone(&inputs);
@@ -144,7 +142,6 @@ pub async fn run(
                     substrate.as_ref(),
                     filter.as_deref(),
                     capabilities,
-                    deadline,
                 )
                 .await
             }
@@ -171,7 +168,6 @@ async fn run_case(
     substrate: &dyn Substrate,
     filter: Option<&str>,
     capabilities: &std::collections::BTreeSet<String>,
-    deadline: tokio::time::Instant,
 ) -> Record {
     let case = path
         .strip_prefix(root)
@@ -214,9 +210,7 @@ async fn run_case(
         let parsed = parsed.ok_or("no portable adapter for declared native capability")?;
         let paths = parsed.paths();
         parsed.prepare(&mut value)?;
-        let observed = tokio::time::timeout_at(deadline, substrate.execute(value, paths))
-            .await
-            .map_err(|_| "corpus execution budget exhausted")??;
+        let observed = substrate.execute(value, paths).await?;
         parsed.check(&observed)?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
             Status::Pass,

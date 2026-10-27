@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 // Cancel a held GET body through the shipping TUI, then explicitly resume it.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Processes } from "./graphcoder-e2e/process.mjs";
 import { pty } from "./graphcoder-e2e/pty.mjs";
+import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 
 const [binary] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
 const begin = performance.now(), processes = new Processes();
-const root = mkdtempSync(join(tmpdir(), "graphcoder-fetch-cancel-"));
+const root = scratchDirectory("graphcoder-fetch-cancel-");
 const workspace = join(root, "workspace"), settings = join(root, "settings"), catalog = join(root, "catalog.json");
-for (const path of [workspace, ...["AppData/Local", "AppData/Roaming", ".codex"].map(p => join(settings, p))]) mkdirSync(path, { recursive: true });
+const env = environment(settings);
+mkdirSync(workspace);
 const requests = [], captures = [], listeners = new Set();
 let rejectFailure, closedSource, source, generations = 0, fetches = 0, sourceRetired = false;
 const failed = new Promise((_, reject) => { rejectFailure = reject; }); failed.catch(() => {});
@@ -44,9 +45,6 @@ const base = `http://127.0.0.1:${server.address().port}`; source = `${base}/sour
 writeFileSync(catalog, JSON.stringify({ e2e: { adapter: "responses", authentication: "optional", base_url: base,
   models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
-const env = { ...process.env, HOME: settings, USERPROFILE: settings, CODEX_HOME: join(settings, ".codex"), LOCALAPPDATA: join(settings, "AppData/Local"), APPDATA: join(settings, "AppData/Roaming"),
-  XDG_CONFIG_HOME: settings, XDG_DATA_HOME: settings, XDG_CACHE_HOME: settings, XDG_STATE_HOME: settings };
-for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
 const fixture = { workspace, settings, catalog, env, requests,
   args: ["--workspace", workspace, "--settings-root", settings, "--catalog", catalog, "--model", "e2e/tiny"],
   onRequest(listener) { listeners.add(listener); return () => listeners.delete(listener); } };

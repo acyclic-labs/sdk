@@ -1,6 +1,12 @@
 use super::*;
 use work::*;
 
+fn native_watch_work() -> Result<crate::NativeMaterializationWork, Box<dyn std::error::Error>> {
+    crate::watch::initialize_native_watch_services()?;
+    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error.into())
+}
+
 #[test]
 fn native_root_identity_encoding_is_exact_and_round_trips() {
     let identity = NativeRootIdentity {
@@ -599,83 +605,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
 #[test]
 fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dyn std::error::Error>>
 {
-    use std::time::{Duration, Instant};
-
-    let directory = tempfile::tempdir()?;
-    let mut watch = NativeWatch::open(
-        directory.path(),
-        NativeWatchOptions::new(VolumeLimits::default()),
-    )?;
-    let initial = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-    assert!(matches!(
-        initial.value,
-        WatchBatch::RescanRequired {
-            reason: WatchInvalidationReason::InitialSnapshotRequired,
-            ..
-        }
-    ));
-    let rescan = watch.begin_rescan()?;
-    let failed_epoch = rescan.epoch();
-    assert_eq!(failed_epoch, 1);
-    rescan.abort(WatchInvalidationReason::NativeRescanRequired);
-    assert!(matches!(
-        watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value,
-        WatchBatch::RescanRequired {
-            reason: WatchInvalidationReason::NativeRescanRequired,
-            ..
-        }
-    ));
-    let rescan = watch.begin_rescan()?;
-    let epoch = rescan.epoch();
-    assert_eq!(epoch, 2);
-    assert!(matches!(
-        watch.finish_rescan(rescan)?,
-        WatchBatch::Changes { .. }
-    ));
-    let _empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-
-    std::fs::write(directory.path().join("observed-0"), b"content")?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut retries = 0_u8;
-    let observed = loop {
-        let receipt = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-        match receipt.value {
-            WatchBatch::Changes { changes, .. } if !changes.is_empty() => break changes,
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("native watcher timed out".into()),
-            WatchBatch::RescanRequired {
-                reason: WatchInvalidationReason::NativeRescanRequired,
-                ..
-            } if cfg!(target_os = "macos") && retries < 3 => {
-                // FSEvents may deliver the watched root's creation hint after
-                // the first baseline. Rebaseline, then demand a precise event
-                // for a fresh write rather than accepting permanent rescans.
-                retries += 1;
-                let rescan = watch.begin_rescan()?;
-                let _ = watch.finish_rescan(rescan)?;
-                std::fs::write(
-                    directory.path().join(format!("observed-{retries}")),
-                    b"content",
-                )?;
-            }
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("native watcher invalidated: {reason}").into());
-            }
-        }
-    };
-    assert!(observed.iter().any(|change| match change {
-        WatchChange::Created(path)
-        | WatchChange::Modified(path)
-        | WatchChange::Arrived(path)
-        | WatchChange::MetadataChanged(path)
-        | WatchChange::Removed(path) => path.depth() <= 1,
-        WatchChange::Renamed { from, to } => from.depth() <= 1 && to.depth() <= 1,
-    }));
-    Ok(())
+    native_contract::completed_write(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -876,75 +806,7 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
 #[test]
 fn fence_queues_every_completed_write_and_hides_its_cookie()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
-
-    #[cfg(windows)]
-    let directory = crate::windows_test_filesystems::ntfs_tempdir()?;
-    #[cfg(not(windows))]
-    let directory = tempfile::tempdir()?;
-    std::fs::create_dir(directory.path().join(".git"))?;
-    let limits = VolumeLimits::default();
-    let excluded = [".acyclic-sdk", ".git"]
-        .into_iter()
-        .map(|name| {
-            relative_namespace_path(
-                directory.path(),
-                &directory.path().join(name),
-                native_filesystem_profile(),
-                limits,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut watch = NativeWatch::open(directory.path(), NativeWatchOptions::new(limits))?;
-    watch.exclude_subtrees(&excluded)?;
-    let mut observed = Vec::new();
-    for attempt in 0..4 {
-        let rescan = watch.begin_rescan()?;
-        let _ = watch.finish_rescan(rescan)?;
-        std::fs::write(directory.path().join(format!("written-{attempt}")), b"x")?;
-        watch.fence(Duration::from_secs(5))?;
-        match watch
-            .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. } => {
-                observed = changes;
-                break;
-            }
-            // FSEvents may replay the temporary root's creation after the
-            // first baseline; rebaseline and fence a fresh write.
-            WatchBatch::RescanRequired { .. } if cfg!(target_os = "macos") => {}
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("fence invalidated the watcher: {reason}").into());
-            }
-        }
-    }
-    assert!(
-        !observed.is_empty(),
-        "the fenced write must already be queued"
-    );
-    assert!(observed.iter().all(|change| match change {
-        WatchChange::Created(path)
-        | WatchChange::Modified(path)
-        | WatchChange::Arrived(path)
-        | WatchChange::MetadataChanged(path)
-        | WatchChange::Removed(path) => !excluded.iter().any(|excluded| path.is_within(excluded)),
-        WatchChange::Renamed { .. } => false,
-    }));
-    assert!(!directory.path().join(".acyclic-sdk").exists());
-
-    let started = Instant::now();
-    for _ in 0..20 {
-        watch.fence(Duration::from_secs(5))?;
-    }
-    eprintln!("fence latency: {:?} per fence", started.elapsed() / 20);
-    assert!(matches!(
-        watch
-            .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value,
-        WatchBatch::Changes { changes, .. } if changes.is_empty()
-    ));
-    Ok(())
+    native_contract::cookie_is_hidden(false)
 }
 
 /// A fork can create a directory that the physical source never had; the lazy
@@ -968,10 +830,25 @@ fn linux_demand_watch_accepts_directories_absent_from_the_source()
     Ok(())
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[test]
+fn held_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dyn std::error::Error>>
+{
+    native_contract::completed_write(true)
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[test]
+fn held_fence_queues_every_completed_write_and_hides_its_cookie()
+-> Result<(), Box<dyn std::error::Error>> {
+    native_contract::cookie_is_hidden(true)
+}
 #[cfg(unix)]
 mod fence_cookie;
 #[cfg(target_os = "macos")]
 mod fsevents_fence;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod native_contract;
 #[cfg(target_os = "linux")]
 mod root_metadata;
 mod work;

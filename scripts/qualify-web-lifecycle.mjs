@@ -2,19 +2,20 @@
 // Actual search -> fetch -> citation, followed by durable replay without redispatch.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Processes } from "./graphcoder-e2e/process.mjs";
+import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 
 const [binary] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
 const begin = performance.now(), processes = new Processes();
-const root = mkdtempSync(join(tmpdir(), "graphcoder-web-"));
+const root = scratchDirectory("graphcoder-web-");
 const workspace = join(root, "workspace"), settings = join(root, "settings");
-for (const path of [workspace, ...["AppData/Local", "AppData/Roaming", ".codex"].map(p => join(settings, p))]) mkdirSync(path, { recursive: true });
+const env = environment(settings);
+mkdirSync(workspace);
 const content = "FETCH_E2E_SOURCE λ\nexact source bytes\n", title = "CITED_E2E_SOURCE";
 let generations = 0, searches = 0, fetches = 0, offline = false, source, answer, rejectFailure;
 const failed = new Promise((_, reject) => { rejectFailure = reject; });
@@ -71,10 +72,6 @@ const catalog = join(root, "catalog.json"), operation = randomUUID();
 writeFileSync(catalog, JSON.stringify({ fixture: { adapter: "responses", authentication: "optional", base_url: base,
   models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
-const env = { ...process.env, HOME: settings, USERPROFILE: settings, CODEX_HOME: join(settings, ".codex"),
-  LOCALAPPDATA: join(settings, "AppData/Local"), APPDATA: join(settings, "AppData/Roaming"),
-  XDG_CONFIG_HOME: settings, XDG_DATA_HOME: settings, XDG_CACHE_HOME: settings, XDG_STATE_HOME: settings };
-for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
 const timer = setTimeout(() => rejectFailure(new Error("web lifecycle exceeded the standard nine-second work budget")), 9000);
 let passed = false;
 try {

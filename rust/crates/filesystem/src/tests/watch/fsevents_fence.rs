@@ -31,9 +31,7 @@ fn a_quiet_fence_confirms_delivery_without_a_rescan() -> Result<(), Box<dyn std:
     let directory = tempfile::tempdir()?;
     let volumes = directory.path().join(".volumes");
     std::fs::create_dir(&volumes)?;
-    let work =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
+    let work = native_watch_work()?;
     let mut watch = NativeWatch::open_with_profile_with_native_work(
         directory.path(),
         native_filesystem_profile(),
@@ -84,9 +82,7 @@ fn a_quiet_fence_confirms_delivery_without_a_rescan() -> Result<(), Box<dyn std:
 fn a_watch_without_exclusions_fences_by_requiring_a_rescan()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let work =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
+    let work = native_watch_work()?;
     let mut watch = NativeWatch::open_with_profile_with_native_work(
         directory.path(),
         native_filesystem_profile(),
@@ -122,9 +118,7 @@ fn a_read_only_git_directory_does_not_block_a_quiet_fence() -> Result<(), Box<dy
     let volumes = directory.path().join(".volumes");
     std::fs::create_dir(&git)?;
     std::fs::create_dir(&volumes)?;
-    let work =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
+    let work = native_watch_work()?;
     let mut watch = NativeWatch::open_with_profile_with_native_work(
         directory.path(),
         native_filesystem_profile(),
