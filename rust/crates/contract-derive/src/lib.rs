@@ -3,10 +3,53 @@ use proc_macro::TokenStream;
 use syn::parse_macro_input;
 mod authorization;
 mod enumeration;
+mod explicit_provider;
 mod heap_layout;
 mod message;
 mod options;
 mod registration;
+
+/// Generate an `ExplicitNAME` provider contract with every default removed,
+/// and the forwarding implementation of `NAME`. Adding a default method to
+/// `NAME` therefore breaks incomplete explicit adapters at compile time.
+///
+/// ```
+/// use acyclic_contract_derive::explicit_provider;
+/// #[explicit_provider]
+/// trait Provider { fn write(&self) -> u8 { 0 } }
+/// struct Complete;
+/// impl ExplicitProvider for Complete { fn write(&self) -> u8 { 7 } }
+/// assert_eq!(Provider::write(&Complete), 7);
+/// ```
+///
+/// Conditional async-trait expansion must reach the forwarding impl too.
+/// ```
+/// use acyclic_contract_derive::explicit_provider;
+/// #[explicit_provider]
+/// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+/// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+/// trait Provider: Sync { async fn write(&self) -> u8 { 0 } }
+/// struct Complete;
+/// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+/// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+/// impl ExplicitProvider for Complete { async fn write(&self) -> u8 { 7 } }
+/// let _forwarded = Provider::write(&Complete);
+/// ```
+///
+/// ```compile_fail,E0046
+/// use acyclic_contract_derive::explicit_provider;
+/// #[explicit_provider]
+/// trait Provider { fn write(&self) {} }
+/// struct Incomplete;
+/// impl ExplicitProvider for Incomplete {}
+/// ```
+#[proc_macro_attribute]
+pub fn explicit_provider(_arguments: TokenStream, input: TokenStream) -> TokenStream {
+    let contract = parse_macro_input!(input as syn::ItemTrait);
+    explicit_provider::expand(contract)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 /// Derive a registered prost shadow and fallible semantic ingress.
 ///

@@ -1,0 +1,44 @@
+{
+  "original_source": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
+  "rebased_source": "74efc341e2448fd5a5756a6a74c12801ec66ade2",
+  "original_inputs": "Q:/lanes/verify/evidence/1697/cac82c7/rust/inputs.json",
+  "scope": "Byte equality of selected proof-bearing files only. Machine, checkpoint and new host-bound changes require fresh execution; whole-program equivalence is not claimed.",
+  "files": [
+    {
+      "path": "rust/crates/harness-core/src/agent/slots.rs",
+      "original_sha256": "888dbdaa2b95bac5cd48f4cf653173fa5a8101b651050b08f52c65aa4f04283d",
+      "current_sha256": "888dbdaa2b95bac5cd48f4cf653173fa5a8101b651050b08f52c65aa4f04283d",
+      "equal": true
+    },
+    {
+      "path": "rust/proofs/spawn-slots/src/lib.rs",
+      "original_sha256": "409cf77a4b11074ada906b35849f10491db605b6c19e279a473197d216221c62",
+      "current_sha256": "409cf77a4b11074ada906b35849f10491db605b6c19e279a473197d216221c62",
+      "equal": true
+    },
+    {
+      "path": "rust/crates/harness-core/src/filesystem/attestation.rs",
+      "original_sha256": "07ee2bde9694e5f844b25d5a8f6d06e0e17e17ecd66ca4fcfcde6bb8f7ce939c",
+      "current_sha256": "07ee2bde9694e5f844b25d5a8f6d06e0e17e17ecd66ca4fcfcde6bb8f7ce939c",
+      "equal": true
+    },
+    {
+      "path": "rust/crates/harness-core/src/filesystem/attestation_proofs.rs",
+      "original_sha256": "1d484a98dca055b564e4ff6e986ddf4d174d4110db68a7f6b3bc470214d0b691",
+      "current_sha256": "1d484a98dca055b564e4ff6e986ddf4d174d4110db68a7f6b3bc470214d0b691",
+      "equal": true
+    },
+    {
+      "path": "rust/crates/stream/src/lib/provider.rs",
+      "original_sha256": "79cfd6fd376bb1bd83e177bb58ef51a3bad50d113374f04aadd87b4be7f12529",
+      "current_sha256": "79cfd6fd376bb1bd83e177bb58ef51a3bad50d113374f04aadd87b4be7f12529",
+      "equal": true
+    },
+    {
+      "path": "rust/crates/contract-derive/src/explicit_provider.rs",
+      "original_sha256": "0d81583cde051524362e9e5424125b3f45ba0c035f435aaa480ebbefcc438e4a",
+      "current_sha256": "0d81583cde051524362e9e5424125b3f45ba0c035f435aaa480ebbefcc438e4a",
+      "equal": true
+    }
+  ]
+}

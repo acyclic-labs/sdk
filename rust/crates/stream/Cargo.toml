@@ -44,6 +44,7 @@ wasm-journal = ["dep:wasm-bindgen"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 base64 = "0.23.1"

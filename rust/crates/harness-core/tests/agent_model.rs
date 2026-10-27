@@ -17,6 +17,8 @@ mod hosting;
 mod reply;
 #[path = "agent_model/runtime.rs"]
 mod runtime;
+#[path = "agent_model/slot_schedules.rs"]
+mod slot_schedules;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/wired.rs"]
 mod wired;

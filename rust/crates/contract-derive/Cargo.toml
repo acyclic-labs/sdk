@@ -19,6 +19,7 @@ quote = "1"
 syn = { version = "3", features = ["full"] }
 
 [dev-dependencies]
+async-trait.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 protoc-bin-vendored.workspace = true

@@ -347,7 +347,7 @@ pub(super) fn check_volumes(volumes: &[VolumeBinding]) -> Result<(), Error> {
 
 /// A name: a binding, principal or host. Like a label, it admits no control
 /// character, so its encoding is at most twice its length.
-fn check_text(text: &str) -> Result<(), Error> {
+pub(super) fn check_text(text: &str) -> Result<(), Error> {
     if text.is_empty() || text.len() > MAX_INTENT_BYTES || text.chars().any(char::is_control) {
         return Err(Error::Record(
             "name must be 1-128 bytes without control characters",
@@ -398,7 +398,11 @@ impl AgentRecord for StatusRecord {
     fn check(&self) -> Result<(), Error> {
         match &self.phase {
             Phase::Done { outcome } => check_outcome(outcome),
-            _ => Ok(()),
+            Phase::WaitingHost { host } => check_text(host),
+            Phase::Idle
+            | Phase::Running
+            | Phase::WaitingApproval { .. }
+            | Phase::WaitingAlarm { .. } => Ok(()),
         }
     }
 }

@@ -33,6 +33,7 @@ pub trait ProviderPlatform {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> ProviderPlatform for T {}
 
+#[acyclic_contract_derive::explicit_provider]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 /// Canonical provider contract. Placement and transport remain invisible.

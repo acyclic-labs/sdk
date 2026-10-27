@@ -195,11 +195,14 @@ mod tests {
         let failure = |n| AgentOutcome::Failed {
             message: widest_text(n),
         };
-        let fits = |n| serde_json::to_vec(&failure(n)).expect("outcome").len() <= MAX_OUTCOME_BYTES;
-        let n = (0..=MAX_MESSAGE_BYTES)
-            .rev()
-            .find(|&n| fits(n))
-            .expect("fits");
+        let overhead = serde_json::to_vec(&failure(0)).expect("outcome").len();
+        let n = ((MAX_OUTCOME_BYTES - overhead) / 6).min(MAX_MESSAGE_BYTES);
+        assert!(serde_json::to_vec(&failure(n)).expect("outcome").len() <= MAX_OUTCOME_BYTES);
+        if n < MAX_MESSAGE_BYTES {
+            assert!(
+                serde_json::to_vec(&failure(n + 1)).expect("outcome").len() > MAX_OUTCOME_BYTES
+            );
+        }
         failure(n)
     }
 
@@ -239,10 +242,12 @@ mod tests {
 
     fn outcomes() -> Vec<AgentOutcome> {
         vec![
+            AgentOutcome::Succeeded { result: None },
             AgentOutcome::Succeeded {
                 result: Some(Box::new(file())),
             },
             widest_failure(),
+            AgentOutcome::Archived,
         ]
     }
 
@@ -294,7 +299,9 @@ mod tests {
                 event: Box::new(file()),
             }),
         ];
-        for outcome in outcomes() {
+        for outcome in outcomes().into_iter().chain([AgentOutcome::Failed {
+            message: widest_text(MAX_MESSAGE_BYTES),
+        }]) {
             records.push(InboxRecord::ChildDone(ChildDone {
                 child: deepest.clone(),
                 outcome,
@@ -435,5 +442,123 @@ mod tests {
             "{record} > {}",
             acyclic_stream::MAX_RECORD_BYTES
         );
+    }
+
+    // Exercise the canonical encoder itself, before its size refusal. A refused
+    // oversized record is a failure of this property, not a passing bound.
+    fn assert_record_bound<T: AgentRecord>(record: &T) -> usize {
+        record
+            .check()
+            .expect("generated record satisfies structural admission");
+        let raw = crate::contract::canonical_json_bytes(record).expect("canonical record");
+        assert!(
+            raw.len() <= MAX_RECORD_BYTES,
+            "{}: {} > {MAX_RECORD_BYTES}",
+            std::any::type_name::<T>(),
+            raw.len()
+        );
+        assert_eq!(
+            record.encode().expect("bounded encoder accepts record"),
+            raw
+        );
+        raw.len()
+    }
+
+    fn vary_text(value: &mut serde_json::Value, name: u8, text: u8) {
+        match value {
+            serde_json::Value::String(value) => {
+                if !value.is_empty() && value.bytes().all(|byte| byte == b'"') {
+                    *value = char::from(name).to_string().repeat(value.len());
+                } else if !value.is_empty() && value.bytes().all(|byte| byte == 0) {
+                    *value = char::from(text).to_string().repeat(value.len());
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    vary_text(value, name, text);
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for value in values.values_mut() {
+                    vary_text(value, name, text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn varied<T: serde::Serialize + serde::de::DeserializeOwned>(
+        record: &T,
+        name: u8,
+        text: u8,
+    ) -> T {
+        let mut value = serde_json::to_value(record).expect("record value");
+        vary_text(&mut value, name, text);
+        serde_json::from_value(value).expect("bounded field variation")
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+        #[test]
+        fn record_bounds_cover_every_kind_and_json_escape_expansion(
+            name in proptest::sample::select(vec![b'"', b'a', b'~']),
+            text in proptest::sample::select(vec![0, 1, 8, 9, 10, 13, b'"', b'\\', b'a']),
+            cursor in proptest::num::u64::ANY,
+        ) {
+            // Every generated case includes every variant, at maximum field
+            // lengths; selection never accidentally omits a large record kind.
+            for record in inbox_records() {
+                let worst = assert_record_bound(&record);
+                let sample: InboxRecord = varied(&record, name, text);
+                proptest::prop_assert!(assert_record_bound(&sample) <= worst);
+            }
+            for by in senders() {
+                let record = Closed { by, id: intent() };
+                let worst = assert_record_bound(&record);
+                let sample: Closed = varied(&record, name, text);
+                proptest::prop_assert!(assert_record_bound(&sample) <= worst);
+            }
+            let phases = [Phase::Idle, Phase::Running,
+                Phase::WaitingApproval { id: intent() },
+                Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
+                Phase::WaitingAlarm { deadline_unix_ms: u64::MAX }];
+            let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
+                message: widest_text(MAX_MESSAGE_BYTES),
+            }]);
+            for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
+                let record = StatusRecord { phase, cursor: u64::MAX };
+                let worst = assert_record_bound(&record);
+                let mut sample: StatusRecord = varied(&record, name, text);
+                sample.cursor = cursor;
+                proptest::prop_assert!(assert_record_bound(&sample) <= worst);
+            }
+            for input in turn_inputs() {
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file() };
+                let worst = assert_record_bound(&record);
+                let sample: ConversationEntry = varied(&record, name, text);
+                proptest::prop_assert!(assert_record_bound(&sample) <= worst);
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_host_status_requires_a_bounded_name() {
+        for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
+            let record = StatusRecord {
+                phase: Phase::WaitingHost { host },
+                cursor: 0,
+            };
+            assert!(
+                record.check().is_err(),
+                "unbounded or malformed host name admitted"
+            );
+        }
+        let record = StatusRecord {
+            phase: Phase::WaitingHost {
+                host: widest(MAX_INTENT_BYTES),
+            },
+            cursor: u64::MAX,
+        };
+        assert_record_bound(&record);
     }
 }
