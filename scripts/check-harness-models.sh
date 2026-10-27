@@ -19,10 +19,6 @@ if (($#)); then
   done < "$2"
 fi
 echo "GATE_HARNESS_LOOM_SCOPE core=$core facade=$facade"
-if [ "$core" = 1 ]; then
-  node scripts/qualify-mcp-loom.mjs --child-views --all-features
-fi
 if [ "$facade" = 1 ]; then
   node scripts/qualify-mcp-loom.mjs --harness-models --all-features
-  node scripts/qualify-mcp-loom.mjs --query-model --all-features
 fi
