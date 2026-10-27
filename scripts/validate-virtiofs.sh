@@ -20,7 +20,7 @@ run() {
 features=filesystem-local,native-execution,test-support
 status=0
 run 'compile filesystem tests' cargo test --locked -p acyclic-fs --lib --no-run || status=$?
-run 'compile local owner and daemon tests' cargo test --locked -p acyclic-harness --features "$features" --lib --test virtiofs --no-run || status=$?
+run 'compile local owner and daemon tests' cargo test --locked -p acyclic-harness --features "$features" --lib --bin acyclic-virtiofsd --test virtiofs --no-run || status=$?
 run 'compile original Bound tests' cargo test --locked -p acyclic-harness-core --features "$features" --test agent-model --no-run || status=$?
 if (( status != 0 )); then
     printf 'step=virtiofs compile gates; recovery: bash scripts/validate-virtiofs.sh\n' >&2
@@ -33,6 +33,7 @@ status=0
 run 'filesystem suite including real kernel packets and both VMMs' cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture || status=$?
 run 'existing local host library suite' cargo test --locked -p acyclic-harness --features "$features" --lib || status=$?
 run 'original Bound agent suite' cargo test --locked -p acyclic-harness-core --features "$features" --test agent-model || status=$?
+run 'kernel-authenticated daemon host peer' cargo test --locked -p acyclic-harness --features "$features" --bin acyclic-virtiofsd || status=$?
 run 'public Bound and standalone daemon with both VMMs' cargo test --locked -p acyclic-harness --features "$features" --test virtiofs -- --include-ignored --nocapture || status=$?
 if (( status != 0 )); then
     printf 'step=virtiofs validation; recovery: bash scripts/validate-virtiofs.sh\n' >&2

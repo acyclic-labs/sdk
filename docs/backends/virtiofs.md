@@ -26,6 +26,9 @@ if let Some((cause, counters)) = retired.take_callback_failure() {
 retired.transport()?;
 ```
 
+The embedding authenticates its VMM connection before passing the connected
+stream to `serve`; guest packet UID/GID fields do not authenticate a host peer.
+
 Embedding a different trusted local composition can implement `LocalGuestSource`.
 It must retain the authenticated canonical source and its original funded work,
 guard, exact view and enrolled POSIX policy together. This is a source-owner
@@ -54,6 +57,23 @@ The existing source must support the intended native POSIX metadata operations.
 The integration test `harness/tests/virtiofs.rs` shows complete local composition
 and config generation. Ctrl-C cancels the original work and joins the server;
 the daemon removes only its own socket inode.
+It sets an owner-only creation mask before starting threads, so its socket is
+private even with inherited umask `000`. It also checks Linux peer credentials
+before reading any protocol message. Run the VMM under the daemon's effective
+host user; guest POSIX enrollment never grants another host user socket access.
+
+Review P1 correction `c5062bd91cb943c17baf066563bb90163666bd8f` passed its bb2
+compile gate, the complete daemon binary test (1 pass) and the public Bound/daemon
+suite (2 pass, 1.34 s). Both actual QEMU and cloud-hypervisor launched the daemon
+with inherited `umask 000`, checked socket mode `0700`, mounted the canonical
+volume, wrote/read/deleted, checked absence, unmounted and powered off with exit0.
+Both daemons exited0 and retired their owned sockets. The binary regression checks
+real kernel peer credentials against a mismatching and matching expected uid,
+then proves the captured INIT packet remained unread across refusal. It does not
+claim execution of a foreign-uid process. Frontend teardown warnings remain.
+Job `1793096177280-159730-b3f40792`, log
+`/home/var/log/buildbox/1793096161658-159730-d88912bb.log`, rc0. The wider
+filesystem failures recorded below were not rerun or reclassified by this fix.
 
 ## Limits
 
