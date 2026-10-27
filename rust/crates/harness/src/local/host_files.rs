@@ -401,19 +401,20 @@ async fn serve_requests(
         let mut changed_keys = BTreeSet::new();
         for entry in std::fs::read_dir(directory.join("requests")).map_err(storage)? {
             let path = entry.map_err(storage)?.path();
-            let Some(operation) = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .filter(|_| {
-                    path.extension()
-                        .is_some_and(|extension| extension == "json")
-                })
-                .and_then(|stem| {
-                    OperationId::parse(stem)
-                        .ok()
-                        .filter(|operation| operation.to_string() == stem)
-                })
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let Some(operation) =
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| {
+                        OperationId::parse(stem)
+                            .ok()
+                            .filter(|operation| operation.to_string() == stem)
+                    })
             else {
+                // Not a request record; see the invalid-request case below.
+                let _ = remove_projection(&path);
                 continue;
             };
             present.insert(operation);
