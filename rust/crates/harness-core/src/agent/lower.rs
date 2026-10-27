@@ -11,7 +11,7 @@
 
 use super::{
     AgentPath, AgentRecord, AgentState, Closed, Control, Error, ForkAdopted, InboxRecord, Out,
-    Sender, Step, commit,
+    Sender, Step, VolumeBinding, commit,
 };
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
@@ -85,17 +85,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 path,
                 intent,
                 cursor,
-                ForkAdopted {
-                    agent: path.id(),
-                    parent: None,
-                    forked_at: cursor,
-                    conversation_tail: prior_conversation,
-                    volumes: volumes.clone(),
-                    // The brief is a file in the child's private volume,
-                    // whose version exists only once this commit seals.
-                    brief: None,
-                    policy: state.policy.clone(),
-                },
+                adoption(state, volumes, cursor, prior_conversation),
             )?;
             builder.created.insert(spawn.child.inbox()?);
             for condition in spawn.request.conditions {
@@ -166,6 +156,27 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         mutations,
         idempotency_key: key,
     })
+}
+
+/// The adoption a spawn of `state` writes as its child's first record; the
+/// spawn names the child, and the fork cut is `cursor`.
+pub(super) fn adoption(
+    state: &AgentState,
+    volumes: &[VolumeBinding],
+    cursor: u64,
+    conversation_tail: u64,
+) -> ForkAdopted {
+    ForkAdopted {
+        agent: state.path.id(),
+        parent: None,
+        forked_at: cursor,
+        conversation_tail,
+        volumes: volumes.to_vec(),
+        // The brief is a file in the child's private volume, whose version
+        // exists only once the spawn's commit seals.
+        brief: None,
+        policy: state.policy.clone(),
+    }
 }
 
 /// Stable key of one delivery: the agent and the A4 trigger identity.

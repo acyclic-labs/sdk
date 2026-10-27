@@ -320,7 +320,11 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = Vec::new();
-                    outs.push(Out::Conversation(entry.encode()?));
+                    // Unbounded here: the step drops an entry beyond its record
+                    // limit and fails the agent visibly instead.
+                    let entry = crate::contract::canonical_json_bytes(&entry)
+                        .map_err(|_| Error::Record("conversation entry is not encodable"))?;
+                    outs.push(Out::Conversation(entry));
                     outs.extend(goal);
                     TurnStep {
                         checkpoint: None,
