@@ -7,7 +7,8 @@ use proptest::test_runner::TestCaseResult;
 #[path = "binding_original.rs"]
 mod original;
 type Verifier = FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>;
-type State = (Result<MemoryContentPublisher>, Arc<Verifier>);
+type Publisher = FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>;
+type State = (Result<Arc<Publisher>>, Arc<Verifier>);
 type Output = (
     std::result::Result<(Vec<FileRef>, Vec<Vec<u8>>), String>,
     acyclic_test_support::AllocationInfo,
@@ -33,7 +34,7 @@ fn scoped<F: std::future::Future>(
 
 async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> State {
     let agent = AgentId::from_bytes([7; 16]);
-    let (mut host, volume, memory_store) = if old {
+    let (mut host, volume) = if old {
         original::content(KEY.to_owned(), agent, 4096, Fs::memory())
             .await
             .unwrap()
@@ -81,16 +82,12 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
     let verifier = issuer.verifier(&mut None).unwrap();
     let input =
         FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, None).unwrap();
-    let publisher = FilesystemContentPublisher::new(host, &volume, &verifier, &scope, 4096, None)
-        .map(|files| MemoryContentPublisher {
-            files,
-            memory_store,
-        });
+    let publisher = FilesystemContentPublisher::new(host, &volume, &verifier, &scope, 4096, None);
     (publisher, input)
 }
 
 async fn exercise(
-    publisher: &MemoryContentPublisher,
+    publisher: &Publisher,
     verifier: &Verifier,
     bytes: &[Vec<u8>; 2],
 ) -> Result<(Vec<FileRef>, Vec<Vec<u8>>)> {

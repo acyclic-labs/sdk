@@ -1,6 +1,9 @@
 use super::*;
 mod pre_dispatch;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod policy_identity;
+
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod phase_claim_tests;
 
