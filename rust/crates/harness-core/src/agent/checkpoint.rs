@@ -169,11 +169,30 @@ mod tests {
         AgentId::from_bytes(bytes)
     }
 
-    /// The longest admissible text of `bytes` bytes that JSON escapes most:
-    /// `"` doubles, and every character a label or path admits escapes to
-    /// at most two bytes.
+    /// The widest name, label or path of `bytes` bytes: none admits a control
+    /// character, so `"`, which JSON doubles, escapes most.
     fn widest(bytes: usize) -> String {
         "\"".repeat(bytes)
+    }
+
+    /// The widest free text of `bytes` bytes: a control character, which JSON
+    /// escapes to six bytes.
+    fn widest_text(bytes: usize) -> String {
+        "\0".repeat(bytes)
+    }
+
+    /// The widest failure a turn settles with: the longest control-character
+    /// message within both its own limit and [`MAX_OUTCOME_BYTES`].
+    fn widest_failure() -> AgentOutcome {
+        let failure = |n| AgentOutcome::Failed {
+            message: widest_text(n),
+        };
+        let fits = |n| serde_json::to_vec(&failure(n)).expect("outcome").len() <= MAX_OUTCOME_BYTES;
+        let n = (0..=MAX_MESSAGE_BYTES)
+            .rev()
+            .find(|&n| fits(n))
+            .expect("fits");
+        failure(n)
     }
 
     fn agent(depth: usize) -> AgentPath {
@@ -185,7 +204,7 @@ mod tests {
     }
 
     fn intent() -> IntentId {
-        IntentId::try_from("i".repeat(MAX_INTENT_BYTES)).expect("intent")
+        IntentId::try_from(widest(MAX_INTENT_BYTES)).expect("intent")
     }
 
     fn volume() -> VolumeRef {
@@ -215,9 +234,7 @@ mod tests {
             AgentOutcome::Succeeded {
                 result: Some(Box::new(file())),
             },
-            AgentOutcome::Failed {
-                message: widest(MAX_MESSAGE_BYTES),
-            },
+            widest_failure(),
         ]
     }
 
@@ -284,7 +301,7 @@ mod tests {
             records.push(InboxRecord::Spawn(SpawnRequest {
                 by: from.clone(),
                 id: intent(),
-                brief: widest(MAX_MESSAGE_BYTES),
+                brief: widest_text(MAX_MESSAGE_BYTES),
             }));
             for control in [InboxRecord::Cancel, InboxRecord::Archive] {
                 records.push(control(Control {
@@ -310,6 +327,19 @@ mod tests {
     #[test]
     fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
         assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
+        // Names admit no control character, so `widest` is their worst case.
+        let control = Sender::User {
+            principal: "\0".into(),
+        };
+        assert!(
+            InboxRecord::Message(Message {
+                from: control,
+                id: intent(),
+                body: Box::new(file()),
+            })
+            .encode()
+            .is_err()
+        );
         let deepest = agent(MAX_DEPTH);
         // Sends, adoptions (host-bound volumes included), reports, archives.
         for record in inbox_records() {
