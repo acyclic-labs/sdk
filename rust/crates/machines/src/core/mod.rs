@@ -306,9 +306,7 @@ impl OperationRegistry {
             if record.phase != OperationPhase::Pending {
                 return false;
             }
-            if !record.targets.iter().any(|id| id == resource) {
-                record.targets.push(resource.into());
-            }
+            bindings::target(record, resource);
             true
         })
         .await

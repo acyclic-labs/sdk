@@ -1631,3 +1631,30 @@ async fn checkpoint_cleanup_reopens_the_admitted_projection_and_revokes_forkabil
     assert_eq!(core.join_settlement(key, operation).await?, settlement);
     Ok(())
 }
+
+#[tokio::test]
+async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult {
+    let core = OperationRegistry::new(Arc::new(MemoryStream::new(Default::default())), "account")?;
+    let operation = fresh(
+        core.admit(IdempotencyKey::new(), &"internal bounded fork custody")
+            .await?,
+    )?;
+    core.bind_target(operation, "existing-parent").await?;
+    for index in 0..MAX_FORK_CHILDREN {
+        // Internal identity vectors with the native UUID address width, not
+        // provider captures or a claim about arbitrary opaque address lengths.
+        let resource = machine_resource(&format!("00000000-0000-4000-8000-{index:012x}"));
+        assert!(core.bind_created(operation, &resource).await?);
+        core.bind_target(operation, resource.handle()).await?;
+    }
+    let row = core
+        .journal
+        .load::<StoredOperation>(&format!("ops/{operation}"))
+        .await?;
+    assert_eq!(row.tail, u64::from(MAX_FORK_CHILDREN) + 2);
+    let record = row.value.ok_or("missing internal custody point")?;
+    assert_eq!(record.created.len(), MAX_FORK_CHILDREN as usize);
+    assert_eq!(record.targets, ["existing-parent"]);
+    assert!(serde_json::to_vec(&record)?.len() <= acyclic_stream::MAX_RECORD_BYTES);
+    Ok(())
+}

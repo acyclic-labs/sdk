@@ -22,6 +22,16 @@ pub(super) fn check_driver(record: &StoredOperation, provider: &str) -> Result<(
     Ok(())
 }
 
+/// A resource created by this operation already has canonical custody. Using
+/// it as a fork source does not also make it an external adopted target.
+pub(super) fn target(record: &mut StoredOperation, handle: &str) {
+    if !record.created.iter().any(|owned| owned.handle() == handle)
+        && !record.targets.iter().any(|known| known == handle)
+    {
+        record.targets.push(handle.to_owned());
+    }
+}
+
 /// One pure ownership decision for machine and checkpoint results.
 pub(super) fn own(
     record: &mut StoredOperation,
@@ -41,13 +51,7 @@ pub(super) fn own(
     }
     record.provider = Some(provider.to_owned());
     if adopted {
-        if !record
-            .targets
-            .iter()
-            .any(|value| value == resource.handle())
-        {
-            record.targets.push(resource.handle().to_owned());
-        }
+        target(record, resource.handle());
     } else if !record.created.contains(resource) {
         record.created.push(resource.clone());
     }
