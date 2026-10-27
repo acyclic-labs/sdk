@@ -77,7 +77,7 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let metadata = decode_file_metadata(
             canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
+            DecodeLimits::for_volume(self.config),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
@@ -100,7 +100,7 @@ impl NativeCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let metadata = decode_file_metadata(
             canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
+            DecodeLimits::for_volume(self.config),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
@@ -118,7 +118,7 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let metadata = decode_file_metadata(
             canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
+            DecodeLimits::for_volume(self.config),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
@@ -140,7 +140,7 @@ impl NativeCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let metadata = decode_file_metadata(
             canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
+            DecodeLimits::for_volume(self.config),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
