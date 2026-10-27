@@ -107,7 +107,6 @@ pub struct LocalHarness {
     checkout_context: bool,
     #[cfg(test)]
     environment_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(any(test, feature = "native-execution"))]
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(any(test, feature = "native-execution"))]
     environment_platform: crate::native_environment::PlatformPolicy,
