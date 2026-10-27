@@ -23,15 +23,12 @@ impl OperationRegistry {
                 ));
             }
             let created = driver.raw_create(&request).await?.checked(|initial| {
-                if initial.contract.image != request.image
-                    || initial.contract.compatibility != request.compatibility
-                    || initial.contract.expiration != request.expiration
-                    || initial.contract.network_policy_digest != request.network_policy_digest
-                    || initial.contract.budgets != request.budgets
-                    || (initial.contract.suspension != request.suspension
-                        && (initial.contract.capabilities.contains(&Capability::SuspendResume)
-                            || initial.contract.suspension != SuspensionPolicy::Manual))
-                {
+                let admitted = super::admit_contract(&request, ImageQualification {
+                    image: initial.contract.image.clone(),
+                    capabilities: initial.contract.capabilities.clone(),
+                    compatibility_revision: initial.contract.compatibility_revision,
+                })?;
+                if initial.contract != admitted {
                     return Err(ProviderError::Rejected(
                         "native create contract contradicts admission; recovery: inspect this operation's cleanup before creating a new machine".into(),
                     ));

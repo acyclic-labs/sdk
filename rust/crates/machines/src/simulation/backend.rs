@@ -37,17 +37,17 @@ impl MachinesProvider for SimulatedMachines {
         let intent = MutationIntent::Create(request.clone());
         let capabilities = self.capabilities.clone();
         self.apply(key, intent, move |state| {
-            if let CompatibilityPolicy::Require(required) = &request.compatibility
-                && (required.is_empty() || !required.is_subset(&capabilities))
-            {
-                return Err(ProviderError::Unsupported(
-                    "required image capabilities are unavailable".into(),
-                ));
-            }
+            let contract = crate::core::admit_contract(
+                &request,
+                ImageQualification {
+                    image: request.image.clone(),
+                    capabilities,
+                    compatibility_revision: Self::revision(),
+                },
+            )?;
             self.ops.check_machine_capacity(state.machines.len(), 1)?;
             let id = Self::machine(key, 0);
             let now = tick(state)?;
-            let contract = Self::contract(&request, capabilities);
             let observation = MachineObservation {
                 id,
                 state: MachineState::Running,

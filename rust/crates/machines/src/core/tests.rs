@@ -12,6 +12,33 @@ fn machine_resource(value: &str) -> NativeResource {
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn image_admission_refuses_substitution_and_unproven_requirements() -> TestResult {
+    let mut request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let mut qualification = ImageQualification {
+        image: Image::custom([9; 32])?,
+        capabilities: BTreeSet::from([Capability::SuspendResume]),
+        compatibility_revision: [10; 32],
+    };
+    assert!(matches!(
+        admit_contract(&request, qualification.clone()),
+        Err(ProviderError::Rejected(_))
+    ));
+    qualification.image = request.image.clone();
+    for required in [BTreeSet::new(), BTreeSet::from([Capability::LiveFork])] {
+        request.compatibility = CompatibilityPolicy::Require(required);
+        assert!(matches!(
+            admit_contract(&request, qualification.clone()),
+            Err(ProviderError::Unsupported(_))
+        ));
+    }
+    request.compatibility = CompatibilityPolicy::Require(qualification.capabilities.clone());
+    let admitted = admit_contract(&request, qualification)?;
+    assert_eq!(admitted.suspension, request.suspension);
+    assert_eq!(admitted.compatibility_revision, [10; 32]);
+    Ok(())
+}
+
 async fn open(path: &std::path::Path) -> Result<OperationRegistry, Box<dyn std::error::Error>> {
     Ok(OperationRegistry::new(
         Arc::new(LocalStream::open(path, LocalStreamLimits::default()).await?),

@@ -189,6 +189,7 @@ async fn live_fork_fidelity_follows_the_declared_capability() {
         unreachable!()
     };
     assert_eq!(parent.contract.fork_fidelity(), None);
+    assert_eq!(parent.contract.suspension, SuspensionPolicy::Manual);
     assert!(matches!(
         none.fork_machine(parent.id, two(), key(0x33)).await,
         Err(ProviderError::Unsupported(_))

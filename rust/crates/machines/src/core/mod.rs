@@ -4,6 +4,8 @@ use crate::*;
 pub use crate::{OperationSettlement, SettledMutation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+mod admission;
+pub use admission::admit_contract;
 #[cfg(not(target_arch = "wasm32"))]
 mod backend;
 #[cfg(not(target_arch = "wasm32"))]

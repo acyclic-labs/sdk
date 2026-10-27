@@ -18,10 +18,9 @@ use std::{
 };
 
 use acyclic_machines::{
-    Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine,
-    ExecCommand, ExecStream, IdempotencyKey, Image, ImageQualification, MachineContract, MachineId,
-    MachineObservation, MachineOutput, MachineState, ProviderAssurance, ProviderError,
-    SuspensionPolicy,
+    Capability, CheckpointId, CheckpointObservation, CreateMachine, ExecCommand, ExecStream,
+    IdempotencyKey, Image, ImageQualification, MachineContract, MachineId, MachineObservation,
+    MachineOutput, MachineState, ProviderAssurance, ProviderError, SuspensionPolicy,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
@@ -32,7 +31,8 @@ use acyclic_machines::core::{
 };
 #[cfg(test)]
 use acyclic_machines::{
-    ForkFidelity, MAX_FORK_CHILDREN, MachinesProvider, MutationIntent, MutationOutcome, core as ops,
+    CompatibilityPolicy, ForkFidelity, MAX_FORK_CHILDREN, MachinesProvider, MutationIntent,
+    MutationOutcome, core as ops,
 };
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox};
 
@@ -318,30 +318,14 @@ impl DaytonaProvider {
         capabilities: BTreeSet<Capability>,
     ) -> Result<MachineContract, ProviderError> {
         Self::check_request(request)?;
-        if let CompatibilityPolicy::Require(required) = &request.compatibility
-            && (required.is_empty() || !required.is_subset(&capabilities))
-        {
-            return Err(ProviderError::Unsupported(format!(
-                "this Daytona snapshot class offers only {capabilities:?}"
-            )));
-        }
-        // A class without pause never suspends on its own; say so rather than retain a
-        // policy nothing enforces.
-        let suspension = if capabilities.contains(&Capability::SuspendResume) {
-            request.suspension
-        } else {
-            SuspensionPolicy::Manual
-        };
-        Ok(MachineContract {
-            image: request.image.clone(),
-            capabilities,
-            compatibility: request.compatibility.clone(),
-            compatibility_revision: Self::revision(),
-            suspension,
-            expiration: request.expiration,
-            network_policy_digest: request.network_policy_digest,
-            budgets: request.budgets,
-        })
+        acyclic_machines::core::admit_contract(
+            request,
+            ImageQualification {
+                image: request.image.clone(),
+                capabilities,
+                compatibility_revision: Self::revision(),
+            },
+        )
     }
 
     /// Decode native metadata using the admitted canonical contract when needed.
