@@ -1,6 +1,9 @@
 //! Physical cancellation uses actual Unix I/O, without synthetic FUSE frames.
 
-use super::super::{host_io::HostIo, packet_cancellation};
+use super::super::{
+    host_io::{HostIo, Received},
+    packet_cancellation,
+};
 use super::*;
 use std::fs::File;
 use std::os::fd::OwnedFd;
@@ -28,7 +31,7 @@ fn original_cancellation_wakes_a_quiet_packet_reader() -> Result<(), Box<dyn std
     worker
         .join()
         .map_err(|_| std::io::Error::other("packet reader panicked"))?;
-    assert!(result??.is_none());
+    assert_eq!(result??, Received::Wake);
     assert!(matches!(
         work.admit(crate::WorkCounters::UNCHARGED),
         Err(crate::NativeTreeMaterializationError::Cancelled)
