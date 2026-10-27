@@ -435,7 +435,7 @@ dependencies = [
  "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
- "rustix",
+ "rustix 1.1.5",
  "rustls",
  "rustls-platform-verifier",
  "same-file",
