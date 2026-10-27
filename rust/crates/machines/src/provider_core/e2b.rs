@@ -99,6 +99,27 @@ enum Event {
     End(End),
     Keepalive(serde_json::Value),
 }
+impl Event {
+    fn output(self) -> Result<Option<ExecOutput>, ProviderError> {
+        Ok(match self {
+            Self::Start(_value) | Self::Keepalive(_value) => None,
+            Self::Data(data) => {
+                let (data, channel): (_, fn(Vec<u8>) -> ExecOutput) = match data {
+                    Data::Stdout(data) => (data, ExecOutput::Stdout),
+                    Data::Stderr(data) => (data, ExecOutput::Stderr),
+                };
+                let bytes = STANDARD
+                    .decode(data)
+                    .map_err(|_| ProviderError::Unavailable)?;
+                (!bytes.is_empty()).then(|| channel(bytes))
+            }
+            Self::End(end) if end.exited && end.error.is_none() => {
+                Some(ExecOutput::ExitCode(end.code))
+            }
+            Self::End(_) => return Err(ProviderError::Unavailable),
+        })
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Data {
@@ -249,15 +270,9 @@ impl SandboxDriver for E2b {
             &serde_json::json!({"process": {"cmd": executable, "args": argv.collect::<Vec<_>>()}, "tag": tag, "stdin": false}),
         )
         .await?;
-        let output = response.try_filter_map(|frame| async move {
-            Ok(match frame.event {
-                Event::Start(_value) | Event::Keepalive(_value) => None,
-                Event::Data(Data::Stdout(data)) => Some(ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?)),
-                Event::Data(Data::Stderr(data)) => Some(ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?)),
-                Event::End(end) if end.exited && end.error.is_none() => Some(ExecOutput::ExitCode(end.code)),
-                Event::End(_) => return Err(ProviderError::Unavailable),
-            })
-        }).boxed();
+        let output = response
+            .try_filter_map(|frame| async move { frame.event.output() })
+            .boxed();
         Ok(output)
     }
 
@@ -294,3 +309,6 @@ impl SandboxDriver for E2b {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests;
