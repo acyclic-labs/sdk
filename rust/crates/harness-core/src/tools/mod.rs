@@ -6,6 +6,9 @@ pub use agents::{
 };
 pub mod shell;
 pub use shell::ShellInput;
+/// Largest chunk published by the shared tool-output writer.
+#[doc(hidden)]
+pub const OUTPUT_CHUNK_BYTES: usize = 64 * 1024;
 #[cfg(all(
     feature = "filesystem",
     feature = "native-execution",

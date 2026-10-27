@@ -53,10 +53,7 @@ fn context(
     )?;
     let harness = bindings.build()?;
     let operation = OperationId::new();
-    let task = harness.agent_context(
-        &Capabilities::default(),
-        storage.content_bindings(),
-    )?;
+    let task = harness.agent_context(&Capabilities::default(), storage.content_bindings())?;
     ToolContext::new(Arc::new(task), operation, "machine-shell-conformance")
 }
 

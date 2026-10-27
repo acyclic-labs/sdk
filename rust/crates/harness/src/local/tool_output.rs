@@ -4,7 +4,7 @@
 /// Bytes of the newest call's output a [`OutputTail`] retains.
 const TAIL_BYTES: usize = 16 * 1024;
 /// Largest output chunk a shell call stages.
-pub(super) const CHUNK_BYTES: usize = 64 * 1024;
+pub(super) const CHUNK_BYTES: usize = crate::tools::OUTPUT_CHUNK_BYTES;
 
 /// The newest call's output: its last [`TAIL_BYTES`] at most, decoded across
 /// chunk boundaries.

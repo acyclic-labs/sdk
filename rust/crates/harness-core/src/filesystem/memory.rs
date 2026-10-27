@@ -16,9 +16,8 @@ use crate::{
     executor::ExecutionJournal,
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
-    runtime::RuntimeScope,
+    runtime::{ContentBindings, RuntimeScope},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
-    runtime::ContentBindings,
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,

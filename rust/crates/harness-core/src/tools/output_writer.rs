@@ -8,8 +8,6 @@ fn storage(error: impl std::fmt::Display) -> Error {
 }
 use acyclic_native_runtime::ProcessOutput;
 
-const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
-
 /// Shared private-volume layout for native and remote shell output.
 pub struct ToolOutputWriter {
     context: ToolContext,
@@ -31,7 +29,7 @@ impl ToolOutputWriter {
     pub async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
         let maximum = usize::try_from(context.effective_scope().limits().file_bytes)
             .unwrap_or(usize::MAX)
-            .min(OUTPUT_BATCH_BYTES);
+            .min(super::OUTPUT_CHUNK_BYTES);
         if maximum == 0 {
             return Err(Error::Storage("tool output has no file budget".into()));
         }
