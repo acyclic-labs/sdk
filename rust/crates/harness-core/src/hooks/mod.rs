@@ -190,7 +190,7 @@ impl Hooks {
                     exit_code: None,
                     message: "hook was interrupted before its outcome was recorded".into(),
                 },
-                blocking: hook.failure == HookFailure::Block,
+                blocking: hook.failure.blocks(event),
             });
         }
         Ok(output)

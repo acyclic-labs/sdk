@@ -83,7 +83,7 @@ impl Budget {
         policy: HookFailure,
         result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
     ) {
-        let blocking = policy == HookFailure::Block && event != HookEvent::Stop;
+        let blocking = policy.blocks(event);
         match result {
             Ok((code, stdout, stderr)) => {
                 let plan = if code != Some(0) && (code != Some(2) || blocking) {
