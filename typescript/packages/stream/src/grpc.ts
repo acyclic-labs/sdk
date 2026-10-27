@@ -6,7 +6,7 @@ import { StreamSessionService, type SessionFrame } from "../generated/proto/stre
 import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -31,7 +31,7 @@ export interface StreamGrpcOptions extends CredentialOptions {
 export type StreamFollowCallOptions = Pick<CallOptions, "signal" | "timeoutMs"> & {
   [Option in Exclude<keyof CallOptions, "signal" | "timeoutMs">]?: never;
 };
-type Follow = (request: Partial<wire.FollowRequest>,
+type Follow = (request: MessageInitShape<typeof wire.FollowRequestSchema>,
   options?: StreamFollowCallOptions) => AsyncIterable<wire.ReadResponse>;
 
 
@@ -40,13 +40,13 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const { client, sessions } = streamGrpc(options);
   const follow: Follow = async function* (request, callOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
-    const path = request.path ?? "";
-    const from = request.from ?? 0n;
+    const { path, from, filter } = create(wire.FollowRequestSchema, structuredClone(request));
     await validateWireRequest({ kind: "follow", path, from });
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
-      for await (const record of sessions.follow(path, { from, signal: controller.signal })) {
+      for await (const record of sessions.follow(path, { from, signal: controller.signal,
+        ...(filter === undefined ? {} : { filter }) })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
         yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
       }
