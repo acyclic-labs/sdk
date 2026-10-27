@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness_core::model::{ModelEvent, ModelProvider};
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::StreamExt as _;
 use std::sync::atomic::AtomicUsize;
 
 const AUTH_ERROR: &str = "data: {\"type\":\"error\",\"error\":{\"code\":\"invalid_api_key\",\"type\":\"authentication_error\"}}\n\n";
@@ -19,7 +19,8 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
             let work = NativeMaterializationWork::new(
                 acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
-            ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
             let transport: Arc<dyn HttpTransport> = if native {
                 Arc::new(super::native::NativeServer {
@@ -30,40 +31,63 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
             } else {
                 server.clone()
             };
-            let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
-                .with_codex_login(login).resolve("openai/gpt-5")?;
+            let provider =
+                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+                    .with_codex_login(login)
+                    .resolve("openai/gpt-5")?;
             let (request, dispatch) = crate::tests::request(&provider)?;
             let path = root.path().join("auth.json");
             if recovery {
                 // Remove only this fixture after the actual first HTTP refusal,
                 // before recovery rereads it. No timer or competing filesystem task.
-                *server.remove_auth_on_unauthorized.lock()
+                *server
+                    .remove_auth_on_unauthorized
+                    .lock()
                     .map_err(|_| invalid("fixture poisoned"))? = Some(path);
             } else {
                 std::fs::remove_file(path).map_err(|error| invalid(error.to_string()))?;
             }
             let result: Result<()> = if native {
                 async {
-                    let mut events = provider.generate_with_native_work(&request, dispatch, &work)?.await?;
-                    while let Some(event) = events.next().await { drop(event?); }
+                    let mut events = provider
+                        .generate_with_native_work(&request, dispatch, &work)?
+                        .await?;
+                    while let Some(event) = events.next().await {
+                        drop(event?);
+                    }
                     Ok(())
-                }.await
+                }
+                .await
             } else {
-                provider.generate(&request, dispatch).try_collect::<Vec<_>>().await.map(|_| ())
+                provider
+                    .generate(&request, dispatch)
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .map(|_| ())
             };
             let error = match result {
                 Err(error) => error,
-                Ok(()) => return Err(invalid("missing fixture credentials unexpectedly succeeded")),
+                Ok(()) => {
+                    return Err(invalid(
+                        "missing fixture credentials unexpectedly succeeded",
+                    ));
+                }
             };
             assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
             if native {
-                assert!(matches!(&error, Error::NativeDiagnostic { custody, .. }
-                    if custody.work().shares_allocation_context(&work)), "{error:?}");
+                assert!(
+                    matches!(&error, Error::NativeDiagnostic { custody, .. }
+                    if custody.work().shares_allocation_context(&work)),
+                    "{error:?}"
+                );
             } else {
                 assert!(matches!(&error, Error::Invalid(_)), "{error:?}");
             }
             drop(error);
-            let mut requests = server.requests.lock().map_err(|_| invalid("fixture poisoned"))?;
+            let mut requests = server
+                .requests
+                .lock()
+                .map_err(|_| invalid("fixture poisoned"))?;
             assert_eq!(requests.len(), usize::from(recovery));
             requests.clear();
             assert_eq!(work.live_allocation_bytes(), baseline);

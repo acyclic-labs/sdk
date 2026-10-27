@@ -107,7 +107,11 @@ pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation
             Error::Invalid(message) => (ErrorCode::Invalid, message, false),
             Error::Unauthorized(message) => (ErrorCode::Unauthorized, message, false),
             Error::Storage(message) => (ErrorCode::Storage, message, false),
-            Error::ModelDiagnostic { code, message, custody: None } => (code, message, true),
+            Error::ModelDiagnostic {
+                code,
+                message,
+                custody: None,
+            } => (code, message, true),
             // A native transport failure carries no excerpt to fund: it keeps its class.
             error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
             error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string(), true),
@@ -133,7 +137,10 @@ pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation
 }
 
 /// Apply the shared remote-response classification, then retain its original ledger.
-pub(crate) fn model_diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
+pub(crate) fn model_diagnostic<T>(
+    result: Result<T>,
+    allocation: &mut NativeAllocation,
+) -> Result<T> {
     diagnostic(result.map_err(crate::diagnostic::rejection), allocation)
 }
 

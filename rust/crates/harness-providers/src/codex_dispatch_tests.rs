@@ -27,13 +27,19 @@ impl Server {
             .lock()
             .map_err(|_| invalid("fixture poisoned"))?
             .push(request);
-        let response = self.replies
+        let response = self
+            .replies
             .lock()
             .map_err(|_| invalid("fixture poisoned"))?
             .pop_front()
             .ok_or_else(|| invalid("unexpected HTTP request"))?;
-        if response.0 == 401 && let Some(path) = self.remove_auth_on_unauthorized
-            .lock().map_err(|_| invalid("fixture poisoned"))?.take() {
+        if response.0 == 401
+            && let Some(path) = self
+                .remove_auth_on_unauthorized
+                .lock()
+                .map_err(|_| invalid("fixture poisoned"))?
+                .take()
+        {
             std::fs::remove_file(path).map_err(|error| invalid(error.to_string()))?;
         }
         Ok(response)
