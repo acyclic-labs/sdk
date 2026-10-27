@@ -2,13 +2,15 @@
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, WorkBudget};
 use std::{error::Error, time::Instant};
 
-pub async fn verify<A, O>(
+pub async fn verify<A, O, ReopenedAuthority, ReopenedObjects>(
     fs: &Fs<A, O>,
-    reopen: impl AsyncFnOnce() -> Result<Fs<A, O>, Box<dyn Error>>,
+    reopen: impl AsyncFnOnce() -> Result<Fs<ReopenedAuthority, ReopenedObjects>, Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
+    ReopenedAuthority: AsyncAuthorityStore + 'static,
+    ReopenedObjects: AsyncObjectStore + 'static,
 {
     let start = Instant::now();
     let cancellation = CancellationToken::new();

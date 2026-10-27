@@ -86,17 +86,6 @@ name = "native-mount-qualify"
 path = "src/bin/native_mount_qualify.rs"
 required-features = ["local-runner"]
 
-[[bin]]
-name = "bench-fs"
-path = "src/bin/bench_fs.rs"
-required-features = ["local-runner"]
-
-[[bin]]
-name = "bench-objects"
-test = false
-path = "src/bin/bench_objects.rs"
-required-features = ["local-runner"]
-
 [[bench]]
 name = "harness"
 harness = false
