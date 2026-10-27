@@ -78,9 +78,15 @@ receives the reopened canonical binding and records its opaque native target;
 the logical machine UUID need not equal a provider resource address. Native readiness is
 separate from public state: a Running VM may still be busy with a fork or snapshot.
 A destroyed canonical observation cannot be replaced by a stale native read.
-Fork rounds join every started sibling before reporting failure, retaining cleanup
-ownership. Only an explicit definite native refusal permits dispatch backoff; a
-lost reply never does. Machine/event page construction belongs to this core.
+Native VM forks use this same owner for admission, source readiness, tree rounds,
+accepted-child custody, provider metadata publication, final readiness and ordered
+settlement. Provider metadata is written only after the child binding and cleanup
+ownership publish. Daytona reads the child's current labels for this wire update;
+this preserves unrelated native labels without a process-local pending-label cache.
+That adds one metadata read per native child compared with the previous adapter;
+no second lifecycle observer is retained. Fork rounds join every started sibling
+before reporting failure, retaining cleanup ownership. Only an explicit definite
+native refusal permits dispatch backoff; a lost reply never does. Machine/event page construction belongs to this core.
 The raw backend migration is in progress; the operation authority alone does not
 establish that all adapters meet the approximately 300-line budget.
 

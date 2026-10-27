@@ -502,6 +502,54 @@ impl RawMachines for NativeLifecycle {
             adopted: false,
         })
     }
+    async fn raw_fork_machine(
+        &self,
+        parent: &MachineObservation,
+        source: MachineId,
+        native: Option<&NativeBinding>,
+        slot: ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<Dispatch<RawCreated>, ProviderError> {
+        let expected = if source == parent.id {
+            "opaque-created-vm".into()
+        } else {
+            format!("opaque-live-fork-{source}")
+        };
+        if native.is_none_or(|native| native.handle != expected) {
+            return Err(ProviderError::Rejected(
+                "internal live-fork oracle requires the canonical source address".into(),
+            ));
+        }
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        let id = MachineId::from_digest(Sha256::digest(format!("{key}/{}", slot.index)).into());
+        let mut child = parent.clone();
+        child.id = id;
+        child.last_checkpoint = None;
+        self.children.lock().await.insert(id, child.clone());
+        Ok(Dispatch::Accepted(RawCreated {
+            handle: format!("opaque-live-fork-{id}"),
+            endpoint: None,
+            observation: Ok(child),
+            adopted: false,
+        }))
+    }
+    async fn raw_finish_fork(
+        &self,
+        child: MachineId,
+        native: Option<&NativeBinding>,
+        _: &MachineObservation,
+        _: &str,
+        _: ForkSlot,
+        _: IdempotencyKey,
+    ) -> Result<(), ProviderError> {
+        if native.is_none_or(|native| native.handle != format!("opaque-live-fork-{child}")) {
+            return Err(ProviderError::Rejected(
+                "internal metadata oracle requires canonical child custody".into(),
+            ));
+        }
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
     async fn raw_fork_children(
         &self,
         _: MachineId,
@@ -1259,5 +1307,75 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
             .await?
             .forkable
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_native_fork_uses_reopened_addresses_and_replays_ordered_settlement() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) =
+        SimulatedMachines::default().create(request.clone()).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let native = NativeLifecycle {
+        provider: "internal",
+        allow_delete: false,
+        expected_handle: None,
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    let interval = Duration::from_millis(1);
+    let timeout = Duration::from_secs(5);
+    core.create_machine(&native, request, interval, timeout)
+        .await?;
+    drop(core);
+    let core = open(dir.path()).await?;
+    let key = IdempotencyKey::new();
+    let count = NonZeroU32::new(4).ok_or("invalid internal count")?;
+    let outcome = core
+        .fork_machine(&native, value.id, count, key, interval, timeout, 10)
+        .await?;
+    let MutationOutcome::MachineForked {
+        source,
+        fidelity,
+        children,
+    } = &outcome
+    else {
+        return Err("expected native fork".into());
+    };
+    assert_eq!(*source, value.id);
+    assert_eq!(*fidelity, ForkFidelity::MemoryAndDisk);
+    assert_eq!(children.len(), 4);
+    for (index, child) in children.iter().enumerate() {
+        assert_eq!(
+            child.id,
+            MachineId::from_digest(Sha256::digest(format!("{key}/{index}")).into())
+        );
+        assert_eq!(
+            core.native_binding(child.id, "internal")
+                .await?
+                .map(|native| native.handle),
+            Some(format!("opaque-live-fork-{}", child.id))
+        );
+    }
+    let settled = core.settled(key).await?;
+    let reads = native.reads.load(Ordering::SeqCst);
+    let mutations = native.mutations.load(Ordering::SeqCst);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.fork_machine(&native, value.id, count, key, interval, timeout, 11)
+            .await?,
+        outcome
+    );
+    assert_eq!(core.settled(key).await?, settled);
+    assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
     Ok(())
 }

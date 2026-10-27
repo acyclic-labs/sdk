@@ -21,20 +21,20 @@ use std::{
 
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
-    ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
-    MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation,
-    MachineOutput, MachinePage, MachineState, MachinesProvider, MutationIntent, MutationOutcome,
-    OperationId, OperationObservation, OperationStream, ProviderAssurance, ProviderError,
-    SuspensionPolicy, UsageReceipt,
+    ExecCommand, ExecStream, IdempotencyKey, Image, ImageQualification, MAX_PAGE_SIZE,
+    MachineContract, MachineId, MachineObservation, MachineOutput, MachinePage, MachineState,
+    MachinesProvider, MutationOutcome, OperationId, OperationObservation, OperationStream,
+    ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
-#[cfg(test)]
-use acyclic_machines::core as ops;
 use acyclic_machines::core::{
-    NativeBinding, NativeResource, OperationRegistry, RawCreated, RawMachines, RawObservation,
+    Dispatch, NativeBinding, NativeResource, OperationRegistry, RawCreated, RawMachines,
+    RawObservation,
 };
+#[cfg(test)]
+use acyclic_machines::{ForkFidelity, MAX_FORK_CHILDREN, MutationIntent, core as ops};
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox};
 
 /// Default Daytona API base URL.
@@ -406,50 +406,6 @@ impl DaytonaProvider {
         self.ops.inspect_machine(self, machine, now_unix_ms()).await
     }
 
-    /// Polls a sandbox until its state settles.
-    async fn wait_settled(
-        &self,
-        sandbox_id: &str,
-        key: IdempotencyKey,
-    ) -> Result<Sandbox, ProviderError> {
-        acyclic_machines::core::settle(
-            key,
-            self.config.poll_interval,
-            self.config.ready_timeout,
-            || async {
-                let sandbox = self.api.get(sandbox_id).await?;
-                if !map::is_settled(sandbox.state.as_deref()) {
-                    return Ok(None);
-                }
-                if map::machine_state(sandbox.state.as_deref()) == MachineState::Failed {
-                    return Err(ProviderError::Failed);
-                }
-                Ok(Some(sandbox))
-            },
-        )
-        .await
-    }
-
-    async fn claim_sandbox(
-        &self,
-        operation: OperationId,
-        sandbox: &Sandbox,
-        contract: &MachineContract,
-        checkpoint: Option<CheckpointId>,
-        adopted: bool,
-        key: IdempotencyKey,
-    ) -> Result<(), ProviderError> {
-        self.ops
-            .accept_created(
-                self,
-                operation,
-                Self::raw_created(sandbox, contract, checkpoint, adopted),
-                key,
-            )
-            .await
-            .map(|_| ())
-    }
-
     fn raw_created(
         sandbox: &Sandbox,
         contract: &MachineContract,
@@ -543,155 +499,18 @@ impl DaytonaProvider {
         }
     }
 
-    /// Runs one mutation under `key`: replays a prior identical success, rejects a rebound
-    /// key, and otherwise records the outcome. Failures that happened before any Daytona side
-    /// effect release the key so a corrected request can reuse it.
-    async fn apply<F>(
-        &self,
-        key: IdempotencyKey,
-        intent: &MutationIntent,
-        action: F,
-    ) -> Result<MutationOutcome, ProviderError>
-    where
-        F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
-    {
-        self.ops.apply_with(self, key, intent, action).await
-    }
-
-    /// Waits for fork children to start and observes them under `contract`.
-    async fn settle_children(
-        &self,
-        ids: Vec<String>,
-        key: IdempotencyKey,
-        contract: &MachineContract,
-        checkpoint: Option<CheckpointId>,
-    ) -> Result<Vec<MachineObservation>, ProviderError> {
-        let mut children = Vec::with_capacity(ids.len());
-        for id in ids {
-            let settled = self.wait_settled(&id, key).await?;
-            let observation = self.observe(&settled, Some(contract), checkpoint).await?;
-            if observation.state != MachineState::Running {
-                return Err(ProviderError::Failed);
-            }
-            children.push(observation);
-        }
-        Ok(children)
-    }
-
-    /// Native VM fork (`POST /sandbox/{id}/fork`) as a doubling tree.
-    ///
-    /// A Daytona VM runs one fork at a time: it stays `forking` for several seconds and refuses
-    /// a second fork with 400 ("must be in started state") until it is `started` again. Forking
-    /// every child from the parent would take `count` sequential rounds, so every node that
-    /// already exists forks once per round instead: round one forks the parent, round two the
-    /// parent and child 0 in parallel, round three the parent and children 0 to 2, and so on
-    /// (see [`map::fork_sources`]). `count` children take `ceil(log2(count + 1))` rounds, for
-    /// example 15 in four and 16 in five. Each fork waits for its source to be started and
-    /// retries the state refusal with backoff until the ready timeout.
-    ///
-    /// Every child is named deterministically from `(key, index)` and relabelled as a live-fork
-    /// child of the *requested* machine (`acyclic.parent`), with the sandbox it was actually
-    /// forked from in `acyclic.fork_source`. A child forked from an earlier child inherits what
-    /// that child executed since its own fork; see [`MachinesProvider::fork_machine`].
-    async fn native_fork(
-        &self,
-        operation: OperationId,
-        parent: &MachineObservation,
-        count: u32,
-        key: IdempotencyKey,
-    ) -> Result<Vec<MachineObservation>, ProviderError> {
-        let ids = acyclic_machines::core::fork_tree(
-            parent.id.to_string(),
-            count,
-            |index, source| async move {
-                self.fork_one(
-                    operation,
-                    parent,
-                    &source,
-                    map::ForkSlot { index, count },
-                    key,
-                )
-                .await
-            },
-        )
-        .await?;
-        self.settle_children(ids, key, &parent.contract, None).await
-    }
-
-    /// Forks child `slot` of the requested `parent` from `source` (the parent or an earlier
-    /// child) and returns the child's sandbox id once it is started and relabelled.
-    async fn fork_one(
-        &self,
-        operation: OperationId,
-        parent: &MachineObservation,
-        source: &str,
-        slot: map::ForkSlot,
-        key: IdempotencyKey,
-    ) -> Result<String, ProviderError> {
-        let name = map::sandbox_name(key, Some(slot.index));
-        let mut ours = self.live_fork_labels(key, slot, parent);
-        ours.insert(map::LABEL_FORK_SOURCE.to_owned(), source.to_owned());
-        // A native child is complete the moment it exists: memory and disk were copied.
-        ours.insert(map::LABEL_READY.to_owned(), "true".to_owned());
-        let (child, adopted) = acyclic_machines::core::retry_refused(
-            key,
-            self.config.poll_interval,
-            self.config.ready_timeout,
-            || async {
-                self.wait_running(source, key).await?;
-                let request = ForkRequest {
-                    name: Some(name.clone()),
-                };
-                use acyclic_machines::core::Dispatch;
-                match self.api.fork(source, &request).await {
-                    Ok(child) => Ok(Dispatch::Accepted((child, false))),
-                    Err(ProviderError::Conflict(detail)) => Ok(Dispatch::Accepted((
-                        self.adopt_fork_child(source, &name, &ours, detail).await?,
-                        true,
-                    ))),
-                    Err(ProviderError::Invalid(detail)) if map::fork_refused_for_state(&detail) => {
-                        Ok(Dispatch::Refused)
-                    }
-                    Err(error) => Err(error),
-                }
-            },
-        )
-        .await?;
-        self.claim_sandbox(operation, &child, &parent.contract, None, adopted, key)
-            .await?;
-        self.api
-            .replace_labels(&child.id, map::relabel(&child.labels, ours))
-            .await?;
-        self.wait_running(&child.id, key).await?;
-        Ok(child.id)
-    }
-
-    /// Waits until `sandbox_id` is settled and running (`started`, not `forking`).
-    async fn wait_running(
-        &self,
-        sandbox_id: &str,
-        key: IdempotencyKey,
-    ) -> Result<(), ProviderError> {
-        let settled = self.wait_settled(sandbox_id, key).await?;
-        if map::machine_state(settled.state.as_deref()) == MachineState::Running {
-            Ok(())
-        } else {
-            Err(ProviderError::Conflict(format!(
-                "fork source {sandbox_id} is {:?}, not running",
-                settled.state
-            )))
-        }
-    }
-
     fn live_fork_labels(
         &self,
         key: IdempotencyKey,
         slot: map::ForkSlot,
         parent: &MachineObservation,
+        source: &str,
     ) -> BTreeMap<String, String> {
         let mut labels = map::labels(key, Some(slot), self.tenant(), &parent.contract);
         labels.insert(map::LABEL_KIND.to_owned(), map::KIND_LIVE_FORK.to_owned());
         labels.insert(map::LABEL_PARENT.to_owned(), parent.id.to_string());
+        labels.insert(map::LABEL_FORK_SOURCE.to_owned(), source.to_owned());
+        labels.insert(map::LABEL_READY.to_owned(), "true".to_owned());
         labels
     }
 }
@@ -839,6 +658,66 @@ impl RawMachines for DaytonaProvider {
             Some(checkpoint),
             adopted,
         ))
+    }
+
+    async fn raw_fork_machine(
+        &self,
+        parent: &MachineObservation,
+        source: MachineId,
+        native: Option<&NativeBinding>,
+        slot: map::ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<Dispatch<RawCreated>, ProviderError> {
+        let handle = native.map_or_else(|| source.to_string(), |native| native.handle.clone());
+        let name = map::sandbox_name(key, Some(slot.index));
+        let request = ForkRequest {
+            name: Some(name.clone()),
+        };
+        let (child, adopted) = match self.api.fork(&handle, &request).await {
+            Ok(child) => (child, false),
+            Err(ProviderError::Conflict(detail)) => (
+                self.adopt_fork_child(
+                    &handle,
+                    &name,
+                    &self.live_fork_labels(key, slot, parent, &handle),
+                    detail,
+                )
+                .await?,
+                true,
+            ),
+            Err(ProviderError::Invalid(detail)) if map::fork_refused_for_state(&detail) => {
+                return Ok(Dispatch::Refused);
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Dispatch::Accepted(Self::raw_created(
+            &child,
+            &parent.contract,
+            None,
+            adopted,
+        )))
+    }
+
+    async fn raw_finish_fork(
+        &self,
+        child: MachineId,
+        native: Option<&NativeBinding>,
+        parent: &MachineObservation,
+        source: &str,
+        slot: map::ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<(), ProviderError> {
+        let handle = native.map_or_else(|| child.to_string(), |native| native.handle.clone());
+        let child = self.api.get(&handle).await?;
+        self.api
+            .replace_labels(
+                &handle,
+                map::relabel(
+                    &child.labels,
+                    self.live_fork_labels(key, slot, parent, source),
+                ),
+            )
+            .await
     }
 
     async fn raw_fork_children(
@@ -1023,39 +902,17 @@ impl MachinesProvider for DaytonaProvider {
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
-        self.apply(
-            key,
-            &MutationIntent::ForkMachine(machine, count),
-            async |operation| {
-                let parent = self.fetch_machine(machine).await?;
-                let fidelity = parent.contract.fork_fidelity().ok_or_else(|| {
-                    ProviderError::Unsupported("machine contract does not declare live fork".into())
-                })?;
-                if parent.state != MachineState::Running {
-                    return Err(ProviderError::Conflict(
-                        "only a running machine can be forked".into(),
-                    ));
-                }
-                let children = match fidelity {
-                    ForkFidelity::MemoryAndDisk => {
-                        self.native_fork(operation, &parent, count, key).await?
-                    }
-                    ForkFidelity::DiskOnly => return Err(ProviderError::Unsupported(
-                        "atomic container snapshot is unavailable; recovery: select a VM snapshot with native fork or an admitted immutable filesystem generation".into(),
-                    )),
-                };
-                Ok(MutationOutcome::MachineForked {
-                    source: machine,
-                    fidelity,
-                    children,
-                })
-            },
-        )
-        .await
+        self.ops
+            .fork_machine(
+                self,
+                machine,
+                count,
+                key,
+                self.config.poll_interval,
+                self.config.ready_timeout,
+                now_unix_ms(),
+            )
+            .await
     }
 
     async fn suspend(

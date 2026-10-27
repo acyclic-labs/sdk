@@ -27,10 +27,10 @@ from the machine contract or the outcome, never from the provider type:
   and disk into each child without a checkpoint (`ForkFidelity::MemoryAndDisk`). Children
   share the parent's environment and credentials. A VM runs one fork at a time (it is
   `forking` for several seconds and refuses another fork with 400 until `started`), so the
-  provider fans out as a doubling tree: every node that exists forks once per round (parent;
+  shared core fans out as a doubling tree: every node that exists forks once per round (parent;
   then parent and child 0; then parent and children 0-2; ...), so 15 children take four rounds
   and 16 take five. Each fork waits for its source to be started and retries the state refusal
-  with backoff. Children forked from earlier children inherit what those executed since their
+  with backoff in that core. Children forked from earlier children inherit what those executed since their
   own fork, so the set is memory-identical only if the workload holds still during the fork.
   Daytona refuses to delete a sandbox with live fork children, so `destroy_machine` checks
   `GET /sandbox/{id}/forks` first and returns `ProviderError::Conflict` until the children are

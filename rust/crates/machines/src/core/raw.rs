@@ -1,5 +1,5 @@
 //! Raw provider primitives. Replay, ordering and resource ownership live in core.
-use super::NativeBinding;
+use super::{Dispatch, NativeBinding};
 use crate::{
     CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, MachineContract, MachineId,
     MachineObservation, MachineState, ProviderError, SuspensionPolicy,
@@ -86,6 +86,29 @@ pub trait RawMachines: Send + Sync {
         slot: ForkSlot,
         key: IdempotencyKey,
     ) -> Result<RawCreated, ProviderError>;
+
+    /// Dispatch one native memory-and-disk fork. Only a definite state refusal
+    /// may return Refused; ambiguous transport results remain errors.
+    async fn raw_fork_machine(
+        &self,
+        parent: &MachineObservation,
+        source: MachineId,
+        native: Option<&NativeBinding>,
+        slot: ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<Dispatch<RawCreated>, ProviderError>;
+
+    /// Publish provider metadata only after canonical custody of the child.
+    /// A provider without a separate metadata call returns Ok without native IO.
+    async fn raw_finish_fork(
+        &self,
+        child: MachineId,
+        native: Option<&NativeBinding>,
+        parent: &MachineObservation,
+        source: &str,
+        slot: ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<(), ProviderError>;
 
     /// Read the native dependency states once. The core decides whether a live
     /// fork source may be deleted; native service refusals remain authoritative.
