@@ -100,10 +100,10 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
                 Err(error) => Ok(Err(error)),
             };
         }
-        Ok::<_, Error>(match deadline_unix_millis {
-            Some(deadline) => client.commit_before(request, deadline).await,
-            None => client.commit(request).await,
-        })
+        let mut request = request;
+        request.deadline_unix_millis = request.deadline_unix_millis
+            .into_iter().chain(deadline_unix_millis).min();
+        Ok::<_, Error>(client.commit(request).await)
     }
     .await?;
     if let Err(error) = &committed

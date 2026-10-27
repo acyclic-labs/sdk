@@ -265,10 +265,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         seal(meter, guard).await?;
         meter.check()?;
         meter.admit(submitted)?;
-        let result = match deadline {
-            Some(deadline) => self.provider.commit_before(request, deadline).await,
-            None => self.provider.commit(request).await,
-        };
+        let mut request = request;
+        request.deadline_unix_millis = request.deadline_unix_millis
+            .into_iter().chain(deadline).min();
+        let result = self.provider.commit(request).await;
         meter.charge(commit_work(submitted, &result))?;
         meter.check()?;
         result
