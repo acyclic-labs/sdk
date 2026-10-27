@@ -17,7 +17,7 @@ pub enum Mode {
     Idle,
     /// A turn continues in the next step.
     Running,
-    /// A turn waits for its approval response.
+    /// A turn waits for its approval response or its host's event hook.
     Approval,
     /// A turn waits until this Unix millisecond deadline.
     Alarm(u64),

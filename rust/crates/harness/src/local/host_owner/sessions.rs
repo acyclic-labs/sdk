@@ -1,8 +1,8 @@
 //! Native session lifecycle: each request is one inbox record of the session's
-//! agent, and every reply observes that agent's last conversation entry.
-use super::agents::{Brief, Control, Event, TurnClaim};
+//! agent, and every reply observes that agent's session after it.
+use super::agents::{Brief, Control, Event, Running, TurnClaim};
 use super::*;
-use crate::{Outcome, executor::TurnOutput};
+use crate::{Outcome, agent::TurnInput, executor::TurnOutput};
 
 /// Bound of one native prompt.
 const MAXIMUM_PROMPT: usize = 32_768;
@@ -136,7 +136,7 @@ impl HostWorkspaceOwner {
             }
             SessionAction::Recover => {
                 let (state, session) = self.native.session(&child).await?;
-                if let Some((claimed, _)) = session.claimed {
+                if let Some(claimed) = session.claimed() {
                     let claim = TurnClaim {
                         agent: state.path,
                         operation: claimed,
@@ -152,24 +152,32 @@ impl HostWorkspaceOwner {
 
     async fn next_session(&self, operation: OperationId, child: &AgentPath) -> Result<Value> {
         let (_, session) = self.native.session(child).await?;
-        if session.claimed.is_some() {
+        if session.claimed().is_some() {
             return Err(Error::Conflict("native turn is already claimed".into()));
         }
-        if session.control != Control::Resume || session.pending.is_empty() {
+        if session.control != Control::Resume || session.running.is_none() {
             return Ok(Value::Null);
         }
         self.native.request(child, operation, &Event::Claim).await?;
         let (state, session) = self.native.session(child).await?;
-        let Some((claimed, input)) = &session.claimed else {
+        let Some(Running {
+            input,
+            claimed: Some(claimed),
+            ..
+        }) = &session.running
+        else {
             return Err(Error::Conflict("native claim was not recorded".into()));
         };
-        let bytes = self.native.read(&state, &input.prompt).await?;
-        let prompt = if input.inbox == 0 {
-            serde_json::from_slice::<Brief>(&bytes)
-                .map_err(storage)?
-                .prompt
-        } else {
-            String::from_utf8(bytes).map_err(storage)?
+        let prompt = match input {
+            TurnInput::Brief { brief } => {
+                serde_json::from_slice::<Brief>(&self.native.read(&state, brief).await?)
+                    .map_err(storage)?
+                    .prompt
+            }
+            TurnInput::Message { body, .. } => {
+                String::from_utf8(self.native.read(&state, body).await?).map_err(storage)?
+            }
+            _ => return Err(Error::Conflict("native turn runs no prompt".into())),
         };
         let claim = TurnClaim {
             agent: child.clone(),
@@ -204,8 +212,8 @@ impl HostWorkspaceOwner {
                 .quiescent();
         quiescence.verify(child, view.path())?;
         let (_, session) = self.native.session(child).await?;
-        match &session.claimed {
-            Some((claimed, _)) if *claimed == claim.operation => {
+        match session.claimed() {
+            Some(claimed) if claimed == claim.operation => {
                 view.capture(operation).await?;
                 self.native
                     .request(
@@ -228,29 +236,19 @@ impl HostWorkspaceOwner {
 
     /// The plugin's view of one session.
     pub(super) async fn session_value(&self, child: &AgentPath) -> Result<Value> {
-        let (_, session) = self.native.session(child).await?;
+        let (state, session) = self.native.session(child).await?;
+        let pending = session.pending(&state);
         Ok(json!({"task":child,"cwd":self.view(child)?.path(),
-            "status":{"settled":session.claimed.is_none(),"turn":session.settled},
+            "status":{"settled":session.claimed().is_none(),"turn":session.settled},
             "control":session.control,"results":session.result.into_iter()
                 .map(|outcome| json!({ "outcome": outcome })).collect::<Vec<_>>(),
-            "pending":session.pending.len()}))
+            "pending":pending}))
     }
 
-    /// Spawned children of `parent` recorded after conversation sequence
-    /// `after`, one bounded page; the reply's `after` continues it.
+    /// The open children `parent` spawned, by parent-local name. `after` is
+    /// returned unchanged: the list is the whole bounded set.
     pub(super) async fn sessions(&self, parent: &AgentPath, after: Option<u64>) -> Result<Value> {
-        let from = after.map_or(0, |after| after + 1);
-        let entries = self.native.entries(parent, from, 32).await?;
-        let next = entries.last().map(|(sequence, _)| *sequence).or(after);
-        let references = entries
-            .into_iter()
-            .filter_map(|(_, entry)| match entry.record {
-                agents::Record::Spawned { reference, .. } if entry.agent == *parent => {
-                    Some(reference)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        Ok(json!({"after":next,"references":references}))
+        let (_, session) = self.native.session(parent).await?;
+        Ok(json!({"after":after,"references":session.spawned}))
     }
 }

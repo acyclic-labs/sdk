@@ -257,6 +257,11 @@ pub enum Phase {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Waiting for an event hook from its host.
+    WaitingHost {
+        /// Host name.
+        host: String,
+    },
     /// Waiting for a deadline.
     WaitingAlarm {
         /// Unix milliseconds.

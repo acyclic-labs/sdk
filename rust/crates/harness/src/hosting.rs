@@ -233,6 +233,9 @@ where
                     delivery: agents.send(agent, by, &record).await?,
                 })
             }
+            AgentCommand::Reply { agent, id, inbox } => Ok(AgentReply::Reply {
+                reply: agents.reply(self.within_tree(agent)?, id, *inbox).await?,
+            }),
             AgentCommand::Cancel { agent, id } => {
                 let agent = self.within_tree(agent)?;
                 let record = InboxRecord::Cancel(Control {

@@ -919,9 +919,10 @@ impl TurnDriver for ToolSpawner {
 #[tokio::test]
 async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
     let (root, mut state) = one_below_the_child_limit()?;
-    state
-        .queued
-        .push_back(TurnInput::Approval { id: intent("q") });
+    state.queued.push_back(Queued {
+        inbox: 1,
+        input: TurnInput::Approval { id: intent("q") },
+    });
     let driver = ToolSpawner(Mutex::new(None));
     // The spawn's step carries only the spawn: no turn runs while its child
     // is being created, so none can write to it in the creating commit.

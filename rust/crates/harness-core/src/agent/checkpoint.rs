@@ -327,7 +327,9 @@ mod tests {
             brief: Box::new(file()),
         }];
         for (sequence, record) in inbox_records().into_iter().enumerate() {
-            inputs.extend(super::super::machine::input(sequence as u64, record).map(|queued| queued.input));
+            inputs.extend(
+                super::super::input::input(sequence as u64, record).map(|queued| queued.input),
+            );
         }
         inputs
     }
@@ -371,6 +373,7 @@ mod tests {
         }
         for input in turn_inputs() {
             ConversationEntry {
+                inbox: u64::MAX,
                 input,
                 output: file(),
             }

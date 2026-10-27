@@ -229,10 +229,11 @@ impl HostWorkspaceOwner {
                 let (state, _) = self.native.session(&task).await?;
                 let mut agents = Vec::with_capacity(state.open_children.len());
                 for child in &state.open_children {
-                    let (_, session) = self.native.session(child).await?;
+                    let (child_state, session) = self.native.session(child).await?;
                     agents.push(json!({"task":child,"reference":session.reference,
                         "control":session.control,"settled":session.settled,
-                        "running":session.claimed.is_some(),"pending":session.pending.len()}));
+                        "running":session.claimed().is_some(),
+                        "pending":session.pending(&child_state)}));
                 }
                 Ok(json!({ "agents": agents }))
             }
@@ -283,11 +284,11 @@ impl HostWorkspaceOwner {
             && name == "merge"
             && let Some(reference) = reference.strip_prefix("agents/")
         {
-            let (_, session) = self
+            let (state, session) = self
                 .native
                 .session(&agents::child(task, reference)?)
                 .await?;
-            if session.claimed.is_some() || !session.pending.is_empty() {
+            if session.claimed().is_some() || session.pending(&state) > 0 {
                 return Err(Error::Conflict(
                     "native session is still running; wait for its captured result before merging"
                         .into(),
