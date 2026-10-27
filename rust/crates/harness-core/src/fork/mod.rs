@@ -47,7 +47,7 @@ use crate::store::history::{HistoryContentFuture, HistoryIo};
 pub use capture::{Capture, CapturedResource, ForkOmission, ReferenceGrant, SharedGrant};
 pub use content::StreamHistoryForkVerifier;
 pub(in crate::fork) use grants::{decode_fork_manifest, reserve_reference_bytes};
-pub use history::{InheritedConversationPrefix, PreparedForkHistory};
+pub use history::InheritedConversationPrefix;
 pub use provider::{ForkPublicationGuard, ForkSeedVerifier, ObservedForkPublicationGuard};
 pub(in crate::fork) use provider::{acquire_fork_fence, frame_bytes, release_frame};
 pub(crate) use provider::{admit_fork_future, boundary_error, release_fork_guard_with_work};
