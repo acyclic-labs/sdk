@@ -8,7 +8,8 @@ memory; it does not require DAX or a provider-specific VMM protocol.
 This implementation is under construction. The public admitted-session
 constructor and `acyclic-virtiofsd` command are not available yet. The commands
 below describe the standard frontend attachment to an already running socket;
-they are not a claim that this branch has booted either guest.
+the validation section distinguishes the two real fixture-source guest boots
+from the public admission work that remains.
 
 ## Admission and limits
 

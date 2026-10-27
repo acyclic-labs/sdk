@@ -263,7 +263,6 @@ impl ProjectionCore {
     }
 
     pub(super) fn retain_handler_failure(&self, failure: (NativeMountError, WorkCounters)) {
-        self.handler_failed.store(true, Ordering::Release);
         let mut reports = self
             .handler_error
             .lock()
@@ -271,6 +270,10 @@ impl ProjectionCore {
         if reports.first_fatal.is_none() {
             reports.first_fatal = Some(failure);
         }
+        // Publish terminal admission only after its original cause is in the
+        // slot. A concurrent packet must not observe an empty retirement slot
+        // and substitute ENODEV before the original refusal is retained.
+        self.handler_failed.store(true, Ordering::Release);
         self.invalidation.notify_all();
     }
 
