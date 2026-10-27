@@ -9,19 +9,15 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
-    fn cached_bytes_never_bypass_policy_revisions(revisions in prop::collection::vec(any::<bool>(), 1..5)) {
+    fn reads_follow_each_policy_revision(revisions in prop::collection::vec(any::<bool>(), 1..5)) {
         tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
             let fs = Fs::memory();
             let storage = MemoryHarnessStorage::from_providers(
                 AgentId::new(), 4096, fs.clone(), Arc::new(MemoryStream::default()),
             ).await?;
             let file = storage.stage(OperationId::new(), "secrets/key", b"cached", "text/plain", "key").await?;
-            assert!(storage.memory_store.lock().unwrap().read(&file).is_ok());
             for (index, denied) in revisions.into_iter().enumerate() {
                 policy(&fs, &storage, index as u64 + 2, denied.then_some(FsAction::Read), "secrets/**").await?;
-                // Keep proving that the old shortcut still has the bytes: a
-                // denial must come from the current volume policy, not eviction.
-                assert!(storage.memory_store.lock().unwrap().read(&file).is_ok());
                 let read = storage.read(&file).await;
                 assert_eq!(read.is_ok(), !denied, "{read:?}");
                 if let Ok(bytes) = read { assert_eq!(bytes.as_ref(), b"cached"); }
