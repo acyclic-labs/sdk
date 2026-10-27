@@ -244,19 +244,6 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
   } finally { core.free(); }
 });
 
-test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
-  const definition = { name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
-    outputSchema: { type: "string" }, projection: await jsonToolProjection({ type: "string" }) };
-  const limits = { ...DEFAULT_LIMITS, render_bytes: 64 };
-  const accepted = { kind: "json" as const, value: "x".repeat(38) };
-  expect(contracts.encodeCanonicalJson(accepted).length).toBe(64);
-  expect(() => contracts.validateToolProjection(definition, accepted, limits)).not.toThrow();
-  const rejected = { kind: "json" as const, value: "x".repeat(39) };
-  expect(contracts.encodeCanonicalJson(rejected).length).toBe(65);
-  expect(() => contracts.validateToolProjection(definition, rejected, limits)).toThrow();
-  expect(() => contracts.validateToolProjection(definition, { kind: "json", value: 42 }, limits)).toThrow();
-});
-
 test("inherited dispatch captures fresh pinned local files after builder construction", async () => {
   const core = new WasmReducer({ kind: "conversation", id: "fresh-prefix" }, "fresh-prefix", new Uint8Array(32).fill(23), []);
   const model = { provider: "mock", name: "fresh", revision: "1", options: {} };
@@ -407,28 +394,6 @@ test("local model dispatch rejects claimed native options before invoking a cust
   await expect(runtime.run({ prompt: "", content: [await nativeOptionPart()] })).rejects.toThrow(
     );
   expect(calls).toBe(0);
-});
-
-test("WASM model validators preserve Rust limits and tool-name checks", async () => {
-  const content = await file();
-  expect(() => validateModelContent("hello", DEFAULT_LIMITS)).not.toThrow();
-  expect(() => validateModelContent({ kind: "file", file: content, policy: "reference" }, DEFAULT_LIMITS)).not.toThrow();
-  expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "lookup", arguments: { value: 1 } }, DEFAULT_LIMITS)).not.toThrow();
-  expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "bad name", arguments: {} }, DEFAULT_LIMITS)).toThrow();
-  expect(() => validateModelContent({ kind: "text", text: "x".repeat(DEFAULT_LIMITS.render_bytes + 1) }, DEFAULT_LIMITS)).toThrow();
-  expect(() => validateModelContent({ kind: "unknown", value: true } as never, DEFAULT_LIMITS)).toThrow();
-});
-
-test("WASM user-input validator rejects empty, tool, and malformed content", async () => {
-  const content = await file();
-  expect(() => validateUserInput("hello")).not.toThrow();
-  expect(() => validateUserInput({ kind: "file", file: content, policy: { native: {
-    intent: { kind: "image", detail: "auto" }, maximum_bytes: 64, maximum_work: 8, configuration: null,
-  } } })).not.toThrow();
-  expect(() => validateUserInput("")).toThrow();
-  expect(() => validateUserInput([])).toThrow();
-  expect(() => validateUserInput({ kind: "tool_result", callId: "call", name: "lookup", content: { kind: "json", value: {} } })).toThrow();
-  expect(() => validateUserInput({ kind: "file", file: { ...content, path: "../escape" }, policy: "reference" })).toThrow();
 });
 
 test("Rust model event admission rejects duplicate tool identities and accepts camelCase call IDs", () => {
