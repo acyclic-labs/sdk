@@ -14,6 +14,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
             clock.0.store(90, Ordering::SeqCst);
             let outcome = stream
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![CommitCondition::Tail {
                         path: path.clone(),
                         expected: 1,
@@ -199,6 +200,7 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
     clock.0.store(100, Ordering::SeqCst);
     let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent {
             path: path("deadline/accepted")?,
         }],
@@ -209,19 +211,20 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         idempotency_key: key(b"deadline-accepted")?,
     };
     assert_eq!(
-        provider.commit_before(request.clone(), 100).await,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(100), ..request.clone() }).await,
         Err(StreamError::DeadlineElapsed)
     );
     assert_eq!(
-        provider.commit_before(request.clone(), 99).await,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(99), ..request.clone() }).await,
         Err(StreamError::DeadlineElapsed)
     );
-    let committed = provider.commit_before(request.clone(), 101).await?;
+    let committed = provider.commit(CommitRequest { deadline_unix_millis: Some(101), ..request.clone() }).await?;
     assert!(matches!(committed, CommitOutcome::Committed(_)));
     clock.0.store(1_000, Ordering::SeqCst);
-    assert_eq!(provider.commit_before(request, 101).await?, committed);
+    assert_eq!(provider.commit(CommitRequest { deadline_unix_millis: Some(101), ..request }).await?, committed);
 
     let retryable = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent {
             path: path("deadline/retry")?,
         }],
@@ -232,11 +235,11 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         idempotency_key: key(b"deadline-retry")?,
     };
     assert_eq!(
-        provider.commit_before(retryable.clone(), 1_000).await,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(1_000), ..retryable.clone() }).await,
         Err(StreamError::DeadlineElapsed)
     );
     assert!(matches!(
-        provider.commit_before(retryable, 1_001).await?,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(1_001), ..retryable }).await?,
         CommitOutcome::Committed(_)
     ));
     Ok(())
@@ -689,6 +692,7 @@ async fn commit_counts_an_explicit_parent_once_across_prefix_siblings() -> Resul
     });
     let names = ["a", "a-/child", "a/child"];
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: names
             .iter()
             .map(|name| Ok(CommitCondition::Absent { path: path(name)? }))

@@ -331,6 +331,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
 /// Encode a guest's transition for its host.
 pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError> {
     let mut effects = CommitRequest {
+        deadline_unix_millis: None,
         conditions: Vec::new(),
         mutations: Vec::with_capacity(transition.effects.len()),
         idempotency_key: IdempotencyKey::new(EFFECTS_KEY.to_vec())

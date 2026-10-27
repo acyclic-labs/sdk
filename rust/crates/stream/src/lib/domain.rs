@@ -420,6 +420,8 @@ pub enum CommitMutation {
 /// One bounded all-or-nothing optimistic commit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitRequest {
+    /// Trusted-clock publication deadline; successful retries keep their original identity.
+    pub deadline_unix_millis: Option<u64>,
     /// Exact conditions for every participant.
     pub conditions: Vec<CommitCondition>,
     /// Nonempty mutation set.

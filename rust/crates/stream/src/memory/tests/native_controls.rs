@@ -204,6 +204,7 @@ async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, C
             .await?;
     }
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: path("completion/owner")?,
@@ -583,6 +584,7 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             idempotency_key: None,
         };
         let commit = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Absent {
                 path: path("unrelated")?,
             }],

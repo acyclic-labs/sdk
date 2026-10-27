@@ -8,6 +8,7 @@ fn request(
     key: &'static [u8],
 ) -> Result<CommitRequest, StreamError> {
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Head {
             path: path.clone(),
             expected,

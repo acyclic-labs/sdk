@@ -8,6 +8,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
     let source = StreamPath::new("receipt/source")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Append {
             path: source.clone(),
@@ -39,6 +40,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     assert_eq!(crate::wire_codec::receipt_from_wire(wire)?, *receipt);
     clock.0.store(9, std::sync::atomic::Ordering::SeqCst);
     let fork = CommitRequest {
+        deadline_unix_millis: None,
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Fork {
             source, destination: StreamPath::new("receipt/fork")?, at_tail: 1,
@@ -76,6 +78,7 @@ async fn present_send_requires_the_precommit_path_and_preserves_retry_and_close_
     let inbox = StreamPath::new("mail/inbox")?;
     let closed = StreamPath::new("mail/inbox/closed")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Present { path: inbox.clone() },
             CommitCondition::Absent { path: closed.clone() },

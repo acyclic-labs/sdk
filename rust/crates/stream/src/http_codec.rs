@@ -310,6 +310,7 @@ mod tests {
     fn commit_projection_preserves_deadline_without_losing_uint64_precision()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let request = crate::CommitRequest {
+            deadline_unix_millis: Some(9_007_199_254_740_993),
             conditions: vec![crate::CommitCondition::Absent {
                 path: crate::StreamPath::new("deadline/events")?,
             }],
@@ -320,7 +321,7 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"identity"))?,
         };
         let mut wire = wire_codec::commit_to_wire(&request);
-        wire.deadline_unix_millis = Some(9_007_199_254_740_993);
+        assert_eq!(wire_codec::commit_from_wire(wire.clone())?.deadline_unix_millis, request.deadline_unix_millis);
         let projected: Value = serde_json::from_str(&encode("commit", &wire.encode_to_vec())?)?;
         assert_eq!(
             projected

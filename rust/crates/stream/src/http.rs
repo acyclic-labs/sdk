@@ -267,7 +267,7 @@ impl HttpStream {
         deadline: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
         let mut wire = wire_codec::commit_to_wire(&request);
-        wire.deadline_unix_millis = deadline;
+        wire.deadline_unix_millis = deadline.into_iter().chain(request.deadline_unix_millis).min();
         let response = self.request("commit", wire.encode_to_vec()).await?;
         Self::commit_response(&response)
     }

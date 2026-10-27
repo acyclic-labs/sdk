@@ -5,6 +5,7 @@ use std::task::{Context, Poll};
 
 fn request() -> CommitRequest {
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             crate::CommitCondition::Tail {
                 path: StreamPath::new("agents/a").unwrap(),

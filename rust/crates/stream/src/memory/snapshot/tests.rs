@@ -168,6 +168,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         .append(snapshot_append(source.clone(), b"before"))
         .await?;
     let request = crate::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             crate::CommitCondition::Tail {
                 path: source.clone(),

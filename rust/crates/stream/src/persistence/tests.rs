@@ -65,6 +65,7 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
         .await?;
     round_trip(&provider, key(b"fork")?).await?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent {
                 path: StreamPath::new("forked")?,

@@ -129,6 +129,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
     )
     .await?;
     let accepted = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Absent {
             path: StreamPath::new("deadline/accepted")?,
         }],
@@ -143,6 +144,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         CommitOutcome::Committed(_)
     ));
     let expired = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Absent {
             path: StreamPath::new("deadline/expired")?,
         }],

@@ -242,7 +242,7 @@ impl Client {
         deadline_unix_millis: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
         let body = wire::CommitRequest {
-            deadline_unix_millis,
+            deadline_unix_millis: deadline_unix_millis.into_iter().chain(request.deadline_unix_millis).min(),
             ..commit_to_wire(&request)
         };
         let response = self

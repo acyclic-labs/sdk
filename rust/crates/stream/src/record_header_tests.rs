@@ -105,6 +105,7 @@ fn commit(record: AppendRecord, fork: bool) -> Result<CommitRequest, StreamError
         }
     };
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent { path: destination }],
         mutations: vec![mutation],
         idempotency_key: IdempotencyKey::new(b"same retry".as_slice())?,

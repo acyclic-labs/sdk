@@ -26,7 +26,12 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
     match command {
         Command::Append(request) => provider.append(request).await.map(|_| ()),
         Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Commit(request) => provider.commit(request).await.map(|_| ()),
+        Command::Commit(mut request) => {
+            // This command already passed its publication deadline. Recovery
+            // installs that accepted decision rather than admitting a new one.
+            request.deadline_unix_millis = None;
+            provider.commit(request).await.map(|_| ())
+        }
     }
 }
 
@@ -157,6 +162,7 @@ mod tests {
             idempotency_key: None,
         });
         let commit = Command::Commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![crate::CommitCondition::Tail {
                 path: crate::StreamPath::new("codec/events")?,
                 expected: 2,

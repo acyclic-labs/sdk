@@ -131,6 +131,7 @@ fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> u
                 .fold(0_usize, usize::saturating_add),
         )
         .saturating_add(block_len(request.idempotency_key.as_bytes().len()))
+        .saturating_add(uint_len(request.deadline_unix_millis))
 }
 
 /// A prepared single-record command admits unknown value and header bytes.
@@ -338,6 +339,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
         }
     }
     bytes(out, 3, request.idempotency_key.as_bytes());
+    uint(out, 4, request.deadline_unix_millis);
 }
 
 #[cfg(test)]
@@ -357,6 +359,7 @@ mod tests {
             for length in [0, 127, 128, 16_383, 16_384, crate::MAX_RECORD_BYTES] {
                 let records: Vec<AppendRecord> = vec![OwnedBytes::from(vec![7; length]).into()];
                 let request = CommitRequest {
+                    deadline_unix_millis: (tail != 0).then_some(tail),
                     conditions: vec![
                         CommitCondition::Present {
                             path: path.clone(),

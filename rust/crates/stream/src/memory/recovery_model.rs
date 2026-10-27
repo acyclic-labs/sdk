@@ -244,6 +244,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
             move || block_on(provider.install_state(&bytes))
         });
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Head {
                 path: path.clone(),
                 expected: 1,
@@ -477,6 +478,7 @@ pub fn subtree_cut(root_only: bool) {
             move || {
                 block_on(
                     provider.commit(CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: ["tree/a", "tree/b"]
                             .map(|name| CommitCondition::Tail {
                                 path: StreamPath::new(name).unwrap(),
@@ -602,6 +604,7 @@ pub fn page_tail_cut(split_reads: bool) {
             move || {
                 let outcome = block_on(
                     provider.commit(CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: ["agents/a/status", "agents/b/status"]
                             .map(|name| crate::CommitCondition::Tail {
                                 path: StreamPath::new(name).unwrap(),
@@ -725,6 +728,7 @@ pub fn stable_intent_key(retain_conflicts: bool) {
         let path = StreamPath::new("intent")?;
         let key = IdempotencyKey::new(b"intent".to_vec())?;
         let request = |expected| CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected,

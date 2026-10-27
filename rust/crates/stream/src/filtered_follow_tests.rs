@@ -228,6 +228,7 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
     }
     for fork in [false, true] {
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![if fork {
                 CommitCondition::Absent {
                     path: StreamPath::new("header-fork")?,

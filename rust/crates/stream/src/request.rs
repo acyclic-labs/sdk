@@ -461,6 +461,7 @@ mod tests {
         let provider = MemoryStream::default();
         let path = StreamPath::new("binding/events")?;
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"body-binding"))?,
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {

@@ -337,6 +337,7 @@ impl MemoryStream {
             return self.receipt(result)
                 .map(|(receipt, claim)| Decision::Returned((CommitOutcome::Committed(receipt), claim)));
         }
+        let deadline = deadline.into_iter().chain(request.deadline_unix_millis).min();
         let check_deadline = move || {
             if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
                 Err(StreamError::DeadlineElapsed)

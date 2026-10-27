@@ -61,6 +61,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
         Err(StreamError::NotFound)
     ));
     let commit = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: request(0)?.path.clone(),
             expected: 0,
@@ -169,6 +170,7 @@ async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal(
     };
     assert_eq!(append.records[0].committed_at_micros, 3_000);
     let request = CommitRequest {
+        deadline_unix_millis: Some(10),
         conditions: vec![CommitCondition::Tail {
             path: request(0)?.path.clone(),
             expected: 1,
@@ -182,7 +184,7 @@ async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal(
     // The transport admitted at 5 ms, then durability completed after 10 ms.
     // Its success must install the accepted decision, not refuse it afterward.
     let Outcome::Commit(CommitOutcome::Committed(envelope)) = core
-        .apply_durable(Command::Commit(request), Some(10), async {
+        .apply_durable(Command::Commit(request), None, async {
             accepted.0.store(5, Ordering::SeqCst);
             wall.0.store(20, Ordering::SeqCst);
             Ok(())

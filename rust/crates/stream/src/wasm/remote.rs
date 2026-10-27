@@ -68,7 +68,7 @@ impl Remote {
         deadline: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
         let body = wire::CommitRequest {
-            deadline_unix_millis: deadline,
+            deadline_unix_millis: deadline.into_iter().chain(request.deadline_unix_millis).min(),
             ..wire_codec::commit_to_wire(&request)
         };
         let response = self

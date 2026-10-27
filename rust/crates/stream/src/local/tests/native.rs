@@ -145,6 +145,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
     assert_eq!(reopened.tail(request.path.clone()).await?, 1);
     // Reusing the same bytes/key through Commit is a different operation.
     let wrong_family = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Tail {
             path: request.path.clone(),
             expected: 1,
@@ -742,6 +743,7 @@ async fn rejected_commits_do_not_grow_the_journal() -> Result<(), Box<dyn std::e
         assert!(matches!(
             provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![crate::CommitCondition::Tail {
                         path: StreamPath::new("absent")?,
                         expected: 1

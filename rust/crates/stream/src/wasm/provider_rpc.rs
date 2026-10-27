@@ -164,7 +164,7 @@ impl InjectedStream {
         deadline: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
         let input = wire::CommitRequest {
-            deadline_unix_millis: deadline,
+            deadline_unix_millis: deadline.into_iter().chain(request.deadline_unix_millis).min(),
             ..wire_codec::commit_to_wire(&request)
         };
         wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)

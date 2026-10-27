@@ -198,6 +198,7 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
 {
     let source = StreamPath::new("source")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: Vec::new(),
         mutations: vec![CommitMutation::Fork {
             exclude: Vec::new(),

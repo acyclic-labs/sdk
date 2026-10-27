@@ -20,6 +20,7 @@ async fn dispatch_publication_admits_durability_before_accepting_a_start()
                     provider
                         .native_commit_guarded::<NativeGuardFailure, _, _>(
                             CommitRequest {
+                                deadline_unix_millis: None,
                                 conditions: vec![crate::CommitCondition::Tail {
                                     path: path.clone(),
                                     expected: 1,
@@ -128,6 +129,7 @@ async fn native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_co
             .await??;
         drop(output);
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![crate::CommitCondition::Tail {
                 path: path.clone(),
                 expected: 1,

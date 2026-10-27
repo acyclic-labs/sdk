@@ -92,6 +92,7 @@ pub(super) async fn prepared_fixture<P: StreamProvider + ?Sized>(
             .await?;
     }
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             crate::CommitCondition::Tail {
                 path: StreamPath::new("prepared/owner")?,

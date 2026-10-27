@@ -99,6 +99,7 @@ async fn agent(
     value.extend_from_slice(&u32::try_from(id)?.to_le_bytes());
     let expected = if first { 1 } else { 2 };
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: own.clone(),

@@ -19,6 +19,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
             .await?;
     }
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: path("completion/owner")?,

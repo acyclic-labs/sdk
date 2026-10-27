@@ -89,6 +89,7 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
     let path = StreamPath::new("events")?;
     let key = IdempotencyKey::new(Bytes::from_static(b"request"))?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent { path: path.clone() }],
         mutations: vec![CommitMutation::Append {
             path,

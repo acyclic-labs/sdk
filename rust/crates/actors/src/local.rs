@@ -217,6 +217,7 @@ impl PreparedPublish {
             sealed: false,
             acknowledgement_unknown: false,
             request: CommitRequest {
+                deadline_unix_millis: None,
                 conditions: Vec::new(),
                 mutations: Vec::new(),
                 idempotency_key: key,
@@ -648,6 +649,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             sealed: false,
             acknowledgement_unknown: false,
             request: CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![own],
                 mutations: vec![CommitMutation::Append {
                     path: previous.path.clone(),

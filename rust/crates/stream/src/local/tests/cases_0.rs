@@ -231,6 +231,7 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
 fn keyed_commit(path: &str, tail: u64) -> Result<CommitRequest, StreamError> {
     let path = StreamPath::new(path)?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![if tail == 0 {
             crate::CommitCondition::Absent { path: path.clone() }
         } else {
@@ -364,6 +365,7 @@ async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
                 };
                 let outcome = provider
                     .commit(CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: vec![condition(&left), condition(&right)],
                         mutations: [&left, &right]
                             .into_iter()

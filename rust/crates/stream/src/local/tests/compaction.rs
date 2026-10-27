@@ -63,6 +63,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
             let provider = provider.clone();
             async move {
                 provider.commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![
                         crate::CommitCondition::Tail { path: StreamPath::new("agents/a")?, expected: 1 },
                         crate::CommitCondition::Absent { path: StreamPath::new("agents/b")? },

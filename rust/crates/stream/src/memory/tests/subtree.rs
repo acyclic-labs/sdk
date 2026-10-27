@@ -19,6 +19,7 @@ proptest! {
             }
             provider.append(AppendRequest { path: StreamPath::new("tree/items-suffix/keep")?, records: vec![Bytes::from_static(b"keep").into()], if_tail: Some(0), idempotency_key: None }).await?;
             provider.commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Tail { path: root.clone(), expected: 1 },
                     CommitCondition::Absent { path: StreamPath::new("tree/children/new")? }],
                 mutations: vec![CommitMutation::Fork { source: root.clone(), destination: StreamPath::new("tree/children/new")?, at_tail: root_cut, records: Vec::new(),
@@ -96,6 +97,7 @@ async fn rejected_conditions_retain_no_key_or_namespace_state() -> Result<(), St
         assert!(matches!(
             provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![CommitCondition::Tail {
                         path: StreamPath::new("absent")?,
                         expected: 1

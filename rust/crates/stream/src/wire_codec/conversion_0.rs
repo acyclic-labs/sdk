@@ -387,6 +387,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
 /// Decodes a commit request from its generated wire representation.
 pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {
+        deadline_unix_millis: value.deadline_unix_millis,
         conditions: value
             .conditions
             .into_iter()
@@ -401,7 +402,7 @@ pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitReque
     })
 }
 
-/// Converts a domain commit request to its wire form, without a deadline.
+/// Converts a domain commit request, including its publication deadline.
 pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
     wire::CommitRequest {
         conditions: value
@@ -412,7 +413,7 @@ pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
             .collect(),
         mutations: value.mutations.iter().cloned().map(mutation_wire).collect(),
         idempotency_key: bytes::Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        deadline_unix_millis: None,
+        deadline_unix_millis: value.deadline_unix_millis,
     }
 }
 

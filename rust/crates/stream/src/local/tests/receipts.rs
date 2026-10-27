@@ -155,6 +155,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
         ));
     } else {
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![
                 crate::CommitCondition::Tail {
                     path: path(),

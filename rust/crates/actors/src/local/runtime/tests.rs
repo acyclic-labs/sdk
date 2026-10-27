@@ -523,6 +523,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
     PreparedPublish::settle(
         &provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Absent {
                     path: StreamPath::new("agents/first")?,
                 }],
@@ -565,6 +566,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
     PreparedPublish::settle(
         &provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Tail {
                     path: StreamPath::new("agents/first")?,
                     expected: 5,
