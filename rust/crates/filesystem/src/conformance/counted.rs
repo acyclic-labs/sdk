@@ -7,10 +7,10 @@ use crate::{
     storage::{HashedObject, ObjectWrite},
 };
 use acyclic_stream::{
-    OwnedBytes,
+    OwnedBytes, ProviderTask,
     testing::{Counted, RequestClass},
 };
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 impl<P: AsyncObjectStore> AsyncObjectStore for Counted<P> {
     fn supports_decoded_cache(&self) -> bool {
@@ -32,92 +32,99 @@ impl<P: AsyncObjectStore> AsyncObjectStore for Counted<P> {
         self.inner().decoded_cache_admit(key, value)
     }
 
-    async fn put(
+    fn put(
         &self,
         id: ObjectId,
         bytes: OwnedBytes,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
+    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().put(id, bytes, work).await
+        self.inner().put(id, bytes, work)
     }
 
-    async fn put_hashed(
+    fn put_hashed(
         &self,
         object: HashedObject,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
+    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().put_hashed(object, work).await
+        self.inner().put_hashed(object, work)
     }
 
-    async fn put_many(
+    fn put_many(
         &self,
         writes: &[ObjectWrite],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
+    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().put_many(writes, work).await
+        self.inner().put_many(writes, work)
     }
 
-    async fn put_many_hashed(
+    fn put_many_hashed(
         &self,
         objects: &[HashedObject],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
+    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().put_many_hashed(objects, work).await
+        self.inner().put_many_hashed(objects, work)
     }
 
-    async fn flush_before_publish(
+    fn flush_before_publish(
         &self,
         scope: PublicationScope<'_>,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<PublicationHold, ObjectStoreError> {
+    ) -> impl Future<Output = Result<PublicationHold, ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().flush_before_publish(scope, work).await
+        self.inner().flush_before_publish(scope, work)
     }
 
-    async fn historical_generation_evidence(
+    fn historical_generation_evidence(
         &self,
         authority: AuthorityId,
         record: &DurableCommit,
         maximum_bytes: u64,
         maximum_objects: u64,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, ObjectStoreError> {
+    ) -> impl Future<
+        Output = Result<Option<crate::kernel::HistoricalGenerationEvidence>, ObjectStoreError>,
+    > + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner()
-            .historical_generation_evidence(authority, record, maximum_bytes, maximum_objects, work)
-            .await
+        self.inner().historical_generation_evidence(
+            authority,
+            record,
+            maximum_bytes,
+            maximum_objects,
+            work,
+        )
     }
 
-    async fn read(
+    fn read(
         &self,
         id: ObjectId,
         maximum_bytes: u64,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
+    ) -> impl Future<Output = Result<ObjectRead, ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().read(id, maximum_bytes, work).await
+        self.inner().read(id, maximum_bytes, work)
     }
 
-    async fn read_many(
+    fn read_many(
         &self,
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, AuthorityAllocation), ObjectStoreError> {
+    ) -> impl Future<Output = Result<(Vec<ObjectRead>, AuthorityAllocation), ObjectStoreError>>
+    + ProviderTask {
         self.record(RequestClass::Data);
-        self.inner().read_many(requests, work).await
+        self.inner().read_many(requests, work)
     }
 
-    async fn contains(
+    fn contains(
         &self,
         id: ObjectId,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
+    ) -> impl Future<Output = Result<bool, ObjectStoreError>> + ProviderTask {
         self.record(RequestClass::Head);
-        self.inner().contains(id, work).await
+        self.inner().contains(id, work)
     }
 
     fn collection(&self) -> Option<&Arc<Collection>> {
