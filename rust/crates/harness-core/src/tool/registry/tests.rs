@@ -11,9 +11,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn default_catalog_requires_each_tools_own_grant(
-        selected in prop::collection::vec(any::<bool>(), crate::tools::default_names().len()),
+        selected in prop::collection::vec(any::<bool>(), crate::tools::catalog().count()),
     ) {
-        let names = crate::tools::default_names();
+        // Agent tools are bound by the turn owner, not the default registry.
+        let names: Vec<_> = crate::tools::catalog().map(|spec| spec.name).collect();
         let registry = crate::tools::defaults().unwrap();
         let grants = crate::Capabilities::new(
             names.iter().enumerate().filter(|(i, _)| selected[*i])

@@ -71,7 +71,7 @@ where
                 (request_hold, original)
             };
             if let Some(original) = &original {
-                return if original.matches_reopened(interaction) {
+                return if original == interaction {
                     Ok(())
                 } else {
                     Err(reject(
@@ -118,7 +118,7 @@ where
                     (request_hold, original)
                 };
                 let result = match &original {
-                    Some(original) if original.matches_reopened(interaction) => Ok(()),
+                    Some(original) if original == interaction => Ok(()),
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",

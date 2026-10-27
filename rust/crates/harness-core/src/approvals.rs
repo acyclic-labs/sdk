@@ -224,7 +224,6 @@ impl ApprovalRule {
             crate::interaction::ApprovalSubject::Tool {
                 tool, arguments, ..
             } => Self::evaluate(rules, fallback, tool, arguments),
-            crate::interaction::ApprovalSubject::Legacy {} => RuleVerdict::Ask,
             crate::interaction::ApprovalSubject::Opaque {} => Self::decide(
                 rules.iter().filter(|rule| {
                     rule.tool.is_none() && rule.arguments.is_none() && rule.selectors.is_empty()

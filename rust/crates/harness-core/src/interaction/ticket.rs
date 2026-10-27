@@ -183,56 +183,6 @@ impl InteractionTicket {
         self.decision_principal(resolution, principal, &decision.0, decision.1.work())
     }
 
-    // Only the publication owner calls this after loading the original request
-    // and its authenticated committed resolution. Never use it for admission.
-    pub(crate) fn validate_published_decision_bytes(
-        &self,
-        resolution: &InteractionResolution,
-        detail: &FileRef,
-        bytes: &[u8],
-        legacy_request: bool,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<[u8; 16]> {
-        if !legacy_request {
-            return self.validate_decision_bytes(resolution, None, detail, bytes, work);
-        }
-        if self.kind != InteractionKind::Approval
-            || detail.descriptor().media_type() != "application/json"
-        {
-            return Err(boundary(
-                work,
-                Invalid,
-                "approval decision artifact is invalid",
-            ));
-        }
-        detail.validate(work)?;
-        detail.descriptor().verify(bytes, work)?;
-        let mut decoded = decode_interaction_json::<PublishedApprovalDecision>(
-            bytes,
-            crate::executor::json::JsonValueSchema::InteractionResponse,
-            work,
-        )?;
-        match &decoded.0 {
-            PublishedApprovalDecision::Current(decision) => {
-                self.decision_principal(resolution, None, decision, decoded.1.work())
-            }
-            PublishedApprovalDecision::Legacy(InteractionResponse::Approval {
-                approved, ..
-            }) if matches!(resolution.outcome, InteractionOutcome::Approved {}) && *approved
-                || matches!(resolution.outcome, InteractionOutcome::Declined {}) && !*approved =>
-            {
-                Ok(ApprovalDecisionFile::principal_digest(
-                    LEGACY_DECISION_PRINCIPAL,
-                ))
-            }
-            _ => Err(boundary(
-                decoded.1.work(),
-                Conflict,
-                "approval artifact disagrees with outcome",
-            )),
-        }
-    }
-
     fn decision_principal(
         &self,
         resolution: &InteractionResolution,

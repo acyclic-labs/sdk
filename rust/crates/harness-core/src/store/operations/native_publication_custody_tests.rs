@@ -200,7 +200,14 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     let (replayed, _) = bounded_operation_with_retained_quota(
         &client,
         &authority,
-        &issuer.verifier(&mut None)?,
+        // Releasing the replay owner must release its authenticated native
+        // input too; the signer is a separate, longer-lived fixture owner.
+        &crate::core::AuthorityVerifier::from_public(
+            "publication-test".into(),
+            authority.clone(),
+            issuer.public_workload_trust()?,
+            issuer.verifier(&mut None)?.public_checkpoint_key(),
+        )?,
         event.operation_id,
         2 * acyclic_stream::MAX_RECORD_BYTES as u64,
         false,

@@ -47,20 +47,6 @@ pub enum ApprovalSubject {
     /// An action whose preimage stays private to its owner (credentials,
     /// authorization URLs, sealed native requests). Only the digest is public.
     Opaque {},
-    /// Read-only marker for requests saved before subjects were recorded.
-    /// It cannot be supplied as an explicit subject on the wire.
-    #[serde(skip_deserializing)]
-    Legacy {},
-}
-
-impl ApprovalSubject {
-    pub(crate) const fn is_legacy(&self) -> bool {
-        matches!(self, Self::Legacy {})
-    }
-}
-
-fn legacy_approval_subject() -> ApprovalSubject {
-    ApprovalSubject::Legacy {}
 }
 
 /// Typed interaction request. Executors decide how and where it is presented.
@@ -103,51 +89,11 @@ pub enum Interaction {
         /// Digest of the exact action being approved.
         action_digest: [u8; 32],
         /// The exact action, so approvers decide what actually runs.
-        /// Missing subjects retain the original pre-upgrade request encoding.
-        #[serde(
-            default = "legacy_approval_subject",
-            skip_serializing_if = "ApprovalSubject::is_legacy"
-        )]
         subject: ApprovalSubject,
     },
 }
 
 impl Interaction {
-    pub(crate) const fn is_legacy_approval(&self) -> bool {
-        matches!(
-            self,
-            Self::Approval {
-                subject: ApprovalSubject::Legacy {},
-                ..
-            }
-        )
-    }
-
-    /// A pre-subject request keeps its original bytes when its owner resumes
-    /// the same operation and action; supplied metadata never rewrites it.
-    pub(crate) fn matches_reopened(&self, request: &Self) -> bool {
-        self == request
-            || matches!(
-                (self, request),
-                (
-                    Self::Approval {
-                        prompt,
-                        operation_id,
-                        action_digest,
-                        subject: ApprovalSubject::Legacy {},
-                    },
-                    Self::Approval {
-                        prompt: other_prompt,
-                        operation_id: other_operation,
-                        action_digest: other_digest,
-                        ..
-                    }
-                ) if prompt == other_prompt
-                    && operation_id == other_operation
-                    && action_digest == other_digest
-            )
-    }
-
     /// Returns the stable request discriminator without serializing its body.
     #[must_use]
     pub const fn kind(&self) -> InteractionKind {

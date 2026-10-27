@@ -299,7 +299,6 @@ impl InternalPublicationCase<'_> {
 #[tokio::test]
 async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()>
 {
-    let mut single_records = Vec::new();
     for class in [
         InternalContentClass::Interaction,
         InternalContentClass::Execution,
@@ -335,17 +334,18 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
                 read: &read,
                 io: io.as_ref(),
             };
-            single_records.push(case.verify(&workspace, class).await.map_err(|error| {
+            let single_record = case.verify(&workspace, class).await.map_err(|error| {
                 Error::Storage(format!(
                     "adapter {adapter}, family {}: {error:?}",
                     class.prefix()
                 ))
-            })?);
+            })?;
+            assert!(
+                single_record,
+                "adapter {adapter}, family {} retained duplicate metadata and recovery indexes",
+                class.prefix()
+            );
         }
     }
-    assert_eq!(
-        single_records, [true; 15],
-        "internal publications retained duplicate metadata and recovery indexes"
-    );
     Ok(())
 }
