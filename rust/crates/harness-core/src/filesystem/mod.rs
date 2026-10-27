@@ -26,7 +26,6 @@ use acyclic_fs::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
-const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 mod content_input;
 use content_input::ContentInput;
 mod content_publisher;

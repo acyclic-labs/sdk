@@ -12,7 +12,9 @@ mod admission;
 mod retained;
 pub(crate) use admission::AuthenticatedRecord;
 pub(super) use admission::HistoricalOwner;
-pub(super) use admission::{live_record, record, verify_record};
+#[cfg(test)]
+pub(super) use admission::live_record;
+pub(super) use admission::{record, verify_record};
 use retained::RetainedAuthentication;
 
 pub(super) struct AuthenticatedWorkload {

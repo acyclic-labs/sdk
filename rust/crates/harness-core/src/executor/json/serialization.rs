@@ -703,58 +703,6 @@ pub(crate) fn count_json_bytes_trusted<
     Ok(size)
 }
 
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) fn json_write_bounded<T: Serialize + ?Sized>(
-    value: &T,
-    output: &mut Vec<u8>,
-    bounds: JsonBounds,
-    charge: &mut impl FnMut(JsonCodecCharge) -> Result<()>,
-) -> Result<()> {
-    let mut scope = scope(bounds, Some(crate::wire::ErrorCode::Invalid), charge);
-    if !output.is_empty() || (output.capacity() as u64) < bounds.maximum_bytes {
-        return Err(boundary("JSON output lacks admitted capacity", scope.code));
-    }
-    write(
-        value,
-        &mut scope,
-        Some(output),
-        None,
-        None,
-        bounds.maximum_bytes,
-        false,
-    )?;
-    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })
-}
-
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) fn json_digest_bounded<T: Serialize + ?Sized>(
-    value: &T,
-    expected: Option<&[u8]>,
-    bounds: JsonBounds,
-    charge: &mut impl FnMut(JsonCodecCharge) -> Result<()>,
-) -> Result<Option<(u64, [u8; 32])>> {
-    let mut scope = scope(bounds, Some(crate::wire::ErrorCode::Invalid), charge);
-    let mut matched = true;
-    let mut digest = blake3::Hasher::new();
-    let size = write(
-        value,
-        &mut scope,
-        None,
-        Some(&mut |bytes: &[u8]| {
-            digest.update(bytes);
-            Ok(())
-        }),
-        expected.map(|bytes| (bytes, &mut matched)),
-        bounds.maximum_bytes,
-        false,
-    )?;
-    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    Ok(
-        (matched && expected.is_none_or(|bytes| size == bytes.len() as u64))
-            .then(|| (size, *digest.finalize().as_bytes())),
-    )
-}
-
 #[cfg(test)]
 #[path = "single_pass_properties.rs"]
 mod single_pass_properties;

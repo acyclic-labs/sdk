@@ -411,24 +411,6 @@ impl ContentGrant {
         self.authority.scope()
     }
 
-    /// Constructs read authority from authenticated project-source authorization.
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn from_project_source(
-        authorization: &crate::source_authorization::ProjectSourceAuthorization,
-        verifier: &AuthorityVerifier,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        authorization.verify_scope_binding(verifier, work)?;
-        Self::build(verifier, &authorization.policy_scope, work, |_, quota| {
-            Ok(Boundary {
-                volume: authorization.project.clone_in_quota(quota)?,
-                operation: VolumeOperation::Read,
-                exact_file: None,
-                directory_prefix: Some(String::new()),
-            })
-        })
-    }
-
     /// Resolves an authenticated whole-volume, exact-file, or directory read.
     pub fn verify_read(
         verifier: &AuthorityVerifier,

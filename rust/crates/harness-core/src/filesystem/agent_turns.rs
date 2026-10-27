@@ -2,9 +2,9 @@
 //! authority over the agent's private volume; its executor comes from the host's
 //! [`TurnExecutors`] for that agent and authority, per turn.
 //!
-//! The model context of a turn is the agent's own conversation stream: the last
-//! settled turns (inherited ones included) as user/assistant messages, then the
-//! turn's input. The host binds exactly that selection into the turn's journal,
+//! The model context of a turn is the host's system prompt, then the agent's
+//! own conversation stream: the last settled turns as user/assistant messages,
+//! then the turn's input. The host binds exactly that selection into the turn's journal,
 //! so the executor can dispatch no other history.
 
 use super::{
@@ -153,6 +153,10 @@ impl<'v> AdmittedAgent<'v> {
                     u64::MAX,
                     &mut None,
                 )?;
+                // That check admits a structured `filesystem:` grant by its
+                // label alone, so the filesystem's own decision over the
+                // grant's ceiling must also admit writing the private volume.
+                require_structured_write(&delegated, owner, &private.volume)?;
                 (issuer, Some(delegated))
             }
         };
@@ -193,6 +197,61 @@ impl<'v> AdmittedAgent<'v> {
             verifier,
             private,
         })
+    }
+}
+
+/// The filesystem's decision over `scope`'s structured grant, if it has one:
+/// it creates and writes every path of `volume`. It performs no IO; the
+/// writer still applies the volume's persisted policy.
+fn require_structured_write(
+    scope: &Scope,
+    owner: crate::AgentId,
+    volume: &crate::conversation::VolumeRef,
+) -> Result<()> {
+    use acyclic_fs::access::{
+        Action, Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind,
+        Resource,
+    };
+    let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
+        return Ok(());
+    };
+    let denied =
+        || Error::Unauthorized("admission does not grant writing its private volume".into());
+    let capability = Capability::from_scope_label(label)
+        .ok()
+        .flatten()
+        .ok_or_else(denied)?;
+    let policy: Policy = serde_json::from_slice(INITIAL_POLICY)
+        .map_err(|_| Error::FilesystemAccessConfiguration("initial policy is invalid"))?;
+    let principal = Principal {
+        kind: PrincipalKind::Agent,
+        id: owner.to_string(),
+        lineage: Vec::new(),
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let now = super::access::access_now()?;
+    let view = PathTrie::compile(
+        &policy,
+        &principal,
+        Resource {
+            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+            lineage: &[],
+            volume: volume.id(),
+            generation: 0,
+            head: 0,
+            path: "",
+        },
+        Context { now, approvals: 0 },
+        &capability,
+    )
+    .map_err(|_| denied())?;
+    if view.allows_every_path(&[Action::Create, Action::Write], now) {
+        Ok(())
+    } else {
+        Err(denied())
     }
 }
 
@@ -276,6 +335,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
+    prompt: Option<Arc<str>>,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -305,7 +365,16 @@ where
             limits,
             approvers: Default::default(),
             goals: Some(Default::default()),
+            prompt: None,
         }
+    }
+
+    /// Opens every turn's model context with `prompt` as its system message;
+    /// `None` sends none.
+    #[must_use]
+    pub fn with_prompt(mut self, prompt: Option<&str>) -> Self {
+        self.prompt = prompt.map(Arc::from);
+        self
     }
 
     /// Continues each agent's active goal within `goals`; `None` runs no goals.
@@ -511,20 +580,38 @@ fn message_id(turn: OperationId, role: ModelRole) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// The selection of `history` plus the current `input`: one user and one
-/// assistant message per settled turn, assistant text read from its staged output.
+/// Stable message identity of the system `prompt`.
+fn prompt_id(prompt: &str) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.prompt.v1");
+    hasher.update(prompt.as_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// The selection of the system `prompt`, `history` and the current `input`:
+/// one user and one assistant message per settled turn, assistant text read
+/// from its staged output. Without either there is no selection.
 async fn select(
     agent: &AgentState,
     journal: &dyn ExecutionJournal,
+    prompt: Option<&str>,
     history: Vec<ConversationEntry>,
     turn: OperationId,
     input: &ModelContent,
 ) -> Result<Option<SelectedModelContext>> {
-    if history.is_empty() {
+    if history.is_empty() && prompt.is_none() {
         return Ok(None);
     }
-    let mut messages = Vec::with_capacity(2 * history.len() + 1);
+    let mut messages = Vec::with_capacity(2 * history.len() + 2);
     let mut message_ids = Vec::with_capacity(messages.capacity());
+    if let Some(prompt) = prompt {
+        messages.push(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(prompt.to_owned()),
+        });
+        message_ids.push(prompt_id(prompt));
+    }
     for entry in history {
         let settled = crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?;
         let bytes = journal.load(&entry.output, None)?.await?;
@@ -626,7 +713,15 @@ where
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
-            let selected = select(agent, &journal, history, turn, input).await?;
+            let selected = select(
+                agent,
+                &journal,
+                self.prompt.as_deref(),
+                history,
+                turn,
+                input,
+            )
+            .await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
                 None => journal,

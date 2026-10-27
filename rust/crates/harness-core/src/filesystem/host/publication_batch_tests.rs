@@ -169,7 +169,6 @@ async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()
                 path: "/".into(),
                 bytes: b"forged root".to_vec().into(),
             }],
-            FilePublication::Replace(None),
             Some(&io),
             &cancellation,
         )
@@ -303,10 +302,7 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
     let mut single_records = Vec::new();
     for class in [
         InternalContentClass::Interaction,
-        InternalContentClass::Workflow,
         InternalContentClass::Execution,
-        InternalContentClass::ModelPrefix,
-        InternalContentClass::Conversation,
     ] {
         for adapter in 0..3 {
             let provider =
@@ -351,104 +347,5 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
         single_records, [true; 15],
         "internal publications retained duplicate metadata and recovery indexes"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn unmetered_immutable_batches_refuse_existing_and_duplicate_bindings() -> Result<()> {
-    immutable_record_batch(0).await
-}
-
-#[tokio::test]
-async fn measured_immutable_batches_refuse_existing_and_duplicate_bindings() -> Result<()> {
-    immutable_record_batch(1).await
-}
-
-#[tokio::test]
-async fn native_immutable_batches_refuse_existing_and_duplicate_bindings() -> Result<()> {
-    immutable_record_batch(2).await
-}
-
-async fn immutable_record_batch(adapter: u8) -> Result<()> {
-    let provider = ProviderRef::new(
-        "immutable-batch".into(),
-        "filesystem".into(),
-        "1".into(),
-        &mut None,
-    )?;
-    let filesystem = Fs::memory();
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-    filesystem
-        .create_workspace("records", budget, &cancellation)
-        .await
-        .map_err(|failure| map_error(failure.error))?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
-    let workspace = workspace_ref(provider, "records")?;
-    let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = match adapter {
-        0 => None,
-        1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
-        _ => Some(PreparationIo::from_native_work(&native)?),
-    };
-    let first = [
-        WorkspaceMutation::CreateDirectory {
-            path: "/records/nested".into(),
-        },
-        WorkspaceMutation::PutFile {
-            path: "/records/nested/sealed".into(),
-            bytes: b"original".to_vec().into(),
-        },
-    ];
-    host.create_records(
-        &workspace,
-        &first,
-        IdempotencyKey::new("create-original")?,
-        io.as_ref(),
-    )?
-    .await?;
-    let before = host.resolve(&workspace, None).await?;
-    for duplicate in [false, true] {
-        let forged = [
-            WorkspaceMutation::CreateDirectory {
-                path: "/uncommitted".into(),
-            },
-            WorkspaceMutation::PutFile {
-                path: "/uncommitted/first".into(),
-                bytes: b"first".to_vec().into(),
-            },
-            WorkspaceMutation::PutFile {
-                path: if duplicate {
-                    "/uncommitted/first"
-                } else {
-                    "/records/nested/sealed"
-                }
-                .into(),
-                bytes: b"forged".to_vec().into(),
-            },
-        ];
-        assert!(matches!(
-            host.create_records(
-                &workspace,
-                &forged,
-                IdempotencyKey::new("overwrite-sealed")?,
-                io.as_ref()
-            )?
-            .await,
-            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
-        ));
-        assert_eq!(host.resolve(&workspace, None).await?, before);
-        assert_eq!(
-            host.read(&workspace, None, "/records/nested/sealed", 64, None)
-                .await?
-                .as_ref(),
-            b"original"
-        );
-        assert!(
-            matches!(host.read(&workspace, None, "/uncommitted/first", 64, None).await,
-        Err(error) if error.code() == crate::wire::ErrorCode::NotFound)
-        );
-    }
     Ok(())
 }

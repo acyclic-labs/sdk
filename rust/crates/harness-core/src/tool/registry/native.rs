@@ -35,6 +35,7 @@ impl ToolRegistry {
     }
 
     /// Copies registry metadata on its original ledger.
+    #[cfg(test)]
     pub(crate) fn clone_with_native_work(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

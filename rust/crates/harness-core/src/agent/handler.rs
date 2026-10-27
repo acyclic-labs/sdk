@@ -44,6 +44,7 @@ fn codec() -> CodecIdentity {
 }
 
 /// The agent state a committed checkpoint carries.
+#[cfg(feature = "filesystem")]
 pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
     if checkpoint.codec != codec() {
         return Err(Error::Record("agent checkpoint codec differs"));

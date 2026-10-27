@@ -74,8 +74,6 @@ pub struct PreparedForkHistory {
     pub(in crate::fork) parent: Authority,
     pub(in crate::fork) parent_revision: u64,
     pub(in crate::fork) conversation: crate::conversation::ConversationState,
-    #[cfg(feature = "filesystem")]
-    pub(in crate::fork) attestation: [u8; 32],
 }
 
 impl PreparedForkHistory {
@@ -83,14 +81,11 @@ impl PreparedForkHistory {
         parent: Authority,
         parent_revision: u64,
         conversation: crate::conversation::ConversationState,
-        #[cfg(feature = "filesystem")] attestation: [u8; 32],
     ) -> Self {
         Self {
             parent,
             parent_revision,
             conversation,
-            #[cfg(feature = "filesystem")]
-            attestation,
         }
     }
 
@@ -110,38 +105,5 @@ impl PreparedForkHistory {
     #[must_use]
     pub fn through_sequence(&self) -> u64 {
         self.conversation.logical_revision()
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) const fn conversation(&self) -> &crate::conversation::ConversationState {
-        &self.conversation
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn verify(
-        &self,
-        verifier: &crate::core::AuthorityVerifier,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        verifier.verify_audience(&self.parent, work)?;
-        let digest = self
-            .conversation
-            .history_prefix_digest(self.through_sequence(), work)?;
-        if self.attestation
-            != verifier.fork_history_selection_proof_with_work(
-                self.parent_revision,
-                self.through_sequence(),
-                self.conversation.agent,
-                digest,
-                work,
-            )?
-        {
-            return Err(boundary_error(
-                work,
-                crate::wire::ErrorCode::Unauthorized,
-                "fork archive belongs to another issuer",
-            ));
-        }
-        Ok(())
     }
 }

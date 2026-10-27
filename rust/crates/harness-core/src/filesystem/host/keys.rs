@@ -24,48 +24,6 @@ pub fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
     FilesystemKey::from_bytes(bytes)
 }
 
-pub(in crate::filesystem) fn project_join_key(
-    operation: crate::OperationId,
-    io: Option<&PreparationIo>,
-) -> Result<FilesystemKey> {
-    use std::io::Write as _;
-    if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-    }
-    let mut buffer = [0_u8; 64];
-    let mut output = buffer.as_mut_slice();
-    write!(&mut output, "project-join:{operation}").map_err(|_| {
-        stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "project join retry key exceeds its fixed encoding",
-        )
-    })?;
-    let length = 64 - output.len();
-    if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
-            bytes_hashed: length as u64,
-            ..Default::default()
-        })?;
-    }
-    let digest = blake3::hash(buffer.get(..length).ok_or_else(|| {
-        stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "project join retry key exceeds its fixed encoding",
-        )
-    })?);
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    if bytes == [0; 16] {
-        bytes[0] = 1;
-    }
-    Ok(FilesystemKey::from_bytes(bytes))
-}
-
 pub(in crate::filesystem) fn content_metadata_path_io(
     path: &str,
     absolute: bool,
@@ -177,5 +135,3 @@ pub(crate) fn map_error(error: WorkspaceError) -> Error {
         WorkspaceError::Engine(value) => Error::Storage(value),
     }
 }
-
-use crate::executor::stock_boundary;

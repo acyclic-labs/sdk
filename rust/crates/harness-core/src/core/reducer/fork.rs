@@ -43,39 +43,6 @@ impl Reducer {
         Ok(())
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn attest_fork_history_with_work(
-        &self,
-        seed: &mut ForkSeed,
-        history: &ConversationState,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.check_cancellation()?;
-        }
-        if seed.parent != self.authority
-            || seed.parent_revision != self.revision
-            || history.agent != self.projection.conversation.agent
-            || history.resident_after_sequence() != 0
-            || history.logical_revision() != seed.inherited_through_sequence
-        {
-            return Err(crate::fork::boundary_error(
-                work,
-                crate::wire::ErrorCode::Conflict,
-                "fork archive differs from its original parent cut",
-            ));
-        }
-        self.validate_fork_reference_ownership(seed, Some(history), work)?;
-        let mut quota = CodecQuota::new(work, 64)?;
-        seed.history_witness = Some(
-            self.authority_verifier
-                .fork_history_proof(seed, quota.work())?
-                .to_vec(),
-        );
-        quota.transfer();
-        Ok(())
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "fork publication checks one complete seed"

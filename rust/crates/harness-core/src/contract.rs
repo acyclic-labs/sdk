@@ -35,11 +35,6 @@ pub mod capability {
     pub const INTERACTION_ROUTE: &str = "interaction:route";
     pub(crate) const OPERATION_OBSERVE: &str = "operation:observe";
     pub(crate) const OPERATION_CANCEL: &str = "operation:cancel";
-    pub(crate) const OPERATION_DECLARE: &str = "operation:declare";
-    pub(crate) const MAIL_SEND: &str = "mail:send";
-    pub(crate) const MAIL_READ: &str = "mail:read";
-    #[cfg(feature = "filesystem")]
-    pub(crate) const TIMER_WAIT: &str = "timer:wait";
     #[doc(hidden)]
     pub const MODEL_GENERATE: &str = "model:generate";
     #[doc(hidden)]

@@ -1,4 +1,4 @@
-use super::{Error, OperationId, Result};
+use super::{Error, OperationId};
 use serde::{Deserialize, Serialize};
 
 /// Why the completion of admitted work is uncertain.
@@ -57,39 +57,5 @@ impl IndeterminateCause {
                 cause,
             },
         }
-    }
-
-    /// Copies the cause, routing every owned string through `text`.
-    pub(crate) fn try_copy(&self, mut text: impl FnMut(&str) -> Result<String>) -> Result<Self> {
-        let Self::Command(cause) = self else {
-            return Ok(Self::Unobserved);
-        };
-        Ok(Self::Command(CommandIndeterminacy {
-            command: text(&cause.command)?,
-            reason: match &cause.reason {
-                CommandIndeterminacyReason::Failed { code, error } => {
-                    CommandIndeterminacyReason::Failed {
-                        code: text(code)?,
-                        error: text(error)?,
-                    }
-                }
-                CommandIndeterminacyReason::Unsettled => CommandIndeterminacyReason::Unsettled,
-                CommandIndeterminacyReason::InputLimit => CommandIndeterminacyReason::InputLimit,
-            },
-        }))
-    }
-
-    /// Bytes the cause's strings own.
-    pub(crate) fn owned_bytes(&self) -> u64 {
-        let Self::Command(cause) = self else {
-            return 0;
-        };
-        let reason = match &cause.reason {
-            CommandIndeterminacyReason::Failed { code, error } => {
-                code.capacity() + error.capacity()
-            }
-            CommandIndeterminacyReason::Unsettled | CommandIndeterminacyReason::InputLimit => 0,
-        };
-        (cause.command.capacity() + reason) as u64
     }
 }

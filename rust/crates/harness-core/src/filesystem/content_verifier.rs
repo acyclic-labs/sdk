@@ -428,23 +428,6 @@ where
         Ok(())
     }
 
-    pub(in crate::filesystem) fn reference_reader(
-        self: &Arc<Self>,
-        file: &FileRef,
-        io: &PreparationIo,
-    ) -> Result<Arc<Self>> {
-        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(Self {
-            host: self.host.clone(),
-            authority: self.authority.clone(),
-            maximum_bytes: self.maximum_bytes,
-            exact_file: Some(file.copy(&mut Some(&mut io.history_io()))?),
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: self._native_metadata.clone(),
-        }))
-    }
-
     pub(in crate::filesystem) async fn read_file(
         &self,
         reference: &FileRef,

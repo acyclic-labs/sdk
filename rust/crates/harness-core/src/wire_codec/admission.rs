@@ -212,6 +212,7 @@ impl<'a, 'b> Quota<'a, 'b> {
         Ok(())
     }
     /// Funds the heap slot separately from the value's already retained children.
+    #[cfg(test)]
     pub(crate) fn boxed<T>(&mut self, value: T) -> Result<Box<T>> {
         let bytes = std::mem::size_of::<T>() as u64;
         let retained = self

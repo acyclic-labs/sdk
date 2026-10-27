@@ -1,7 +1,5 @@
 //! request fork protocol.
 use super::*;
-#[cfg(feature = "filesystem")]
-use crate::core::OwnedBytes;
 /// Idempotent request to capture selected resources for a new child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -174,16 +172,6 @@ impl ForkRequest {
             boundary.validate(work.work())?;
         }
         Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        CodecQuota::produce(work, |quota| {
-            crate::core::copy(self, quota, |source, work| {
-                source.validate(work)?;
-                source.owned_heap_bytes()
-            })
-        })
     }
 
     fn validate_authorized_source(&self, work: &mut CodecQuota<'_, '_>) -> Result<()> {

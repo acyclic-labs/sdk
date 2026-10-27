@@ -135,7 +135,9 @@ pub struct MemoryHarnessStorage<
     publisher: Arc<MemoryContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
+    #[cfg(test)]
     read_capability: String,
+    #[cfg(test)]
     write_capability: String,
     scope: Scope,
     issuer: AuthorityRoot,
@@ -302,7 +304,9 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             publisher,
             host,
             volume,
+            #[cfg(test)]
             read_capability,
+            #[cfg(test)]
             write_capability,
             scope,
             issuer,

@@ -2,8 +2,6 @@ use super::*;
 
 /// One canonical event and its atomic derived indexes.
 pub(crate) struct IndexedPublication {
-    #[cfg(feature = "filesystem")]
-    pub(crate) operation_id: OperationId,
     pub(crate) path: StreamPath,
     pub(crate) expected_tail: u64,
     pub(crate) bytes: OwnedBytes,
@@ -32,8 +30,6 @@ impl IndexedPublication {
         let (path, path_owned) = publication_path(authority, "harness/v2/", None, quota.work())?;
         quota.adopt(path_owned)?;
         let mut publication = Self {
-            #[cfg(feature = "filesystem")]
-            operation_id: event.operation_id,
             path,
             expected_tail,
             bytes,

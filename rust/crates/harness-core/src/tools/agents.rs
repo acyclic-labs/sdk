@@ -62,6 +62,11 @@ struct Turn {
     effects: Arc<dyn TurnEffects>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
+    /// Open children allowed at once, this turn's spawns included.
+    max_children: Option<u32>,
+    /// Held from a spawn's limit check through its record, so concurrent
+    /// spawns of one turn see each other.
+    spawning: futures::lock::Mutex<()>,
 }
 
 struct AgentTool {
@@ -97,6 +102,10 @@ impl AgentTool {
         let turn = &*self.turn;
         let key = call_key(&invocation, context.as_ref());
         let operation = hex(&invocation.operation_id.into_bytes());
+        let _spawning = match self.name {
+            "spawn" => Some(turn.spawning.lock().await),
+            _ => None,
+        };
         let effect = match self.name {
             "spawn" => {
                 let input: SpawnAgentInput = match decode(invocation.arguments) {
@@ -114,6 +123,13 @@ impl AgentTool {
                         "name must be short printable ASCII without spaces",
                     ));
                 };
+                if let Some(limit) = turn.max_children
+                    && !self.within(&intent, limit).await?
+                {
+                    return Ok(rejected(format!(
+                        "at most {limit} open children; archive one or wait for one to finish"
+                    )));
+                }
                 TurnEffect::Spawn {
                     intent,
                     brief: input.task,
@@ -178,6 +194,21 @@ impl AgentTool {
         Ok(ToolResult { value })
     }
 
+    /// Whether spawning `intent` keeps at most `limit` open children: those
+    /// open when the turn started plus this turn's recorded spawns. A spawn
+    /// already recorded (a replayed call) is within its own limit.
+    async fn within(&self, intent: &IntentId, limit: u32) -> Result<bool> {
+        let turn = &*self.turn;
+        let mut open = turn.children.clone();
+        for effect in turn.effects.recorded().await? {
+            if let TurnEffect::Spawn { intent, .. } = effect {
+                open.insert(TurnEffect::child(&turn.agent, &intent).map_err(agent)?);
+            }
+        }
+        let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
+        Ok(open.contains(&child) || open.len() < limit as usize)
+    }
+
     /// `agent` when this turn may reach it: an open child, or the parent too.
     fn recipient(&self, agent: String, parent: bool) -> Option<AgentPath> {
         let agent = AgentPath::try_from(agent).ok()?;
@@ -227,13 +258,15 @@ fn definition<T: JsonSchema>(name: &str, description: &str) -> Result<ToolDefini
 
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
 /// `effects` and its private `writer`, and selects them for the model over any
-/// other revision of the same names.
+/// other revision of the same names. `max_children` bounds the agent's open
+/// children; `spawn` refuses a child beyond it.
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
     effects: Arc<dyn TurnEffects>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
+    max_children: Option<u32>,
 ) -> Result<()> {
     let turn = Arc::new(Turn {
         agent: agent.path.clone(),
@@ -242,6 +275,8 @@ pub fn bind_agent_tools(
         effects,
         writer,
         maximum_bytes,
+        max_children,
+        spawning: futures::lock::Mutex::new(()),
     });
     for (name, definition) in [
         (

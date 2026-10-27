@@ -54,8 +54,6 @@ pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
 };
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use serialization::{json_digest_bounded, json_write_bounded};
 
 /// Fixed JSON input failures, distinct from exhausted work allowances.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

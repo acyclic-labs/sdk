@@ -54,9 +54,6 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    pub(crate) fn append(&mut self, other: Self) {
-        self.bindings.extend(other.bindings);
-    }
     /// Media type for normalized rules retained as a configuration file.
     pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.hooks+json";
 
@@ -64,17 +61,6 @@ impl Hooks {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
-    }
-
-    /// Whether any command fires at a site the stock execution loop owns.
-    pub(crate) fn has_execution_hooks(&self) -> bool {
-        self.bindings.iter().any(|binding| {
-            let execution = match binding.event.site() {
-                HookSite::Prompt => false,
-                HookSite::BeforeTool | HookSite::AfterTool | HookSite::TurnEnd => true,
-            };
-            execution && !binding.commands.is_empty()
-        })
     }
 
     /// Adds a Claude settings file or a Codex hooks.json document atomically.

@@ -61,12 +61,6 @@ impl ResourceRef {
         .checked_add(self.provider.logical_owned_bytes()?)
         .ok_or_else(|| invalid("resource ownership overflows"))
     }
-    pub(super) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let copy = crate::core::copy_resource(self, &mut quota)?;
-        quota.transfer();
-        Ok(copy)
-    }
 
     /// Creates a validated opaque reference without embedding credentials or endpoints.
     pub fn new(

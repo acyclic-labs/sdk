@@ -82,6 +82,10 @@ pub struct LocalHarness {
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
     context_manifest: Option<crate::conversation::FileRef>,
+    /// System prompt of every agent turn.
+    prompt: Option<String>,
+    /// Open children each agent may have at once.
+    max_children: Option<u32>,
     active_directory: String,
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]

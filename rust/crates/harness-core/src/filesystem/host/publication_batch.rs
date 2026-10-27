@@ -6,7 +6,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(super) async fn stage_publication_batch(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
-        publication: FilePublication<'_>,
         io: Option<&PreparationIo>,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<bool> {
@@ -56,68 +55,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
         }
-        let create_only = matches!(publication, FilePublication::CreateOnly);
         let result = if let Some(io) = io {
-            let (result, recorded) = Self::stage_file_batch(
-                transaction,
-                &directories,
-                &files,
-                create_only,
-                io,
-                cancellation,
+            io.sdk(
+                transaction
+                    .write_batch(&directories, &files, io, cancellation)
+                    .await,
             )
-            .await;
-            io.sdk((
-                result.map_err(|error| {
-                    if create_only {
-                        creation_error(error, Some(io))
-                    } else {
-                        error.into()
-                    }
-                }),
-                recorded,
-            ))
         } else {
-            Self::stage_file_batch(
-                transaction,
-                &directories,
-                &files,
-                create_only,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                if create_only {
-                    creation_error(failure.error, None)
-                } else {
-                    map_error(failure.error)
-                }
-            })
-            .map(|_| ())
+            transaction
+                .write_batch(
+                    &directories,
+                    &files,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| map_error(failure.error))
+                .map(|_| ())
         };
         drop((files, directories));
         drop(quota);
         result.map(|()| true)
-    }
-
-    async fn stage_file_batch<W: acyclic_fs::facade::FsWork>(
-        transaction: &mut acyclic_fs::Transaction<A, O>,
-        directories: &[&str],
-        files: &[(&str, acyclic_stream::OwnedBytes)],
-        create_only: bool,
-        work: W,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> W::Output<(), acyclic_fs::WorkspaceError> {
-        if create_only {
-            transaction
-                .create_batch(directories, files, work, cancellation)
-                .await
-        } else {
-            transaction
-                .write_batch(directories, files, work, cancellation)
-                .await
-        }
     }
 }
 
