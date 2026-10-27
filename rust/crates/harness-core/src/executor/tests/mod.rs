@@ -247,13 +247,16 @@ fn admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> 
     agent_context(scope, None)
 }
 
-/// Each admitted context owns its own agent harness.
-fn context_identity(context: &crate::runtime::TaskContext) -> usize {
-    Arc::as_ptr(&context.harness) as usize
+/// The agent's private volume survives context scoping and process restart.
+fn context_identity(context: &crate::runtime::TaskContext) -> Option<&crate::conversation::VolumeRef> {
+    context
+        .content_binding(None)
+        .and_then(|binding| binding.writer.as_ref())
+        .map(|writer| writer.volume())
 }
 
 struct ContextOnlyTool {
-    admission: usize,
+    admission: Option<crate::conversation::VolumeRef>,
     lost_response: fn() -> Error,
     calls: AtomicUsize,
     reconciles: AtomicUsize,
@@ -269,7 +272,7 @@ impl ToolExecutor for ContextOnlyTool {
             return Box::pin(async { Err(Error::Unsupported("original context required".into())) });
         };
         Box::pin(async move {
-            assert_eq!(context_identity(context.task()), self.admission);
+            assert_eq!(context_identity(context.task()), self.admission.as_ref());
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -286,7 +289,7 @@ impl ToolExecutor for ContextOnlyTool {
             return Box::pin(async { Err(Error::Unsupported("original context required".into())) });
         };
         Box::pin(async move {
-            assert_eq!(context_identity(context.task()), self.admission);
+            assert_eq!(context_identity(context.task()), self.admission.as_ref());
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
             self.reconciles.fetch_add(1, Ordering::SeqCst);

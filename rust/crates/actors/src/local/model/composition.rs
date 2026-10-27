@@ -401,7 +401,9 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
     let snapshot = store.load(&actor).await?;
     let mut competing = PreparedPublish::foreign(key("competing-child")?);
     competing.join(Effect {
-        conditions: Vec::new(),
+        conditions: vec![CommitCondition::Absent {
+            path: path("participant/child")?,
+        }],
         mutation: CommitMutation::Append {
             path: path("participant/child")?,
             records: vec![Bytes::from_static(b"other owner").into()],
