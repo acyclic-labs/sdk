@@ -33,7 +33,8 @@ export class EventAgentHost {
     };
     const providers = WasmAgentProviders.injected(stream, objects, true, options);
     try {
-      this.guest = AgentGuest.open(providers, options, owner, registry);
+      // This host holds `owner`'s custody: it is its tree's root.
+      this.guest = AgentGuest.open(providers, options, owner, registry, { kind: "root" });
       this.host = WasmAgents.openHostingEvent(providers, options, owner, this.guest.manifest(),
         (delivery: Uint8Array, signal: AbortSignal) => this.guest.onRecord(delivery, signal));
     } finally { providers.free(); stream.free(); }

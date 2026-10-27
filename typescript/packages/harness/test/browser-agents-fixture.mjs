@@ -32,7 +32,8 @@ export async function agentsFixture(id, reply, initialize = init) {
     // Host-injected storage, the guest artifact's entry over it, and a host
     // over the same storage whose turns run only through the guest.
     providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),
-    guest: providers => AgentGuest.open(providers, options, owner, registry),
+    // The fixture holds `owner`'s custody: its guest is the tree's root.
+    guest: providers => AgentGuest.open(providers, options, owner, registry, { kind: "root" }),
     hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
       (delivery, signal) => guest.onRecord(delivery, signal), (actor, error) => failures.push({ actor, error })),
     free: () => { registry.free(); owner.free(); } };
