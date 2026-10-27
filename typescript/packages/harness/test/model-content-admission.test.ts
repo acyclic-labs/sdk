@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
 import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
 import { validateModelContent, validateUserInput,
   type WasmFileRefWire } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -153,4 +154,101 @@ try { admitted = decodeClientJson(contracts.encodeCanonicalJson(contracts.valida
 catch { /* Rejecting an accessor is also safe. */ }
 if (admitted !== undefined) expect(admitted).toEqual({ unsafe: 1n });
 expect(reads).toBeLessThanOrEqual(1);
+});
+
+// Ported pure context oracles; Rust retains JSON maps and exact integers.
+test("generated skill parser and immutable projection share Rust validation and bounds", () => {
+  const provider = { namespace: "discovery", family: "filesystem", version: "2" };
+  const source: contracts.PinnedContextPath = {
+    root: { volume: { provider, id: "skills", class: "session_shared", owner: { kind: "session", id: "test" } }, directory: "" },
+    generation: { kind: "generation", provider, key: [1], version: "pinned" }, path: "inspect/SKILL.md",
+  };
+  const prefix = new TextEncoder().encode("---\r\nname: inspect\r\ndescription: >-\r\n  Inspect selected\r\n  files\r\nmetadata: {category: review}\r\n---\r\nSECRET BODY");
+  const skill = contracts.parseSkillMetadata(prefix, source);
+  expect(skill.description).toBe("Inspect selected files");
+  expect(contracts.encodeCanonicalJson(skill.fields)).toEqual(
+    contracts.encodeCanonicalJson({ metadata: { category: "review" } }));
+  expect(contracts.encodeCanonicalJson(skill.source)).toEqual(contracts.encodeCanonicalJson(source));
+  const snapshot = { instructions: [], skills: [skill] };
+  const base = { messages: [{ role: "user" as const, content: "inspect" }], metadata: {} };
+  const projected = contracts.projectDiscoveredContext(snapshot, base, "prepend", fixtureLimits);
+  expect(base.messages).toHaveLength(1);
+  expect(projected.messages).toHaveLength(2);
+  expect(JSON.stringify(projected)).toContain("Inspect selected files");
+  expect(JSON.stringify(projected)).not.toContain("SECRET BODY");
+  expect(() => contracts.projectDiscoveredContext(snapshot, base, "prepend", { ...fixtureLimits, render_bytes: 1 })).toThrow();
+  expect(() => contracts.projectDiscoveredContext({ ...snapshot, skills: [{ ...skill, name: "Invalid" }] }, base, "prepend", fixtureLimits)).toThrow();
+  expect(() => contracts.parseSkillMetadata(new TextEncoder().encode("---\nname: inspect\ndescription: &x hidden\nmetadata: *x\n---\n"), source)).toThrow();
+  expect(() => contracts.parseSkillMetadata(prefix, { ...source, path: ".system/private" })).toThrow();
+  const name = "a".repeat(128);
+  const description = "d".repeat(2048);
+  const payload = "x".repeat(70000);
+  const items = Array(3000).fill("0").join(",");
+  const admitted = contracts.parseSkillMetadata(new TextEncoder().encode(
+    `---\nname: ${name}\ndescription: ${description}\npayload: ${payload}\nitems: [${items}]\nnested: ${"[".repeat(32)}0${"]".repeat(32)}\n---\n`,
+  ), source);
+  expect(admitted.name).toBe(name);
+  expect(admitted.description).toBe(description);
+  const fields = decodeClientJson(contracts.encodeCanonicalJson(admitted.fields)) as Record<string, unknown>;
+  expect(fields.payload).toBe(payload);
+  expect(fields.items).toHaveLength(3000);
+  // The original case admits >70 KiB of metadata; this is a finite fixture bound.
+  expect(() => contracts.projectDiscoveredContext({ instructions: [], skills: [admitted] },
+    base, "prepend", { ...fixtureLimits, render_bytes: 131_072 })).not.toThrow();
+});
+test("generated context composition preserves existing file wires without reinterpreting metadata", async () => {
+  const reference = await file();
+  const part = { kind: "file" as const, file: reference, policy: "reference" as const };
+  const opaque = Object.fromEntries([["sha256", "note"], ["byte_length", 7n], ["media_type", "note"],
+    ["__proto__", { marker: "literal" }]]);
+  const base = { messages: [{ role: "user" as const, content: part },
+    { role: "user" as const, content: [{ kind: "text" as const, text: "attached" }, part] },
+    { role: "assistant" as const, content: { kind: "tool_call" as const, call_id: "call", name: "inspect", arguments: opaque } },
+    { role: "tool" as const, content: { kind: "tool_result" as const, call_id: "call", name: "inspect", content: { kind: "json" as const, value: opaque } } }],
+  metadata: Object.fromEntries([["attachment", reference], ["__proto__", reference]]) };
+  for (const placement of ["prepend", "append"] as const) {
+    const projections = [
+      contracts.projectDiscoveredContext({ instructions: [reference], skills: [] }, base, placement, fixtureLimits),
+      contracts.applyContextProjection(base, [{ role: "system", content: part }], "prompt", placement, fixtureLimits),
+    ];
+    for (const projected of projections) {
+      expect(projected.metadata).toEqual(base.metadata);
+      expect(Object.hasOwn(projected.metadata, "__proto__")).toBe(true);
+      const calls = projected.messages.filter(message => !Array.isArray(message.content)
+        && typeof message.content !== "string" && message.content.kind === "tool_call");
+      expect(contracts.encodeCanonicalJson(calls[0]?.content)).toEqual(contracts.encodeCanonicalJson(
+        { kind: "tool_call", call_id: "call", name: "inspect", arguments: opaque }));
+      const files = projected.messages.flatMap(message => {
+        const parts = typeof message.content === "string" ? []
+          : Array.isArray(message.content) ? message.content : [message.content];
+        return parts.flatMap(part => part.kind === "file" ? [part.file] : []);
+      });
+      expect(files).toHaveLength(3);
+      for (const file of files) expect(typeof file.descriptor.byte_length).toBe("number");
+      expect(() => contracts.prepareModelRequest({ model: { provider: "mock", name: "files", revision: "1", options: {} },
+        messages: projected.messages, tools: [{ name: "inspect", revision: "1", description: "Inspect files",
+          inputSchema: {}, outputSchema: {}, projectionSchema: contracts.jsonToolProjectionSchema({}) }], maxOutputTokens: 4096 }, fixtureLimits)).not.toThrow();
+    }
+  }
+});
+
+test("native and WASM request construction preserve exact Unicode and paired tool bytes", async () => {
+  const fixture = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-request.json", import.meta.url));
+  const wire = decodeClientJson(fixture) as unknown as contracts.ModelRequest;
+  const request = {
+    model: wire.model,
+    messages: wire.messages,
+    tools: wire.tools.map((tool) => ({
+      name: tool.name, revision: tool.revision, description: tool.description,
+      inputSchema: tool.input_schema, outputSchema: tool.output_schema, projectionSchema: tool.projection_schema,
+    })),
+    maxOutputTokens: wire.max_output_tokens,
+  };
+  const bytes = contracts.prepareModelRequest(request, fixtureLimits);
+  expect(bytes).toEqual(Uint8Array.from(fixture));
+  const prefix = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-prefix.json", import.meta.url));
+  expect(contracts.encodeModelPrefix(bytes, null, undefined, fixtureLimits)).toEqual(Uint8Array.from(prefix));
+  expect(() => contracts.prepareModelRequest({ ...request, maxOutputTokens: 0 }, fixtureLimits)).toThrow();
+  expect(() => contracts.prepareModelRequest({ ...request, messages: request.messages.slice(0, 2) }, fixtureLimits)).toThrow();
+  expect(() => contracts.prepareModelRequest({ ...request, tools: [...request.tools, ...request.tools] }, fixtureLimits)).toThrow();
 });
