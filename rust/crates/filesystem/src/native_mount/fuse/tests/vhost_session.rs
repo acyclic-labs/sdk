@@ -10,7 +10,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::UnixStream;
 use vhost::VhostBackend;
 use vhost::vhost_user::{Frontend, VhostUserFrontend, message::VhostUserConfigFlags};
-use vmm_sys_util::event::{EventFlag, new_event_consumer_and_notifier};
+use vmm_sys_util::eventfd::EventFd;
 
 #[test]
 fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
@@ -57,10 +57,8 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
             assert_eq!(u32::from_le_bytes(config[36..40].try_into()?), 1);
             frontend.set_owner()?;
             for index in 0..2 {
-                let (_consumer, call) =
-                    new_event_consumer_and_notifier(EventFlag::NONBLOCK | EventFlag::CLOEXEC)?;
-                let (_consumer, error) =
-                    new_event_consumer_and_notifier(EventFlag::NONBLOCK | EventFlag::CLOEXEC)?;
+                let call = EventFd::new(libc::EFD_NONBLOCK | libc::EFD_CLOEXEC)?;
+                let error = EventFd::new(libc::EFD_NONBLOCK | libc::EFD_CLOEXEC)?;
                 frontend.set_vring_call(index, &call)?;
                 frontend.set_vring_err(index, &error)?;
             }
