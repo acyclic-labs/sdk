@@ -9,6 +9,11 @@ use bytes::Bytes;
 use prost::Message as _;
 use std::borrow::Cow;
 
+/// The actor every [`AgentBinding::discovery`] invocation names.
+const DISCOVERY_ACTOR: &str = "agents";
+/// The routing URL of a discovery invocation.
+const DISCOVERY_URL: &str = "/agents/bind";
+
 /// Pure protocol admission used by both the client and the owning host. The
 /// authenticated session supplies authority separately; no field here grants it.
 fn decode_invocation(encoded: &[u8]) -> Result<wire::InvokeActorRequest, CommandError> {
@@ -82,9 +87,59 @@ impl AgentCall {
 /// A host-published canonical Actors address and dispatch metadata. It contains
 /// no command body or reusable per-invocation ordering sequence. Authentication
 /// remains the session credential, not this routing value.
+#[derive(Clone)]
 pub struct AgentBinding(wire::InvokeActorRequest);
 
 impl AgentBinding {
+    /// The routing every endpoint answers [`AgentCommand::Bind`] on: no
+    /// account, namespace or tree, only the session's credential.
+    #[must_use]
+    pub fn discovery() -> Self {
+        Self(wire::InvokeActorRequest {
+            actor_id: DISCOVERY_ACTOR.into(),
+            method: "POST".into(),
+            url: DISCOVERY_URL.into(),
+            ..Default::default()
+        })
+    }
+
+    /// Whether `invocation` is routed as [`Self::discovery`].
+    #[must_use]
+    pub fn is_discovery(invocation: &wire::InvokeActorRequest) -> bool {
+        invocation.actor_id == DISCOVERY_ACTOR
+            && invocation.namespace.is_none()
+            && invocation.account_id.is_empty()
+    }
+
+    /// The binding a [`crate::AgentReply::Bound`] reply carries, and the
+    /// resource announcing the root's tool output.
+    ///
+    /// # Errors
+    /// When the reply is not a binding, or its bytes are not one.
+    pub fn from_reply(reply: &crate::AgentReply) -> Result<(Self, String), CommandError> {
+        use base64::Engine as _;
+        let crate::AgentReply::Bound { binding, tools } = reply else {
+            return Err(CommandError::Invalid);
+        };
+        let binding = Self::new(
+            &base64::engine::general_purpose::STANDARD
+                .decode(binding)
+                .map_err(|_| CommandError::Invalid)?,
+        )?;
+        Ok((binding, tools.clone()))
+    }
+
+    /// The [`crate::AgentReply::Bound`] reply naming `binding` and the root's
+    /// tool-output resource `tools`.
+    #[must_use]
+    pub fn reply(binding: &wire::InvokeActorRequest, tools: String) -> crate::AgentReply {
+        use base64::Engine as _;
+        crate::AgentReply::Bound {
+            binding: base64::engine::general_purpose::STANDARD.encode(binding.encode_to_vec()),
+            tools,
+        }
+    }
+
     /// Admit bounded canonical host metadata before retaining it. The host uses
     /// the same binding for local, Actors and managed deployments.
     pub fn new(encoded: &[u8]) -> Result<Self, CommandError> {
@@ -132,6 +187,7 @@ impl AgentBinding {
 
 /// Controls use the very same pool and credential as the selected agent fold.
 /// Cloning the pool handle creates no connection, task, queue or result index.
+#[derive(Clone)]
 pub struct AgentControls {
     client: Client,
     credential: u32,

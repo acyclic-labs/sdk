@@ -1,26 +1,22 @@
-//! One agent observed as its local user: its status, its settled turns and
-//! its newest tool call's output, on one [`AgentClient`] over the harness's
-//! in-process session and one derived credential.
+//! The root of one agent tree observed through its connection: its status,
+//! its settled turns and its newest tool call's output, on one
+//! [`AgentClient`] over the connection's session and credential.
 use super::{
-    LocalHarness, storage,
+    AgentFailure, Connection,
+    agent_conversation::Conversation,
+    storage,
     tool_output::{CHUNK_BYTES, OutputTail},
 };
 use crate::{
-    Error, Result,
+    Result,
     agent::{AgentPath, ConversationEntry, StatusRecord},
-    conversation::{ContentAccess, ContentResidencyVerifier, VolumeRef},
-    filesystem::{FilesystemContentVerifier, TOOL_OUTPUT, TurnAdmission, agent_authority},
 };
 use acyclic_actors::addressing::ActorReference;
 use acyclic_harness_client::{
-    AgentClient, AgentClientError, AgentEvent, AgentSelection, WireSessionError,
+    AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget, WireSessionError,
 };
-use acyclic_stream::{StreamError, StreamPath, StreamProvider as _, session::Client, wire};
-use std::sync::Arc;
+use acyclic_stream::{StreamError, StreamPath, wire};
 use tokio::sync::broadcast;
-
-/// The observer's one credential slot: conversation, status and tool output.
-const CREDENTIAL: u32 = 0;
 
 /// What an observer sees, in commit order per stream.
 pub enum Event {
@@ -40,6 +36,7 @@ pub enum Event {
 /// from ends it.
 pub struct Observer {
     client: AgentClient,
+    connection: Connection,
     agent: AgentPath,
     conversation: StreamPath,
     status: StreamPath,
@@ -50,84 +47,26 @@ pub struct Observer {
     /// The conversation stream does not exist yet: the step that creates it
     /// also appends a status, so it reopens after the next status.
     missing: bool,
-    failures: Option<broadcast::Receiver<super::AgentFailure>>,
-    actor: ActorReference,
-    reader: Arc<dyn ContentResidencyVerifier>,
-    volume: VolumeRef,
+    failures: Option<(broadcast::Receiver<AgentFailure>, ActorReference)>,
     tail: OutputTail,
-    #[cfg(test)]
-    pub(super) scope: crate::core::Scope,
 }
 
-impl LocalHarness {
-    /// Observes `agent` from conversation sequence `from` and its latest
-    /// status on, under a credential derived from its own scope and bound to
-    /// its audience.
-    ///
-    /// # Errors
-    /// Fails for an embedded harness, an unknown agent, or a scope that does
-    /// not grant reading its tool output.
-    pub async fn observe(self: &Arc<Self>, agent: &AgentPath, from: u64) -> Result<Observer> {
-        let (agents, _) = self.agents().await?;
-        let state = agents.state(agent).await.map_err(storage)?;
-        let actor = agents.actor(agent).map_err(storage)?;
-        let failures = Some(
-            self.agent_failures()
-                .ok_or_else(|| Error::Conflict("agents are not hosted".into()))?,
-        );
-        let issuer = self.root_authority.as_ref().ok_or_else(|| {
-            Error::Unsupported("an embedded harness has no agent signing custody".into())
-        })?;
-        let stream = self
-            .agent_stream
-            .clone()
-            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
-        let authority = agent_authority(
-            issuer,
-            &TurnAdmission::LocalRoot,
-            &state.path,
-            &state.volumes,
-            &[],
-        )?;
-        let observation = self
-            .files
-            .agent_observation(
-                &authority,
-                &state.path,
-                &authority.private.volume,
-                Arc::clone(&self.clock),
-            )
-            .await?;
-        let changes = self.files.change_provider(Arc::clone(&stream))?;
-        let reader = FilesystemContentVerifier::new(
-            Arc::clone(&self.files),
-            &authority.verifier,
-            &authority.scope,
-            self.limits.file_bytes,
-            None,
-        )?;
-        let status = agent.status().map_err(storage)?;
-        let latest = stream.tail(status.clone()).await.map_err(storage)?;
-        let session = Client::in_process_with_resources(
-            stream,
-            observation.authority,
-            Arc::new(changes),
-            Arc::new(acyclic_stream::runtime::PlatformExecutor),
-        );
-        session
-            .register_credential(CREDENTIAL, observation.credential.into())
+impl Observer {
+    /// Observes `connection`'s root from conversation sequence `from` and
+    /// status sequence `status_from` on.
+    pub(super) fn open(connection: &Connection, from: u64, status_from: u64) -> Result<Self> {
+        let agent = connection.root().clone();
+        let mut client = connection
+            .controls
+            .observe(AgentSelection {
+                agent: agent.clone(),
+                conversation_from: from,
+                status_from,
+            })
             .map_err(storage)?;
-        let mut client = AgentClient::new(
-            session,
-            agent.clone(),
-            from,
-            latest.saturating_sub(1),
-            CREDENTIAL,
-        )
-        .map_err(storage)?;
         client
             .open_resource(wire::SessionSubscription {
-                credential: CREDENTIAL,
+                credential: super::endpoint::CREDENTIAL,
                 filter: None,
                 channel: None,
                 resume: Some(wire::SessionCursor {
@@ -136,33 +75,30 @@ impl LocalHarness {
                 }),
                 kind: Some(wire::session_subscription::Kind::Follow(
                     wire::SessionFollow {
-                        resource: observation.resource.clone(),
+                        resource: connection.tools.clone(),
                         delivery: wire::SessionDelivery::All as i32,
                         ..Default::default()
                     },
                 )),
             })
             .map_err(storage)?;
-        Ok(Observer {
+        Ok(Self {
             client,
-            agent: agent.clone(),
             conversation: agent.conversation().map_err(storage)?,
-            status,
-            resource: observation.resource,
+            status: agent.status().map_err(storage)?,
+            resource: connection.tools.clone(),
             next_turn: from,
             missing: false,
-            failures,
-            actor,
-            reader,
-            volume: authority.private.volume.clone(),
+            failures: connection
+                .failures
+                .as_ref()
+                .map(|failures| (failures.sender.subscribe(), failures.actor.clone())),
             tail: OutputTail::default(),
-            #[cfg(test)]
-            scope: authority.scope.clone(),
+            connection: connection.clone(),
+            agent,
         })
     }
-}
 
-impl Observer {
     /// The next event; cancel-safe.
     ///
     /// # Errors
@@ -175,7 +111,7 @@ impl Observer {
                 } = &mut *self;
                 let failure = async {
                     match failures.as_mut() {
-                        Some(failures) => failures.recv().await,
+                        Some((failures, _)) => failures.recv().await,
                         None => futures::future::pending().await,
                     }
                 };
@@ -186,7 +122,12 @@ impl Observer {
             };
             let event = match next {
                 Ok(event) => event,
-                Err(Ok(failure)) if failure.actor == self.actor => {
+                Err(Ok(failure))
+                    if self
+                        .failures
+                        .as_ref()
+                        .is_some_and(|(_, actor)| failure.actor == *actor) =>
+                {
                     return Ok(Event::Failed(failure.error));
                 }
                 Err(Ok(_) | Err(broadcast::error::RecvError::Lagged(_))) => continue,
@@ -277,18 +218,15 @@ impl Observer {
         };
         let mut bytes = Vec::with_capacity(plan.reads.len());
         for (path, _) in &plan.reads {
-            let (_, read, _) = self
-                .reader
-                .read_private_path(
-                    &self.volume,
-                    TOOL_OUTPUT,
-                    path,
-                    None,
+            bytes.push(
+                Conversation::read(
+                    &self.connection,
+                    &self.agent,
+                    ReadTarget::ToolOutput { path: path.clone() },
                     CHUNK_BYTES as u64,
-                    ContentAccess::default(),
-                )?
-                .await?;
-            bytes.push(read.to_vec());
+                )
+                .await?,
+            );
         }
         self.tail.apply(plan, bytes);
         Ok(())

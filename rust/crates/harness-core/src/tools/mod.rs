@@ -2,7 +2,7 @@
 mod agents;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
-    SpawnAgentInput, bind_agent_tools,
+    SpawnAgentInput, bind_agent_tools, definitions as agent_tool_definitions,
 };
 pub mod shell;
 pub use shell::ShellInput;

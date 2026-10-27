@@ -39,10 +39,22 @@ impl std::fmt::Display for ConnectionConfigError {
 
 impl std::error::Error for ConnectionConfigError {}
 
+/// How a validated endpoint is reached.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EndpointTransport {
+    /// HTTPS: every managed and remote endpoint.
+    Tls,
+    /// Plain HTTP to a loopback address on this machine, such as a
+    /// self-hosted server under test. Only an explicit `http://` URL whose
+    /// host is a loopback IP literal or `localhost` selects it.
+    Loopback,
+}
+
 /// Validated connection inputs. This value does not assert that the endpoint is
 /// reachable, bootstrap a capability or create/configure an agent.
 pub struct ConnectionOptions {
     endpoint: String,
+    transport: EndpointTransport,
     credential: String,
 }
 
@@ -60,6 +72,11 @@ impl ConnectionOptions {
     #[must_use]
     pub fn endpoint(&self) -> &str {
         &self.endpoint
+    }
+    /// How the endpoint is reached.
+    #[must_use]
+    pub const fn transport(&self) -> EndpointTransport {
+        self.transport
     }
     /// Original admitted account credential, without conversion or issuance.
     #[must_use]
@@ -120,8 +137,12 @@ pub fn resolve_connection_options(
         return Err(ConnectionConfigError::InvalidEndpoint);
     }
     let parsed = url::Url::parse(endpoint).map_err(|_| ConnectionConfigError::InvalidEndpoint)?;
-    if parsed.scheme() != "https"
-        || parsed.host_str().is_none()
+    let transport = match parsed.scheme() {
+        "https" => EndpointTransport::Tls,
+        "http" if loopback(&parsed) => EndpointTransport::Loopback,
+        _ => return Err(ConnectionConfigError::InvalidEndpoint),
+    };
+    if parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.query().is_some()
@@ -137,8 +158,19 @@ pub fn resolve_connection_options(
     }
     Ok(ConnectionOptions {
         endpoint: parsed.as_str().trim_end_matches('/').to_owned(),
+        transport,
         credential: credential.to_owned(),
     })
+}
+
+/// Whether `url` names this machine only: a loopback IP literal or `localhost`.
+fn loopback(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -164,8 +196,24 @@ mod tests {
             resolve_connection_options(None, Some("key"), None, None)?.endpoint(),
             DEFAULT_ENDPOINT
         );
+        for (endpoint, transport) in [
+            ("http://127.0.0.1:7443", EndpointTransport::Loopback),
+            ("http://[::1]:7443", EndpointTransport::Loopback),
+            ("http://localhost:7443", EndpointTransport::Loopback),
+            ("https://127.0.0.1:7443", EndpointTransport::Tls),
+        ] {
+            assert_eq!(
+                resolve_connection_options(Some(endpoint), Some("key"), None, None)?.transport(),
+                transport,
+                "{endpoint}"
+            );
+        }
+        assert_eq!(explicit.transport(), EndpointTransport::Tls);
         for endpoint in [
-            "http://localhost",
+            "http://example.com",
+            "http://10.0.0.1",
+            "http://localhost.example.com",
+            "unix:/tmp/socket",
             "not a URL",
             "",
             "https://",

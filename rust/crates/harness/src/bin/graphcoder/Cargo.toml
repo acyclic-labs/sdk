@@ -13,7 +13,7 @@ name = "graphcoder"
 path = "../graphcoder.rs"
 
 [dependencies]
-acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 acyclic-native-runtime = { path = "../../../../native-runtime" }
 acyclic-stream = { path = "../../../../stream", default-features = false }
@@ -21,7 +21,7 @@ clap.workspace = true
 dirs.workspace = true
 futures.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "signal", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "net", "signal", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

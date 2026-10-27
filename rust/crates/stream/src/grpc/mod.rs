@@ -161,6 +161,34 @@ impl Client {
         Self::connect_tls(endpoint.as_ref(), bearer_token.as_ref(), Some(pem)).await
     }
 
+    /// Connects eagerly over plain HTTP/2 to a loopback endpoint on this
+    /// machine, such as a self-hosted server under test. Only an `http://`
+    /// URL whose host is a loopback IP literal or `localhost` is admitted;
+    /// every other endpoint needs TLS.
+    pub async fn connect_loopback(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, ConnectError> {
+        let authorization = authorization(bearer_token.as_ref())?;
+        let endpoint =
+            Endpoint::from_shared(endpoint.as_ref().to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+        let uri = endpoint.uri();
+        let loopback = uri.host().is_some_and(|host| {
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        });
+        if uri.scheme_str() != Some("http") || !loopback {
+            return Err(ConnectError::InsecureEndpoint);
+        }
+        Ok(Self::from_channel(
+            endpoint.tcp_nodelay(true).connect().await?,
+            authorization,
+        ))
+    }
+
     async fn connect_tls(
         endpoint: &str,
         bearer_token: &str,

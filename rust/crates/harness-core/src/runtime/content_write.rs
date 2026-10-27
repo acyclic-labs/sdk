@@ -345,9 +345,7 @@ fn authorize_volume_write(
     scope: &RuntimeScope,
     io: Option<&ContentIo>,
 ) -> Result<()> {
-    if !crate::executor::with_history_io(io, |work| {
-        crate::core::volume_write_granted_with_work(&scope.grants, volume, work)
-    })? {
+    if !can_write_volume(volume, scope, io)? {
         return Err(content_error(
             io,
             ErrorCode::Unauthorized,
@@ -357,18 +355,16 @@ fn authorize_volume_write(
     Ok(())
 }
 
+/// Whether `scope` admits writing `volume`: its exact grant, or a structured
+/// filesystem grant whose owner decides the path. The one check every writer
+/// makes, so a summary destination and a publication never disagree.
 fn can_write_volume(
     volume: &VolumeRef,
     scope: &RuntimeScope,
     io: Option<&ContentIo>,
 ) -> Result<bool> {
     crate::executor::with_history_io(io, |work| {
-        contains_content_grant_with_work(
-            &scope.grants,
-            volume,
-            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
-            work,
-        )
+        crate::core::volume_write_granted_with_work(&scope.grants, volume, work)
     })
 }
 

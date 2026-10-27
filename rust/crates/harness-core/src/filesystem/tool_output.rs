@@ -21,11 +21,16 @@ pub struct AgentObservation {
     pub credential: Vec<u8>,
     /// Session authority admitting `credential` under the agent's audience.
     pub authority: Arc<Authority>,
+    /// The principal `credential` authenticates: who its commands, such as
+    /// approval decisions, are recorded as.
+    pub principal: String,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
     /// Derives an [`AgentObservation`] of `agent`, whose private volume is
-    /// `volume`, from `authority`'s scope at `clock`'s time.
+    /// `volume`, from `authority`'s scope at `clock`'s time. With `calls`, the
+    /// credential also invokes that actor resource: the hosting server of
+    /// `agent`'s tree, so one credential drives and observes it.
     ///
     /// # Errors
     /// Fails unless that scope is `agent`'s and already grants listing and
@@ -37,6 +42,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         agent: &crate::agent::AgentPath,
         volume: &VolumeRef,
         clock: Arc<dyn UnixMillisClock>,
+        calls: Option<&str>,
     ) -> Result<AgentObservation> {
         if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id().to_bytes())) {
             return Err(Error::Unauthorized(
@@ -96,13 +102,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
         let follow: &[&str] = &["streams/follow"];
         let read: &[&str] = &["fs/list", "fs/read"];
-        let credential = authority.issuer.resource_credential(
+        let invoke: &[&str] = &["actors/invoke"];
+        let mut grants = vec![
+            (conversation.as_str(), false, follow),
+            (status.as_str(), false, follow),
+            (resource.as_str(), true, read),
+        ];
+        if let Some(calls) = calls {
+            grants.push((calls, false, invoke));
+        }
+        let (credential, principal) = authority.issuer.resource_credential(
             &authority.scope,
-            &[
-                (conversation.as_str(), false, follow),
-                (status.as_str(), false, follow),
-                (resource.as_str(), true, read),
-            ],
+            &grants,
             seconds(clock.as_ref()),
         )?;
         let session = Authority::new(
@@ -119,7 +130,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             resource,
             credential,
             authority: Arc::new(session),
+            principal,
         })
+    }
+
+    /// The `fs:/` resource of [`TOOL_OUTPUT`] on `volume`.
+    ///
+    /// # Errors
+    /// When the volume cannot be opened.
+    pub async fn tool_resource(&self, volume: &VolumeRef) -> Result<String> {
+        let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
+        let workspace = self.open(&reference, None).await?;
+        acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
+            .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))
     }
 
     /// Serves change follows of this host's volumes over `streams`, the

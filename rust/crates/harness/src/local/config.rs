@@ -51,6 +51,8 @@ pub struct LocalHarnessConfig {
     pub(super) prompt: Option<String>,
     /// Open children each agent may have at once.
     pub(super) max_children: Option<u32>,
+    /// Hosts the agents for [`crate::server::serve`].
+    pub(super) served: bool,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
     pub(super) approval_issuer: Option<AuthorityRoot>,
     pub(super) approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
@@ -120,6 +122,7 @@ impl LocalHarnessConfig {
             default_tools: crate::tools::default_names(),
             prompt: None,
             max_children: None,
+            served: false,
             approval_policy: Default::default(),
             approval_issuer: None,
             approval_models: Default::default(),
@@ -273,6 +276,15 @@ impl LocalHarnessConfig {
         model: (Model, Arc<dyn ModelProvider>),
     ) -> Self {
         self.approval_models.insert(selection.into(), model);
+        self
+    }
+    /// Hosts the agent tree as a self-hosted endpoint does: admitted under
+    /// this harness's own owner scope, exactly as a managed host admits its
+    /// verified caller, instead of as the tree's root custody.
+    #[must_use]
+    #[cfg(feature = "serve")]
+    pub(crate) const fn served(mut self) -> Self {
+        self.served = true;
         self
     }
     /// Applies `preset`'s prompt, tool selection, limits and approval policy. Its model is

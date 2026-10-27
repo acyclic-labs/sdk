@@ -9,16 +9,17 @@ publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
 [features]
-agents = ["session", "dep:acyclic-harness-core", "dep:acyclic-actors", "dep:serde", "dep:serde_json", "dep:thiserror"]
+agents = ["session", "dep:acyclic-harness-core", "dep:acyclic-actors", "dep:base64", "dep:serde", "dep:serde_json", "dep:thiserror"]
 grpc = ["agents", "acyclic-stream/grpc"]
 session = ["acyclic-stream/session", "dep:prost"]
-wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
+wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:base64", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-actors = { version = "=0.2.0", path = "../actors", optional = true }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+base64 = { version = "=0.22.1", optional = true }
 bytes.workspace = true
 futures.workspace = true
 prost = { workspace = true, optional = true }

@@ -3,6 +3,7 @@
 
 use acyclic_harness_core::{
     agent::{AgentPath, IntentId},
+    conversation::FileRef,
     interaction::ApprovalBinding,
     model::ModelContent,
 };
@@ -11,6 +12,11 @@ use std::io::Write;
 
 /// Finite encoded command budget, before decoding or starting any host work.
 pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
+/// Most bytes one [`AgentCommand::Read`] returns; its encoded reply stays
+/// within the reply budget.
+pub const MAX_READ_BYTES: u64 = 32 * 1024;
+/// Longest tool-output path a read names.
+const MAX_READ_PATH_BYTES: usize = 1024;
 const MAX_CURSOR_BYTES: usize = 4096;
 
 /// Requested page custody. Both ceilings are enforced by the host before it
@@ -112,6 +118,9 @@ impl<'de> Deserialize<'de> for AgentPageRequest {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    /// Discover the binding of the tree this endpoint serves the session's
+    /// credential, sent with [`crate::AgentBinding::discovery`].
+    Bind,
     /// Discover the root admitted by this session's credential.
     Root,
     /// Stage canonical user input and send one message with caller-owned intent.
@@ -190,6 +199,42 @@ pub enum AgentCommand {
         /// Inbox sequence `Delivered::Committed` returned for the message.
         inbox: u64,
     },
+    /// How far `agent` has settled: its settled turns, published statuses
+    /// and current phase.
+    Settlement {
+        /// Agent whose conversation is read.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+    },
+    /// Read one bounded range of a file the agent's turns produced, through
+    /// the host's authorized reader of that agent's volumes.
+    Read {
+        /// Agent whose volumes hold the file.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// What to read.
+        target: ReadTarget,
+        /// First byte of the range; the host returns at most [`MAX_READ_BYTES`].
+        offset: u64,
+    },
+}
+
+/// A file an agent's turns produced, as a frontend names it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadTarget {
+    /// An exact file: a settled turn's staged input or output.
+    File {
+        /// The immutable reference its record carries.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+        file: FileRef,
+    },
+    /// One chunk of the agent's tool output, as its change records name it.
+    ToolOutput {
+        /// Path below the agent's tool-output directory.
+        path: String,
+    },
 }
 
 impl AgentCommand {
@@ -199,6 +244,17 @@ impl AgentCommand {
                 .validate_user_input(&mut None)
                 .map_err(|_| CommandError::Invalid),
             Self::Decide { binding, .. } => binding.validate().map_err(|_| CommandError::Invalid),
+            Self::Read {
+                target: ReadTarget::ToolOutput { path },
+                ..
+            } if path.is_empty()
+                || path.len() > MAX_READ_PATH_BYTES
+                || path
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..") =>
+            {
+                Err(CommandError::Invalid)
+            }
             _ => Ok(()),
         }
     }

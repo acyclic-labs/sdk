@@ -14,11 +14,11 @@ mod view;
 
 use acyclic_harness::{
     OperationId,
-    local::{LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
+    local::{Connection, LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
     preset::Preset,
 };
 use acyclic_harness_providers::{Credentials, Registry};
-use args::{Args, InputFormat};
+use args::{Args, Command, InputFormat};
 use clap::Parser;
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, process::ExitCode, sync::Arc};
@@ -58,13 +58,13 @@ fn main() -> ExitCode {
     }
 }
 
-/// The `GraphCoder` preset with argv's overrides on the local harness, its
+/// The `GraphCoder` preset with argv's overrides for the local harness, its
 /// models resolved by the provider registry and its catalog, under the
 /// workspace's native settings and search.
-async fn open(
+fn configure(
     args: &Args,
     credentials: Credentials,
-) -> Result<Arc<LocalHarness>, Box<dyn std::error::Error>> {
+) -> Result<LocalHarnessConfig, Box<dyn std::error::Error>> {
     let mut registry = Registry::new(credentials)?;
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
@@ -109,8 +109,7 @@ async fn open(
         let provider = Arc::new(registry.resolve(model)?);
         config = config.approval_model(model, (provider.model().clone(), provider));
     }
-    config = config.settings(settings).preset(&preset);
-    Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
+    Ok(config.settings(settings).preset(&preset))
 }
 
 // Own native phase futures separately from the CLI orchestration frame.
@@ -138,17 +137,66 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .await?;
         return Ok(0);
     }
+    // An endpoint serves the agent tree: nothing of this machine's harness
+    // is opened.
+    if let Some(endpoint) = &args.endpoint {
+        let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
+        return drive(&args, Conversation::open(connection)?).await;
+    }
     let credentials = args
         .credentials
         .as_deref()
         .map(Credentials::from_file)
         .transpose()?
         .unwrap_or_default();
-    let local = phase(|| open(&args, credentials)).await?;
+    let config = configure(&args, credentials)?;
+    if let Some(Command::Serve(serve)) = &args.command {
+        if args.prompt.is_some() || args.endpoint.is_some() || args.host_workspace {
+            return Err("serve takes no prompt, endpoint or host workspace".into());
+        }
+        let tls = match (&serve.tls_certificate, &serve.tls_key) {
+            (Some(certificate), Some(key)) => Some(acyclic_harness::server::TlsIdentity {
+                certificate: std::fs::read(certificate)?,
+                key: std::fs::read(key)?,
+            }),
+            _ => None,
+        };
+        let listener = tokio::net::TcpListener::bind(serve.address).await?;
+        phase(|| {
+            acyclic_harness::server::serve(
+                listener,
+                acyclic_harness::server::ServerConfig {
+                    harness: config,
+                    tls,
+                },
+                |endpoint| {
+                    use std::io::Write as _;
+                    let mut output = std::io::stdout().lock();
+                    let _ = serde_json::to_writer(&mut output, endpoint);
+                    let _ = writeln!(output);
+                    let _ = output.flush();
+                },
+                async {
+                    let _ = workspace_shutdown().await;
+                },
+            )
+        })
+        .await?;
+        return Ok(0);
+    }
+    let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
+    let connection = phase(|| local.connect()).await?;
+    drive(&args, Conversation::open(connection)?).await
+}
+
+/// Drives `conversation` headless (`-p`, JSONL) or through the terminal view.
+async fn drive(
+    args: &Args,
+    conversation: Arc<Conversation>,
+) -> Result<u8, Box<dyn std::error::Error>> {
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
-    let conversation = phase(|| Conversation::open(local)).await?;
     let operation = args
         .operation
         .clone()

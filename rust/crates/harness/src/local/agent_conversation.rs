@@ -1,25 +1,28 @@
-//! A typed client for the local harness's root agent conversation, which fans
-//! out through its spawn, send and archive tools. Prompts, cancels and
-//! approval decisions are inbox commits; observation is one [`super::Observer`]
-//! of its status, its settled conversation entries and its tool output. Frontends render
-//! its events; it holds no frontend state.
+//! A typed client for one agent tree's root conversation, which fans out
+//! through its spawn, send and archive tools. Prompts, cancels and approval
+//! decisions are commands on the tree's [`super::Connection`], in process or
+//! remote alike; observation is one [`super::Observer`] of its status, its
+//! settled conversation entries and its tool output. Frontends render its
+//! events; it holds no frontend state.
+use super::Connection;
 use crate::{
-    Error, LocalHarness, Result,
+    Error, Result,
     agent::{
-        AgentPath, Control, ConversationEntry, Delivered, InboxRecord, IntentId, Phase, Reply,
-        Sender, StatusRecord, TurnInput,
+        AgentPath, ConversationEntry, Delivered, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
-    approvals::{ApprovalPolicy, ApprovalResponder, Approver},
-    conversation::{ContentResidencyVerifier, FileRef},
+    conversation::FileRef,
     executor::TurnOutput,
+    interaction::{ApprovalBinding, Interaction},
+    model::ModelContent,
 };
-use acyclic_stream::{StreamError, StreamProvider as _};
-use std::sync::Arc;
+use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 /// Bytes read back from one staged prompt or turn output.
 const MAXIMUM_TEXT: u64 = 16 * 1024 * 1024;
-/// The local user's principal when the agent's policy names no human.
-const USER: &str = "local";
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -29,59 +32,54 @@ fn intent(id: &str) -> Result<IntentId> {
     IntentId::try_from(id).map_err(failed)
 }
 
-/// One local agent's conversation, observed and driven as its local user.
+fn unexpected() -> Error {
+    Error::Conflict("the endpoint answered another command".into())
+}
+
+/// One agent tree's root conversation, driven by its connection's principal.
 pub struct Conversation {
-    local: Arc<LocalHarness>,
-    agent: AgentPath,
-    reader: Arc<dyn ContentResidencyVerifier>,
-    /// The human principals of the agent's policy: the terminal user is each.
-    humans: Vec<String>,
+    connection: Connection,
+    /// The binding each decision was sent with: a retried decision, its
+    /// reply lost after the agent resumed, is sent again exactly, though the
+    /// request is no longer pending.
+    decided: Mutex<HashMap<IntentId, ApprovalBinding>>,
 }
 
 impl Conversation {
-    /// The root agent of `local`, created on first use and reopened after.
+    /// The conversation of `connection`'s root.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
-    pub async fn open(local: Arc<LocalHarness>) -> Result<Arc<Self>> {
-        let (agents, agent) = local.agents().await?;
-        let agent = agent.clone();
-        let reader = local.client_reader()?;
-        let mut humans = Vec::new();
-        if let Some(policy) = agents.state(&agent).await.map_err(failed)?.policy {
-            let bytes = reader.read(&policy, MAXIMUM_TEXT, None, None)?.await?;
-            let policy: ApprovalPolicy = serde_json::from_slice(&bytes).map_err(failed)?;
-            for approver in policy.approvers {
-                if let Approver::Human { principal } = approver
-                    && !humans.contains(&principal)
-                {
-                    humans.push(principal);
-                }
-            }
-        }
-        if humans.is_empty() {
-            humans.push(USER.into());
-        }
+    /// Never today; kept fallible for the endpoint handshake.
+    pub fn open(connection: Connection) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
-            local,
-            agent,
-            reader,
-            humans,
+            connection,
+            decided: Mutex::new(HashMap::new()),
         }))
+    }
+
+    fn agent(&self) -> &AgentPath {
+        self.connection.root()
+    }
+
+    async fn delivered(&self, command: &AgentCommand) -> Result<Delivered> {
+        match self.connection.execute(command).await? {
+            AgentReply::Delivered { delivery } => Ok(delivery),
+            _ => Err(unexpected()),
+        }
     }
 
     /// Send `prompt` as message `id`; returns its inbox sequence. The same id
     /// and prompt replay exactly.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// Session, host or decoding failures.
     pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
-        match self
-            .local
-            .prompt(&intent(id)?, prompt)
-            .await
-            .map_err(failed)?
-        {
+        let command = AgentCommand::Prompt {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+            body: ModelContent::Text(prompt.to_owned()),
+        };
+        match self.delivered(&command).await? {
             Delivered::Committed { inbox } => {
                 tracing::debug!(id, inbox, "message committed");
                 Ok(inbox)
@@ -93,71 +91,120 @@ impl Conversation {
     /// Stop the running turn; the conversation stays open.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// Session, host or decoding failures.
     pub async fn cancel(&self) -> Result<()> {
-        let (agents, _) = self.local.agents().await?;
-        let by = Sender::User {
-            principal: USER.into(),
+        let command = AgentCommand::Cancel {
+            agent: self.agent().clone(),
+            id: intent(&crate::OperationId::new().to_string())?,
         };
-        let id = intent(&crate::OperationId::new().to_string())?;
-        agents
-            .send(
-                &self.agent,
-                &by,
-                &InboxRecord::Cancel(Control { by: by.clone(), id }),
-            )
-            .await
-            .map_err(failed)?;
-        Ok(())
+        self.delivered(&command).await.map(drop)
     }
 
-    /// Answer the agent's pending approval request as the local user, who
-    /// holds every human stage of the policy: the active stage accepts one.
+    /// Answer the agent's pending approval request `request`, bound to the
+    /// exact action it shows, as this connection's principal.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// When `request` is not pending, or session, host or decoding failures.
     pub async fn decide(&self, request: &IntentId, approved: bool) -> Result<()> {
-        let mut refused = None;
-        for human in &self.humans {
-            match self
-                .local
-                .decide(
-                    &self.agent,
-                    request,
-                    ApprovalResponder::Human(human),
-                    approved,
-                    None,
-                )
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(crate::agent::Error::Turn(error))
-                    if matches!(*error, Error::Unauthorized(_)) =>
-                {
-                    refused = Some(error);
-                }
-                Err(error) => return Err(failed(error)),
+        let sent = self.decided().get(request).cloned();
+        let binding = match sent {
+            Some(binding) => binding,
+            None => self.pending_binding(request).await?,
+        };
+        self.decided().insert(request.clone(), binding.clone());
+        self.delivered(&AgentCommand::Decide {
+            agent: self.agent().clone(),
+            id: request.clone(),
+            binding,
+            approved,
+            reason: None,
+        })
+        .await
+        .map(drop)
+    }
+
+    fn decided(&self) -> std::sync::MutexGuard<'_, HashMap<IntentId, ApprovalBinding>> {
+        self.decided
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The binding of `request`, which `agent` waits on.
+    async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
+        let AgentReply::Approvals { items, .. } = self
+            .connection
+            .execute(&AgentCommand::Approvals {
+                agent: self.agent().clone(),
+                page: AgentPageRequest::default(),
+            })
+            .await?
+        else {
+            return Err(unexpected());
+        };
+        items
+            .into_iter()
+            .find(|pending| &pending.id == request)
+            .and_then(|pending| match pending.request {
+                Interaction::Approval {
+                    operation_id,
+                    action_digest,
+                    ..
+                } => Some(ApprovalBinding {
+                    operation_id,
+                    action_digest,
+                }),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Conflict("no such approval is pending".into()))
+    }
+
+    /// Reads all of `target` on `agent`, at most `maximum` bytes.
+    pub(super) async fn read(
+        connection: &Connection,
+        agent: &AgentPath,
+        target: ReadTarget,
+        maximum: u64,
+    ) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        loop {
+            let reply = connection
+                .execute(&AgentCommand::Read {
+                    agent: agent.clone(),
+                    target: target.clone(),
+                    offset: bytes.len() as u64,
+                })
+                .await?;
+            let (range, length) = reply.content().map_err(failed)?;
+            if length > maximum {
+                return Err(Error::Invalid("read file exceeds its limit".into()));
+            }
+            let done = range.is_empty();
+            bytes.extend_from_slice(&range);
+            if done || bytes.len() as u64 >= length {
+                return Ok(bytes);
             }
         }
-        Err(refused.map_or_else(
-            || Error::Conflict("no human approver".into()),
-            |error| *error,
-        ))
     }
 
     /// The text of a staged prompt or turn output.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// Session, host or decoding failures.
     pub async fn text(&self, file: &FileRef) -> Result<String> {
-        let bytes = self.reader.read(file, MAXIMUM_TEXT, None, None)?.await?;
-        String::from_utf8(bytes.to_vec()).map_err(failed)
+        let bytes = Self::read(
+            &self.connection,
+            self.agent(),
+            ReadTarget::File { file: file.clone() },
+            MAXIMUM_TEXT,
+        )
+        .await?;
+        String::from_utf8(bytes).map_err(failed)
     }
 
     /// The prompt and answer text of a settled turn.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// Session, host or decoding failures.
     pub async fn turn(&self, entry: &ConversationEntry) -> Result<(Option<String>, String)> {
         let prompt = match &entry.input {
             TurnInput::Message { body, .. } => Some(self.text(body).await?),
@@ -168,46 +215,60 @@ impl Conversation {
         Ok((prompt, output.text))
     }
 
+    async fn settlement(&self) -> Result<(u64, u64, Phase)> {
+        match self
+            .connection
+            .execute(&AgentCommand::Settlement {
+                agent: self.agent().clone(),
+            })
+            .await?
+        {
+            AgentReply::Settlement {
+                settled,
+                statuses,
+                phase,
+            } => Ok((settled, statuses, phase)),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// The committed reply to message `id`, which [`Self::send`] committed at
     /// inbox sequence `inbox`: its settled entry, pending, or dropped.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures, and an entry at `inbox` that
+    /// Session, host or decoding failures, and an entry at `inbox` that
     /// settled another request.
     pub async fn reply(&self, id: &str, inbox: u64) -> Result<Reply> {
-        let (agents, _) = self.local.agents().await?;
-        agents
-            .reply(&self.agent, &intent(id)?, inbox)
-            .await
-            .map_err(|error| match error {
-                crate::agent::Error::Conflict(reason) => Error::Conflict(reason.into()),
-                error => failed(error),
+        match self
+            .connection
+            .execute(&AgentCommand::Reply {
+                agent: self.agent().clone(),
+                id: intent(id)?,
+                inbox,
             })
+            .await?
+        {
+            AgentReply::Reply { reply } => Ok(reply),
+            _ => Err(unexpected()),
+        }
     }
 
     /// Why a dropped prompt got no turn: the agent finished, or a cancel
     /// cleared it.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// Session, host or decoding failures.
     pub async fn dropped(&self) -> Result<String> {
-        let (agents, _) = self.local.agents().await?;
-        let state = agents.state(&self.agent).await.map_err(failed)?;
-        Ok(finished(&state.phase).unwrap_or_else(|| "the prompt was cancelled".into()))
+        let (_, _, phase) = self.settlement().await?;
+        Ok(finished(&phase).unwrap_or_else(|| "the prompt was cancelled".into()))
     }
 
     /// Number of settled turns.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
+    /// Session, host or decoding failures.
     pub async fn settled(&self) -> Result<u64> {
-        let (agents, _) = self.local.agents().await?;
-        let conversation = self.agent.conversation().map_err(failed)?;
-        match agents.provider().tail(conversation).await {
-            Ok(tail) => Ok(tail),
-            Err(StreamError::NotFound) => Ok(0),
-            Err(error) => Err(failed(error)),
-        }
+        Ok(self.settlement().await?.0)
     }
 
     /// Every settled turn from conversation sequence `from`, the agent's
@@ -216,9 +277,10 @@ impl Conversation {
     /// entry.
     ///
     /// # Errors
-    /// See [`LocalHarness::observe`].
+    /// When the follows are refused.
     pub async fn observe(&self, from: u64) -> Result<super::Observer> {
-        self.local.observe(&self.agent, from).await
+        let (_, statuses, _) = self.settlement().await?;
+        super::Observer::open(&self.connection, from, statuses.saturating_sub(1))
     }
 }
 

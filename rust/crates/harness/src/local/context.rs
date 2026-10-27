@@ -113,10 +113,17 @@ impl LocalHarness {
                 .instructions(&policy.instruction_names, publisher, &mut work)
                 .await?;
             let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
-            let manifest =
+            let mut manifest =
                 ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
-            #[cfg(any(any(test, feature = "native-execution"), feature = "hooks"))]
-            let mut manifest = manifest;
+            // The agent tools bind per turn, outside the registry; the model
+            // sees them through the manifest like every other tool. A turn
+            // binds each over any registered tool of its name, so the manifest
+            // lists it in that tool's place.
+            let agent_tools = crate::tools::agent_tool_definitions(&self.agent_tools)?;
+            manifest
+                .tools
+                .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
+            manifest.tools.extend(agent_tools);
             #[cfg(any(test, feature = "native-execution"))]
             if let Some(workspace) = &self.workspace {
                 manifest

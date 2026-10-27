@@ -27,6 +27,7 @@ mod checkout_tools;
 mod compaction;
 mod config;
 pub(crate) mod context;
+mod endpoint;
 mod files;
 #[cfg(feature = "native-execution")]
 pub mod host_files;
@@ -36,10 +37,13 @@ pub mod host_owner;
 pub mod host_process;
 #[cfg(feature = "native-execution")]
 pub mod host_workspace;
+pub use endpoint::Connection;
 mod observer;
 pub(crate) mod open;
 mod owner;
 mod owner_record;
+#[cfg(feature = "serve")]
+mod serve;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
 #[cfg(test)]
@@ -91,6 +95,9 @@ pub struct LocalHarness {
     prompt: Option<String>,
     /// Open children each agent may have at once.
     max_children: Option<u32>,
+    /// Agents are admitted under the owner scope; see
+    /// [`LocalHarnessConfig::served`].
+    served: bool,
     /// The agent tools selected among the standard tools, bound per turn.
     agent_tools: Vec<String>,
     active_directory: String,

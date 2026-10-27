@@ -6,29 +6,26 @@
 use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
-    agent::{
-        AgentHost, AgentPath, AgentState, Delivered, ExecutorDriver, ForkAdopted, InboxRecord,
-        IntentId, Message, Sender, VolumeBinding,
-    },
+    agent::{AgentHost, AgentPath, AgentState, IntentId, VolumeBinding},
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, StockExecutors,
-        TurnAdmission, TurnAuthority, TurnContext, TurnExecutors, TurnLimits,
+        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, StockExecutors, TurnAuthority,
+        TurnContext, TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
+use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
-use acyclic_stream::BoxProviderFuture;
+use acyclic_harness_client::AgentCommand;
+use acyclic_stream::{BoxProviderFuture, StreamError};
 use std::sync::{Arc, Weak};
 
 /// Turns of local agents.
 pub type LocalTurns = FilesystemTurnHost<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 /// Every agent of one local harness.
 pub type LocalAgents = AgentHost<LocalStream>;
-
-mod decisions;
 
 /// Settled turns of history in each agent turn's model context.
 const HISTORY_TURNS: u32 = 64;
@@ -37,13 +34,33 @@ const HISTORY_TURNS: u32 = 64;
 /// this only reclaims a delivery whose provider never answers.
 const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 
-/// The hosted agents, their root, and the runtime task that ends with them.
+/// The served agent tree: the same [`crate::hosting::Server`] a remote host
+/// serves, and the runtime task that ends with it.
 pub(super) struct Hosted {
-    agents: Arc<LocalAgents>,
-    turns: Arc<LocalTurns>,
-    root: AgentPath,
+    server: Arc<LocalServer>,
     failures: tokio::sync::broadcast::Sender<AgentFailure>,
     run: tokio::task::JoinHandle<()>,
+}
+
+/// The local harness's agent tree, served as every host serves one.
+pub type LocalServer = crate::hosting::Server<LocalStream, LocalObjectBackend>;
+
+impl Hosted {
+    pub(super) fn agents(&self) -> &Arc<LocalAgents> {
+        self.server.bound().agents()
+    }
+
+    pub(super) fn root(&self) -> &AgentPath {
+        self.server.root()
+    }
+
+    pub(super) const fn server(&self) -> &Arc<LocalServer> {
+        &self.server
+    }
+
+    pub(super) const fn failures(&self) -> &tokio::sync::broadcast::Sender<AgentFailure> {
+        &self.failures
+    }
 }
 
 /// One failed agent delivery. It stays queued and is retried; a waiting
@@ -59,6 +76,41 @@ pub struct AgentFailure {
 impl Drop for Hosted {
     fn drop(&mut self) {
         self.run.abort();
+    }
+}
+
+/// The served tree's admission: the owner's grants, bound to no one agent
+/// and over every volume of the tree, so each spawned child is admitted
+/// under it exactly as a managed host admits its caller's whole tree.
+fn served_admission(
+    issuer: &crate::core::AuthorityRoot,
+    owner: &crate::core::Scope,
+) -> Result<crate::core::Scope> {
+    let tree = acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let grants = crate::Capabilities::new(
+        owner
+            .capabilities()
+            .iter()
+            .chain(std::iter::once(tree.as_str())),
+    );
+    issuer
+        .bootstrap_scope("served", &grants, None, &mut None)
+        .map_err(storage)
+}
+
+/// The local user owns the whole tree: its policy admits every command its
+/// own session credential carries.
+struct LocalUser;
+
+impl crate::hosting::Platform for LocalUser {
+    fn policy<'a>(
+        &'a self,
+        _: &'a Principal,
+        _: &'a AgentCommand,
+    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
+        Box::pin(async { Ok(PolicyDecision::Allow) })
     }
 }
 
@@ -204,52 +256,7 @@ impl LocalHarness {
             .agents
             .get_or_try_init(|| async { self.host_agents().await })
             .await?;
-        Ok((&hosted.agents, &hosted.root))
-    }
-
-    /// Send `prompt` to the root agent as message `id`: one staged body file
-    /// on its private volume, then one inbox commit. Retrying the same `id`
-    /// with the same prompt replays exactly.
-    /// An uncertain inbox commit returns `agent::Error::Unknown` with its exact
-    /// request; retain it and settle it through `agent::submit`.
-    pub async fn prompt(
-        self: &Arc<Self>,
-        id: &IntentId,
-        prompt: &str,
-    ) -> std::result::Result<Delivered, crate::agent::Error> {
-        let preparation = |error| crate::agent::Error::Turn(Box::new(error));
-        let (agents, root) = self.agents().await.map_err(preparation)?;
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.prompt.v1");
-        hasher.update(root.as_str().as_bytes());
-        hasher.update(&[0]);
-        hasher.update(id.as_str().as_bytes());
-        let mut bytes = [0; 16];
-        hasher.finalize_xof().fill(&mut bytes);
-        let operation = OperationId::from_bytes(bytes);
-        let body = self
-            .input_publisher_with_limit(self.limits.file_bytes)
-            .map_err(preparation)?
-            .stage_once(
-                operation,
-                &format!("inputs/{operation}.txt"),
-                prompt.as_bytes(),
-                "text/plain",
-                "prompt",
-                ContentAccess::default(),
-            )
-            .map_err(preparation)?
-            .await
-            .map_err(preparation)?
-            .0;
-        let from = Sender::User {
-            principal: "local".into(),
-        };
-        let message = InboxRecord::Message(Message {
-            from: from.clone(),
-            id: id.clone(),
-            body: Box::new(body),
-        });
-        agents.send(root, &from, &message).await
+        Ok((hosted.agents(), hosted.root()))
     }
 
     /// The configured approval policy, staged once on the root's private
@@ -282,75 +289,105 @@ impl LocalHarness {
     }
 
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
+        use crate::hosting::{Bound, RootRequest, Serving, Turns};
         let authority = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
-        let stream = self
-            .agent_stream
-            .clone()
-            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
-        let limits = TurnLimits {
-            maximum_bytes: self.limits.file_bytes,
-            max_steps: u32::try_from(self.limits.model_steps)
-                .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
-            history_turns: HISTORY_TURNS,
-        };
-        let turns = Arc::new(
-            FilesystemTurnHost::new(
-                stream.clone(),
-                self.files.clone(),
-                authority.clone(),
-                TurnAdmission::LocalRoot,
-                self.executors(),
-                limits,
-                self.approval_policy.clone(),
-            )
-            .with_approvers(self.approval_models.clone())
-            .with_goals(self.goal_continuations)
-            .with_prompt(self.prompt.as_deref()),
-        );
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
-        let agents = Arc::new(
-            AgentHost::with_spawn_volumes(
-                stream,
-                ExecutorDriver::new(Arc::clone(&turns)),
+        let turns = Turns {
+            executors: self.executors(),
+            limits: TurnLimits {
+                maximum_bytes: self.limits.file_bytes,
+                max_steps: u32::try_from(self.limits.model_steps)
+                    .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
+                history_turns: HISTORY_TURNS,
+            },
+            actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
+            clock: Arc::new(SystemClock),
+            approval_policy: self.approval_policy.clone(),
+        };
+        let configure = |turns: LocalTurns| {
+            turns
+                .with_approvers(self.approval_models.clone())
+                .with_goals(self.goal_continuations)
+                .with_prompt(self.prompt.as_deref())
+        };
+        let bound = if self.served {
+            let caller = crate::hosting::VerifiedCaller {
+                audience: self.verifier.audience().clone(),
+                scope: served_admission(&authority, &self.signed)?,
+            };
+            Bound::admitted_host(
+                authority,
+                caller,
+                Arc::clone(&self.files),
                 within,
-                ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
-                Arc::new(SystemClock),
-                Arc::new(FilesystemSpawnVolumes::new(
-                    self.files.clone(),
-                    authority,
-                    TurnAdmission::LocalRoot,
-                    self.limits.file_bytes,
-                )),
+                turns,
+                configure,
             )
-            .map_err(storage)?,
-        );
+        } else {
+            Bound::local_host(authority, Arc::clone(&self.files), within, turns, configure)
+        }
+        .map_err(storage)?;
+        let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser);
         // A reopened root keeps the policy it was created with: the agent
         // model has no policy-update record, and replaying a creation with
         // another policy would refuse the reopen.
         let existing = AgentPath::root(&id);
-        let root = match agents.state(&existing).await {
+        let configured = self.root_policy(&id).await?;
+        let server = match bound.agents().state(&existing).await {
             Ok(state) => {
-                let configured = self.root_policy(&id).await?;
                 if state.policy.as_ref() != Some(&configured) {
                     tracing::warn!(
-                        "the configured approval policy differs from the one this workspace's                          root agent was created with; the agent keeps its original policy"
+                        "the configured approval policy differs from the one this workspace's \
+                         root agent was created with; the agent keeps its original policy"
                     );
                 }
-                agents.host(&existing).map_err(storage)?;
-                existing
+                // This runtime runs the reopened root; reopening only restores
+                // its placement.
+                bound.agents().host(&existing).map_err(storage)?;
+                crate::hosting::reopen(bound, platform, existing)
+                    .await
+                    .map_err(storage)?
             }
-            Err(crate::agent::Error::NoSuchAgent) => self.create_root(&agents, id).await?,
+            Err(crate::agent::Error::NoSuchAgent) => {
+                let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
+                    name: name.to_owned(),
+                    volume: volume.clone(),
+                };
+                let request = RootRequest {
+                    agent: id,
+                    fresh: Vec::new(),
+                    retained: vec![
+                        bind(PRIVATE_VOLUME, &self.journal),
+                        bind("project", &self.project),
+                        bind(GOAL_VOLUME, &self.scratch),
+                    ],
+                    brief: None,
+                    policy: Some(configured),
+                };
+                let intent = IntentId::try_from("root").map_err(storage)?;
+                match crate::hosting::serve(bound, platform, &intent, request)
+                    .await
+                    .map_err(storage)?
+                {
+                    Serving::Served(server) => server,
+                    Serving::Unknown(_) => {
+                        return Err(Error::Storage(
+                            "the root agent's creation is uncertain; reopen to settle it".into(),
+                        ));
+                    }
+                }
+            }
             Err(error) => return Err(storage(error)),
         };
         let (failures, _) = tokio::sync::broadcast::channel(64);
         let report = failures.clone();
-        let runner = Arc::clone(&agents);
+        let runner = Arc::clone(&server);
         let run = tokio::spawn(async move {
-            let Err(error) = runner
+            let error = runner
                 .run(|actor, error| {
                     tracing::warn!(?actor, %error, "agent turn failed");
                     let _ = report.send(AgentFailure {
@@ -362,44 +399,10 @@ impl LocalHarness {
             tracing::error!(%error, "agent runtime stopped");
         });
         Ok(Hosted {
-            agents,
-            turns,
-            root,
+            server,
             failures,
             run,
         })
-    }
-
-    /// Create the root agent over this harness's volumes and policy.
-    async fn create_root(
-        &self,
-        agents: &LocalAgents,
-        id: crate::agent::AgentId,
-    ) -> Result<AgentPath> {
-        let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-            name: name.to_owned(),
-            volume: volume.clone(),
-        };
-        let policy = self.root_policy(&id).await?;
-        agents
-            .create(
-                &IntentId::try_from("root").map_err(storage)?,
-                ForkAdopted {
-                    agent: id,
-                    parent: None,
-                    forked_at: 0,
-                    conversation_tail: 0,
-                    volumes: vec![
-                        bind(PRIVATE_VOLUME, &self.journal),
-                        bind("project", &self.project),
-                        bind(GOAL_VOLUME, &self.scratch),
-                    ],
-                    brief: None,
-                    policy: Some(policy),
-                },
-            )
-            .await
-            .map_err(storage)
     }
 
     /// Failed agent deliveries from now on, once the agents are hosted.

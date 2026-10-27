@@ -362,7 +362,7 @@ pub(super) fn resource_credential(
     parent: &VerifiedCapability,
     grants: &[(&str, bool, &[&str])],
     timestamp: u64,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, String)> {
     let grants = GrantSet {
         grants: grants
             .iter()
@@ -402,7 +402,8 @@ pub(super) fn resource_credential(
     )
     .and_then(VerifiedCapability::seal)
     .map_err(unauthorized)?;
-    Ok(capability.encode().to_vec())
+    let principal = capability.effective().principal().id.clone();
+    Ok((capability.encode().to_vec(), principal))
 }
 pub(super) fn append(
     capability: &VerifiedCapability,

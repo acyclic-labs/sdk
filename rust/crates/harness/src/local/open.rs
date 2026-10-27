@@ -411,6 +411,7 @@ impl Opening {
             context_manifest: self.config.context_manifest,
             prompt: self.config.prompt,
             max_children: self.config.max_children,
+            served: self.config.served,
             agent_tools: self
                 .config
                 .default_tools
@@ -467,6 +468,13 @@ fn scopes(
     }
     for definition in opening.tools.definitions(None)? {
         grants.push(format!("tool:call:{}", definition.name));
+    }
+    // The agent tools bind per turn, outside the registry: grant the ones
+    // selected so a turn's tool authority admits their calls.
+    for name in &opening.config.default_tools {
+        if crate::tools::AGENT_TOOLS.contains(&name.as_str()) {
+            grants.push(format!("tool:call:{name}"));
+        }
     }
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     grants.extend(

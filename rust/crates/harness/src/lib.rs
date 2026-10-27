@@ -37,6 +37,8 @@ pub mod client;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
 pub mod preset;
+#[cfg(feature = "serve")]
+pub mod server;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 #[cfg(feature = "tui")]

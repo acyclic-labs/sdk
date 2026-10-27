@@ -1,11 +1,14 @@
 //! One frontend control result, independent of the endpoint's hosting backend.
 
-use crate::{AgentCommand, CommandError, MAX_AGENT_COMMAND_BYTES};
+use crate::{AgentCommand, CommandError, MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES};
 use acyclic_harness_core::{
-    agent::{AgentPath, Delivered, Error as AgentError, IntentId, Reply, StatusRecord, TurnInput},
+    agent::{
+        AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
+    },
     interaction::Interaction,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
+use base64::Engine as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +46,14 @@ pub struct PendingApproval {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentReply {
+    /// The binding of the tree this endpoint serves the credential.
+    Bound {
+        /// The canonical bodyless invocation, base64 (standard alphabet,
+        /// padded).
+        binding: String,
+        /// The `fs:/` resource whose follow announces the root's tool output.
+        tools: String,
+    },
     /// The root admitted by the verified credential.
     Root {
         /// Admitted root identity.
@@ -70,6 +81,49 @@ pub enum AgentReply {
     },
     /// The committed reply to one accepted message.
     Reply { reply: Reply },
+    /// How far an agent has settled.
+    Settlement {
+        /// Settled turns: the conversation's tail.
+        settled: u64,
+        /// Published statuses: the status stream's tail.
+        statuses: u64,
+        /// The agent's current phase.
+        phase: Phase,
+    },
+    /// One range of a read file, and the file's whole length.
+    Content {
+        /// The range's bytes, base64 (standard alphabet, padded).
+        data: String,
+        /// The file's length; a reader is done at this offset.
+        length: u64,
+    },
+}
+
+impl AgentReply {
+    /// The read bytes of a [`Self::Content`] reply.
+    ///
+    /// # Errors
+    /// When this is not a content reply or its data is not base64.
+    pub fn content(&self) -> Result<(Vec<u8>, u64), CommandError> {
+        match self {
+            Self::Content { data, length } => Ok((
+                base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|_| CommandError::Invalid)?,
+                *length,
+            )),
+            _ => Err(CommandError::Invalid),
+        }
+    }
+
+    /// A [`Self::Content`] reply carrying `bytes` of a file of `length`.
+    #[must_use]
+    pub fn read(bytes: &[u8], length: u64) -> Self {
+        Self::Content {
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            length,
+        }
+    }
 }
 
 /// Remote failures preserve uncertain custody as a typed original request.
@@ -210,6 +264,8 @@ fn validate_reply(
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
         (AgentReply::Root { .. }, AgentCommand::Root)
+        | (AgentReply::Bound { .. }, AgentCommand::Bind)
+        | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
         | (
             AgentReply::Delivered { .. },
             AgentCommand::Prompt { .. } | AgentCommand::Cancel { .. } | AgentCommand::Decide { .. },
@@ -224,6 +280,19 @@ fn validate_reply(
                     Err(CommandError::Invalid)
                 }
                 _ => Ok(()),
+            };
+        }
+        (AgentReply::Content { data, length }, AgentCommand::Read { offset, .. }) => {
+            // Padded base64: 4 characters per 3 bytes, less the padding.
+            let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count();
+            let bytes = (data.len() / 4 * 3).saturating_sub(padding) as u64;
+            return if data.len() % 4 == 0
+                && bytes <= MAX_READ_BYTES
+                && offset.checked_add(bytes).is_some_and(|end| end <= *length)
+            {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
             };
         }
         (AgentReply::Spawned { agent, .. }, AgentCommand::Spawn { parent, .. }) => {

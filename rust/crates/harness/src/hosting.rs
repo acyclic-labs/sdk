@@ -34,7 +34,10 @@ use crate::{
 };
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
-use acyclic_harness_client::{AgentCall, AgentCommand, AgentReply, ChildAgent, PendingApproval};
+use acyclic_harness_client::{
+    AgentBinding, AgentCall, AgentCommand, AgentReply, ChildAgent, MAX_READ_BYTES, PendingApproval,
+    ReadTarget,
+};
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, ProviderPlatform, ReadRequest, StreamError,
     StreamPath,
@@ -62,6 +65,9 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async { Ok(()) })
     }
 }
+
+/// The routing URL of every agent command; a host dispatches on the command.
+const BINDING_URL: &str = "/agents/command";
 
 /// One admitted agent tree served over the unified session protocol.
 pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
@@ -218,6 +224,28 @@ where
         self.bound.agents().drain_event(agent).await
     }
 
+    /// The binding a client sends this server's commands with: the canonical
+    /// bodyless Actors invocation of the served tree. It names only routing,
+    /// never authority; the session credential authorizes each command.
+    #[must_use]
+    pub fn binding(&self) -> acyclic_actors::wire::InvokeActorRequest {
+        let within = self.bound.within();
+        acyclic_actors::wire::InvokeActorRequest {
+            actor_id: within.id().to_owned(),
+            method: "POST".into(),
+            url: BINDING_URL.into(),
+            namespace: Some(within.namespace().as_str().to_owned()),
+            account_id: within.account().as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// The binding this server serves.
+    #[must_use]
+    pub fn bound(&self) -> &Bound<P, O> {
+        &self.bound
+    }
+
     /// Runs the tree's agents until the runtime stops; `failed` sees each
     /// failed delivery.
     ///
@@ -237,7 +265,16 @@ where
         let call = AgentCall::decode(invocation).map_err(|_| StreamError::InvalidArgument)?;
         let within = self.bound.within();
         let routed = call.invocation();
-        if routed.namespace.as_deref() != Some(within.namespace().as_str())
+        // Discovery names no tree: the endpoint answers it with its own.
+        if AgentBinding::is_discovery(routed) {
+            return if matches!(call.command(), AgentCommand::Bind) {
+                Ok(call)
+            } else {
+                Err(StreamError::AccessDenied)
+            };
+        }
+        if matches!(call.command(), AgentCommand::Bind)
+            || routed.namespace.as_deref() != Some(within.namespace().as_str())
             || routed.account_id.as_slice() != within.account().as_bytes()
         {
             return Err(StreamError::AccessDenied);
@@ -257,12 +294,58 @@ where
         Err(Error::NoSuchAgent)
     }
 
+    /// The `fs:/` resource announcing the root's tool output, on a host whose
+    /// volumes announce it.
+    async fn tool_resource(&self) -> Result<String, Error> {
+        #[cfg(feature = "filesystem-local")]
+        return self.bound.tool_resource(&self.root).await;
+        #[cfg(not(feature = "filesystem-local"))]
+        Err(Error::Record("this host announces no tool output"))
+    }
+
     async fn dispatch(&self, command: &AgentCommand, by: &Sender) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
+            AgentCommand::Bind => Ok(AgentBinding::reply(
+                &self.binding(),
+                self.tool_resource().await?,
+            )),
             AgentCommand::Root => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
+            AgentCommand::Settlement { agent } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::Settlement {
+                    settled: self.tail(agent.conversation()?).await?,
+                    statuses: self.tail(agent.status()?).await?,
+                    phase: agents.state(agent).await?.phase,
+                })
+            }
+            AgentCommand::Read {
+                agent,
+                target,
+                offset,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let (bytes, length) = match target {
+                    ReadTarget::File { file } => {
+                        self.bound
+                            .read_file(agent, file, *offset, MAX_READ_BYTES)
+                            .await?
+                    }
+                    #[cfg(feature = "filesystem-local")]
+                    ReadTarget::ToolOutput { path } => {
+                        self.bound
+                            .read_tool_output(agent, path, *offset, MAX_READ_BYTES)
+                            .await?
+                    }
+                    #[cfg(not(feature = "filesystem-local"))]
+                    ReadTarget::ToolOutput { .. } => {
+                        return Err(Error::Record("this host announces no tool output"));
+                    }
+                };
+                Ok(AgentReply::read(&bytes, length))
+            }
             AgentCommand::Prompt { agent, id, body } => {
                 let agent = self.within_tree(agent)?;
                 let body = self
@@ -389,6 +472,15 @@ where
                         .await?,
                 })
             }
+        }
+    }
+
+    /// The tail of stream `path`; an absent stream holds nothing.
+    async fn tail(&self, path: StreamPath) -> Result<u64, Error> {
+        match self.bound.agents().provider().tail(path).await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(Error::Stream(error)),
         }
     }
 
