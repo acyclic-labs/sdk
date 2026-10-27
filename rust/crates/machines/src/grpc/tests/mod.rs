@@ -16,6 +16,7 @@ enum WatchReply {
 enum JoinReply {
     Reject(Code),
     Settlement(wire::OperationSettlement),
+    Stream(Vec<Result<wire::OperationSettlement, Code>>),
     Silent,
     Script(Arc<std::sync::Mutex<JoinScript>>),
     #[cfg(feature = "core")]
@@ -114,7 +115,9 @@ operation_service! {
         Ok(Response::new(self.recovered.clone()))
     }
 
-    async fn join(&self, request: Request<wire::JoinRequest>) -> Result<Response<wire::OperationSettlement>, Status> {
+    type JoinStream = Pin<Box<dyn Stream<Item = Result<wire::OperationSettlement, Status>> + Send>>;
+
+    async fn join(&self, request: Request<wire::JoinRequest>) -> Result<Response<Self::JoinStream>, Status> {
         let request = request.into_inner();
         if request.idempotency_key.as_ref().map(|key| key.value.as_slice()) != Some(self.expected_key.as_bytes().as_slice()) || request.operation != operation_request(self.expected_operation).operation {
             return Err(Status::invalid_argument("join identity was substituted"));
@@ -126,13 +129,18 @@ operation_service! {
         };
         match reply {
             JoinReply::Reject(code) => Err(Status::new(code, "join interrupted")),
-            JoinReply::Settlement(value) => Ok(Response::new(value)),
-            JoinReply::Silent => std::future::pending().await,
+            JoinReply::Settlement(value) => Ok(Response::new(Box::pin(stream::once(async { Ok(value) })))),
+            JoinReply::Stream(values) => Ok(Response::new(Box::pin(stream::iter(values.into_iter().map(|value| value.map_err(|code| Status::new(code, "join body interrupted"))))))),
+            JoinReply::Silent => Ok(Response::new(Box::pin(stream::pending()))),
             JoinReply::Script(_) => Err(Status::internal("nested join script")),
             #[cfg(feature = "core")]
             JoinReply::Core(core) => {
-                let value = core.join_settlement(self.expected_key, self.expected_operation).await.map_err(|_| Status::unavailable("canonical join interrupted"))?;
-                encode_settlement(&value).map(Response::new).map_err(|_| Status::internal("invalid canonical result"))
+                let key = self.expected_key;
+                let operation = self.expected_operation;
+                Ok(Response::new(Box::pin(stream::once(async move {
+                    let value = core.join_settlement(key, operation).await.map_err(|_| Status::unavailable("canonical join interrupted"))?;
+                    encode_settlement(&value).map_err(|_| Status::internal("invalid canonical result"))
+                }))))
             },
         }
     }
@@ -296,6 +304,7 @@ async fn serve_operation_service(
             .await
     });
     let channel = TonicEndpoint::from_static("http://contract.fixture")
+        .timeout(RPC_TIMEOUT)
         .connect_with_connector(tower::service_fn(move |_| {
             let incoming = incoming.clone();
             async move {

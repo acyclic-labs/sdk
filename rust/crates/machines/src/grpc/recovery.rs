@@ -31,7 +31,7 @@ impl GrpcProvider {
     ) -> Result<SettledMutation, ProviderError> {
         obs::finish(
             async {
-                let value = self
+                let mut stream = self
                     .client()
                     .await
                     .map_err(|_| ProviderError::Indeterminate(key))?
@@ -43,6 +43,21 @@ impl GrpcProvider {
                     .await
                     .map_err(|error| watch_error(key, &error))?
                     .into_inner();
+                let value = stream
+                    .message()
+                    .await
+                    .map_err(|error| watch_error(key, &error))?
+                    .ok_or(ProviderError::Indeterminate(key))?;
+                if stream
+                    .message()
+                    .await
+                    .map_err(|error| watch_error(key, &error))?
+                    .is_some()
+                {
+                    return Err(ProviderError::Rejected(
+                        "Join returned multiple settlements; recovery: repair the server single-settlement contract".into(),
+                    ));
+                }
                 decode_settlement(value, operation)?.result(key)
             }
             .await,

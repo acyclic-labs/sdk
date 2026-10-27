@@ -312,6 +312,8 @@ message MutationOutcome {
     ForkedLiveMachines machine_forked = 9;
   }
 }
+// Join emits exactly one terminal settlement, then ends. Response headers precede
+// the wait so the physical RPC setup deadline does not bound observation.
 // Join is observation only. It never dispatches or cancels a native mutation.
 // The operation must be the admission originally returned for this key.
 message JoinRequest {
@@ -433,7 +435,7 @@ service MachinesService {
   rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc DestroyMachine(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete" extractor: "machines.delete" }; }
   rpc DestroyCheckpoint(CheckpointMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete-checkpoint" extractor: "machines.delete-checkpoint" }; }
-  rpc Join(JoinRequest) returns (OperationSettlement) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
+  rpc Join(JoinRequest) returns (stream OperationSettlement) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
   rpc Recover(RecoverRequest) returns (RecoveredAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
   rpc InspectMachine(InspectMachineRequest) returns (MachineState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read" }; }
   rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState) { option (acyclic.validation.v1.auth) = { action: "machines/read-checkpoint" extractor: "machines.read-checkpoint" }; }

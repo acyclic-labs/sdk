@@ -38,9 +38,10 @@ A lost Join reply or credential failure after admission returns the retained key
 as `ProviderError::Indeterminate(key)`. Call `recover` with that same key; never
 resubmit the native mutation. Explicit terminal failed/cancelled publications are
 typed and cannot be inferred from a transport status. Dropping Join stops local
-observation without cancelling native work. Existing physical RPC deadlines may
-interrupt a long wait; the durable operation continues. Protocol 1.2 servers must
-implement Join; the client has no fallback that reconstructs results from current
+observation without cancelling native work. Join sends response headers before
+waiting, then emits one settlement and ends. The existing physical RPC setup
+deadline remains in force without imposing a new lifecycle observation deadline.
+Protocol 1.2 servers must implement Join; the client has no fallback that reconstructs results from current
 resource inspection. `recover_operation` remains a nonblocking admission lookup.
 
 `Machine::fork` (`MachinesProvider::fork_machine`) forks a *running* machine into fresh children at any moment, with no checkpoint step. Its fidelity is declared, not inferred: `Capability::LiveFork` means children resume from the source's memory, processes, and disk (`ForkFidelity::MemoryAndDisk`); `Capability::DiskFork` means they boot fresh over a copy of its disk (`ForkFidelity::DiskOnly`) and the caller restarts its workload. A machine with neither returns `ProviderError::Unsupported`; fall back to `checkpoint` plus `fork`, or a restart. Children inherit the source's contract, credentials, and environment, get fresh identities and endpoints, and never inherit open network connections. Destroy children before their source: a provider may refuse the reverse order with `ProviderError::Conflict`. The trait method documents the full semantics.

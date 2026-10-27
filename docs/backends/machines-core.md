@@ -18,7 +18,9 @@ infers success from a native resource's name or labels.
 `watch` and `join` follow the point projection through Streams' checked cursor.
 `SettledMutation` includes the operation, final `CommitId`, and exact result.
 Protocol 1.2 `Join` takes the original key and operation, and returns the same
-canonical publication. `join_settlement` also exposes explicit failed/cancelled
+canonical publication as a one-result server stream. Send headers immediately;
+the single stream item awaits `join_settlement`, then the stream ends. This keeps
+the existing RPC setup deadline without a lifecycle wait deadline. `join_settlement` also exposes explicit failed/cancelled
 publications; `grpc::encode_settlement` is the server encoding boundary. Verify
 the request's key/operation binding in the existing authenticated admission scope
 before joining. A transport error preserves the recovery key. The gRPC client

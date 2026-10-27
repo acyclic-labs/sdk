@@ -108,7 +108,7 @@ fn command_bounds_are_checked_before_dispatch() {
             Err(ProviderError::Invalid(_))
         ));
     }
-    let bounded = ExecCommand::new(vec!["Ã©".repeat(2048); 8], 60_000).unwrap();
+    let bounded = ExecCommand::new(vec!["é".repeat(2048); 8], 60_000).unwrap();
     assert_eq!(bounded.argv().len(), 8);
     assert_eq!(bounded.timeout_ms(), 60_000);
     assert!(ExecCommand::new(vec!["a".into(), "".into()], 1).is_ok());

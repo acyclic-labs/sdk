@@ -143,27 +143,32 @@ async fn accepted_join_resumes_after_interruption_without_resubmission()
         Code::Internal,
         Code::PermissionDenied,
     ] {
-        let (service, script, _) = scripted_operation_service(vec![
+        for interrupted in [
             JoinReply::Reject(code),
-            JoinReply::Settlement(settled_suspend(operation, machine)),
-        ]);
-        let key = service.expected_key;
-        let (machines, shutdown, server) = serve_operation_service(service).await?;
-        assert_eq!(
-            machines.suspend(machine, key).await,
-            Err(ProviderError::Indeterminate(key))
-        );
-        assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
-        assert_eq!(
-            machines.recover(key).await?,
-            MutationOutcome::Suspended(machine)
-        );
-        assert_eq!(
-            script.lock().expect("script").calls,
-            ["suspend", "join", "recover", "join"]
-        );
-        let _ = shutdown.send(());
-        server.await??;
+            JoinReply::Stream(vec![Ok(settled_suspend(operation, machine)), Err(code)]),
+        ] {
+            let (service, script, _) = scripted_operation_service(vec![
+                interrupted,
+                JoinReply::Settlement(settled_suspend(operation, machine)),
+            ]);
+            let key = service.expected_key;
+            let (machines, shutdown, server) = serve_operation_service(service).await?;
+            assert_eq!(
+                machines.suspend(machine, key).await,
+                Err(ProviderError::Indeterminate(key))
+            );
+            assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
+            assert_eq!(
+                machines.recover(key).await?,
+                MutationOutcome::Suspended(machine)
+            );
+            assert_eq!(
+                script.lock().expect("script").calls,
+                ["suspend", "join", "recover", "join"]
+            );
+            let _ = shutdown.send(());
+            server.await??;
+        }
     }
     Ok(())
 }
@@ -175,8 +180,8 @@ async fn silent_join_has_no_client_polling_or_native_cancellation()
     let key = service.expected_key;
     let (machines, shutdown, server) = serve_operation_service(service).await?;
     let mut wait = Box::pin(machines.suspend(machine, key));
-    // The fixture channel has no physical RPC deadline; advance beyond the deleted
-    // watch reconciliation timer and prove this remains a single pending Join.
+    // The fixture uses the production physical RPC deadline. Headers precede the
+    // wait: observation survives both that deadline and the deleted polling timer.
     let result = tokio::time::timeout(Duration::from_secs(75), &mut wait).await;
     assert!(result.is_err());
     assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
@@ -346,5 +351,30 @@ async fn grpc_join_returns_original_settlement_after_resource_change_and_journal
     assert_eq!(machines.join(key, operation).await?, original_settlement);
     let _ = shutdown.send(());
     server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_requires_one_complete_settlement_stream()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+    let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
+    for values in [vec![], vec![settled_suspend(operation, machine); 2]] {
+        let empty = values.is_empty();
+        let (service, script, _) = scripted_operation_service(vec![JoinReply::Stream(
+            values.into_iter().map(Ok).collect(),
+        )]);
+        let key = service.expected_key;
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+        let result = machines.suspend(machine, key).await;
+        if empty {
+            assert_eq!(result, Err(ProviderError::Indeterminate(key)));
+        } else {
+            assert!(matches!(result, Err(ProviderError::Rejected(_))));
+        }
+        assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
+        let _ = shutdown.send(());
+        server.await??;
+    }
     Ok(())
 }
