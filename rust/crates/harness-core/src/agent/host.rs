@@ -120,7 +120,9 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         };
         Ok(Self {
             agents: Agents::new(actor_store(&provider)?),
-            runtime: Runtime::new(published, handler, clock),
+            // Agents of other bindings may share this stream's actor root;
+            // this host claims only its own account and namespace.
+            runtime: Runtime::new(published, handler, clock).claiming(&within),
             provider,
             within,
         })

@@ -362,3 +362,66 @@ async fn a_write_without_valid_evidence_publishes_nothing() -> Result {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
+    let stream = Arc::new(MemoryStream::default());
+    let bind = |namespace: &[u8]| -> Result<Bound<MemoryStream, Objects>> {
+        let mut placement = placement(&stream)?;
+        placement.within = ActorReference::new(b"account", namespace, b"owner")?;
+        Ok(Bound::local_root(
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "local".into(),
+                },
+            ),
+            placement,
+            turns()?,
+        )?)
+    };
+    let create = async |bound: &Bound<MemoryStream, Objects>, agent: u8| -> Result<AgentPath> {
+        let request = root(id(agent), vec![volume(PRIVATE_VOLUME, id(agent))?]);
+        match bound
+            .create_root(&intent(&format!("root-{agent}")), request)
+            .await?
+        {
+            RootSubmission::Created(created) => Ok(created),
+            RootSubmission::Unknown(_) => Err("the root's submission was uncertain".into()),
+        }
+    };
+    // Two servers, one per tree, on one stream; each tree's later roots come
+    // from another binding of the same tree, so its server discovers them.
+    let (a, b) = (bind(b"tree-a")?, bind(b"tree-b")?);
+    let (a2, b2) = (bind(b"tree-a")?, bind(b"tree-b")?);
+    let root_b = create(&b, 2).await?;
+    create(&a, 1).await?;
+    let foreign = b.agents().actor(&root_b)?;
+    assert!(a.agents().runtime().track(foreign).is_err());
+    let runners: Vec<_> = [a.agents(), b.agents()]
+        .into_iter()
+        .map(|agents| {
+            let agents = Arc::clone(agents);
+            tokio::spawn(async move { agents.run(|_, _| {}).await })
+        })
+        .collect();
+    // The activation log orders b's roots around a's: a reaching its second
+    // root has passed b's first two, and b reaching its third has passed a's.
+    create(&b2, 3).await?;
+    create(&a2, 4).await?;
+    create(&b2, 5).await?;
+    let resident = |bound: &Bound<MemoryStream, Objects>| bound.agents().runtime().counts().0;
+    for _ in 0..2_000 {
+        if resident(&a) == 2 && resident(&b) == 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!((resident(&a), resident(&b)), (2, 3));
+    for runner in runners {
+        runner.abort();
+    }
+    Ok(())
+}
