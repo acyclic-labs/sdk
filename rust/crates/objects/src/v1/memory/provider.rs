@@ -2,7 +2,8 @@
 use super::transaction::put_group_sizes;
 use super::*;
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl ObjectsProvider for MemoryObjects {
     async fn put_batch(
         &self,

@@ -2,13 +2,13 @@
 use super::*;
 
 /// Immutable body IO used by the sealed durable publisher transport.
-pub trait ImmutableBodies: Send + Sync {
+pub trait ImmutableBodies: acyclic_stream::ProviderPlatform {
     /// Write a body under its content digest.
     fn put(
         &self,
         id: [u8; 32],
         bytes: acyclic_stream::OwnedBytes,
-    ) -> BoxFuture<'_, Result<(), Error>>;
+    ) -> BoxProviderFuture<'_, Result<(), Error>>;
     /// Read a selected interval of a body with its expected complete length.
     fn get(
         &self,
@@ -16,7 +16,7 @@ pub trait ImmutableBodies: Send + Sync {
         length: usize,
         start: usize,
         end: usize,
-    ) -> BoxFuture<'_, Result<acyclic_stream::OwnedBytes, Error>>;
+    ) -> BoxProviderFuture<'_, Result<acyclic_stream::OwnedBytes, Error>>;
 }
 
 #[derive(Clone)]

@@ -64,11 +64,11 @@ pub struct Download {
     pub body: BodyStream,
 }
 pub use crate::obs::BodyStream;
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::{BoxProviderStream, OwnedBytes};
 /// Caller-owned upload chunks retaining the same funded stream box through destruction.
-pub type UploadBody = Guarded<futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>>;
-impl From<futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>> for UploadBody {
-    fn from(value: futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>) -> Self {
+pub type UploadBody = Guarded<BoxProviderStream<'static, Result<OwnedBytes, Error>>>;
+impl From<BoxProviderStream<'static, Result<OwnedBytes, Error>>> for UploadBody {
+    fn from(value: BoxProviderStream<'static, Result<OwnedBytes, Error>>) -> Self {
         Self {
             value,
             _allocation: Default::default(),

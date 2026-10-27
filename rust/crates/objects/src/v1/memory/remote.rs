@@ -2,7 +2,7 @@
 use super::durable::{self, packing::Pending, protocol::*, snapshot};
 use super::*;
 use crate::body::{ImmutableBodies, RemoteBody};
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture;
 
 pub(in crate::v1) use super::durable::RECORD_LIMIT as RECORD_BYTES;
 
@@ -17,7 +17,7 @@ fn unavailable(_: impl std::fmt::Debug) -> Error {
 fn externalize<'a>(
     body: &'a StoredBody,
     source: &'a Arc<dyn ImmutableBodies>,
-) -> BoxFuture<'a, Result<StoredBody, Error>> {
+) -> BoxProviderFuture<'a, Result<StoredBody, Error>> {
     Box::pin(async move {
         match body {
             StoredBody::Memory(bytes) => {

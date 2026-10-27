@@ -1,34 +1,34 @@
 //! Shared conditional-root publication over canonical Objects state.
 use super::*;
-use futures::future::BoxFuture;
+use acyclic_stream::{BoxProviderFuture, ProviderPlatform, ProviderTask};
 use tokio::sync::Mutex;
 
 /// Physical IO only. Versions are opaque conditional-write tokens.
-pub trait Store: ImmutableBodies + Send + Sync + 'static {
+pub trait Store: ImmutableBodies + 'static {
     /// Opaque conditional-write version of a head.
-    type Version: Send + Sync;
+    type Version: ProviderPlatform;
     /// Read the head and its version.
-    fn head(&self) -> BoxFuture<'_, Result<(Vec<u8>, Self::Version), Error>>;
+    fn head(&self) -> BoxProviderFuture<'_, Result<(Vec<u8>, Self::Version), Error>>;
     /// Create or conditionally replace a head; false means a lost race.
     fn publish<'a>(
         &'a self,
         version: Option<&'a Self::Version>,
         bytes: Vec<u8>,
-    ) -> BoxFuture<'a, Result<bool, Error>>;
+    ) -> BoxProviderFuture<'a, Result<bool, Error>>;
     /// Read bounded immutable metadata.
     fn get<'a>(
         &'a self,
         kind: &'a str,
         id: &'a str,
         maximum: usize,
-    ) -> BoxFuture<'a, Result<Vec<u8>, Error>>;
+    ) -> BoxProviderFuture<'a, Result<Vec<u8>, Error>>;
     /// Write immutable metadata.
     fn put<'a>(
         &'a self,
         kind: &'a str,
         id: &'a str,
         bytes: bytes::Bytes,
-    ) -> BoxFuture<'a, Result<(), Error>>;
+    ) -> BoxProviderFuture<'a, Result<(), Error>>;
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -191,7 +191,7 @@ impl<T: Store> Publisher<T> {
         }
     }
 
-    pub(in crate::v1) async fn mutate<R: Message + Default + Send + 'static>(
+    pub(in crate::v1) async fn mutate<R: Message + Default + ProviderTask + 'static>(
         &self,
         route: &str,
         request: Vec<u8>,
@@ -238,10 +238,9 @@ impl<T: Store> Publisher<T> {
     }
     async fn transaction<R, F>(&self, operation: F) -> Result<R, Error>
     where
-        R: Send + 'static,
-        F: for<'a> Fn(&'a MemoryObjects, prost_types::Timestamp) -> BoxFuture<'a, Result<R, Error>>
-            + Send
-            + Sync
+        R: ProviderTask + 'static,
+        F: for<'a> Fn(&'a MemoryObjects, prost_types::Timestamp) -> BoxProviderFuture<'a, Result<R, Error>>
+            + ProviderPlatform
             + 'static,
     {
         let provider = self.clone();
@@ -252,7 +251,7 @@ impl<T: Store> Publisher<T> {
     }
     async fn publish<R, F>(&self, operation: F) -> Result<R, Error>
     where
-        F: for<'a> Fn(&'a MemoryObjects, prost_types::Timestamp) -> BoxFuture<'a, Result<R, Error>>,
+        F: for<'a> Fn(&'a MemoryObjects, prost_types::Timestamp) -> BoxProviderFuture<'a, Result<R, Error>>,
     {
         let mut cache = self.inner.cache.lock().await;
         for _ in 0..8 {
@@ -320,7 +319,8 @@ impl<T: Store> Publisher<T> {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<T: Store> ObjectsProvider for Publisher<T> {
     async fn put_batch(
         &self,

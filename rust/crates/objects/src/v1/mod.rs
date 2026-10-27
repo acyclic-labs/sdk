@@ -138,8 +138,9 @@ pub use ownership::{
 };
 
 /// Transport-independent logical Objects interface.
-#[async_trait::async_trait]
-pub trait ObjectsProvider: Send + Sync {
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait ObjectsProvider: acyclic_stream::ProviderPlatform {
     /// Publishes ordered, individually atomic mutations in one native admission.
     async fn put_batch(
         &self,
