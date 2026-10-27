@@ -281,6 +281,115 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     Ok(())
 }
 
+/// A spawned child is a clone of its parent at the fork cut: its first model
+/// request holds the parent's settled turn, whose output the parent staged on
+/// its own private volume.
+#[tokio::test]
+async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Result {
+    let parent = AgentPath::root(&id(5));
+    let child = parent.child(&id(6))?;
+    let stream = Arc::new(MemoryStream::default());
+    let model = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Text("parent answer".into()),
+        ScriptedTurn::Text("child answer".into()),
+    ]));
+    let (host, binding) = private(&parent).await?;
+    let own = VolumeRef::new(
+        binding.volume.provider().clone(),
+        "agent-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+            child.id().to_bytes(),
+        )),
+        &mut None,
+    )?;
+    host.create_volume(&own).await?;
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        host,
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    ));
+    let mut adoption = adopted(id(5));
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(parent.clone(), &adoption);
+    let first = step(
+        &driver,
+        &parent,
+        Some(state),
+        0,
+        requested("p1", &parent),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let entry: Vec<_> = first
+        .outs
+        .iter()
+        .filter_map(|out| match out {
+            Out::Conversation(bytes) => Some(bytes.clone()),
+            _ => None,
+        })
+        .collect();
+    // The parent's settled turn, and the child's conversation as the spawn
+    // fork leaves it: the same entry, inherited at the cut.
+    for path in [parent.conversation()?, child.conversation()?] {
+        stream
+            .commit(CommitRequest {
+                conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                mutations: vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: entry.iter().cloned().map(Into::into).collect(),
+                }],
+                idempotency_key: intent_key("settle", &[path.as_str()])?,
+            })
+            .await?;
+    }
+    let forked = ForkAdopted {
+        agent: id(6),
+        parent: Some(parent.clone()),
+        forked_at: 0,
+        conversation_tail: 1,
+        volumes: vec![VolumeBinding {
+            name: PRIVATE_VOLUME.into(),
+            volume: own,
+        }],
+        brief: None,
+        policy: None,
+    };
+    let state = AgentState::adopted(child.clone(), &forked);
+    step(
+        &driver,
+        &child,
+        Some(state),
+        0,
+        requested("c1", &child),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.role == ModelRole::Assistant
+                && message.content == ModelContent::Text("parent answer".into())),
+        "the child's first request lacks its parent's settled turn: {:?}",
+        requests[1].messages
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_write() -> Result {
     let parent = AgentPath::root(&id(4));

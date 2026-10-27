@@ -52,6 +52,8 @@ pub enum WorkspaceMutation {
 pub(crate) enum InternalContentClass {
     Interaction,
     Execution,
+    /// Settled turn outputs, inherited by an agent's forks.
+    Conversation,
 }
 
 impl InternalContentClass {
@@ -87,6 +89,7 @@ impl InternalContentClass {
         match self {
             Self::Interaction => ".system/interactions/",
             Self::Execution => ".system/execution/",
+            Self::Conversation => ".system/inherited-conversation/",
         }
     }
 }
