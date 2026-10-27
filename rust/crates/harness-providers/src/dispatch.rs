@@ -25,7 +25,7 @@ pub(crate) fn generate<'a>(
         let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
         let mut events = generate_encoded(provider, request, dispatch, body, auth, names);
         while let Some(event) = events.next().await { yield event?; }
-    })
+    }.map(|result: Result<ModelEvent>| result.map_err(crate::diagnostic::ordinary)))
 }
 
 /// Caller has admitted model identity and bound dispatch to the immutable request.
@@ -91,7 +91,7 @@ pub(crate) fn generate_encoded<'a>(
             Err(error)?;
         }
 
-    })
+    }.map(|result: Result<ModelEvent>| result.map_err(crate::diagnostic::ordinary)))
 }
 
 pub(crate) async fn authenticate<'a>(

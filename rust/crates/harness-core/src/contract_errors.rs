@@ -88,9 +88,8 @@ pub enum Error {
         /// Bounded, control-free excerpt of the response body or the transport's root cause.
         excerpt: String,
     },
-    /// A definitive provider rejection funded by the original ledger, rather than an
-    /// accounting failure. Its diagnostic survives until task settlement.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    /// A definitive provider rejection, rather than an accounting failure.
+    /// Native callers retain the original ledger custody until task settlement.
     #[error("{message}")]
     ModelDiagnostic {
         /// The provider's original semantic classification.
@@ -98,7 +97,7 @@ pub enum Error {
         /// Original diagnostic, moved without copying.
         message: String,
         /// Original custody, released after the diagnostic.
-        custody: acyclic_fs::NativeAllocation,
+        custody: crate::NativeCustody,
     },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
@@ -486,9 +485,9 @@ impl Error {
             | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
+            Self::ModelDiagnostic { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::ModelDiagnostic { code, .. }
-            | Self::NativeBoundary { code, .. }
+            Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
@@ -546,9 +545,7 @@ impl Error {
     #[must_use]
     pub(crate) fn is_model_failure(&self) -> bool {
         match self {
-            Self::ModelUnavailable { .. } => true,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::ModelDiagnostic { .. } => true,
+            Self::ModelUnavailable { .. } | Self::ModelDiagnostic { .. } => true,
             _ => false,
         }
     }
@@ -611,7 +608,6 @@ impl Error {
             | Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
             | Self::SearchPublicationDeferred => false,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::ModelDiagnostic { .. } => false,
             #[cfg(feature = "machines")]
             Self::Machines(_) => false,
