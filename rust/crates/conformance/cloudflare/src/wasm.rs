@@ -4,6 +4,18 @@ use acyclic_stream::{BoxProviderFuture, JournalStream, JournalStreamLimits, Stre
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+/// Provision the same lazy spawn fixture for the real event-owned host.
+#[wasm_bindgen(js_name = spawnAdoptionFixture)]
+pub async fn spawn_adoption_fixture(port: JsValue) -> std::result::Result<String, JsValue> {
+    let provider = acyclic_stream::WasmStream::connect_provider(port)?.provider();
+    let within = acyclic_actors::addressing::ActorReference::new(b"browser", b"agents", b"host")
+        .map_err(|error| JsValue::from_str(&format!("STEP adoption-fixture identity failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))?;
+    acyclic_agent_host_conformance::fixtures::spawned(provider, within)
+        .await
+        .map(|path| path.to_string())
+        .map_err(|error| JsValue::from_str(&format!("STEP adoption-fixture spawn failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
+}
+
 /// Produce a real canonical append through the supplied SQLite ledger port.
 #[wasm_bindgen(js_name = appendWakeRecord)]
 pub async fn append_wake_record(port: JsValue, path: String) -> std::result::Result<(), JsValue> {
