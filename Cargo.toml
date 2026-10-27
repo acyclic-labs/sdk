@@ -35,8 +35,6 @@ members = [
   "rust/crates/machines",
   "rust/crates/machines-wasm",
   "rust/crates/machines-daytona",
-  "rust/crates/markdown",
-  "rust/crates/markdown-work",
   "rust/crates/native-runtime",
   "rust/crates/objects",
   "rust/crates/objects-wasm",

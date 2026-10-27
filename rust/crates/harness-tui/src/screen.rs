@@ -19,8 +19,6 @@ pub struct Screen<'a> {
     pub transcript: &'a [Line<'a>],
     /// Independently cached tool tail, following the answer rows without copies.
     pub tools: &'a [Line<'a>],
-    /// Search decoration over the existing wrapping projection; only visible rows are painted.
-    pub transcript_search: Option<(crate::TranscriptRows<'a>, &'a crate::TranscriptSearch)>,
     /// Visible current reasoning, folded from the same agent stream.
     pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
@@ -139,10 +137,7 @@ fn take_top(area: &mut Rect, height: u16) -> Rect {
 
 impl Screen<'_> {
     fn transcript_len(&self) -> usize {
-        self.transcript_search
-            .map_or(self.transcript.len() + self.tools.len(), |(rows, _)| {
-                rows.len()
-            })
+        self.transcript.len() + self.tools.len()
     }
 
     /// Default follow-tail position; a followed layout file may override it.
@@ -341,9 +336,7 @@ impl Screen<'_> {
                     frame.render_widget(line, area);
                 } else if index < self.reasoning.len() + self.transcript_len() {
                     let index = index - self.reasoning.len();
-                    if let Some((projection, search)) = self.transcript_search {
-                        frame.render_widget(search.row(projection, index), area);
-                    } else if let Some(line) = self.transcript.get(index) {
+                    if let Some(line) = self.transcript.get(index) {
                         frame.render_widget(line, area);
                     } else if let Some(line) = self.tools.get(index - self.transcript.len()) {
                         frame.render_widget(line, area);

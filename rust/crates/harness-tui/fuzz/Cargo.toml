@@ -80,13 +80,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "transcript_search"
-path = "fuzz_targets/transcript_search.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "transcript_anchor"
 path = "fuzz_targets/transcript_anchor.rs"
 test = false

@@ -1,1 +1,0 @@
-# Seeds for the bounded table-output property.

@@ -4,7 +4,7 @@ use acyclic_harness::local::{Event, agent_conversation::Conversation};
 use acyclic_harness::{
     agent::{IntentId, Phase},
     tui::{
-        InputEffect, PromptInput, Screen, Viewport,
+        Editor, InputEffect, Layout, PromptInput, Screen, Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -105,21 +105,22 @@ impl View {
                 } else {
                     Style::default()
                 };
-                let mut first = true;
-                for line in text.lines() {
-                    let characters = line.chars().collect::<Vec<_>>();
-                    for chunk in characters
-                        .chunks(width)
-                        .chain(characters.is_empty().then_some(&[][..]))
-                    {
-                        let marker = match (prompt, first) {
-                            (true, true) => "› ",
-                            _ => "  ",
-                        };
-                        first = false;
-                        let row = format!("{marker}{}", chunk.iter().collect::<String>());
-                        self.lines.push(Line::styled(row, style));
-                    }
+                // The shared grapheme- and display-width-aware wrap.
+                let layout = Layout::new(&Editor::new(text.trim_end_matches('\n')), width);
+                // An empty row that starts where the previous row ends is the
+                // editor's cursor cell after a full row, not text.
+                let rows = layout.rows.iter().enumerate().filter(|(index, row)| {
+                    !(row.cells.is_empty()
+                        && index
+                            .checked_sub(1)
+                            .and_then(|previous| layout.rows.get(previous))
+                            .is_some_and(|previous| previous.end == row.start))
+                });
+                for (index, row) in rows {
+                    let marker = if prompt && index == 0 { "› " } else { "  " };
+                    let mut text = String::from(marker);
+                    text.extend(row.cells.iter().map(|cell| cell.symbol.as_str()));
+                    self.lines.push(Line::styled(text, style));
                 }
                 self.lines.push(Line::default());
             }
