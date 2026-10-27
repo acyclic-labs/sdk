@@ -423,7 +423,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .state()
             .and_then(|state| state.cursor("activation"))
             .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        let mut created = provider.follow(root, from, FollowFilter::default()).await?;
+        let mut created = acyclic_stream::records_only(provider.follow(acyclic_stream::FollowRequest { path: root, from, preceding: None, filter: FollowFilter::default(), progress: false }).await?);
         let mut dispatcher = Some(dispatcher);
         let mut dispatching: Option<BoxProviderFuture<'_, Result<Snapshot, Error>>> = None;
         let mut running = FuturesUnordered::new();
@@ -838,11 +838,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         match self
             .store
             .provider()
-            .follow(path.clone(), cursor, FollowFilter::default())
+            .follow(acyclic_stream::FollowRequest { path: path.clone(), from: cursor, preceding: None, filter: FollowFilter::default(), progress: false })
             .await
         {
             Ok(follow) => {
-                inner.follows.insert(id.to_owned(), follow);
+                inner.follows.insert(id.to_owned(), Box::pin(acyclic_stream::records_only(follow)));
                 Ok(true)
             }
             Err(StreamError::NotFound) => Ok(false),

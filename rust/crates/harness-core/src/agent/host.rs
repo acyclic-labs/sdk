@@ -201,11 +201,11 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
             if consumed {
                 return self.applied(&path, sequence, intent).await;
             }
-            let mut committed = self
+            let mut committed = acyclic_stream::records_only(self
                 .provider
-                .follow(path.clone(), tail, FollowFilter::default())
+                .follow(acyclic_stream::FollowRequest { path: path.clone(), from: tail, preceding: None, filter: FollowFilter::default(), progress: false })
                 .await
-                .map_err(Error::Stream)?;
+                .map_err(Error::Stream)?);
             match committed.next().await {
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(Error::Stream(error)),
