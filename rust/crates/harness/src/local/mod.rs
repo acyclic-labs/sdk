@@ -51,8 +51,8 @@ pub mod web;
 mod workspace;
 pub use agents::{AgentFailure, LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
-pub use tool_output::{OutputTail, ToolOutput};
 use config::LocalProject;
+pub use tool_output::{OutputTail, ToolOutput};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
 
