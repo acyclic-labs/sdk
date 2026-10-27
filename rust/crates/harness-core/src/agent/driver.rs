@@ -8,7 +8,7 @@
 
 use super::{
     AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, Error, InboxRecord,
-    IntentId, Out, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
+    IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
     OperationId,
@@ -177,7 +177,9 @@ fn encode(input: &impl Serialize) -> Result<Vec<u8>, Error> {
 fn starting(agent: &AgentState, input: Option<Queued>) -> Result<Queued, Error> {
     match (&agent.turn, input) {
         (
-            Some(bytes),
+            Some(Progress {
+                checkpoint: bytes, ..
+            }),
             None
             | Some(Queued {
                 input: TurnInput::Approval { .. },

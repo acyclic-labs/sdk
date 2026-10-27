@@ -76,7 +76,11 @@ pub async fn reply<P: StreamProvider + ?Sized>(
         .overflow
         .is_some_and(|first| inbox >= first && !state.taken.contains(&inbox));
     Ok(
-        if inbox >= cursor || queued || unread || state.turn.is_some() {
+        if inbox >= cursor
+            || queued
+            || unread
+            || state.turn.as_ref().is_some_and(|turn| turn.inbox == inbox)
+        {
             Reply::Pending
         } else {
             Reply::Dropped

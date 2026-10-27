@@ -88,6 +88,17 @@ pub struct Queued {
     pub input: TurnInput,
 }
 
+/// A turn in progress: the inbox sequence of the input that started it and
+/// the turn driver's checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Progress {
+    /// Inbox sequence of the turn's starting input.
+    pub inbox: u64,
+    /// Turn driver checkpoint for the next step.
+    pub checkpoint: Vec<u8>,
+}
+
 /// Durable agent state, carried in the actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,8 +138,8 @@ pub struct AgentState {
     pub closed: bool,
     /// `ChildDone` has been sent to the parent.
     pub reported: bool,
-    /// Turn driver checkpoint while a turn is in progress.
-    pub turn: Option<Vec<u8>>,
+    /// The turn in progress.
+    pub turn: Option<Progress>,
 }
 
 impl AgentState {
@@ -508,6 +519,11 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
+    // A resumed turn keeps the input that started it.
+    let started = match (&state.turn, &input) {
+        (Some(turn), _) => Some(turn.inbox),
+        (None, input) => input.as_ref().map(|input| input.inbox),
+    };
     let turn = driver.step(state, cursor, input).await?;
     outs.extend(turn.outs);
     let (wait, approval, outcome) = match turn.wait {
@@ -518,7 +534,10 @@ async fn run<T: TurnDriver + ?Sized>(
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
     let (next, send) = kernel::settle(control(state), wait);
-    state.turn = next.turn.then(|| turn.checkpoint.unwrap_or_default());
+    state.turn = started.filter(|_| next.turn).map(|inbox| Progress {
+        inbox,
+        checkpoint: turn.checkpoint.unwrap_or_default(),
+    });
     state.reported = next.reported;
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,

@@ -38,8 +38,8 @@ pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Queued, Step, TurnDriver, TurnFuture,
-    TurnInput, TurnStep, Wait, Wake, step,
+    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Progress, Queued, Step, TurnDriver,
+    TurnFuture, TurnInput, TurnStep, Wait, Wake, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,

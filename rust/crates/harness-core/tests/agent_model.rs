@@ -495,7 +495,10 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
     state.phase = Phase::WaitingApproval { id: intent("q") };
-    state.turn = Some(Vec::new());
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
     let request = |n: u64| -> Result<InboxRecord> {
         Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
             child: path.child(&id(2))?,
