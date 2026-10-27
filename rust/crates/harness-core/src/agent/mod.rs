@@ -39,12 +39,13 @@ pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, S
 pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Wait, Wake, step,
+    TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
     ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-    MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, StatusRecord, VolumeBinding,
+    MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest, StatusRecord,
+    VolumeBinding,
 };
 
 /// Agent model failures.
@@ -71,9 +72,6 @@ pub enum Error {
     /// Turn driver failure.
     #[error(transparent)]
     Turn(Box<crate::Error>),
-    /// A well-formed request this host does not serve.
-    #[error("unsupported agent request: {0}")]
-    Unsupported(&'static str),
 }
 
 impl Error {
@@ -89,7 +87,6 @@ impl Error {
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",
             Self::Turn(_) => "agent_turn_error",
-            Self::Unsupported(_) => "agent_unsupported",
         }
     }
 

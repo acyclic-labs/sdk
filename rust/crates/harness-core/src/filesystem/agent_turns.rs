@@ -438,6 +438,84 @@ where
         crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
 
+    /// Decides approval `request` of `agent` as `responder`, then wakes the
+    /// waiting turn with one `InboxRecord::Approval` from that responder.
+    ///
+    /// The embedding authenticates `responder` (its human connection or the
+    /// running parent); only human and parent roles enter here. Retrying
+    /// identical arguments repairs a crash between decision and wake; an
+    /// uncertain wake is `agent::Error::Unknown` with its exact request.
+    pub async fn respond(
+        &self,
+        agents: &crate::agent::AgentHost<P>,
+        agent: &AgentPath,
+        request: &crate::agent::IntentId,
+        responder: crate::approvals::ApprovalResponder<'_>,
+        approved: bool,
+        reason: Option<String>,
+    ) -> std::result::Result<crate::agent::Delivered, crate::agent::Error> {
+        use crate::agent::{Approval, Error as AgentError, InboxRecord, Sender};
+        use crate::approvals::ApprovalResponder;
+        let state = agents.state(agent).await?;
+        let from = match responder {
+            ApprovalResponder::Human(principal) => Sender::User {
+                principal: principal.to_owned(),
+            },
+            ApprovalResponder::Parent(parent) => Sender::Agent {
+                path: state
+                    .parent
+                    .clone()
+                    .filter(|path| &path.id() == parent)
+                    .ok_or(AgentError::Record("approval responder is not the parent"))?,
+            },
+            _ => return Err(AgentError::Record("external approval role is required")),
+        };
+        self.decide(&state, request.as_str(), responder, approved, reason)
+            .await
+            .map_err(|error| AgentError::Turn(Box::new(error)))?;
+        let wake = InboxRecord::Approval(Approval {
+            id: request.clone(),
+        });
+        agents.send(agent, &from, &wake).await
+    }
+
+    /// The approval `agent`'s turn waits on, read from its request file.
+    pub async fn pending_approval(
+        &self,
+        agent: &AgentState,
+    ) -> Result<Option<(crate::agent::IntentId, crate::interaction::Interaction)>> {
+        let crate::agent::Phase::WaitingApproval { id } = &agent.phase else {
+            return Ok(None);
+        };
+        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
+        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        let bytes = policy.request(&*files, id.as_str()).await?;
+        let request = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(Some((id.clone(), request)))
+    }
+
+    /// Approval `id` of `agent` as `principal` already decided it, read from
+    /// its request file whether or not the turn still waits on it: an
+    /// identical decision retried after the agent resumed replays.
+    pub async fn decided_approval(
+        &self,
+        agent: &AgentState,
+        id: &crate::agent::IntentId,
+        principal: &str,
+    ) -> Result<Option<crate::interaction::Interaction>> {
+        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
+        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        let Some(bytes) =
+            crate::approvals::decided_request(&*files, &policy, id.as_str(), principal).await?
+        else {
+            return Ok(None);
+        };
+        crate::contract::json_from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
     /// `agent`'s verified admission; it performs no IO.
     fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v>> {
         AdmittedAgent::verify(&self.issuer, &self.admission, &agent.path, &agent.volumes)

@@ -93,6 +93,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-core",
  "acyclic-native-runtime",
+ "acyclic-objects",
  "acyclic-stream",
  "async-trait",
  "base64 0.22.1",
