@@ -94,7 +94,8 @@ message SessionFollow {
   // [resume.next, min(until, tail at open)) with the same credit, credential
   // and anchor rules as any ALL follow, then closes with SessionClosed code
   // "end". It never waits for appends. until <= resume.next ends with no data.
-  // A resumed bounded follow keeps until and re-resolves against its new tail.
+  // Once opened, a bounded read fails on connection loss or placement moves;
+  // it must not resume by re-resolving its end against a different snapshot.
   uint64 until = 4;
 }
 message SessionCursor {

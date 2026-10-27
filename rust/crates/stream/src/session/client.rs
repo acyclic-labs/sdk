@@ -240,12 +240,12 @@ impl Route {
     fn live(&self) -> bool {
         !self.progress.cancelled() && !self.records.is_closed()
     }
-    /// Follows resume from their cursor. A children page is a pure read, so it
-    /// is reissued until its first fragment arrives, never spliced afterwards.
-    /// An Actors call is never replayed.
+    /// Live follows resume from their cursor. An opened finite read cannot
+    /// reopen against a different snapshot; a children page is reissued only
+    /// before its first fragment. An Actors call is never replayed.
     fn resumable(&self) -> bool {
-        match self.kind {
-            Kind::Follow(_) => true,
+        match &self.kind {
+            Kind::Follow(follow) => follow.until == 0 || !self.opened,
             Kind::ChildrenPage(_) => self.received == 0,
             _ => false,
         }
@@ -388,6 +388,8 @@ impl Client {
     }
     /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
     /// on the shared session, with the semantics of [`crate::StreamProvider::read`].
+    /// An opened read fails on connection loss or placement moves rather than
+    /// resuming against a different snapshot. The caller may start a new read.
     pub async fn read(&self, request: crate::ReadRequest) -> Result<RecordStream, StreamError> {
         self.read_with_ack(request, true).await
     }
@@ -422,7 +424,9 @@ impl Client {
         if let Some(Err(error)) = first {
             return Err(error);
         }
-        Ok(super::runtime::boxed(futures::stream::iter(first).chain(records)))
+        Ok(super::runtime::boxed(
+            futures::stream::iter(first).chain(records),
+        ))
     }
     pub(crate) async fn follow_records(
         &self,

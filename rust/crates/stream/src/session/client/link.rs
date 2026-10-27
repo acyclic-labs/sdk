@@ -289,15 +289,16 @@ impl Pool {
         if node == self.home {
             self.reset_home();
         }
-        // Follows have durable cursors; calls do not. Never splice a partial
-        // response with a recomputed response, or repeat a mutating invocation.
-        let calls = self
+        // Only resumable routes can open again: an opened finite read would
+        // choose a new snapshot, a page could splice replies, and a call could
+        // repeat a mutating invocation.
+        let interrupted = self
             .routes
             .iter()
             .filter(|(_, route)| route.node == node && !route.resumable())
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
-        for id in calls {
+        for id in interrupted {
             self.reject(id, StreamError::Unavailable);
         }
         // The authenticated discovery endpoint may now host a replacement

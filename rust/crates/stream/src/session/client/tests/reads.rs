@@ -57,14 +57,21 @@ async fn bounded_follow_delivers_exactly_the_read_range_and_closes() -> TestResu
         let path = format!("events/{index}");
         append(&provider, &path, 5).await?;
         let expected = sequences(provider.read(read(&path, from, limit)?).await?).await?;
-        assert_eq!(expected, (from..(from + u64::from(limit)).min(5)).collect::<Vec<_>>());
+        assert_eq!(
+            expected,
+            (from..(from + u64::from(limit)).min(5)).collect::<Vec<_>>()
+        );
         let session = client.read(read(&path, from, limit)?).await?;
         // Appends after open never extend the range: it ends at the tail at open.
         append(&provider, &path, 1).await?;
         assert_eq!(sequences(session).await?, expected);
     }
     // Errors resolve exactly as the provider's own read.
-    for request in [read("events/0", 99, 1)?, read("absent", 0, 1)?, read("events/0", 0, 0)?] {
+    for request in [
+        read("events/0", 99, 1)?,
+        read("absent", 0, 1)?,
+        read("events/0", 0, 0)?,
+    ] {
         assert_eq!(
             client.read(request.clone()).await.err(),
             provider.read(request).await.err()
@@ -94,7 +101,10 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
         let end = tokio::time::timeout(Duration::from_secs(1), data.next()).await?;
         assert!(end.is_none(), "{from}..{until} delivered data");
     }
-    assert_eq!(sequences(client.read(read("events", 5, 1)?).await?).await?, Vec::<u64>::new());
+    assert_eq!(
+        sequences(client.read(read("events", 5, 1)?).await?).await?,
+        Vec::<u64>::new()
+    );
     // A bound is meaningful only for an ALL follow of a stream.
     let mut latest = bounded("events", 4);
     latest.delivery = wire::SessionDelivery::Latest as i32;
@@ -102,7 +112,10 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
         wire_codec::session::follow_bound(&latest),
         Err(StreamError::InvalidArgument)
     ));
-    assert_eq!(wire_codec::session::follow_bound(&bounded("events", 0))?, None);
+    assert_eq!(
+        wire_codec::session::follow_bound(&bounded("events", 0))?,
+        None
+    );
     assert_eq!(client.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }
@@ -129,7 +142,12 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
     }
     let full = client.children_page(page("tree", 10)?, 0).await?;
     assert_eq!(full.children.len(), 3);
-    assert!(full.children.iter().take(2).all(|child| child.tail_record.is_some()));
+    assert!(
+        full.children
+            .iter()
+            .take(2)
+            .all(|child| child.tail_record.is_some())
+    );
     assert_eq!(
         client.children_page(page("tree", 0)?, 0).await.err(),
         provider.children_page(page("tree", 0)?).await.err()
@@ -155,5 +173,121 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
     assert_eq!(fixture.counts.unary.load(Ordering::Relaxed), 0);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 1);
+    for request in [read("absent", 0, 1)?, read("events", 5, 1)?] {
+        assert_eq!(
+            StreamProvider::read(&client, request.clone()).await.err(),
+            provider.read(request).await.err()
+        );
+    }
+    assert!(
+        sequences(StreamProvider::read(&client, read("events", 4, 10)?).await?)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(fixture.counts.unary.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn partially_delivered_read_fails_instead_of_widening_after_reconnect() -> TestResult {
+    interrupted_read(false).await
+}
+
+#[tokio::test]
+async fn partially_delivered_read_fails_instead_of_widening_after_move() -> TestResult {
+    interrupted_read(true).await
+}
+
+async fn interrupted_read(moved: bool) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 5).await?;
+    append(&provider, "healthy", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
+    let client = fixture.client()?;
+    let mut healthy = client
+        .follow(
+            StreamPath::new("healthy")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
+    let mut records = StreamProvider::read(&client, read("events", 0, 10)?).await?;
+    assert_eq!(next(&mut records).await?.sequence, 0);
+    assert_eq!(next(&mut records).await?.sequence, 1);
+    // Two credited records remain buffered. The fifth cannot be sent yet,
+    // so this interruption necessarily precedes the finite read's completion.
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture.until(|counts| counts.sent.load(Ordering::Relaxed) == 4),
+    )
+    .await?;
+    append(&provider, "events", 5).await?;
+    if moved {
+        fixture.controls.send(Ok(frame(
+            3,
+            1,
+            Body::Moved(wire::SessionMoved {
+                node: Some(wire::SessionNode {
+                    node_id: "node".into(),
+                    endpoint: String::new(),
+                    placement_epoch: 1,
+                }),
+            }),
+        )))?;
+    } else {
+        fixture.reset()?;
+    }
+    let mut refused = false;
+    while let Some(record) = tokio::time::timeout(Duration::from_secs(1), records.next()).await? {
+        match record {
+            Ok(record) => assert!(record.sequence < 5, "read crossed its original snapshot"),
+            Err(error) => {
+                assert_eq!(error, StreamError::Unavailable);
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        refused,
+        "a partially delivered finite read must fail on disconnect"
+    );
+    assert!(records.next().await.is_none());
+    // A live follow on the same physical connection still recovers, and a
+    // fresh read can explicitly choose the new snapshot.
+    append(&provider, "healthy", 1).await?;
+    assert_eq!(next(&mut healthy).await?.sequence, 1);
+    assert_eq!(
+        sequences(StreamProvider::read(&client, read("events", 0, 10)?).await?).await?,
+        (0..10).collect::<Vec<_>>()
+    );
+    assert_eq!(fixture.counts.unary.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        fixture.counts.follows.load(Ordering::Relaxed),
+        if moved { 3 } else { 4 }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_finite_read_releases_only_its_own_interest() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 10).await?;
+    let client = local(&provider)?;
+    let mut healthy = client
+        .follow(
+            StreamPath::new("events")?,
+            10,
+            crate::FollowFilter::default(),
+        )
+        .await?;
+    let records = client.read(read("events", 0, 10)?).await?;
+    assert_eq!(client.active.load(super::super::Ordering::Acquire), 2);
+    drop(records);
+    assert_eq!(client.active.load(super::super::Ordering::Acquire), 1);
+    append(&provider, "events", 1).await?;
+    assert_eq!(next(&mut healthy).await?.sequence, 10);
+    drop(healthy);
+    assert_eq!(client.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }
