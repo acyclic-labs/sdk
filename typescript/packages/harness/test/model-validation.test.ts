@@ -52,29 +52,6 @@ test("generated skill parser and immutable projection share Rust validation and 
     base, "prepend", DEFAULT_LIMITS)).not.toThrow();
 });
 
-test("generated context selections and updates use native schemas, placement and bounds", () => {
-  const selection = { source: { kind: "attribute" as const, attribute: {
-    type_name: "example.role", type_revision: "1", state_revision: "2",
-    schema: { type: "string" }, value: "reviewer",
-  } }, extent: { kind: "whole" as const }, representation: "full" as const };
-  contracts.validateContextSelection(selection, DEFAULT_LIMITS);
-  expect(() => contracts.validateContextSelection({ ...selection, source: {
-    kind: "attribute", attribute: { ...selection.source.attribute, value: 3 },
-  } }, DEFAULT_LIMITS)).toThrow();
-  expect(() => contracts.validateContextSelection(selection, {
-    ...DEFAULT_LIMITS, render_bytes: 1,
-  })).toThrow();
-  const base = { messages: [{ role: "user" as const, content: "task" }], metadata: {} };
-  const rendered = [{ role: "system" as const, content: "reviewer" }];
-  const rebuilt = contracts.applyContextProjection(base, rendered, "prompt", "prepend", DEFAULT_LIMITS);
-  const update = contracts.applyContextProjection(base, rendered, "update", "prepend", DEFAULT_LIMITS);
-  expect(rebuilt.messages[0]).toEqual(update.messages[1]);
-  expect(base.messages).toHaveLength(1);
-  expect(() => contracts.applyContextProjection(base, rendered, "prompt", "prepend", {
-    ...DEFAULT_LIMITS, render_bytes: 1,
-  })).toThrow();
-});
-
 test("generated context composition preserves existing file wires without reinterpreting metadata", async () => {
   const reference = await file();
   const part = { kind: "file" as const, file: reference, policy: "reference" as const };

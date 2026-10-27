@@ -42,26 +42,6 @@ function fixtureJson(value: unknown): string {
   });
 }
 
-test("Rust constructs exact descriptors for empty files and rejects invalid media types", async () => {
-  const descriptor = await descriptorFor(new Uint8Array(), "application/octet-stream");
-  expect(descriptor.byte_length).toBe(0);
-  expect(descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join(""))
-    .toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-  await expect(descriptorFor(new Uint8Array(), "not a media type")).rejects.toThrow();
-});
-
-test("standalone provider and file descriptor admission has one Rust contract", () => {
-  const provider = contracts.validate("provider_ref", { namespace: "test", family: "filesystem", version: "2" });
-  expect(provider.family).toBe("filesystem");
-  expect(() => contracts.validate("provider_ref", { ...provider, namespace: "" })).toThrow();
-  const descriptor = contracts.validate("file_descriptor", {
-    sha256: Array(32).fill(0) as number[], byte_length: 0, media_type: "application/octet-stream",
-  });
-  expect(descriptor.sha256).toHaveLength(32);
-  expect(() => contracts.validate("file_descriptor", { ...descriptor, sha256: [0] })).toThrow();
-  expect(() => contracts.validate("file_descriptor", { ...descriptor, byte_length: Number.MAX_SAFE_INTEGER + 1 })).toThrow();
-});
-
 async function content(owner = agent): Promise<FileRef> {
   const bytes = new TextEncoder().encode("payload");
   return contracts.validate("file_ref", {

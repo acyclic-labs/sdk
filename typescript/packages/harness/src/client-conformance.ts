@@ -1,5 +1,6 @@
 /** Identical host-provisioned bytes for the Rust and TS public-client runners. */
 import { AgentClient, AgentControls, PreparedAgentCommand, type PreparedAgentInvocation, type WasmStream } from "./client-query.js";
+import { clientValueKey as exactJson } from "./client-conformance-value.js";
 
 export interface ClientControlVector {
   readonly case: string;
@@ -26,21 +27,6 @@ export interface ClientToolOutputFixture {
   readonly resource: string;
   readonly subscription: readonly number[];
   readonly record: readonly number[];
-}
-
-function exactJson(value: unknown): string {
-  return JSON.stringify(value, (_, item: unknown) => {
-    if (item instanceof Map) throw new Error("CLIENT_CONFORMANCE client projection contains a Map instead of object fields");
-    if (typeof item === "bigint") return {$integer: item.toString()};
-    if (typeof item === "number" && Number.isInteger(item)) {
-      if (!Number.isSafeInteger(item)) throw new Error("CLIENT_INPUT rounded integer");
-      return {$integer: item.toString()};
-    }
-    if (item !== null && typeof item === "object" && !Array.isArray(item)) {
-      return Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
-    }
-    return item;
-  });
 }
 
 /** One public observer folds agent records and a host-filtered fs:/ follow.
