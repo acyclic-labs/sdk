@@ -14,19 +14,111 @@ export interface ClientControlFixture {
   readonly cases: readonly ClientControlVector[];
 }
 
-/** The same host-provisioned file consumed by the native tool-output runner.
- * Decode with decodeClientJson so stream cursors retain all 64 bits. */
+/** Host-created settled records, shared with Rust client::Fixture. Decode with
+ * decodeClientJson so stream cursors retain all 64 bits. Each supplied stream
+ * must end immediately after its fixture record. */
+export interface ClientObservationFixture {
+  readonly agent: string;
+  readonly conversation_from: bigint;
+  readonly status_from: bigint;
+  readonly entry: unknown;
+  readonly status: unknown;
+}
+
+/** The same host-provisioned file consumed by the native tool-output runner. */
 export interface ClientToolOutputFixture {
-  readonly observation: {
-    readonly agent: string;
-    readonly conversation_from: bigint;
-    readonly status_from: bigint;
-    readonly entry: unknown;
-    readonly status: unknown;
-  };
+  readonly observation: ClientObservationFixture;
   readonly resource: string;
   readonly subscription: readonly number[];
   readonly record: readonly number[];
+}
+
+function observationCursors(fixture: ClientObservationFixture): void {
+  if (fixture === null || typeof fixture !== "object" || typeof fixture.agent !== "string") {
+    throw new Error("CLIENT_INPUT invalid observation fixture");
+  }
+  for (const cursor of [fixture.conversation_from, fixture.status_from]) {
+    if (typeof cursor !== "bigint" || cursor < 0n || cursor >= (1n << 64n) - 1n) {
+      throw new Error("CLIENT_INPUT invalid exact stream cursor");
+    }
+  }
+}
+
+function refused(step: string, code: string, action: () => unknown): void {
+  try { action(); }
+  catch (error) {
+    if (error instanceof Error && error.name === code) return;
+    throw error;
+  }
+  throw new Error(`CLIENT_CONFORMANCE ${step}: expected ${code}`);
+}
+
+/** The six observation oracles from Rust client::verify_observation, through
+ * the public WASM client. Native verify additionally validates provider tails;
+ * this runner requires the same host-provisioned settled-cut fixture. Neither
+ * runner establishes turn execution, byte/credit bounds or endpoint bootstrap. */
+export async function verifyClientObservation(stream: WasmStream, credential: number,
+  fixture: ClientObservationFixture): Promise<{passed: string[]}> {
+  observationCursors(fixture);
+  const client = new AgentClient(stream, fixture.agent, fixture.conversation_from, fixture.status_from, credential);
+  const select = (agent: string, conversation: bigint, status: bigint): void => {
+    client.setView([agent], BigUint64Array.of(conversation), BigUint64Array.of(status));
+  };
+  let conversation = false, status = false;
+  try {
+    while (!(conversation && status)) {
+      const event = await client.next();
+      switch (event.kind) {
+        case "conversation":
+          if (conversation || event.agent !== fixture.agent || event.sequence !== fixture.conversation_from
+            || exactJson(event.entry) !== exactJson(fixture.entry)) {
+            throw new Error("CLIENT_CONFORMANCE exact_conversation: wrong identity, duplicate, sequence or payload");
+          }
+          conversation = true;
+          break;
+        case "status":
+          if (status || event.agent !== fixture.agent || exactJson(event.status) !== exactJson(fixture.status)) {
+            throw new Error("CLIENT_CONFORMANCE exact_status: wrong identity, duplicate or payload");
+          }
+          status = true;
+          break;
+        case "progress": break;
+        default: throw new Error("CLIENT_CONFORMANCE not_requested: unrequested delivery");
+      }
+    }
+    const before = client.agentWindow(fixture.agent);
+    select(fixture.agent, fixture.conversation_from, fixture.status_from);
+    const retained = client.agentWindow(fixture.agent);
+    if (retained.nextSequence !== before.nextSequence || retained.revision !== before.revision || retained.recordCount !== 1n) {
+      throw new Error("CLIENT_CONFORMANCE retain_selection: unchanged demand reset the fold or cursor");
+    }
+    // The production interest policy admits eight selected agents. Nine inputs
+    // must be refused atomically, including when their identities overlap.
+    const overCapacity = Array<string>(9).fill(fixture.agent);
+    const composition = client.viewRevision();
+    refused("atomic_capacity_refusal", "selected_capacity", () => client.setView(overCapacity,
+      new BigUint64Array(9).fill(fixture.conversation_from), new BigUint64Array(9).fill(fixture.status_from)));
+    const unchanged = client.agentWindow(fixture.agent);
+    if (unchanged.nextSequence !== before.nextSequence || client.viewRevision() !== composition
+      || exactJson(client.selectedAgents()) !== exactJson([fixture.agent])) {
+      throw new Error("CLIENT_CONFORMANCE atomic_capacity_refusal: refusal changed admitted demand");
+    }
+    // This is the same fixed test identity used by the native suite, not a
+    // frontend agent-address constructor. Rust admits each selected path.
+    const parentEdge = fixture.agent.lastIndexOf("/children/");
+    const unknown = parentEdge < 0 ? `${fixture.agent}/children/${"7f".repeat(16)}` : fixture.agent.slice(0, parentEdge);
+    refused("unknown_authority", "not_requested", () => client.agentStatus(unknown));
+    select(unknown, 0n, 0n);
+    refused("reselection_cursor", "not_requested", () => client.agentWindow(fixture.agent));
+    // Do not poll the replacement: selection is lazy and releases old custody.
+    select(fixture.agent, before.nextSequence, fixture.status_from + 1n);
+    const reselected = client.agentWindow(fixture.agent);
+    if (reselected.nextSequence !== before.nextSequence || reselected.recordCount !== 0n) {
+      throw new Error("CLIENT_CONFORMANCE reselection_cursor: evicted history retained or cursor reset");
+    }
+    return {passed: ["exact_conversation", "exact_status", "retain_selection", "atomic_capacity_refusal",
+      "unknown_authority", "reselection_cursor"]};
+  } finally { client.close(); client.free(); }
 }
 
 /** One public observer folds agent records and a host-filtered fs:/ follow.
@@ -35,11 +127,7 @@ export interface ClientToolOutputFixture {
 export async function verifyClientToolOutput(stream: WasmStream, credential: number,
   fixture: ClientToolOutputFixture): Promise<{passed: string[]}> {
   const observed = fixture.observation;
-  for (const cursor of [observed.conversation_from, observed.status_from]) {
-    if (typeof cursor !== "bigint" || cursor < 0n || cursor >= (1n << 64n) - 1n) {
-      throw new Error("CLIENT_INPUT invalid exact stream cursor");
-    }
-  }
+  observationCursors(observed);
   const subscription = bytes(fixture.subscription, PreparedAgentCommand.maximumInvocationBytes());
   const record = bytes(fixture.record, PreparedAgentCommand.maximumReplyBytes());
   const client = new AgentClient(stream, observed.agent, observed.conversation_from, observed.status_from, credential);
