@@ -58,7 +58,10 @@ struct Credential {
 }
 
 pub(super) fn entry(name: &str) -> keyring::Entry {
-    keyring::Entry::new_with_credential(Box::new(Credential { name: name.into(), remote: host::remote() }))
+    keyring::Entry::new_with_credential(Box::new(Credential {
+        name: name.into(),
+        remote: host::remote(),
+    }))
 }
 
 impl CredentialApi for Credential {

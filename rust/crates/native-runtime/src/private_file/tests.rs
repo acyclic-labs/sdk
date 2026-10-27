@@ -14,6 +14,32 @@ fn credential_identity_requires_a_persistent_account_namespace() -> io::Result<(
     assert!(persistent_user_directory(Path::new("/tmp/service/home")).is_err());
     assert!(persistent_user_directory(Path::new("/var/tmp/service/home")).is_err());
     assert!(persistent_user_directory(Path::new("relative/home")).is_err());
+
+    // The job-owned source directory provides a persistent fixture parent;
+    // nothing is created in the OS account's actual profile. The old
+    // home-only admission accepts this parent but misses the appended alias.
+    let root = tempfile::Builder::new()
+        .prefix(".custody-namespace-")
+        .tempdir_in(std::env::current_dir()?)?;
+    let home = fs::canonicalize(root.path())?;
+    persistent_user_directory(&home)?;
+    let data = home.join(".local/share");
+    fs::create_dir_all(&data)?;
+    let admitted = credential_directory(&data)?;
+    assert_eq!(admitted, fs::canonicalize(data.join("acyclic.authority.signing-seed.v1"))?);
+    fs::remove_dir(&admitted)?;
+    fs::remove_dir(&data)?;
+    let temporary = tempfile::tempdir()?;
+    std::os::unix::fs::symlink(temporary.path(), &data)?;
+    // This is the actual former admission boundary, and its unchanged parent
+    // still passes. The full namespace must fail before any credential access.
+    assert!(persistent_user_directory(&home).is_ok());
+    let error = match credential_directory(&data) {
+        Ok(_) => return Err(io::Error::other("temporary data alias was admitted")),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(fs::read_dir(temporary.path().join("acyclic.authority.signing-seed.v1"))?.count(), 0);
     Ok(())
 }
 

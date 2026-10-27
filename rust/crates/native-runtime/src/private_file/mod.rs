@@ -127,22 +127,13 @@ pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
     #[cfg(windows)]
     let user = "user";
     #[cfg(not(any(test, feature = "test-support")))]
-    let root = {
-        let root = root.join("acyclic.authority.signing-seed.v1");
-        let mut create = fs::DirBuilder::new();
-        create.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt as _;
-            create.mode(0o700);
-        }
-        create.create(&root)?;
-        root
-    };
+    let root = credential_directory(&root)?;
     // A fixture credential exists in this process only. Its lock namespace
     // follows that same custody boundary, without changing the locking API.
     #[cfg(any(test, feature = "test-support"))]
-    let identity = if shared.is_some() { identity.to_owned() } else {
+    let identity = if shared.is_some() {
+        identity.to_owned()
+    } else {
         format!("fixture-{}-{identity}", std::process::id())
     };
     open_or_create(&root.join(format!("acyclic-custody-{user}-{identity}.lock")))
@@ -210,13 +201,41 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
     }
 }
 
-#[cfg(all(unix, any(test, not(feature = "test-support"))))]
-fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
-    if !path.is_absolute()
-        || ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
-            .iter()
-            .any(|temporary| path.starts_with(temporary))
+// Admission must follow every appended component and alias, including the
+// service directory. A persistent account home alone does not establish that
+// its data directory is outside a service-private temporary mount.
+#[cfg(any(test, not(feature = "test-support")))]
+fn credential_directory(data: &Path) -> io::Result<std::path::PathBuf> {
+    let root = data.join("acyclic.authority.signing-seed.v1");
+    let mut create = fs::DirBuilder::new();
+    create.recursive(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::DirBuilderExt as _;
+        create.mode(0o700);
+    }
+    create.create(&root)?;
+    let resolved = fs::canonicalize(&root)?;
+    persistent_user_directory(&resolved).map_err(|error| io::Error::new(error.kind(),
+        format!("credential lock final namespace admission failed for {}: {error}; recovery: configure the OS account data directory on persistent storage outside temporary namespaces", resolved.display())))?;
+    Ok(resolved)
+}
+
+#[cfg(any(test, not(feature = "test-support")))]
+fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
+    #[cfg(unix)]
+    let temporary = ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
+        .iter()
+        .any(|temporary| path.starts_with(temporary));
+    // Windows temporary folders conventionally occur at either the volume,
+    // Windows or account-data level. Compare complete components, including
+    // canonicalized reparse-point targets, without consulting TEMP/TMP.
+    #[cfg(windows)]
+    let temporary = path.components().any(|part| {
+        let component = part.as_os_str().as_encoded_bytes();
+        component.eq_ignore_ascii_case(b"Temp") || component.eq_ignore_ascii_case(b"Tmp")
+    });
+    if !path.is_absolute() || temporary {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(path)
