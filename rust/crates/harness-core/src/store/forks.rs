@@ -62,7 +62,7 @@ pub(super) fn fork_command_key_with_work(
     Ok((key, held))
 }
 
-impl<P: StreamProvider> StreamAggregate<P> {
+impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
     /// Prepares the selected resources at the captured parent revision.
     pub async fn prepare_fork(
         &self,

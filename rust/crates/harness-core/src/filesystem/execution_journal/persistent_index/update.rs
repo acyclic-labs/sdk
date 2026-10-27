@@ -7,7 +7,7 @@ pub(super) struct Ancestor {
     children: [NodeRef; 2],
 }
 
-impl<'a, P: StreamProvider> Writer<'a, P> {
+impl<'a, P: StreamProvider + ?Sized> Writer<'a, P> {
     pub(in crate::filesystem::execution_journal) fn new(
         provider: &'a Arc<P>,
         path: &'a StreamPath,

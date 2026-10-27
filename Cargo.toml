@@ -10,6 +10,7 @@ members = [
   "rust/crates/auth-wasm",
   "rust/crates/conformance",
   "rust/crates/conformance/agent-host",
+  "rust/crates/conformance/cloudflare",
   "rust/crates/contract-derive",
   "rust/crates/differential",
   "rust/crates/filesystem",

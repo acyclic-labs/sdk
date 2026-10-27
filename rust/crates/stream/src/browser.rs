@@ -271,24 +271,11 @@ impl BrowserStream {
 
     async fn execute(
         &self,
-        mut command: Command,
+        command: Command,
         deadline: Option<u64>,
     ) -> Result<Outcome, StreamError> {
-        match &mut command {
-            Command::Append(request) => {
-                crate::request::validate_records(&request.records)?;
-                crate::request::validate_append_size(request)?;
-            }
-            Command::Fork(request) => crate::request::validate_fork_size(request)?,
-            Command::Commit(request) => {
-                crate::request::normalize_commit(request)?;
-                crate::request::validate_commit_shape(request)?;
-            }
-        }
+        let command = command.validated()?;
         let journal = &command;
-        if journal.encoded_len() > MAX_COMMAND_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
         let encoded = journal.encode_to_vec();
         let mut dispatch = publication::Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;

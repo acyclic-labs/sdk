@@ -226,6 +226,16 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         Ok(())
     }
 
+    /// Runs one agent's committed inputs to quiescence within this event.
+    /// Uses finite reads, so no subscription transport wake is required.
+    pub async fn drain(&self, agent: &AgentPath) -> Result<(), Error> {
+        self.host(agent)?;
+        self.runtime
+            .drain_actor(&self.actor(agent)?)
+            .await
+            .map_err(actor_error)
+    }
+
     /// One inbox commit, independent of the observed inbox tail. The tail read
     /// rejects an absent agent; an existing inbox cannot disappear. The closed
     /// marker fences admission in the commit itself. Removing only the inbox

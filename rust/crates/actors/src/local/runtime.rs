@@ -75,6 +75,14 @@ struct Inner {
     pending: Option<(Snapshot, PreparedPublish)>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Inputs {
+    /// Read committed inputs, then install passive subscriptions.
+    Follow,
+    /// One event reads committed inputs without retaining subscriptions.
+    Event,
+}
+
 enum Event {
     Created(Record),
     Work(Work<ActorReference>),
@@ -233,11 +241,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self.ready.wake_due(self.clock.now_unix_ms(), usize::MAX);
         let mut failures = Vec::new();
         while let Some(work) = self.ready.take() {
-            if let Err(failure) = self.execute(work).await {
+            if let Err(failure) = self.execute(work, Inputs::Follow).await {
                 failures.push(failure);
             }
         }
         failures
+    }
+
+    /// Drain one tracked actor using finite reads of its committed input.
+    /// Event-owned hosts cannot wait for a passive subscription's transport
+    /// wake before returning from their event. No live follow is opened here.
+    pub async fn drain_actor(&self, actor: &ActorReference) -> Result<(), Error> {
+        let slot = self
+            .slot(actor)
+            .ok_or(Error::Invalid("actor is not tracked"))?;
+        self.deliver(actor, &slot, Inputs::Event).await
     }
 
     /// Host forever: follow the root's activation log to discover actors
@@ -302,7 +320,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
                 Event::Work(work) => {
-                    let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
+                    let execution: BoxProviderFuture<'_, _> =
+                        Box::pin(self.execute(work, Inputs::Follow));
                     running.push(execution);
                 }
                 Event::Done(Err((actor, error))) => report(&actor, &error),
@@ -327,12 +346,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .cloned()
     }
 
-    async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
+    async fn execute(
+        &self,
+        work: Work<ActorReference>,
+        inputs: Inputs,
+    ) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot).await;
+        let result = self.deliver(&actor, &slot, inputs).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
@@ -342,12 +365,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Deliver until nothing is ready: one committed transition per input.
-    async fn deliver(&self, actor: &ActorReference, slot: &Slot) -> Result<(), Error> {
+    async fn deliver(
+        &self,
+        actor: &ActorReference,
+        slot: &Slot,
+        inputs: Inputs,
+    ) -> Result<(), Error> {
         let mut inner = slot.inner.lock().await;
         if inner.released {
             return Ok(());
         }
         loop {
+            // A pending follow may own asynchronous provider I/O or a fair
+            // mutex ticket. Cancel it before loading state through that same
+            // provider; the committed cursor is the source of truth below.
+            inner.follows.clear();
             if let Some((snapshot, publication)) = inner.pending.take() {
                 match self.store.submit(publication).await {
                     Ok(()) => continue,
@@ -411,7 +443,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     },
                     None,
                 ),
-                _ => match self.next_record(slot, &mut inner, state).await? {
+                _ => match self.next_record(slot, &mut inner, state, inputs).await? {
                     Some((subscription, record)) => (
                         Trigger::Record {
                             subscription,
@@ -517,6 +549,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         slot: &Slot,
         inner: &mut Inner,
         state: &State,
+        inputs: Inputs,
     ) -> Result<Option<(String, Record)>, Error> {
         for (id, subscription) in state.subscriptions() {
             if let Some(held) = inner.held.get(id) {
@@ -525,6 +558,33 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 inner.held.remove(id);
             }
+            let records = self
+                .store
+                .provider()
+                .read(acyclic_stream::ReadRequest {
+                    path: subscription.path.clone(),
+                    from: subscription.cursor,
+                    limit: 1,
+                })
+                .await;
+            let mut records = match records {
+                Ok(records) => records,
+                Err(StreamError::NotFound) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(record) = records.next().await.transpose()? {
+                if record.sequence != subscription.cursor {
+                    return Err(Error::Invalid("subscription skipped a record"));
+                }
+                return Ok(Some((id.clone(), record)));
+            }
+        }
+        if inputs == Inputs::Event {
+            return Ok(None);
+        }
+        // Open every cursor before polling any: polling a cursor can retain
+        // provider I/O that another subscription's open would need to finish.
+        for (id, subscription) in state.subscriptions() {
             if !inner.follows.contains_key(id)
                 && !self
                     .open(inner, id, &subscription.path, subscription.cursor)
@@ -532,6 +592,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             {
                 continue;
             }
+        }
+        for (id, subscription) in state.subscriptions() {
             let Some(follow) = inner.follows.get_mut(id) else {
                 continue;
             };
@@ -541,14 +603,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     Poll::Ready(Some(Ok(record))) if record.sequence < subscription.cursor => {}
                     Poll::Ready(Some(Ok(record))) if record.sequence == subscription.cursor => {
                         inner.held.insert(id.clone(), record.clone());
+                        inner.follows.clear();
                         return Ok(Some((id.clone(), record)));
                     }
                     Poll::Ready(Some(Ok(_))) => {
-                        inner.follows.remove(id);
+                        inner.follows.clear();
                         return Err(Error::Invalid("subscription skipped a record"));
                     }
                     Poll::Ready(Some(Err(error))) => {
-                        inner.follows.remove(id);
+                        inner.follows.clear();
                         return Err(error.into());
                     }
                     Poll::Ready(None) => {

@@ -6,9 +6,11 @@ A backend implements two setup traits. `Backend::fresh` returns disposable stora
 
 The native adapter opens a real `LocalStream` directory. It runs twice: direct handlers and handlers carried through `acyclic_actors::guest::wire::Remote`. The browser adapter opens real `BrowserStream` IndexedDB databases and uses the same wire boundary.
 
+`agent_host::fixtures` exposes the same initial adoption, sender, file-free input and deterministic turn driver to endpoint fixtures. The driver accepts ordinary client messages as well as host-side delegated requests: intent `once` publishes `once`, `spawn` forks `child` at the saved cut, and `respawn` conflicts with that child's original prompt. Provision an endpoint with this driver and capture its real binding, command, invocation and reply for the client-protocol suite; use the same intents and retained storage for exact replay. The client lane owns its `ControlFixture` and `ToolOutputFixture` schemas and endpoint runner. These shared host fixtures do not supply a public ingress, credentials or an endpoint qualification receipt.
+
 The vectors cover:
 
-- Creation and send replay after progress, one committed conversation effect, changed creation prompt refusal, and archive fencing.
+- Creation and send replay after progress, one committed conversation effect, a status cursor covering each consecutive settled turn, changed creation prompt refusal, and archive fencing.
 - Unknown publication retries with byte-for-byte equal `CommitRequest`s, one participant open and seal, no settlement even if an uncertain retry is refused, and exactly one terminal settlement. A definitive first refusal and a real conditional conflict settle without consuming input.
 - A spawn's inbox prefix and conversation cut, including input queued after the spawn input and a conversation append in the spawning transaction. The child has no checkpoint until hosted. A changed-prompt respawn fails and preserves the original child.
 - Local root and delegated workload scope, read-only, wrong audience, wrong agent, revoked, expired and tampered widening admissions. Both valid controls reach nonempty history. Invalid admissions perform zero **turn-provider** reads/writes and invoke no executor. Scheduler reads are separate: the actor runtime must load the committed checkpoint to discover which turn to admit.

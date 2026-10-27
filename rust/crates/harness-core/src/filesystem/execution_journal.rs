@@ -69,7 +69,7 @@ use summary::*;
 use summary_cache::SummaryCache;
 
 /// Durable observations and private payload references for one exact agent-private volume.
-pub struct FilesystemExecutionJournal<P, A: 'static, O: 'static> {
+pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     cache_identity: crate::executor::ExecutionJournalCacheId,
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,

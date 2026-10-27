@@ -2,7 +2,7 @@ use super::*;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -230,14 +230,14 @@ where
     }
 }
 
-pub(super) struct JournalSelectedResolver<'a, P, A: 'static, O: 'static> {
+pub(super) struct JournalSelectedResolver<'a, P: ?Sized, A: 'static, O: 'static> {
     pub(super) journal: &'a FilesystemExecutionJournal<P, A, O>,
     pub(super) inner: &'a dyn ContentResidencyVerifier,
 }
 
 impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: StreamProvider> HistoryReader<P> {
+impl<P: StreamProvider + ?Sized> HistoryReader<P> {
     /// Captures the latest canonical message using one head locator and one owner-attested event.
     pub async fn latest_conversation_message(
         &self,

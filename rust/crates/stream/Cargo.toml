@@ -40,6 +40,7 @@ session = ["tokio/rt", "tokio/macros"]
 postgres = ["dep:tokio-postgres", "tokio/rt", "tokio/macros"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
+wasm-journal = ["dep:wasm-bindgen"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]

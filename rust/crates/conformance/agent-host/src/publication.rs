@@ -1,5 +1,5 @@
 use crate::{
-    Backend, Result,
+    Backend, Result, fixtures,
     observe::{Fault, Observed},
     vectors,
 };
@@ -109,10 +109,10 @@ async fn conflict(backend: &dyn Backend) -> Result {
         Some(Arc::new(ComposerCounts(counts.clone()))),
     )?;
     let root = host
-        .create(&vectors::intent("create")?, vectors::adopted())
+        .create(&vectors::intent("create")?, fixtures::adopted())
         .await?;
     vectors::drain(&host).await?;
-    host.send(&root, &vectors::sender(), &vectors::request("once")?)
+    host.send(&root, &fixtures::sender(), &fixtures::request("once")?)
         .await?;
     let state = host.state(&root).await?;
     let settled = counts.settled.load(Ordering::SeqCst);
@@ -143,10 +143,10 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
         Some(Arc::new(ComposerCounts(counts.clone()))),
     )?;
     let root = host
-        .create(&vectors::intent("create")?, vectors::adopted())
+        .create(&vectors::intent("create")?, fixtures::adopted())
         .await?;
     vectors::drain(&host).await?;
-    host.send(&root, &vectors::sender(), &vectors::request("once")?)
+    host.send(&root, &fixtures::sender(), &fixtures::request("once")?)
         .await?;
     let before = provider.commits().len();
     let settled = counts.settled.load(Ordering::SeqCst);

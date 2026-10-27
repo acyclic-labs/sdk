@@ -40,6 +40,14 @@
     "./worker": {
       "types": "./dist/client-worker.d.ts",
       "default": "./dist/client-worker.js"
+    },
+    "./hosting": {
+      "types": "./dist/event-host.d.ts",
+      "default": "./dist/event-host.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.ts",
+      "default": "./dist/cloudflare.js"
     }
   },
   "scripts": {

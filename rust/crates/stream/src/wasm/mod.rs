@@ -31,6 +31,7 @@ include!("follow_state.rs");
 
 include!("wasm_follow.rs");
 
+pub(crate) mod provider_rpc;
 mod remote;
 mod socket;
 
