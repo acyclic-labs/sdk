@@ -476,18 +476,11 @@ async fn serve_requests(
         }
         for key in changed_keys {
             if let Some((sequence, status)) = published.statuses.get_mut(&key) {
-                // Sandboxed hosts can write the status tree. A publish they
-                // obstruct leaves this status for the next change under a
-                // newer sequence; it never stops the owner serving others.
-                match publish_status(directory, &key, sequence.saturating_add(1), status) {
-                    Ok(taken) => *sequence = taken,
-                    Err(error) => {
-                        *sequence = sequence.saturating_add(1);
-                        eprintln!(
-                            "step=publish native status {key}: {error}; recovery: remove unexpected entries under .acyclic-sdk/host-files/status"
-                        );
-                    }
-                }
+                // Each publish takes the next sequence no entry names, so
+                // entries a sandboxed host leaves cannot obstruct or exhaust
+                // it. A status that still cannot publish (storage failure)
+                // retires the owner; its callers observe the owner's exit.
+                *sequence = publish_status(directory, &key, sequence.saturating_add(1), status)?;
             }
             if published
                 .statuses
@@ -508,9 +501,19 @@ fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -
         .map_err(native_file_error)?
         .create_directories(&Path::new("status").join(key))
         .map_err(native_file_error)?;
-    // A previous owner's statuses may remain: continue past them.
-    let floor = latest(root.path())?.map_or(0, |(latest, _)| latest);
-    let sequence = sequence.max(floor.saturating_add(1));
+    // A previous owner's statuses, or any entry a sandboxed host left, may
+    // remain. Take the next sequence no entry already names: nothing there
+    // can obstruct or exhaust it, and cleanup below leaves this one latest.
+    let mut names = BTreeSet::new();
+    for entry in std::fs::read_dir(root.path()).map_err(storage)? {
+        names.insert(entry.map_err(storage)?.file_name());
+    }
+    let mut sequence = sequence;
+    while names.contains(std::ffi::OsStr::new(&format!("{sequence}.json"))) {
+        sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("native status sequence exhausted".into()))?;
+    }
     let bytes = serde_json::to_vec(status).map_err(storage)?;
     if bytes.len() as u64 > STATUS_BYTES {
         return Err(Error::Invalid("native status exceeds its bound".into()));
