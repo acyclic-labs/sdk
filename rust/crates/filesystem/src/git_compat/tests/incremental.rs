@@ -1,4 +1,10 @@
+#[macro_use]
+#[path = "../../../tests/support/unbounded.rs"]
+mod unbounded;
+
 use super::*;
+
+use crate as acyclic_fs;
 
 #[tokio::test]
 async fn incremental_capture_honors_unchanged_nested_ignore() {
@@ -46,31 +52,10 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
     .await
     .expect("incremental capture");
     assert!(
-        captured
-            .generation
-            .stat(
-                "/src/new.tmp",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(captured.generation, stat("/src/new.tmp")).is_err()
     );
     assert_eq!(
-        captured
-            .generation
-            .read(
-                "/src/kept.txt",
-                64,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .expect("kept")
-            .value
-            .as_ref(),
+        unbounded!(captured.generation, read("/src/kept.txt", 64)).expect("kept").as_ref(),
         b"after"
     );
     assert!(!captured.tracked_paths.contains("src/new.tmp"));
@@ -97,11 +82,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .await
         .expect("nested ignore");
     publish_fixture(initial).await;
-    let before = workspace
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("before")
-        .value;
+    let before = unbounded!(workspace, head()).expect("before");
     workspace
         .write_text("/scratch.tmp", "child")
         .await
@@ -128,11 +109,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .await
         .expect("generated file");
     publish_fixture(build).await;
-    let after = workspace
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("after")
-        .value;
+    let after = unbounded!(workspace, head()).expect("after");
     let changes = before
         .diff_to(&after, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -245,56 +222,18 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
         "incremental capture must fork from the prior filtered capture"
     );
     assert_eq!(
-        captured
-            .generation
-            .read(
-                "/kept.txt",
-                64,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .expect("edited file")
-            .value
-            .as_ref(),
+        unbounded!(captured.generation, read("/kept.txt", 64)).expect("edited file").as_ref(),
         b"after"
     );
     assert_eq!(
-        captured
-            .generation
-            .read(
-                "/unchanged.txt",
-                64,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .expect("unchanged file")
-            .value
-            .as_ref(),
+        unbounded!(captured.generation, read("/unchanged.txt", 64)).expect("unchanged file").as_ref(),
         b"same"
     );
     assert!(
-        captured
-            .generation
-            .stat("/new.tmp", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(captured.generation, stat("/new.tmp")).is_err()
     );
     assert!(
-        captured
-            .generation
-            .stat(
-                "/previous.tmp",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(captured.generation, stat("/previous.tmp")).is_err()
     );
     assert_eq!(
         captured.tracked_paths,
@@ -342,29 +281,9 @@ async fn nested_gitignore_change_forces_exact_capture() {
     .await
     .expect("capture");
     assert!(
-        captured
-            .generation
-            .stat(
-                "/src/ignored.txt",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
+        unbounded!(captured.generation, stat("/src/ignored.txt")).is_err()
     );
     assert!(
-        captured
-            .generation
-            .stat(
-                "/src/.gitignore",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_ok()
+        unbounded!(captured.generation, stat("/src/.gitignore")).is_ok()
     );
 }
