@@ -1,4 +1,6 @@
-//! Task-bound delegation for the stock workspace commands.
+//! Task-bound delegation for the stock workspace commands. Every host's
+//! `shell` and `fs` pass here, so their bounds ([`super::bounds`]) hold for
+//! each backend without a per-backend limit.
 use crate::{
     Error, Result,
     runtime::{RuntimeScope, ToolContext},
@@ -76,7 +78,12 @@ impl ToolExecutor for WorkspaceExecutor {
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
             let executor = workspace(&context, None)?.clone();
-            executor.execute(invocation, Some(context)).await
+            let limits = super::bounds::limits(&context);
+            if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
+                return Ok(super::rejected_input(error));
+            }
+            let result = executor.execute(invocation, Some(context)).await?;
+            super::bounds::result(self.name, result, limits.0)
         })
     }
 
@@ -95,7 +102,12 @@ impl ToolExecutor for WorkspaceExecutor {
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
             let executor = workspace(&context, None)?.clone();
-            executor.reconcile(invocation, Some(context)).await
+            let maximum = super::bounds::limits(&context).0;
+            executor
+                .reconcile(invocation, Some(context))
+                .await?
+                .map(|result| super::bounds::result(self.name, result, maximum))
+                .transpose()
         })
     }
 

@@ -10,6 +10,7 @@ mod defaults;
 pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
+mod bounds;
 mod command;
 mod fs_command;
 mod workspace_executor;
