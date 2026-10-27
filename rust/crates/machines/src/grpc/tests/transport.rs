@@ -9,6 +9,7 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
         guest: None,
+        join: JoinReply::Reject(Code::Unimplemented),
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -39,6 +40,7 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     observe!(destroy_machine, MachineMutationRequest);
     observe!(destroy_checkpoint, CheckpointMutationRequest);
     observe!(recover, RecoverRequest);
+    observe!(join, JoinRequest);
     observe!(inspect_machine, InspectMachineRequest);
     observe!(inspect_checkpoint, InspectCheckpointRequest);
     observe!(list_machines, ListMachinesRequest);
@@ -86,6 +88,7 @@ async fn remote_bearer_crosses_mtls_constructor_and_operation_clones()
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
         guest: None,
+        join: JoinReply::Reject(Code::Unimplemented),
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -174,6 +177,7 @@ async fn local_bearer_crosses_owner_confined_socket_and_operation_clones()
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
         guest: None,
+        join: JoinReply::Reject(Code::Unimplemented),
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),

@@ -8,10 +8,9 @@ fn credential_failure_preserves_admitted_recovery_keys() {
         .build()
         .unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(16))
-        .run(&(0..3usize, any::<u32>()), |(fail_at, seed)| {
+        .run(&(0..2usize, any::<u32>()), |(fail_at, seed)| {
             runtime.block_on(async {
-                let (mut service, script, machine) =
-                    scripted_operation_service(vec![WatchReply::Items(vec![])], vec![]);
+                let (mut service, script, machine) = scripted_operation_service(vec![]);
                 let key = IdempotencyKey::parse(&format!("{seed:08x}-0000-0000-0000-000000000041"))
                     .unwrap();
                 service.expected_key = key;
@@ -41,7 +40,11 @@ fn credential_failure_preserves_admitted_recovery_keys() {
                 );
                 prop_assert_eq!(
                     script.lock().unwrap().calls.clone(),
-                    if fail_at == 2 { vec!["watch"] } else { vec![] }
+                    if fail_at == 1 {
+                        vec!["suspend"]
+                    } else {
+                        vec![]
+                    }
                 );
                 // Rejected discards the key; the same post-admission assertion rejects it.
                 if fail_at > 0 {
@@ -85,13 +88,14 @@ async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
         )),
     };
     assert!(
-        decode_recovered(&provider, recovered(Vec::new()))
+        finish_admission(&provider, IdempotencyKey::new(), recovered(Vec::new()))
             .await
             .is_err()
     );
     assert!(
-        decode_recovered(
+        finish_admission(
             &provider,
+            IdempotencyKey::new(),
             recovered(vec![encode_machine(child), encode_machine(child)])
         )
         .await
@@ -107,6 +111,7 @@ async fn servers_without_live_fork_report_unsupported()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
     let service = OperationService {
         guest: None,
+        join: JoinReply::Reject(Code::Unimplemented),
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -124,115 +129,76 @@ async fn servers_without_live_fork_report_unsupported()
     Ok(())
 }
 
+// These are internal protocol vectors, not provider response captures.
 #[tokio::test]
-async fn accepted_mutation_resumes_after_eof_or_interruption_without_resubmission()
+async fn accepted_join_resumes_after_interruption_without_resubmission()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
-    for first_watch in [
-        WatchReply::Items(Vec::new()),
-        WatchReply::Items(vec![WatchItem::Error(Code::Unavailable)]),
-        WatchReply::Reject(Code::Unknown),
+    let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
+    for code in [
+        Code::Unavailable,
+        Code::Unknown,
+        Code::Cancelled,
+        Code::DeadlineExceeded,
+        Code::Internal,
+        Code::PermissionDenied,
     ] {
-        let (service, _script, machine) = scripted_operation_service(
-            vec![
-                first_watch,
-                WatchReply::Items(vec![WatchItem::State(operation_state(
-                    operation,
-                    wire::OperationStatus::Succeeded,
-                ))]),
-            ],
-            vec![Ok(operation_state(
-                operation,
-                wire::OperationStatus::Pending,
-            ))],
-        );
+        let (service, script, _) = scripted_operation_service(vec![
+            JoinReply::Reject(code),
+            JoinReply::Settlement(settled_suspend(operation, machine)),
+        ]);
         let key = service.expected_key;
         let (machines, shutdown, server) = serve_operation_service(service).await?;
-        let outcome =
-            tokio::time::timeout(Duration::from_secs(10), machines.suspend(machine, key)).await?;
-        let _ = shutdown.send(());
-        server.await??;
-        outcome?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn ambiguous_watch_always_inspects_before_returning_original_recovery_key()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
-    for final_inspection in [
-        Ok(operation_state(operation, wire::OperationStatus::Succeeded)),
-        Err(Code::Unknown),
-    ] {
-        let expected_success = final_inspection.is_ok();
-        let (service, _script, machine) = scripted_operation_service(
-            vec![WatchReply::Reject(Code::Unknown); 3],
-            vec![Err(Code::Unknown), Err(Code::Unknown), final_inspection],
+        assert_eq!(
+            machines.suspend(machine, key).await,
+            Err(ProviderError::Indeterminate(key))
         );
-        let key = service.expected_key;
-        let (machines, shutdown, server) = serve_operation_service(service).await?;
-        let outcome =
-            tokio::time::timeout(Duration::from_secs(10), machines.suspend(machine, key)).await?;
+        assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
+        assert_eq!(
+            machines.recover(key).await?,
+            MutationOutcome::Suspended(machine)
+        );
+        assert_eq!(
+            script.lock().expect("script").calls,
+            ["suspend", "join", "recover", "join"]
+        );
         let _ = shutdown.send(());
         server.await??;
-        if expected_success {
-            outcome?;
-        } else {
-            assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
-        }
     }
     Ok(())
 }
 
 #[tokio::test(start_paused = true)]
-async fn silent_accepted_mutation_reconciles_the_same_operation()
+async fn silent_join_has_no_client_polling_or_native_cancellation()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
-    let (service, script, machine) = scripted_operation_service(
-        vec![
-            WatchReply::Silent,
-            WatchReply::Items(vec![WatchItem::State(operation_state(
-                operation,
-                wire::OperationStatus::Succeeded,
-            ))]),
-        ],
-        vec![Ok(operation_state(
-            operation,
-            wire::OperationStatus::Pending,
-        ))],
-    );
+    let (service, script, machine) = scripted_operation_service(vec![JoinReply::Silent]);
     let key = service.expected_key;
     let (machines, shutdown, server) = serve_operation_service(service).await?;
-    let before = tokio::time::Instant::now();
-    let outcome =
-        tokio::time::timeout(Duration::from_secs(75), machines.suspend(machine, key)).await?;
+    let mut wait = Box::pin(machines.suspend(machine, key));
+    // The fixture channel has no physical RPC deadline; advance beyond the deleted
+    // watch reconciliation timer and prove this remains a single pending Join.
+    let result = tokio::time::timeout(Duration::from_secs(75), &mut wait).await;
+    assert!(result.is_err());
+    assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
+    drop(wait);
     let _ = shutdown.send(());
     server.await??;
-    outcome?;
-    assert!(before.elapsed() >= WATCH_RECONCILE_INTERVAL + OBSERVATION_RETRY_DELAY);
-    let script = script.lock().expect("observation script");
-    assert_eq!(script.calls, ["watch", "watch"]);
-    assert!(script.inspections.is_empty());
-    assert!(script.watches.is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn dropping_accepted_wait_does_not_cancel_native_operation()
+async fn dropping_accepted_join_does_not_cancel_native_operation()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (service, script, machine) = scripted_operation_service(vec![WatchReply::Silent], vec![]);
+    let (service, script, machine) = scripted_operation_service(vec![JoinReply::Silent]);
     let key = service.expected_key;
     let (machines, shutdown, server) = serve_operation_service(service).await?;
     let mut wait = Box::pin(machines.suspend(machine, key));
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             tokio::select! {
-                result = &mut wait => panic!("silent wait completed: {result:?}"),
+                result = &mut wait => panic!("silent join completed: {result:?}"),
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                    if script.lock().expect("script").calls.contains(&"watch") {
-                        break;
-                    }
+                    if script.lock().expect("script").calls.contains(&"join") { break; }
                 }
             }
         }
@@ -240,51 +206,145 @@ async fn dropping_accepted_wait_does_not_cancel_native_operation()
     .await?;
     drop(wait);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!script.lock().expect("script").calls.contains(&"cancel"));
+    assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
     let _ = shutdown.send(());
     server.await??;
     Ok(())
 }
 
 #[tokio::test]
-async fn permanent_observation_errors_retain_key_and_terminal_inspection_is_authoritative()
+async fn join_terminal_refusals_are_typed_and_transport_failures_retain_the_key()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
-    for (watch, inspection, expected) in [
-        (WatchReply::Reject(Code::Internal), vec![], None),
-        (
-            WatchReply::Reject(Code::Unknown),
-            vec![Err(Code::Internal)],
-            None,
-        ),
-        (
-            WatchReply::Items(vec![]),
-            vec![Ok(operation_state(
-                operation,
-                wire::OperationStatus::Failed,
-            ))],
-            Some(ProviderError::Failed),
-        ),
-        (
-            WatchReply::Items(vec![]),
-            vec![Ok(operation_state(
-                operation,
-                wire::OperationStatus::Cancelled,
-            ))],
-            Some(ProviderError::Cancelled),
-        ),
+    for (phase, expected) in [
+        (wire::OperationStatus::Failed, ProviderError::Failed),
+        (wire::OperationStatus::Cancelled, ProviderError::Cancelled),
     ] {
-        let (service, _script, machine) = scripted_operation_service(vec![watch], inspection);
+        let (service, script, machine) =
+            scripted_operation_service(vec![JoinReply::Settlement(wire::OperationSettlement {
+                operation: Some(operation_state(operation, phase)),
+                settlement_commit_id: vec![7; 32],
+                outcome: None,
+            })]);
         let key = service.expected_key;
         let (machines, shutdown, server) = serve_operation_service(service).await?;
-        let outcome =
-            tokio::time::timeout(Duration::from_secs(5), machines.suspend(machine, key)).await?;
+        assert_eq!(machines.suspend(machine, key).await, Err(expected));
+        assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
         let _ = shutdown.send(());
         server.await??;
-        assert_eq!(
-            outcome,
-            Err(expected.unwrap_or(ProviderError::Indeterminate(key)))
-        );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_rejects_substituted_operation_outcome_and_commit_shape()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+    let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
+    let mut changed_operation = settled_suspend(operation, machine);
+    changed_operation.operation = Some(operation_state(
+        OperationId::new(),
+        wire::OperationStatus::Succeeded,
+    ));
+    let changed_machine = settled_suspend(operation, MachineId::new());
+    let mut changed_kind = settled_suspend(operation, machine);
+    changed_kind.outcome = Some(wire::MutationOutcome {
+        result: Some(wire::mutation_outcome::Result::Woken(encode_machine(
+            machine,
+        ))),
+    });
+    let mut missing_commit = settled_suspend(operation, machine);
+    missing_commit.settlement_commit_id.clear();
+    let mut zero_commit = settled_suspend(operation, machine);
+    zero_commit.settlement_commit_id = vec![0; 32];
+    let mut missing_outcome = settled_suspend(operation, machine);
+    missing_outcome.outcome = None;
+    let mut pending = settled_suspend(operation, machine);
+    pending.operation = Some(operation_state(operation, wire::OperationStatus::Pending));
+    let mut contradictory = settled_suspend(operation, machine);
+    contradictory.operation = Some(operation_state(operation, wire::OperationStatus::Cancelled));
+    for reply in [
+        changed_operation,
+        changed_machine,
+        changed_kind,
+        missing_commit,
+        zero_commit,
+        missing_outcome,
+        pending,
+        contradictory,
+    ] {
+        let (service, script, _) = scripted_operation_service(vec![JoinReply::Settlement(reply)]);
+        let key = service.expected_key;
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+        assert!(matches!(
+            machines.suspend(machine, key).await,
+            Err(ProviderError::Rejected(_))
+        ));
+        assert_eq!(script.lock().expect("script").calls, ["suspend", "join"]);
+        let _ = shutdown.send(());
+        server.await??;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "core")]
+#[tokio::test]
+async fn grpc_join_returns_original_settlement_after_resource_change_and_journal_reopen()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::core::{Admission, OperationRegistry};
+    use acyclic_stream::{LocalStream, LocalStreamLimits};
+    let dir = tempfile::tempdir()?;
+    let key = IdempotencyKey::new();
+    let request = CreateMachine::new(key, Image::custom([7; 32])?, [8; 32]);
+    let outcome = SimulatedMachines::default().create(request.clone()).await?;
+    let MutationOutcome::Created(original) = &outcome else {
+        return Err("expected machine".into());
+    };
+    let journal = OperationRegistry::new(
+        Arc::new(LocalStream::open(dir.path(), LocalStreamLimits::default()).await?),
+        "grpc-account",
+    )?;
+    let Admission::Fresh(operation) = journal.admit(key, &MutationIntent::Create(request)).await?
+    else {
+        return Err("expected fresh admission".into());
+    };
+    journal
+        .observe_machine(original.clone(), original.created_at_unix_ms)
+        .await?;
+    journal.complete(operation, outcome.clone()).await?;
+    let original_settlement = journal.settled(key).await?;
+    journal
+        .mark_destroyed(original.id, original.changed_at_unix_ms + 1)
+        .await?;
+    drop(journal);
+    let journal = OperationRegistry::new(
+        Arc::new(LocalStream::open(dir.path(), LocalStreamLimits::default()).await?),
+        "grpc-account",
+    )?;
+    let wire::mutation_outcome::Result::Created(encoded) =
+        encode_outcome(&outcome)?.result.ok_or("missing outcome")?
+    else {
+        return Err("expected encoded create".into());
+    };
+    let (mut service, _, _) = scripted_operation_service(vec![]);
+    service.expected_key = key;
+    service.expected_operation = operation;
+    service.recovered = wire::RecoveredAdmission {
+        operation: operation_request(operation).operation.clone(),
+        result: Some(wire::recovered_admission::Result::Create(
+            wire::MachineAdmission {
+                machine: Some(encode_machine(original.id)),
+                operation: operation_request(operation).operation,
+                contract: encoded.contract,
+            },
+        )),
+    };
+    service.join = JoinReply::Core(journal);
+    // All inspect-machine/checkpoint RPCs are unimplemented: a reconstruction fails.
+    let (machines, shutdown, server) = serve_operation_service(service).await?;
+    assert_eq!(machines.recover(key).await?, outcome);
+    assert_eq!(machines.join(key, operation).await?, original_settlement);
+    let _ = shutdown.send(());
+    server.await??;
     Ok(())
 }

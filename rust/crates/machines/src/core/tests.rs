@@ -132,6 +132,15 @@ async fn cancellation_retains_cleanup_until_each_delete_is_acknowledged() -> Tes
     assert_eq!(core.created(id).await?, [machine_resource("late-child")]);
     core.deleted(id, &machine_resource("late-child")).await?;
     assert!(core.created(id).await?.is_empty());
+    let terminal = core.join_settlement(key, id).await?;
+    assert_eq!(
+        terminal.operation,
+        OperationObservation {
+            id,
+            phase: OperationPhase::Cancelled
+        }
+    );
+    assert!(terminal.outcome.is_none());
     core.complete(id, MutationOutcome::Woken(MachineId::new()))
         .await?;
     assert!(matches!(
@@ -148,6 +157,15 @@ async fn failed_operation_retains_cleanup_and_never_replays() -> TestResult {
     let id = fresh(core.admit(key, &"fork").await?)?;
     core.bind_created(id, &machine_resource("child")).await?;
     core.fail(id, &ProviderError::Failed).await?;
+    let terminal = core.join_settlement(key, id).await?;
+    assert_eq!(
+        terminal.operation,
+        OperationObservation {
+            id,
+            phase: OperationPhase::Failed
+        }
+    );
+    assert!(terminal.outcome.is_none());
     assert!(
         core.cancel(id)
             .await?

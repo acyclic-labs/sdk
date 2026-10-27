@@ -10,13 +10,20 @@ use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 enum WatchReply {
     Reject(Code),
     Items(Vec<WatchItem>),
-    Silent,
-    Script(std::sync::Arc<std::sync::Mutex<ObservationScript>>),
 }
 
-struct ObservationScript {
-    watches: std::collections::VecDeque<WatchReply>,
-    inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
+#[derive(Clone)]
+enum JoinReply {
+    Reject(Code),
+    Settlement(wire::OperationSettlement),
+    Silent,
+    Script(Arc<std::sync::Mutex<JoinScript>>),
+    #[cfg(feature = "core")]
+    Core(crate::core::OperationRegistry),
+}
+
+struct JoinScript {
+    replies: std::collections::VecDeque<JoinReply>,
     calls: Vec<&'static str>,
 }
 
@@ -35,6 +42,7 @@ struct OperationService {
     inspected: wire::OperationState,
     cancelled: wire::OperationState,
     watch: WatchReply,
+    join: JoinReply,
 }
 
 macro_rules! operation_service {
@@ -69,9 +77,7 @@ operation_service! {
         &self,
         request: Request<wire::MachineMutationRequest>,
     ) -> Result<Response<wire::MutationAdmission>, Status> {
-        let WatchReply::Script(_) = &self.watch else {
-            return Err(Status::unimplemented("suspend"));
-        };
+        self.record_call("suspend");
         let request = request.into_inner();
         if request
             .idempotency_key
@@ -95,6 +101,7 @@ operation_service! {
         &self,
         request: Request<wire::RecoverRequest>,
     ) -> Result<Response<wire::RecoveredAdmission>, Status> {
+        self.record_call("recover");
         if request
             .into_inner()
             .idempotency_key
@@ -107,18 +114,35 @@ operation_service! {
         Ok(Response::new(self.recovered.clone()))
     }
 
+    async fn join(&self, request: Request<wire::JoinRequest>) -> Result<Response<wire::OperationSettlement>, Status> {
+        let request = request.into_inner();
+        if request.idempotency_key.as_ref().map(|key| key.value.as_slice()) != Some(self.expected_key.as_bytes().as_slice()) || request.operation != operation_request(self.expected_operation).operation {
+            return Err(Status::invalid_argument("join identity was substituted"));
+        }
+        self.record_call("join");
+        let reply = match &self.join {
+            JoinReply::Script(script) => script.lock().expect("join script").replies.pop_front().ok_or_else(|| Status::internal("unexpected join"))?,
+            value => value.clone(),
+        };
+        match reply {
+            JoinReply::Reject(code) => Err(Status::new(code, "join interrupted")),
+            JoinReply::Settlement(value) => Ok(Response::new(value)),
+            JoinReply::Silent => std::future::pending().await,
+            JoinReply::Script(_) => Err(Status::internal("nested join script")),
+            #[cfg(feature = "core")]
+            JoinReply::Core(core) => {
+                let value = core.join_settlement(self.expected_key, self.expected_operation).await.map_err(|_| Status::unavailable("canonical join interrupted"))?;
+                encode_settlement(&value).map(Response::new).map_err(|_| Status::internal("invalid canonical result"))
+            },
+        }
+    }
+
     async fn cancel(
         &self,
         request: Request<wire::OperationRequest>,
     ) -> Result<Response<wire::OperationState>, Status> {
         self.require_operation(&request.into_inner())?;
-        if let WatchReply::Script(script) = &self.watch {
-            script
-                .lock()
-                .expect("observation script")
-                .calls
-                .push("cancel");
-        }
+        self.record_call("cancel");
         Ok(Response::new(self.cancelled.clone()))
     }
 
@@ -127,15 +151,7 @@ operation_service! {
         request: Request<wire::OperationRequest>,
     ) -> Result<Response<wire::OperationState>, Status> {
         self.require_operation(&request.into_inner())?;
-        if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
-            return script
-                .inspections
-                .pop_front()
-                .ok_or_else(|| Status::internal("unexpected inspection"))?
-                .map(Response::new)
-                .map_err(|code| Status::new(code, "inspection interrupted"));
-        }
+        self.record_call("inspect");
         Ok(Response::new(self.inspected.clone()))
     }
 
@@ -168,18 +184,8 @@ operation_service! {
         request: Request<wire::OperationRequest>,
     ) -> Result<Response<Self::WatchOperationStream>, Status> {
         self.require_operation(&request.into_inner())?;
-        let reply = match &self.watch {
-            WatchReply::Script(script) => {
-                let mut script = script.lock().expect("observation script");
-                script.calls.push("watch");
-                script
-                    .watches
-                    .pop_front()
-                    .ok_or_else(|| Status::internal("unexpected watch"))?
-            }
-            reply => reply.clone(),
-        };
-        match reply {
+        self.record_call("watch");
+        match self.watch.clone() {
             WatchReply::Reject(code) => Err(Status::new(code, "watch rejected")),
             WatchReply::Items(items) => {
                 let items = items.into_iter().map(|item| match item {
@@ -188,13 +194,17 @@ operation_service! {
                 });
                 Ok(Response::new(Box::pin(stream::iter(items))))
             }
-            WatchReply::Script(_) => Err(Status::internal("nested observation script")),
-            WatchReply::Silent => Ok(Response::new(Box::pin(stream::pending()))),
         }
     }
 }
 
 impl OperationService {
+    fn record_call(&self, name: &'static str) {
+        if let JoinReply::Script(script) = &self.join {
+            script.lock().expect("join script").calls.push(name);
+        }
+    }
+
     fn require_operation(&self, request: &wire::OperationRequest) -> Result<(), Status> {
         if request
             .operation
@@ -208,19 +218,17 @@ impl OperationService {
     }
 }
 fn scripted_operation_service(
-    watches: Vec<WatchReply>,
-    inspections: Vec<Result<wire::OperationState, Code>>,
+    replies: Vec<JoinReply>,
 ) -> (
     OperationService,
-    std::sync::Arc<std::sync::Mutex<ObservationScript>>,
+    Arc<std::sync::Mutex<JoinScript>>,
     MachineId,
 ) {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041").expect("key");
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042").expect("operation");
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine");
-    let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
-        watches: watches.into(),
-        inspections: inspections.into(),
+    let script = Arc::new(std::sync::Mutex::new(JoinScript {
+        replies: replies.into(),
         calls: Vec::new(),
     }));
     (
@@ -231,11 +239,24 @@ fn scripted_operation_service(
             recovered: recovered_suspend(operation, operation, machine),
             inspected: operation_state(operation, wire::OperationStatus::Pending),
             cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
-            watch: WatchReply::Script(script.clone()),
+            watch: WatchReply::Items(Vec::new()),
+            join: JoinReply::Script(script.clone()),
         },
         script,
         machine,
     )
+}
+
+fn settled_suspend(operation: OperationId, machine: MachineId) -> wire::OperationSettlement {
+    wire::OperationSettlement {
+        operation: Some(operation_state(operation, wire::OperationStatus::Succeeded)),
+        settlement_commit_id: vec![7; 32],
+        outcome: Some(wire::MutationOutcome {
+            result: Some(wire::mutation_outcome::Result::Suspended(encode_machine(
+                machine,
+            ))),
+        }),
+    }
 }
 
 async fn serve_operation_service(

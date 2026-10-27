@@ -19,140 +19,119 @@ pub(super) async fn recovered_admission(
     Ok((operation, value))
 }
 
-#[tracing::instrument(name = "acyclic.machines.wait", level = "debug", skip_all,
-    fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty))]
-pub(super) async fn wait(
+impl GrpcProvider {
+    /// Join the admitted operation once. Retry this observation with the same key
+    /// after interruption; neither losing this reply nor dropping it cancels work.
+    #[tracing::instrument(name = "acyclic.machines.join", skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty))]
+    pub async fn join(
+        &self,
+        key: IdempotencyKey,
+        operation: OperationId,
+    ) -> Result<SettledMutation, ProviderError> {
+        obs::finish(
+            async {
+                let value = self
+                    .client()
+                    .await
+                    .map_err(|_| ProviderError::Indeterminate(key))?
+                    .join(wire::JoinRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        operation: operation_request(operation).operation,
+                    })
+                    .await
+                    .map_err(|error| watch_error(key, &error))?
+                    .into_inner();
+                decode_settlement(value, operation)?.result(key)
+            }
+            .await,
+        )
+    }
+}
+
+pub(super) async fn finish_admission(
     provider: &GrpcProvider,
     key: IdempotencyKey,
-    operation: OperationId,
-) -> Result<(), ProviderError> {
-    obs::finish(
-        async {
-            let mut unknown_observations = 0;
-            loop {
-                match provider
-                    .client()
-                    .await
-                    .map_err(|_| ProviderError::Indeterminate(key))?
-                    .watch_operation(operation_request(operation))
-                    .await
-                {
-                    Ok(response) => {
-                        let mut stream = response.into_inner();
-                        loop {
-                            match tokio::time::timeout(WATCH_RECONCILE_INTERVAL, stream.message())
-                                .await
-                            {
-                                Ok(Ok(Some(value))) => {
-                                    let phase =
-                                        decode_operation_observation(&value, operation)?.phase;
-                                    unknown_observations = 0;
-                                    if let Some(outcome) = observed_outcome(key, phase) {
-                                        return outcome;
-                                    }
-                                }
-                                Ok(Err(error)) if !retryable_watch_error(&error) => {
-                                    return Err(watch_error(key, &error));
-                                }
-                                // Inspect the admitted operation after interruption; never resubmit.
-                                _ => break,
-                            }
-                        }
-                    }
-                    Err(error) if !retryable_watch_error(&error) => {
-                        return Err(watch_error(key, &error));
-                    }
-                    Err(_) => {}
-                }
-                match provider
-                    .client()
-                    .await
-                    .map_err(|_| ProviderError::Indeterminate(key))?
-                    .inspect_operation(operation_request(operation))
-                    .await
-                {
-                    Ok(response) => {
-                        let phase =
-                            decode_operation_observation(&response.into_inner(), operation)?.phase;
-                        unknown_observations = 0;
-                        if let Some(outcome) = observed_outcome(key, phase) {
-                            return outcome;
-                        }
-                    }
-                    Err(error)
-                        if !retryable_observation_error(&error, &mut unknown_observations) =>
-                    {
-                        return Err(watch_error(key, &error));
-                    }
-                    Err(_) => {}
-                }
-                tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;
-            }
+    admission: wire::RecoveredAdmission,
+) -> Result<MutationOutcome, ProviderError> {
+    let operation = validate_recovered_admission(&admission)?;
+    // Validate the admitted child set before any join or per-child work.
+    match &admission.result {
+        Some(wire::recovered_admission::Result::Fork(value)) => {
+            fork_children(&value.children, None)?;
         }
-        .await,
-    )
+        Some(wire::recovered_admission::Result::ForkMachine(value)) => {
+            decode_fork_machine_admission(value)?;
+        }
+        _ => {}
+    }
+    let settled = provider.join(key, operation).await?;
+    validate_settled_admission(&admission, &settled.outcome)?;
+    Ok(settled.outcome)
 }
 
-pub(super) async fn decode_recovered(
-    provider: &GrpcProvider,
-    value: wire::RecoveredAdmission,
-) -> Result<MutationOutcome, ProviderError> {
-    use wire::recovered_admission::Result as ResultKind;
-    validate_recovered_admission(&value)?;
-    match value
-        .result
-        .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
-    {
-        ResultKind::Create(value) => {
-            MachinesProvider::inspect_machine(provider, decode_machine(value.machine.as_ref())?)
-                .await
-                .map(MutationOutcome::Created)
+fn validate_settled_admission(
+    admission: &wire::RecoveredAdmission,
+    outcome: &MutationOutcome,
+) -> Result<(), ProviderError> {
+    use wire::recovered_admission::Result as Kind;
+    let matches = match (admission.result.as_ref(), outcome) {
+        (Some(Kind::Create(value)), MutationOutcome::Created(machine)) => {
+            machine.id == decode_machine(value.machine.as_ref())?
+                && machine.contract == decode_contract(value.contract.as_ref())?
         }
-        ResultKind::Checkpoint(value) => MachinesProvider::inspect_checkpoint(
-            provider,
-            decode_checkpoint(value.checkpoint.as_ref())?,
-        )
-        .await
-        .map(MutationOutcome::Checkpointed),
-        ResultKind::Fork(value) => Ok(MutationOutcome::Forked(
-            inspect_children(provider, fork_children(&value.children, None)?).await?,
-        )),
-        ResultKind::ForkMachine(value) => {
-            let (source, fidelity, children, _) = decode_fork_machine_admission(&value)?;
-            Ok(MutationOutcome::MachineForked {
+        (Some(Kind::Checkpoint(value)), MutationOutcome::Checkpointed(checkpoint)) => {
+            checkpoint.id == decode_checkpoint(value.checkpoint.as_ref())?
+                && checkpoint.source == decode_machine(value.source.as_ref())?
+                && checkpoint.contract == decode_contract(value.contract.as_ref())?
+        }
+        (Some(Kind::Fork(value)), MutationOutcome::Forked(children)) => {
+            let contract = decode_contract(value.contract.as_ref())?;
+            children
+                .iter()
+                .map(|child| child.id)
+                .eq(fork_children(&value.children, None)?)
+                && children.iter().all(|child| child.contract == contract)
+        }
+        (
+            Some(Kind::ForkMachine(value)),
+            MutationOutcome::MachineForked {
                 source,
                 fidelity,
-                children: inspect_children(provider, children).await?,
-            })
+                children,
+            },
+        ) => {
+            let (expected, expected_fidelity, ids, _) = decode_fork_machine_admission(value)?;
+            let contract = decode_contract(value.contract.as_ref())?;
+            *source == expected
+                && *fidelity == expected_fidelity
+                && children.iter().map(|child| child.id).eq(ids)
+                && children.iter().all(|child| child.contract == contract)
         }
-        ResultKind::Suspend(value) => {
-            decode_machine(value.machine.as_ref()).map(MutationOutcome::Suspended)
+        (Some(Kind::Suspend(value)), MutationOutcome::Suspended(machine))
+        | (Some(Kind::Wake(value)), MutationOutcome::Woken(machine))
+        | (Some(Kind::DestroyMachine(value)), MutationOutcome::MachineDestroyed(machine)) => {
+            *machine == decode_machine(value.machine.as_ref())?
         }
-        ResultKind::Wake(value) => {
-            decode_machine(value.machine.as_ref()).map(MutationOutcome::Woken)
+        (
+            Some(Kind::DestroyCheckpoint(value)),
+            MutationOutcome::CheckpointDestroyed(checkpoint),
+        ) => *checkpoint == decode_checkpoint(value.checkpoint.as_ref())?,
+        (
+            Some(Kind::SetSuspensionPolicy(value)),
+            MutationOutcome::SuspensionPolicySet(machine, policy),
+        ) => {
+            *machine == decode_machine(value.machine.as_ref())?
+                && *policy == decode_suspension(value.policy.as_ref())?
         }
-        ResultKind::DestroyMachine(value) => {
-            decode_machine(value.machine.as_ref()).map(MutationOutcome::MachineDestroyed)
-        }
-        ResultKind::SetSuspensionPolicy(value) => Ok(MutationOutcome::SuspensionPolicySet(
-            decode_machine(value.machine.as_ref())?,
-            decode_suspension(value.policy.as_ref())?,
-        )),
-        ResultKind::DestroyCheckpoint(value) => {
-            decode_checkpoint(value.checkpoint.as_ref()).map(MutationOutcome::CheckpointDestroyed)
-        }
+        _ => false,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(ProviderError::Rejected("settled result contradicts its admitted mutation; recovery: retain the original key and repair the server settlement binding".into()))
     }
-}
-
-pub(super) async fn inspect_children(
-    provider: &GrpcProvider,
-    children: Vec<MachineId>,
-) -> Result<Vec<MachineObservation>, ProviderError> {
-    let mut result = Vec::with_capacity(children.len());
-    for child in children {
-        result.push(MachinesProvider::inspect_machine(provider, child).await?);
-    }
-    Ok(result)
 }
 
 pub(super) fn decode_fork_machine_admission(
@@ -161,17 +140,7 @@ pub(super) fn decode_fork_machine_admission(
     let source = decode_machine(value.source.as_ref())?;
     let operation = decode_operation(value.operation.as_ref())?;
     let contract = decode_contract(value.contract.as_ref())?;
-    let fidelity = match wire::ForkFidelity::try_from(value.fidelity)
-        .map_err(|_| ProviderError::Rejected("fork fidelity is invalid".into()))?
-    {
-        wire::ForkFidelity::MemoryAndDisk => ForkFidelity::MemoryAndDisk,
-        wire::ForkFidelity::DiskOnly => ForkFidelity::DiskOnly,
-        wire::ForkFidelity::Unspecified => {
-            return Err(ProviderError::Rejected(
-                "fork fidelity is unspecified".into(),
-            ));
-        }
-    };
+    let fidelity = decode_fidelity(value.fidelity)?;
     if contract.fork_fidelity() != Some(fidelity) {
         return Err(ProviderError::Rejected(
             "fork fidelity contradicts the source contract".into(),
@@ -238,43 +207,5 @@ pub(super) fn validate_recovered_admission(
         Err(ProviderError::Rejected(
             "recovery operation identity was substituted".into(),
         ))
-    }
-}
-
-pub(super) fn retryable_observation_error(
-    value: &tonic::Status,
-    unknown_observations: &mut u8,
-) -> bool {
-    match value.code() {
-        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
-        // Repeated ambiguous errors return the retained recovery key.
-        tonic::Code::Unknown => {
-            *unknown_observations = unknown_observations.saturating_add(1);
-            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS
-        }
-        _ => false,
-    }
-}
-
-pub(super) fn retryable_watch_error(value: &tonic::Status) -> bool {
-    matches!(
-        value.code(),
-        tonic::Code::Unavailable
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::Cancelled
-            | tonic::Code::Unknown
-    )
-}
-
-pub(super) fn observed_outcome(
-    key: IdempotencyKey,
-    phase: OperationPhase,
-) -> Option<Result<(), ProviderError>> {
-    match phase {
-        OperationPhase::Pending => None,
-        OperationPhase::Succeeded => Some(Ok(())),
-        OperationPhase::Cancelled => Some(Err(ProviderError::Cancelled)),
-        OperationPhase::Failed => Some(Err(ProviderError::Failed)),
-        OperationPhase::Indeterminate => Some(Err(ProviderError::Indeterminate(key))),
     }
 }

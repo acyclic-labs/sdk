@@ -17,6 +17,13 @@ infers success from a native resource's name or labels.
 
 `watch` and `join` follow the point projection through Streams' checked cursor.
 `SettledMutation` includes the operation, final `CommitId`, and exact result.
+Protocol 1.2 `Join` takes the original key and operation, and returns the same
+canonical publication. `join_settlement` also exposes explicit failed/cancelled
+publications; `grpc::encode_settlement` is the server encoding boundary. Verify
+the request's key/operation binding in the existing authenticated admission scope
+before joining. A transport error preserves the recovery key. The gRPC client
+never rebuilds an outcome by inspecting current machines/checkpoints and has no
+watch/inspect reconciliation loop.
 Large immutable results use bounded canonical records with a length, digest and
 prefix anchor; success publishes only after those records are durable. This
 preserves Streams' 64 KiB record limit and retains original outcomes independently

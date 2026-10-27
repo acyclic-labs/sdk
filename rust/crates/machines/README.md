@@ -1,6 +1,6 @@
 # acyclic-machines
 
-Machines protocol 1.1 is shape-free. Customers choose an immutable image and
+Machines protocol 1.2 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject
@@ -27,9 +27,21 @@ cargo add acyclic-machines
 
 `Machines` wraps a `MachinesProvider`; the crate also includes a gRPC client. Qualify an immutable image digest before creation and retain idempotency keys for mutation recovery. Inspect an operation when its outcome is indeterminate rather than assuming failure.
 
-Once a gRPC mutation is admitted, its completion wait has no overall observation deadline. A silent or interrupted watch reconciles the same operation through inspection and resumes observation with a bounded retry delay. It never resubmits the mutation or changes its idempotency key. Authority-reported failure, cancellation and indeterminate outcomes remain visible; authentication and other permanent observation errors return the retained key for recovery. Dropping the waiting future stops local observation without cancelling the native operation. Persist the original idempotency key and recover its operation after process restart; the SDK does not replace the service's durable operation journal.
+An admitted gRPC mutation joins its canonical operation publication through one
+`Join` RPC. The server uses the shared Streams core; the client has no lifecycle
+polling or reconciliation timer. Success returns the original immutable outcome
+and its Streams `CommitId`, even if the machine has since changed or been deleted.
+`GrpcProvider::join(key, operation)` exposes that settlement directly. Resource
+identities, contracts, fork child order and fidelity must match the admission.
 
-An `Unknown` observation status may indicate temporary client readiness or a server journal error. An unknown watch always triggers inspection of the same operation. The client returns the retained key after three unknown inspections without an intervening validated operation state. A valid pending state resets this ambiguity count. `Internal` is returned immediately. Silence and ordinary transport unavailability do not consume this count or establish an operation failure.
+A lost Join reply or credential failure after admission returns the retained key
+as `ProviderError::Indeterminate(key)`. Call `recover` with that same key; never
+resubmit the native mutation. Explicit terminal failed/cancelled publications are
+typed and cannot be inferred from a transport status. Dropping Join stops local
+observation without cancelling native work. Existing physical RPC deadlines may
+interrupt a long wait; the durable operation continues. Protocol 1.2 servers must
+implement Join; the client has no fallback that reconstructs results from current
+resource inspection. `recover_operation` remains a nonblocking admission lookup.
 
 `Machine::fork` (`MachinesProvider::fork_machine`) forks a *running* machine into fresh children at any moment, with no checkpoint step. Its fidelity is declared, not inferred: `Capability::LiveFork` means children resume from the source's memory, processes, and disk (`ForkFidelity::MemoryAndDisk`); `Capability::DiskFork` means they boot fresh over a copy of its disk (`ForkFidelity::DiskOnly`) and the caller restarts its workload. A machine with neither returns `ProviderError::Unsupported`; fall back to `checkpoint` plus `fork`, or a restart. Children inherit the source's contract, credentials, and environment, get fresh identities and endpoints, and never inherit open network connections. Destroy children before their source: a provider may refuse the reverse order with `ProviderError::Conflict`. The trait method documents the full semantics.
 

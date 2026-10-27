@@ -285,7 +285,7 @@ message RecoveredAdmission {
   }
 }
 
-// Terminal simulator result. Unlike an admission, this contains the checked
+// Immutable terminal mutation result. Unlike an admission, this contains the checked
 // observations produced after the operation has completed.
 message ForkedMachines {
   repeated MachineState machines = 1;
@@ -311,6 +311,22 @@ message MutationOutcome {
     CheckpointId checkpoint_destroyed = 8;
     ForkedLiveMachines machine_forked = 9;
   }
+}
+// Join is observation only. It never dispatches or cancels a native mutation.
+// The operation must be the admission originally returned for this key.
+message JoinRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  OperationId operation = 3;
+}
+// The canonical operation publication, including the exact historical outcome.
+// Only SUCCEEDED, FAILED or CANCELLED is legal; outcome is present iff SUCCEEDED.
+// A transport error is ambiguous and retains the original recovery key.
+message OperationSettlement {
+  OperationState operation = 1;
+  // Exact 32-byte canonical Streams commit identity, never a native resource label.
+  bytes settlement_commit_id = 2;
+  MutationOutcome outcome = 3;
 }
 message OperationPage {
   repeated OperationState operations = 1;
@@ -417,6 +433,7 @@ service MachinesService {
   rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc DestroyMachine(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete" extractor: "machines.delete" }; }
   rpc DestroyCheckpoint(CheckpointMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete-checkpoint" extractor: "machines.delete-checkpoint" }; }
+  rpc Join(JoinRequest) returns (OperationSettlement) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
   rpc Recover(RecoverRequest) returns (RecoveredAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
   rpc InspectMachine(InspectMachineRequest) returns (MachineState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read" }; }
   rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState) { option (acyclic.validation.v1.auth) = { action: "machines/read-checkpoint" extractor: "machines.read-checkpoint" }; }

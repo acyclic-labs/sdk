@@ -154,3 +154,82 @@ fn fork_machine_admissions_are_checked_against_the_source_contract()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn every_settled_mutation_round_trips_original_observations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(source) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let mut child = source.clone();
+    child.id = MachineId::new();
+    let checkpoint = CheckpointObservation {
+        id: CheckpointId::new(),
+        source: source.id,
+        contract: source.contract.clone(),
+        forkable: true,
+        created_at_unix_ms: source.changed_at_unix_ms,
+    };
+    let outcomes = vec![
+        MutationOutcome::Created(source.clone()),
+        MutationOutcome::Checkpointed(checkpoint.clone()),
+        MutationOutcome::Forked(vec![child.clone()]),
+        MutationOutcome::MachineForked {
+            source: source.id,
+            fidelity: source.contract.fork_fidelity().ok_or("missing fidelity")?,
+            children: vec![child],
+        },
+        MutationOutcome::Suspended(source.id),
+        MutationOutcome::Woken(source.id),
+        MutationOutcome::SuspensionPolicySet(source.id, SuspensionPolicy::Manual),
+        MutationOutcome::MachineDestroyed(source.id),
+        MutationOutcome::CheckpointDestroyed(checkpoint.id),
+    ];
+    for outcome in outcomes {
+        let value = OperationSettlement {
+            operation: OperationObservation {
+                id: OperationId::new(),
+                phase: OperationPhase::Succeeded,
+            },
+            settlement: acyclic_stream::CommitId::from_bytes([9; 32]),
+            outcome: Some(outcome),
+        };
+        assert_eq!(
+            decode_settlement(encode_settlement(&value)?, value.operation.id)?,
+            value
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_fork_outcomes_refuse_empty_duplicate_and_parent_children()
+-> Result<(), Box<dyn std::error::Error>> {
+    use wire::mutation_outcome::Result as Kind;
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let outcome = SimulatedMachines::default().create(request).await?;
+    let Kind::Created(child) = encode_outcome(&outcome)?.result.ok_or("missing outcome")? else {
+        return Err("expected machine".into());
+    };
+    for kind in [
+        Kind::Forked(wire::ForkedMachines { machines: vec![] }),
+        Kind::Forked(wire::ForkedMachines {
+            machines: vec![child.clone(), child.clone()],
+        }),
+        Kind::MachineForked(wire::ForkedLiveMachines {
+            source: child.machine.clone(),
+            fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
+            children: vec![child.clone()],
+        }),
+        Kind::MachineForked(wire::ForkedLiveMachines {
+            source: Some(encode_machine(MachineId::new())),
+            fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
+            children: vec![],
+        }),
+    ] {
+        assert!(decode_outcome(wire::MutationOutcome { result: Some(kind) }).is_err());
+    }
+    Ok(())
+}

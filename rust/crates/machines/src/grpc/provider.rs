@@ -1,7 +1,7 @@
 use super::*;
 
 macro_rules! machine_mutations {
-    ($(($method:ident, $outcome:ident, $span:literal)),+; $($other:tt)*) => {
+    ($(($method:ident, $kind:ident, $span:literal)),+; $($other:tt)*) => {
         #[async_trait]
         impl MachinesProvider for GrpcProvider {
         $(
@@ -18,8 +18,9 @@ macro_rules! machine_mutations {
                 if decode_machine(value.machine.as_ref())? != machine {
                     return Err(ProviderError::Rejected("machine result was substituted".into()));
                 }
-                wait(self, key, decode_operation(value.operation.as_ref())?).await?;
-                Ok(MutationOutcome::$outcome(machine))
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: value.operation.clone(), result: Some(wire::recovered_admission::Result::$kind(value)),
+                }).await
             }.await)
         }
         )+
@@ -29,9 +30,9 @@ macro_rules! machine_mutations {
 }
 
 machine_mutations! {
-    (suspend, Suspended, "acyclic.machines.suspend"),
-    (wake, Woken, "acyclic.machines.wake"),
-    (destroy_machine, MachineDestroyed, "acyclic.machines.destroy_machine");
+    (suspend, Suspend, "acyclic.machines.suspend"),
+    (wake, Wake, "acyclic.machines.wake"),
+    (destroy_machine, DestroyMachine, "acyclic.machines.destroy_machine");
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::CustomerHosted
     }
@@ -170,13 +171,11 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(response.operation.as_ref())?;
-                let machine = decode_machine(response.machine.as_ref())?;
-                let _contract = decode_contract(response.contract.as_ref())?;
-                wait(self, key, operation).await?;
-                self.inspect_machine(machine)
-                    .await
-                    .map(MutationOutcome::Created)
+                decode_machine(response.machine.as_ref())?;
+                decode_contract(response.contract.as_ref())?;
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: response.operation.clone(), result: Some(wire::recovered_admission::Result::Create(response)),
+                }).await
             }
             .await,
         )
@@ -285,17 +284,15 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(value.operation.as_ref())?;
-                let checkpoint = decode_checkpoint(value.checkpoint.as_ref())?;
+                decode_checkpoint(value.checkpoint.as_ref())?;
                 if decode_machine(value.source.as_ref())? != machine {
                     return Err(ProviderError::Rejected(
                         "checkpoint source was substituted".into(),
                     ));
                 }
-                wait(self, key, operation).await?;
-                self.inspect_checkpoint(checkpoint)
-                    .await
-                    .map(MutationOutcome::Checkpointed)
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: value.operation.clone(), result: Some(wire::recovered_admission::Result::Checkpoint(value)),
+                }).await
             }
             .await,
         )
@@ -362,11 +359,9 @@ machine_mutations! {
                         "fork result was substituted".into(),
                     ));
                 }
-                let operation = decode_operation(value.operation.as_ref())?;
-                wait(self, key, operation).await?;
-                Ok(MutationOutcome::Forked(
-                    inspect_children(self, fork_children(&value.children, None)?).await?,
-                ))
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: value.operation.clone(), result: Some(wire::recovered_admission::Result::Fork(value)),
+                }).await
             }
             .await,
         )
@@ -398,7 +393,7 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let (source, fidelity, children, operation) = decode_fork_machine_admission(&value)?;
+                let (source, _, children, _) = decode_fork_machine_admission(&value)?;
                 if source != machine
                     || children.len()
                         != usize::try_from(count.get())
@@ -408,10 +403,9 @@ machine_mutations! {
                         "fork result was substituted".into(),
                     ));
                 }
-                wait(self, key, operation).await?;
-                Ok(MutationOutcome::MachineForked {
-                    source, fidelity, children: inspect_children(self, children).await?,
-                })
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: value.operation.clone(), result: Some(wire::recovered_admission::Result::ForkMachine(value)),
+                }).await
             }
             .await,
         )
@@ -447,9 +441,9 @@ machine_mutations! {
                         "policy result was substituted".into(),
                     ));
                 }
-                wait(self, key, decode_operation(value.operation.as_ref())?)
-                    .await?;
-                Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: value.operation.clone(), result: Some(wire::recovered_admission::Result::SetSuspensionPolicy(value)),
+                }).await
             }
             .await,
         )
@@ -480,9 +474,9 @@ machine_mutations! {
                         "checkpoint result was substituted".into(),
                     ));
                 }
-                wait(self, key, decode_operation(value.operation.as_ref())?)
-                    .await?;
-                Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
+                finish_admission(self, key, wire::RecoveredAdmission {
+                    operation: value.operation.clone(), result: Some(wire::recovered_admission::Result::DestroyCheckpoint(value)),
+                }).await
             }
             .await,
         )
@@ -585,9 +579,8 @@ machine_mutations! {
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let (operation, value) = recovered_admission(self, key).await?;
-                wait(self, key, operation).await?;
-                decode_recovered(self, value).await
+                let (_, value) = recovered_admission(self, key).await?;
+                finish_admission(self, key, value).await
             }
             .await,
         )

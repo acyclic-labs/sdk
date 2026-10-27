@@ -1,6 +1,7 @@
 //! G29: one operation owner over the caller-selected canonical StreamProvider.
 //! Backends must never reconstruct an absent operation by redispatching it.
 use crate::*;
+pub use crate::{OperationSettlement, SettledMutation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod bindings;
@@ -69,14 +70,6 @@ impl StoredOperation {
             phase: self.phase,
         }
     }
-}
-
-/// Exact settlement, suitable for control planes which must not rebuild a wait loop.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SettledMutation {
-    pub operation: OperationId,
-    pub settlement: acyclic_stream::CommitId,
-    pub outcome: MutationOutcome,
 }
 
 #[derive(Clone, Debug)]
@@ -444,7 +437,11 @@ impl OperationRegistry {
         Err(ProviderError::Cancelled)
     }
 
-    pub async fn settled(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {
+    /// Read a terminal canonical publication, including explicit failed/cancelled state.
+    pub async fn settlement(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<OperationSettlement, ProviderError> {
         let id = operation_id(key);
         let row = self
             .journal
@@ -453,29 +450,57 @@ impl OperationRegistry {
         let record = row
             .value
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))?;
-        match (record.phase, record.outcome, row.anchor) {
-            (OperationPhase::Succeeded, Some(outcome), Some(settlement)) => Ok(SettledMutation {
-                operation: id,
-                settlement,
-                outcome: self.journal.outcome(id, &outcome).await?,
-            }),
-            (OperationPhase::Failed, _, _) => Err(ProviderError::Failed),
-            (OperationPhase::Cancelled, _, _) => Err(ProviderError::Cancelled),
-            _ => Err(ProviderError::Indeterminate(key)),
+        if !matches!(
+            record.phase,
+            OperationPhase::Succeeded | OperationPhase::Failed | OperationPhase::Cancelled
+        ) {
+            return Err(ProviderError::Indeterminate(key));
         }
+        let settlement = row
+            .anchor
+            .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?;
+        let observation = record.observation();
+        let outcome = match record.outcome {
+            Some(outcome) if record.phase == OperationPhase::Succeeded => {
+                Some(self.journal.outcome(id, &outcome).await?)
+            }
+            None if record.phase != OperationPhase::Succeeded => None,
+            _ => return Err(storage(acyclic_stream::StreamError::InvalidResponse)),
+        };
+        Ok(OperationSettlement {
+            operation: observation,
+            settlement,
+            outcome,
+        })
     }
 
-    /// Join through the durable follow, then read the immutable settlement.
-    /// Lost observations never authorize another dispatch.
-    pub async fn join(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {
+    pub async fn settled(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {
+        self.settlement(key).await?.result(key)
+    }
+
+    /// Join through the durable follow. Lost observations never authorize dispatch.
+    pub async fn join_settlement(
+        &self,
+        key: IdempotencyKey,
+        operation: OperationId,
+    ) -> Result<OperationSettlement, ProviderError> {
         use futures::TryStreamExt;
-        let mut observations = self.watch(operation_id(key)).await?;
+        if operation != operation_id(key) {
+            return Err(ProviderError::Rejected("join operation does not match its admission key; recovery: retain the original key and operation returned by admission".into()));
+        }
+        let mut observations = self.watch(operation).await?;
         while let Some(observation) = observations.try_next().await? {
             if observation.phase != OperationPhase::Pending {
-                return self.settled(key).await;
+                return self.settlement(key).await;
             }
         }
         Err(ProviderError::Indeterminate(key))
+    }
+
+    pub async fn join(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {
+        self.join_settlement(key, operation_id(key))
+            .await?
+            .result(key)
     }
 
     /// Replay and live changes share the Streams follow cursor, with no poll timer.

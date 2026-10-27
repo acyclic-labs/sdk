@@ -54,6 +54,7 @@ async fn fixture() -> (
     let io = Arc::new(GuestIo::default());
     let service = OperationService {
         guest: Some(io.clone()),
+        join: JoinReply::Reject(Code::Unimplemented),
         expected_key: IdempotencyKey::parse("00000000-0000-4000-8000-000000000002").unwrap(),
         expected_operation: OperationId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
         recovered: wire::RecoveredAdmission::default(),
@@ -107,7 +108,7 @@ fn command_bounds_are_checked_before_dispatch() {
             Err(ProviderError::Invalid(_))
         ));
     }
-    let bounded = ExecCommand::new(vec!["é".repeat(2048); 8], 60_000).unwrap();
+    let bounded = ExecCommand::new(vec!["Ã©".repeat(2048); 8], 60_000).unwrap();
     assert_eq!(bounded.argv().len(), 8);
     assert_eq!(bounded.timeout_ms(), 60_000);
     assert!(ExecCommand::new(vec!["a".into(), "".into()], 1).is_ok());
