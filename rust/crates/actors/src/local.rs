@@ -13,10 +13,9 @@ use crate::guest::{
 };
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope,
-    CommittedMutation, IdempotencyKey, ReadRequest, Record, StreamError, StreamPath,
+    CommittedMutation, IdempotencyKey, Record, StreamError, StreamPath,
     StreamProvider,
 };
-use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -422,9 +421,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
-        let tail = match self.provider.tail(path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
+        let (tail, last) = match self.provider.head(path.clone()).await {
+            Ok(head) => (head.tail, head.last),
+            Err(StreamError::NotFound) => (0, None),
             Err(error) => return Err(error.into()),
         };
         if tail == 0 {
@@ -435,18 +434,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 state: None,
             });
         }
-        let mut records = self
-            .provider
-            .read(ReadRequest {
-                path: path.clone(),
-                from: tail - 1,
-                limit: 1,
-            })
-            .await?;
-        let record = records
-            .try_next()
-            .await?
-            .ok_or(Error::Invalid("checkpoint history is incomplete"))?;
+        let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
         if record.sequence != tail - 1 {
             return Err(Error::Invalid("checkpoint cursor changed"));
         }

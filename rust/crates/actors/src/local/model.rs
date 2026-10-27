@@ -11,7 +11,7 @@ use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, FollowFilter, ForkReceipt,
-    ForkRequest, IdempotencyObservation, MemoryStream, RecordStream, StreamBounds,
+    ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds,
 };
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
