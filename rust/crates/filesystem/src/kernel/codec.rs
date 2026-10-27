@@ -75,7 +75,9 @@ impl Default for DecodeLimits {
 }
 
 impl DecodeLimits {
-    pub(crate) fn for_volume(config: VolumeConfig) -> Self {
+    /// Derives canonical decode bounds from the selected volume's limits.
+    #[must_use]
+    pub fn for_volume(config: VolumeConfig) -> Self {
         Self {
             maximum_object_bytes: config.limits.maximum_object_bytes,
             maximum_name_bytes: config.limits.maximum_component_bytes,

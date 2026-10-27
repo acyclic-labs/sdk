@@ -262,7 +262,7 @@ pub(in crate::bindings) fn authored_transaction(
             path: browser_path(&path, config)?,
             metadata: decode_file_metadata(
                 canonical_bytes.as_ref(),
-                browser_decode_limits(config.limits),
+                DecodeLimits::for_volume(config),
                 &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
             )
             .map_err(js_error)?,
