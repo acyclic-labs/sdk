@@ -52,6 +52,7 @@ pub(crate) use prepared::PreparedCommit;
 include!("memory_limits.rs");
 
 include!("memory_stream.rs");
+include!("decision.rs");
 include!("provider.rs");
 include!("follow.rs");
 include!("follow_progress.rs");
@@ -89,3 +90,4 @@ impl UnixMillisClock for std::sync::atomic::AtomicU64 {
 }
 
 include!("append.rs");
+include!("fork.rs");

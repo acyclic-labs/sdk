@@ -15,20 +15,7 @@ impl CommitPlan {
                 bind_envelope(envelope, commit_id, time);
             }
         }
-        for history in &mut self.histories {
-            if let History::Batch { records, .. } =
-                Arc::get_mut(history).ok_or(StreamError::Unavailable)?
-            {
-                for record in &mut Arc::get_mut(records)
-                    .ok_or(StreamError::Unavailable)?
-                    .records
-                {
-                    record.commit_id = commit_id;
-                    record.committed_at_micros = time;
-                }
-            }
-        }
-        Ok(())
+        bind_histories(&mut self.histories, commit_id, time)
     }
 
     fn publish(
@@ -57,6 +44,27 @@ impl CommitPlan {
         );
         Ok((self.result, self.output_claim))
     }
+}
+
+fn bind_histories(
+    histories: &mut [Arc<History>],
+    commit_id: CommitId,
+    time: u64,
+) -> Result<(), StreamError> {
+    for history in histories {
+        if let History::Batch { records, .. } =
+            Arc::get_mut(history).ok_or(StreamError::Unavailable)?
+        {
+            for record in &mut Arc::get_mut(records)
+                .ok_or(StreamError::Unavailable)?
+                .records
+            {
+                record.commit_id = commit_id;
+                record.committed_at_micros = time;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl MemoryStream {
@@ -299,6 +307,23 @@ impl MemoryStream {
         digest: [u8; 32],
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
+        self.plan_commit_locked(state, request, digest, deadline)?
+            .install(self, state)
+    }
+
+    fn plan_commit_locked<'a>(
+        &'a self,
+        state: &mut State,
+        request: CommitRequest,
+        digest: [u8; 32],
+        deadline: Option<u64>,
+    ) -> Result<
+        Decision<
+            (CommitOutcome, Allocation),
+            impl FnOnce(&mut State, bool) -> Result<(CommitOutcome, Allocation), StreamError> + use<'a>,
+        >,
+        StreamError,
+    > {
         if let Some(replay) = self.replay(state, request.idempotency_key.as_bytes())? {
             if replay.digest != digest {
                 return Err(StreamError::IdempotencyMismatch);
@@ -306,9 +331,9 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.copy_commit(result);
+            return self.copy_commit(result).map(Decision::Returned);
         }
-        let check_deadline = || {
+        let check_deadline = move || {
             if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
                 Err(StreamError::DeadlineElapsed)
             } else {
@@ -342,7 +367,7 @@ impl MemoryStream {
                     resident,
                 );
             }
-            return Ok((result, output_claim));
+            return Ok(Decision::Returned((result, output_claim)));
         }
         drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {
@@ -363,21 +388,26 @@ impl MemoryStream {
         }
         self.reserve_retained(state)?;
         let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
-        self.publish(envelope_payload_bytes(&plan.result), || {
-            check_deadline()?;
-            let time = crate::preparation::committed_time(
-                state.last_committed_at_micros,
-                self.commit_clock.now_unix_millis(),
-            );
-            plan.bind(commit_id, time)?;
-            plan.publish(
-                state,
-                &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
-                &mut || self.record_replay_probe(&mut probes),
-                request.idempotency_key,
-                digest,
-                time,
-            )
+        Ok(Decision::Accepted {
+            bytes: envelope_payload_bytes(&plan.result),
+            install: move |state: &mut State, durable: bool| {
+                if !durable {
+                    check_deadline()?;
+                }
+                let time = crate::preparation::committed_time(
+                    state.last_committed_at_micros,
+                    self.commit_clock.now_unix_millis(),
+                );
+                plan.bind(commit_id, time)?;
+                plan.publish(
+                    state,
+                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+                    &mut || self.record_replay_probe(&mut probes),
+                    request.idempotency_key,
+                    digest,
+                    time,
+                )
+            },
         })
     }
 }

@@ -5,7 +5,7 @@
 //! become visible only after the journal's durability promise resolves.
 
 use crate::{
-    journal::{Command, decode_command},
+    journal::{Command, Outcome, decode_command},
     *,
 };
 use async_trait::async_trait;
@@ -44,7 +44,7 @@ extern "C" {
 /// Retained command journal and shared core capacities for one consistency domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JournalStreamLimits {
-    /// Maximum retained commands, including deterministic refusals.
+    /// Maximum retained accepted commands. Refusals consume no journal entry.
     pub commands: u32,
     /// Maximum retained bytes, including command clocks and deadlines.
     pub journal_bytes: u64,
@@ -233,8 +233,8 @@ impl JournalStream {
                 .filter(|bytes| *bytes <= self.0.limits.journal_bytes)
                 .ok_or(StreamError::Capacity)?;
             self.0.clock.set(time);
-            // Refused commands are retained too: they are deterministic, do
-            // not publish records, and cannot spend a coordinated retry key.
+            // Recovery uses the canonical evaluator. New publication only
+            // journals accepted mutations, never conditional refusals.
             let result = apply(&cache.provider, command, deadline).await;
             replayable(&result)?;
             cache.cursor = cache.cursor.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -264,17 +264,16 @@ impl JournalStream {
             return apply(&cache.provider, command, deadline).await;
         }
         let length = encoded.len() + 17;
-        let bytes = cache
-            .bytes
+        let base_bytes = cache.bytes;
+        let cursor = cache.cursor;
+        // Journal capacity is checked only after the canonical core accepts a
+        // new mutation; a conditional refusal does not need a durable slot.
+        let bytes = base_bytes
             .checked_add(u64::try_from(length).map_err(unavailable)?)
-            .filter(|bytes| *bytes <= self.0.limits.journal_bytes)
-            .ok_or(StreamError::Capacity)?;
-        if cache.cursor >= self.0.limits.commands {
-            return Err(StreamError::Capacity);
-        }
+            .filter(|bytes| *bytes <= self.0.limits.journal_bytes);
         // The host owns durable wake routing, but never decodes command semantics.
-        // A refused command may cause a harmless wake; only forks affect a
-        // destination subtree. Ordinary appends affect exactly their path.
+        // Only accepted commands reach it. Forks affect a destination subtree;
+        // ordinary appends affect exactly their path.
         let changes = js_sys::Array::new();
         let changed = |path: &StreamPath, subtree: bool| {
             let change = js_sys::Array::new();
@@ -300,6 +299,7 @@ impl JournalStream {
         // storage adapter never interprets a deadline or a Stream command.
         let accepted = Rc::new(Cell::new(None));
         let sampled = accepted.clone();
+        let clock = self.0.clock.clone();
         let frame = Closure::<dyn FnMut() -> Result<Uint8Array, JsValue>>::new(move || {
             if sampled.get().is_some() {
                 return Err(JsValue::from_str(
@@ -308,32 +308,64 @@ impl JournalStream {
             }
             let time = SystemUnixMillisClock.now_unix_millis();
             sampled.set(Some(time));
+            if deadline.is_some_and(|deadline| time >= deadline) {
+                return Err(JsValue::from_str(
+                    "STEP journal-accept failed: deadline elapsed; recovery: inspect the original request identity before submitting another operation",
+                ));
+            }
+            clock.set(time);
             let mut frame = time.to_le_bytes().to_vec();
             frame.push(u8::from(deadline.is_some()));
             frame.extend_from_slice(&deadline.unwrap_or(0).to_le_bytes());
             frame.extend_from_slice(&encoded);
             Ok(Uint8Array::from(frame.as_slice()))
-        });
+        }).into_js_value();
+        // The host's promise owns this JavaScript function across caller
+        // cancellation. Dropping this Rust future must not invalidate a frame
+        // callback that the host may still call in its acceptance transaction.
         // Cancellation after acceptance leaves the cursor unchanged. The next
         // query replays that accepted row before exposing any new state.
-        JsFuture::from(
-            self.0
-                .journal
-                .append(cache.cursor, frame.as_ref().unchecked_ref(), &changes)
-                .map_err(unavailable)?,
-        )
-        .await
-        .map_err(unavailable)?;
-        self.0
-            .clock
-            .set(accepted.get().ok_or(StreamError::Unavailable)?);
-        let result = apply(&cache.provider, command, deadline).await;
-        cache.failed = matches!(
-            &result,
-            Err(StreamError::Unavailable | StreamError::InvalidResponse | StreamError::Unsupported)
-        );
-        cache.cursor += 1;
-        cache.bytes = bytes;
+        self.0.clock.set(SystemUnixMillisClock.now_unix_millis());
+        let mut published = false;
+        let result = cache
+            .provider
+            .apply_durable(command, deadline, async {
+                if cursor >= self.0.limits.commands {
+                    return Err(StreamError::Capacity);
+                }
+                bytes.ok_or(StreamError::Capacity)?;
+                let appended = JsFuture::from(
+                    self.0
+                        .journal
+                        .append(cursor, frame.unchecked_ref(), &changes)
+                        .map_err(unavailable)?,
+                )
+                .await
+                .map_err(unavailable);
+                if appended.is_err()
+                    && accepted
+                        .get()
+                        .is_some_and(|at| deadline.is_some_and(|deadline| at >= deadline))
+                {
+                    return Err(StreamError::DeadlineElapsed);
+                }
+                appended?;
+                accepted.get().ok_or(StreamError::Unavailable)?;
+                published = true;
+                Ok(())
+            })
+            .await;
+        cache.failed = (published && result.is_err())
+            || matches!(
+                &result,
+                Err(StreamError::Unavailable
+                    | StreamError::InvalidResponse
+                    | StreamError::Unsupported)
+            );
+        if published {
+            cache.cursor += 1;
+            cache.bytes = bytes.ok_or(StreamError::Capacity)?;
+        }
         result
     }
 
@@ -351,11 +383,6 @@ impl JournalStream {
     }
 }
 
-enum Outcome {
-    Append(AppendOutcome),
-    Fork(ForkReceipt),
-    Commit(CommitOutcome),
-}
 async fn apply(
     provider: &MemoryStream,
     command: Command,

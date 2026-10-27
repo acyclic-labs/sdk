@@ -5,7 +5,7 @@
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
 use crate::{
-    journal::{Command, decode_command, replay},
+    journal::{Command, Outcome, decode_command, replay},
     *,
 };
 use futures::StreamExt;
@@ -378,12 +378,6 @@ impl PostgresStream {
             },
         ))
     }
-}
-
-enum Outcome {
-    Append(AppendOutcome),
-    Fork(ForkReceipt),
-    Commit(CommitOutcome),
 }
 
 #[async_trait]

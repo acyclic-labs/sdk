@@ -12,6 +12,16 @@ pub(crate) enum Command {
     Commit(CommitRequest),
 }
 
+#[cfg(any(
+    feature = "postgres",
+    all(feature = "wasm-journal", target_arch = "wasm32")
+))]
+pub(crate) enum Outcome {
+    Append(crate::AppendOutcome),
+    Fork(crate::ForkReceipt),
+    Commit(crate::CommitOutcome),
+}
+
 pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
     match command {
         Command::Append(request) => provider.append(request).await.map(|_| ()),

@@ -3,6 +3,22 @@ impl MemoryStream {
         &self,
         request: AppendRequest,
     ) -> Result<(AppendOutcome, Allocation), StreamError> {
+        let mut state = self.state.write().await;
+        self.plan_append_locked(&mut state, request)?
+            .install(self, &mut state)
+    }
+
+    fn plan_append_locked<'a>(
+        &'a self,
+        state: &mut State,
+        request: AppendRequest,
+    ) -> Result<
+        Decision<
+            (AppendOutcome, Allocation),
+            impl FnOnce(&mut State, bool) -> Result<(AppendOutcome, Allocation), StreamError> + use<'a>,
+        >,
+        StreamError,
+    > {
         #[cfg(not(target_arch = "wasm32"))]
         let _input = self.adopt(
             request.records.capacity() * std::mem::size_of::<AppendRecord>()
@@ -18,11 +34,10 @@ impl MemoryStream {
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
         let digest = self.append_request_digest(&request)?;
-        let mut state = self.state.write().await;
         if let Some(result) =
             self.replay_append(&state, request.idempotency_key.as_ref(), digest)?
         {
-            return Ok((result, Default::default()));
+            return Ok(Decision::Returned((result, Default::default())));
         }
         let mut probes = self.reserve_replay_probes(
             request
@@ -33,7 +48,7 @@ impl MemoryStream {
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
-            return Ok((result, Default::default()));
+            return Ok(Decision::Returned((result, Default::default())));
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
         reserve_append(&state, &request.path, &request.records, self.limits)?;
@@ -63,33 +78,45 @@ impl MemoryStream {
         let (mut facts, claim) = self.vector(1)?;
         self.absorb(&mut allocation, claim)?;
         facts.push(CommittedMutation::Append(fact));
-        let (histories, _histories) = self.histories(&state, &facts)?;
+        let (mut histories, _histories) = self.histories(&state, &facts)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&request.path))?;
-        self.reserve_retained(&mut state)?;
-        let envelope = CommittedEnvelope {
+        self.reserve_retained(state)?;
+        let mut envelope = CommittedEnvelope {
             commit_id,
             mutations: facts,
         };
-        self.publish(bytes, || {
-            publish(
-                &mut state,
-                paths,
-                histories,
-                &envelope,
-                &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
-            )?;
-            state.decision = decision;
-            state.last_committed_at_micros = time;
-            retain(
-                &mut state,
-                &mut || self.record_replay_probe(&mut probes),
-                Some(envelope),
-                request.idempotency_key,
-                digest,
-                IdempotencyOutcome::Append(outcome.clone()),
-                allocation,
-            );
-            Ok((outcome, Default::default()))
+        Ok(Decision::Accepted {
+            bytes,
+            install: move |state: &mut State, _durable| {
+                #[cfg(not(target_arch = "wasm32"))]
+                let _input = _input;
+                let _holds = (_histories, _paths);
+                let time = crate::preparation::committed_time(
+                    state.last_committed_at_micros,
+                    self.commit_clock.now_unix_millis(),
+                );
+                bind_envelope(&mut envelope, commit_id, time);
+                bind_histories(&mut histories, commit_id, time)?;
+                publish(
+                    state,
+                    paths,
+                    histories,
+                    &envelope,
+                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+                )?;
+                state.decision = decision;
+                state.last_committed_at_micros = time;
+                retain(
+                    state,
+                    &mut || self.record_replay_probe(&mut probes),
+                    Some(envelope),
+                    request.idempotency_key,
+                    digest,
+                    IdempotencyOutcome::Append(outcome.clone()),
+                    allocation,
+                );
+                Ok((outcome, Default::default()))
+            },
         })
     }
     fn append_request_digest(&self, request: &AppendRequest) -> Result<[u8; 32], StreamError> {

@@ -2,6 +2,8 @@
 use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
 use std::time::{Duration, Instant};
+#[path = "refusals.rs"]
+mod refusals;
 
 pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let namespace = uuid::Uuid::new_v4().to_string();
@@ -83,6 +85,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let reopened = PostgresStream::connect(database, &namespace).await?;
     assert_eq!(reopened.tail(path).await?, 4);
     println!("Cross-session replay, exact CAS, LISTEN/NOTIFY and reopen checks passed");
+    refusals::verify(database).await?;
     subscription_lifetime(database).await?;
     listener_failure(database).await?;
     Ok(())
