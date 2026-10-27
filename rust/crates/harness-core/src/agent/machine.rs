@@ -7,7 +7,7 @@
 
 use super::{
     AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase, Sender,
-    SpawnRequest, StatusRecord, VolumeBinding,
+    StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -19,6 +19,37 @@ pub const MAX_OPEN_CHILDREN: usize = 256;
 /// Most inputs held in the checkpoint. Later input stays in the inbox, which is
 /// the agent's unbounded durable queue, and is read back as the window drains.
 pub const MAX_QUEUED: usize = 32;
+/// Most spawn outcomes held in the checkpoint, oldest evicted first: as many
+/// as the agent may have open children.
+pub const MAX_SPAWN_OUTCOMES: usize = MAX_OPEN_CHILDREN;
+
+/// Why a step did not create a requested child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnRefusal {
+    /// The agent is archived.
+    Archived,
+    /// The child would exceed [`super::MAX_DEPTH`].
+    Depth,
+    /// The agent already has [`MAX_OPEN_CHILDREN`] open children.
+    Limit,
+}
+
+/// What the step that applied a spawn did with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum SpawnOutcome {
+    /// The child was created, or was already open, in that step's commit.
+    Spawned {
+        /// The child.
+        child: AgentPath,
+    },
+    /// No child was created.
+    Refused {
+        /// Why.
+        reason: SpawnRefusal,
+    },
+}
 
 /// Input queued for the turn, in inbox order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +149,10 @@ pub struct AgentState {
     pub reported: bool,
     /// Turn driver checkpoint while a turn is in progress.
     pub turn: Option<Vec<u8>>,
+    /// The outcome of each recent spawn, client request or tool, keyed by its
+    /// intent and in application order; at most [`MAX_SPAWN_OUTCOMES`].
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub spawns: VecDeque<(IntentId, SpawnOutcome)>,
 }
 
 impl AgentState {
@@ -141,7 +176,16 @@ impl AgentState {
             closed: false,
             reported: false,
             turn: None,
+            spawns: VecDeque::new(),
         }
+    }
+
+    /// The recorded outcome of the spawn named `intent`, while retained.
+    #[must_use]
+    pub fn spawn_outcome(&self, intent: &IntentId) -> Option<&SpawnOutcome> {
+        self.spawns
+            .iter()
+            .find_map(|(recorded, outcome)| (recorded == intent).then_some(outcome))
     }
 
     /// Drops every pending input, held or still in the inbox.
@@ -338,25 +382,30 @@ pub async fn step<T: TurnDriver + ?Sized>(
         // A requested spawn is this step's own spawn effect; it is never a
         // turn input, so it neither wakes nor reorders the turn.
         (
-            Some(state),
+            Some(mut state),
             Wake::Inbox {
                 sequence,
                 record: InboxRecord::Spawn(spawn),
             },
         ) => {
-            if let Some(out) = requested_spawn(&state, sequence, spawn) {
-                outs.push(out);
-            }
+            outs.push(Out::Spawn {
+                intent: requested_intent(sequence)?,
+                brief: Some(spawn.brief.into_bytes()),
+                volumes: Vec::new(),
+            });
+            // Applied before the turn runs, so its tools see this child.
+            apply_spawns(&mut state, &mut outs, 0);
             state
         }
         (Some(state), Wake::Inbox { sequence, record }) => admit(state, sequence, record)?,
     };
+    let applied = outs.len();
     if state.closed {
         cascade(&mut state, &mut outs)?;
     } else {
         run(driver, &mut state, cursor, alarm_wake, &mut outs).await?;
     }
-    track_children(&mut state, &outs)?;
+    apply_spawns(&mut state, &mut outs, applied);
     let alarm = match kernel::alarm(
         control(&state),
         !state.queued.is_empty() || state.overflow.is_some(),
@@ -573,41 +622,59 @@ fn report(state: &AgentState, outcome: AgentOutcome, outs: &mut Vec<Out>) {
     }
 }
 
-/// Records spawned children as open.
 /// The child that the `Spawn` request at `parent`'s inbox `sequence` names,
 /// and its spawning intent. Tool spawns name theirs `spawn:*`, so the two
 /// never collide.
 pub fn requested_child(parent: &AgentPath, sequence: u64) -> Result<(IntentId, AgentPath), Error> {
-    let intent = IntentId::try_from(format!("request:{sequence}"))?;
+    let intent = requested_intent(sequence)?;
     let child = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))?;
     Ok((intent, child))
 }
 
-/// The spawn a request at `sequence` makes, or `None` when the agent is
-/// archived, its tree is at depth, or it has [`MAX_OPEN_CHILDREN`]: a refused
-/// request is consumed rather than failing every retry of the step.
-fn requested_spawn(state: &AgentState, sequence: u64, spawn: SpawnRequest) -> Option<Out> {
-    let (intent, _) = requested_child(&state.path, sequence).ok()?;
-    (!state.closed && state.open_children.len() < MAX_OPEN_CHILDREN).then(|| Out::Spawn {
-        intent,
-        brief: Some(spawn.brief.into_bytes()),
-        volumes: Vec::new(),
-    })
+fn requested_intent(sequence: u64) -> Result<IntentId, Error> {
+    IntentId::try_from(format!("request:{sequence}"))
 }
 
-fn track_children(state: &mut AgentState, outs: &[Out]) -> Result<(), Error> {
-    for out in outs {
-        if let Out::Spawn { intent, .. } = out {
-            let child = state
-                .path
-                .child(&super::AgentId::derive(&state.path.id(), intent.as_str()))?;
-            if state.open_children.len() >= MAX_OPEN_CHILDREN
-                && !state.open_children.contains(&child)
-            {
-                return Err(Error::Record("agent has too many open children"));
+/// Applies each spawn in `outs[from..]`, in order, to `state`: each sees the
+/// children every earlier spawn of the step opened. A refused spawn creates
+/// nothing and is dropped from `outs`; every outcome is recorded under its
+/// intent, so a requester reads it from the committed state.
+fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize) {
+    let mut index = from;
+    while index < outs.len() {
+        let Out::Spawn { intent, .. } = &outs[index] else {
+            index += 1;
+            continue;
+        };
+        let intent = intent.clone();
+        let child = state
+            .path
+            .child(&super::AgentId::derive(&state.path.id(), intent.as_str()));
+        let outcome = match child {
+            Err(_) => SpawnOutcome::Refused {
+                reason: SpawnRefusal::Depth,
+            },
+            Ok(child) if state.open_children.contains(&child) => SpawnOutcome::Spawned { child },
+            Ok(_) if state.closed => SpawnOutcome::Refused {
+                reason: SpawnRefusal::Archived,
+            },
+            Ok(_) if state.open_children.len() >= MAX_OPEN_CHILDREN => SpawnOutcome::Refused {
+                reason: SpawnRefusal::Limit,
+            },
+            Ok(child) => {
+                state.open_children.insert(child.clone());
+                SpawnOutcome::Spawned { child }
             }
-            state.open_children.insert(child);
+        };
+        if matches!(outcome, SpawnOutcome::Refused { .. }) {
+            outs.remove(index);
+        } else {
+            index += 1;
+        }
+        state.spawns.retain(|(recorded, _)| *recorded != intent);
+        state.spawns.push_back((intent, outcome));
+        while state.spawns.len() > MAX_SPAWN_OUTCOMES {
+            state.spawns.pop_front();
         }
     }
-    Ok(())
 }

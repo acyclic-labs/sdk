@@ -720,3 +720,125 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
     assert!(seen >= 13);
     Ok(())
 }
+
+/// Root at `MAX_OPEN_CHILDREN - 1` open children, idle.
+fn one_below_the_child_limit() -> Result<(AgentPath, AgentState)> {
+    let root = AgentPath::root(&id(1));
+    let mut state = AgentState::adopted(root.clone(), &adopted(id(1)));
+    for n in 0..MAX_OPEN_CHILDREN - 1 {
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
+        state
+            .open_children
+            .insert(root.child(&AgentId::from_bytes(bytes))?);
+    }
+    Ok((root, state))
+}
+
+fn spawn_request(sequence: u64) -> Wake {
+    Wake::Inbox {
+        sequence,
+        record: InboxRecord::Spawn(SpawnRequest {
+            by: user(),
+            id: intent(&format!("s{sequence}")),
+            brief: "task".into(),
+        }),
+    }
+}
+
+fn spawns(outs: &[Out]) -> Vec<IntentId> {
+    outs.iter()
+        .filter_map(|out| match out {
+            Out::Spawn { intent, .. } => Some(intent.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other() -> Result {
+    // Two clients' requests land at inbox 1 and 2; the parent's steps apply
+    // them in order and each records its outcome in the committed state.
+    let (root, state) = one_below_the_child_limit()?;
+    let driver = script(Vec::new());
+    let first = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let second = step(
+        &driver,
+        &root,
+        Some(first.state.clone()),
+        3,
+        spawn_request(2),
+    )
+    .await?;
+    let (one, child) = requested_child(&root, 1)?;
+    let (two, _) = requested_child(&root, 2)?;
+    assert_eq!(spawns(&first.outs), [one.clone()]);
+    assert!(spawns(&second.outs).is_empty());
+    assert_eq!(
+        second.state.spawn_outcome(&one),
+        Some(&SpawnOutcome::Spawned { child })
+    );
+    assert_eq!(
+        second.state.spawn_outcome(&two),
+        Some(&SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        })
+    );
+    assert_eq!(second.state.open_children.len(), MAX_OPEN_CHILDREN);
+    Ok(())
+}
+
+/// Spawns `spawn:tool` on its one turn, recording how many children it saw.
+struct ToolSpawner(Mutex<Option<usize>>);
+
+impl TurnDriver for ToolSpawner {
+    fn step<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        _cursor: u64,
+        _input: Option<TurnInput>,
+    ) -> TurnFuture<'a> {
+        *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
+        Box::pin(async move {
+            Ok(TurnStep {
+                checkpoint: None,
+                outs: vec![Out::Spawn {
+                    intent: intent("spawn:tool"),
+                    brief: None,
+                    volumes: Vec::new(),
+                }],
+                wait: Wait::Input,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_client_spawn_counts_against_a_tool_spawn_in_the_same_step() -> Result {
+    let (root, mut state) = one_below_the_child_limit()?;
+    state
+        .queued
+        .push_back(TurnInput::Approval { id: intent("q") });
+    let driver = ToolSpawner(Mutex::new(None));
+    let stepped = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    // The turn ran with the client's child already open, and the tool's
+    // spawn past the limit is refused rather than failing every retry.
+    assert_eq!(
+        *driver.0.lock().expect("seen lock"),
+        Some(MAX_OPEN_CHILDREN)
+    );
+    let (client, child) = requested_child(&root, 1)?;
+    assert_eq!(spawns(&stepped.outs), [client.clone()]);
+    assert_eq!(
+        stepped.state.spawn_outcome(&client),
+        Some(&SpawnOutcome::Spawned { child })
+    );
+    assert_eq!(
+        stepped.state.spawn_outcome(&intent("spawn:tool")),
+        Some(&SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        })
+    );
+    assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN);
+    Ok(())
+}
