@@ -25,6 +25,10 @@ Streams data; retention and storage custody belong to the supplied backend.
 
 Machine state and its state event (`machines/<account>/<id>/events`) publish in
 one multi-stream commit. Cleanup ownership survives cancellation and process exit.
+A created machine's native handle, initial observation/event, and ownership
+publish in one conditional commit before readiness. Driver identity is part of
+native admission; another backend cannot observe or clean up its resources.
+Bindings live in the machine projection, without a second process-local map.
 Each acknowledged deletion releases only that resource; a late create cannot be
 lost by another cleanup pass replacing the ownership list. A successful settlement
 never yields resources for cancellation to delete.

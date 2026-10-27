@@ -1,0 +1,229 @@
+//! Native identity and cleanup ownership publish at the same canonical boundary.
+use super::*;
+use acyclic_stream::CommitMutation;
+
+/// Only native addressing, never credentials or a second operation journal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeBinding {
+    pub provider: String,
+    pub handle: String,
+    pub endpoint: Option<String>,
+}
+
+pub(super) fn check_driver(record: &StoredOperation, provider: &str) -> Result<(), ProviderError> {
+    if record
+        .provider
+        .as_ref()
+        .is_some_and(|owner| owner != provider)
+    {
+        return Err(ProviderError::Unsupported(
+            "operation belongs to another native provider; recovery: compose the original provider before recovery or cleanup".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn project(
+    entry: &mut Option<StoredMachine>,
+    observation: &MachineObservation,
+    at: u64,
+) -> Result<Option<MachineEvent>, ProviderError> {
+    if entry
+        .as_ref()
+        .is_some_and(|entry| entry.observation.state == MachineState::Destroyed)
+    {
+        return Ok(None);
+    }
+    let changed = entry
+        .as_ref()
+        .is_none_or(|entry| entry.observation.state != observation.state);
+    let sequence = entry
+        .as_ref()
+        .map_or(0, |entry| entry.event_sequence)
+        .checked_add(u64::from(changed))
+        .ok_or_else(|| {
+            ProviderError::Rejected(
+                "machine event sequence exhausted; recovery: create a new machine identity".into(),
+            )
+        })?;
+    let native = entry.as_ref().and_then(|entry| entry.native.clone());
+    *entry = Some(StoredMachine {
+        observation: observation.clone(),
+        event_sequence: sequence,
+        native,
+    });
+    Ok(changed.then_some(MachineEvent {
+        machine: observation.id,
+        sequence,
+        observed_at_unix_ms: at,
+        fact: EventFact::State(observation.state),
+    }))
+}
+
+impl OperationRegistry {
+    pub(super) async fn check_driver(
+        &self,
+        operation: OperationId,
+        provider: &str,
+    ) -> Result<(), ProviderError> {
+        let record = self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{operation}"))
+            .await?
+            .value
+            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+        check_driver(&record, provider)
+    }
+
+    /// For an already admitted native result, including malformed metadata.
+    /// Normal native actions bind their driver in the initial admission commit.
+    pub async fn bind_driver(
+        &self,
+        operation: OperationId,
+        provider: &str,
+    ) -> Result<(), ProviderError> {
+        self.journal
+            .update(
+                &format!("ops/{operation}"),
+                |entry: &mut Option<StoredOperation>| {
+                    let record = entry
+                        .as_mut()
+                        .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+                    check_driver(record, provider)?;
+                    record.provider = Some(provider.to_owned());
+                    Ok(())
+                },
+            )
+            .await
+    }
+    /// A different driver cannot interpret a native handle in this account.
+    /// This check precedes the raw observation or mutation, including after reopen.
+    pub async fn native_binding(
+        &self,
+        machine: MachineId,
+        provider: &str,
+    ) -> Result<Option<NativeBinding>, ProviderError> {
+        Ok(self.bound_machine(machine, provider).await?.1)
+    }
+
+    pub(super) async fn bound_machine(
+        &self,
+        machine: MachineId,
+        provider: &str,
+    ) -> Result<(Option<MachineObservation>, Option<NativeBinding>), ProviderError> {
+        let row = self
+            .journal
+            .load::<StoredMachine>(&machine.to_string())
+            .await?
+            .value;
+        let (known, value) = match row {
+            Some(row) => (Some(row.observation), row.native),
+            None => (None, None),
+        };
+        if value
+            .as_ref()
+            .is_some_and(|value| value.provider != provider)
+        {
+            return Err(ProviderError::Unsupported(
+                "native binding belongs to another provider; recovery: compose the original provider for this machine identity".into(),
+            ));
+        }
+        Ok((known, value))
+    }
+
+    /// Publish handle, initial observation/event, and created/adopted ownership in
+    /// one conditional commit, before readiness or any further native mutation.
+    pub async fn claim_machine<D: RawMachines + ?Sized>(
+        &self,
+        driver: &D,
+        operation: OperationId,
+        observation: MachineObservation,
+        native: NativeBinding,
+        adopted: bool,
+    ) -> Result<(), ProviderError> {
+        if native.provider != driver.name() || native.handle.is_empty() {
+            return Err(ProviderError::Invalid(
+                "native result binding is invalid; recovery: repair the raw adapter's provider identity and handle mapping".into(),
+            ));
+        }
+        let pending = loop {
+            let operation_path = format!("ops/{operation}");
+            let machine_path = observation.id.to_string();
+            let op = self
+                .journal
+                .load::<StoredOperation>(&operation_path)
+                .await?;
+            let machine = self.journal.load::<StoredMachine>(&machine_path).await?;
+            let conditions = vec![op.condition(), machine.condition()];
+            let mut record = op
+                .value
+                .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+            check_driver(&record, driver.name())?;
+            record.provider = Some(driver.name().to_owned());
+            if record.phase == OperationPhase::Succeeded {
+                return Err(ProviderError::Conflict(
+                    "native result arrived after settlement; recovery: inspect the settled operation before reclaiming any resource".into(),
+                ));
+            }
+            let mut state = machine.value;
+            if state
+                .as_ref()
+                .and_then(|state| state.native.as_ref())
+                .is_some_and(|binding| binding != &native)
+            {
+                return Err(ProviderError::Conflict(
+                    "machine identity has a different native binding; recovery: reconcile the original provider resource before retrying".into(),
+                ));
+            }
+            let pending = record.phase == OperationPhase::Pending;
+            if adopted && !pending {
+                return Err(ProviderError::Cancelled);
+            }
+            let owned = if adopted {
+                &mut record.targets
+            } else {
+                &mut record.created
+            };
+            // Native IDs stay in the operation's bounded ownership list. The full
+            // endpoint/binding lives once in the machine projection.
+            if !owned.contains(&native.handle) {
+                owned.push(native.handle.clone());
+            }
+            let mut mutations = Vec::new();
+            if let Some(event) = project(&mut state, &observation, observation.changed_at_unix_ms)?
+            {
+                mutations.push(
+                    self.journal
+                        .append(&format!("{machine_path}/events"), &event)?,
+                );
+            }
+            if let Some(state) = &mut state {
+                state.native = Some(native.clone());
+            }
+            mutations.push(self.journal.append(&machine_path, &state)?);
+            mutations.push(
+                self.journal
+                    .append(&operation_path, &Some(record.clone()))?,
+            );
+            mutations.push(self.journal.operation_log(&operation_path, &Some(record))?);
+            if self
+                .journal
+                .publish(conditions, mutations, op.path, op.tail + 1)
+                .await?
+            {
+                break pending;
+            }
+        };
+        if pending {
+            return Ok(());
+        }
+        match driver.destroy(&native.handle).await {
+            Ok(()) | Err(ProviderError::NotFound(_)) => {
+                self.deleted(operation, &native.handle).await?
+            }
+            Err(error) => tracing::warn!(%operation, %error,
+                "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with the original operation identity again"),
+        }
+        Err(ProviderError::Cancelled)
+    }
+}

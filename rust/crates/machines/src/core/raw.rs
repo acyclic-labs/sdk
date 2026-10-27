@@ -1,4 +1,5 @@
 //! Raw provider primitives. Replay, ordering and resource ownership live in core.
+use super::NativeBinding;
 use crate::{MachineId, MachineObservation, ProviderError, SuspensionPolicy};
 use async_trait::async_trait;
 
@@ -6,12 +7,14 @@ use async_trait::async_trait;
 /// into this same boundary; implementations must never add their own operation registry.
 #[async_trait]
 pub trait RawMachines: Send + Sync {
+    fn name(&self) -> &str;
     /// Read once; `known` is the canonical observation, not a provider cache.
     /// Return the provider's actual readiness separately from its public state
     /// (a running VM can temporarily be busy snapshotting or forking).
     async fn raw_observe(
         &self,
         machine: MachineId,
+        native: Option<&NativeBinding>,
         known: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError>;
 

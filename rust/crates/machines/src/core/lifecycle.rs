@@ -56,9 +56,13 @@ impl OperationRegistry {
         machine: MachineId,
         at: u64,
     ) -> Result<MachineObservation, ProviderError> {
-        let known = self.machine(machine).await?;
-        match driver.raw_observe(machine, known.as_ref()).await {
+        let (known, native) = self.bound_machine(machine, driver.name()).await?;
+        match driver
+            .raw_observe(machine, native.as_ref(), known.as_ref())
+            .await
+        {
             Ok(RawObservation { machine: value, .. }) => {
+                same_machine(machine, value.id)?;
                 self.observe_machine(value, at).await?;
                 self.machine(machine)
                     .await?
@@ -81,8 +85,11 @@ impl OperationRegistry {
         timeout: Duration,
     ) -> Result<MachineObservation, ProviderError> {
         let value = settle(key, interval, timeout, || async {
-            let known = self.machine(machine).await?;
-            let observed = driver.raw_observe(machine, known.as_ref()).await?;
+            let (known, native) = self.bound_machine(machine, driver.name()).await?;
+            let observed = driver
+                .raw_observe(machine, native.as_ref(), known.as_ref())
+                .await?;
+            same_machine(machine, observed.machine.id)?;
             if !observed.settled {
                 return Ok(None);
             }
@@ -115,7 +122,7 @@ impl OperationRegistry {
         } else {
             MutationIntent::Suspend(machine)
         };
-        self.apply(key, &intent, async |operation| {
+        self.apply_with(driver, key, &intent, async |operation| {
             let current = self.inspect_machine(driver, machine, at).await?;
             require_capability(&current, Capability::SuspendResume)?;
             let (from, to, outcome) = if wake {
@@ -141,7 +148,7 @@ impl OperationRegistry {
                 return Err(ProviderError::Failed);
             }
             Ok(outcome)
-        }, async |operation| self.cleanup(driver, operation).await).await
+        }).await
     }
 
     pub async fn set_suspension_policy<D: RawMachines + ?Sized>(
@@ -152,7 +159,8 @@ impl OperationRegistry {
         key: IdempotencyKey,
         at: u64,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(
+        self.apply_with(
+            driver,
             key,
             &MutationIntent::Policy(machine, policy),
             async |operation| {
@@ -171,10 +179,18 @@ impl OperationRegistry {
                 self.observe_machine(current, at).await?;
                 Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
             },
-            async |operation| self.cleanup(driver, operation).await,
         )
         .await
     }
+}
+
+fn same_machine(expected: MachineId, actual: MachineId) -> Result<(), ProviderError> {
+    if expected != actual {
+        return Err(ProviderError::Rejected(
+            "native observation identity mismatch; recovery: repair the raw adapter binding before retrying".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn require_capability(

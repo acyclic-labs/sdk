@@ -32,7 +32,7 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(test)]
 use acyclic_machines::core as ops;
-use acyclic_machines::core::{OperationRegistry, RawMachines, RawObservation};
+use acyclic_machines::core::{NativeBinding, OperationRegistry, RawMachines, RawObservation};
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox, Snapshot};
 
 /// Default Daytona API base URL.
@@ -461,6 +461,48 @@ impl DaytonaProvider {
         .await
     }
 
+    async fn claim_sandbox(
+        &self,
+        operation: OperationId,
+        sandbox: &Sandbox,
+        contract: &MachineContract,
+        checkpoint: Option<CheckpointId>,
+        adopted: bool,
+        key: IdempotencyKey,
+    ) -> Result<(), ProviderError> {
+        let observation = match map::sandbox_to_observation(
+            sandbox,
+            Some(contract),
+            checkpoint,
+            now_unix_ms(),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                // The native mutation already returned a handle. Malformed metadata
+                // must retain its cleanup ownership and must never release the key.
+                self.ops
+                    .claim(self, operation, &sandbox.id, adopted)
+                    .await?;
+                tracing::error!(%operation, %error,
+                    "native create metadata mapping failed; recovery: cancel this operation before dispatching a new create");
+                return Err(ProviderError::Indeterminate(key));
+            }
+        };
+        self.ops
+            .claim_machine(
+                self,
+                operation,
+                observation,
+                NativeBinding {
+                    provider: "daytona".into(),
+                    handle: sandbox.id.clone(),
+                    endpoint: None,
+                },
+                adopted,
+            )
+            .await
+    }
+
     /// Creates a sandbox, or adopts the one an earlier attempt under the same deterministic
     /// name already created.
     ///
@@ -547,11 +589,7 @@ impl DaytonaProvider {
     where
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
     {
-        self.ops
-            .apply(key, intent, action, async |operation| {
-                self.ops.cleanup(self, operation).await
-            })
-            .await
+        self.ops.apply_with(self, key, intent, action).await
     }
 
     /// Waits for fork children to start and observes them under `contract`.
@@ -653,7 +691,8 @@ impl DaytonaProvider {
             },
         )
         .await?;
-        self.ops.claim(self, operation, &child.id, adopted).await?;
+        self.claim_sandbox(operation, &child, &parent.contract, None, adopted, key)
+            .await?;
         self.api
             .replace_labels(&child.id, map::relabel(&child.labels, ours))
             .await?;
@@ -719,12 +758,20 @@ impl DaytonaProvider {
 
 #[async_trait]
 impl RawMachines for DaytonaProvider {
+    fn name(&self) -> &str {
+        "daytona"
+    }
+
     async fn raw_observe(
         &self,
         machine: MachineId,
+        native: Option<&NativeBinding>,
         known: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError> {
-        let sandbox = self.api.get(&machine.to_string()).await?;
+        let handle = native
+            .map(|value| value.handle.clone())
+            .unwrap_or_else(|| machine.to_string());
+        let sandbox = self.api.get(&handle).await?;
         if !map::owned_by(&sandbox, self.tenant()) {
             return Err(ProviderError::NotFound(machine.to_string()));
         }
@@ -811,8 +858,7 @@ impl MachinesProvider for DaytonaProvider {
                 let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
                 body.env = self.staged_boot_env(key).unwrap_or_default();
                 let (created, adopted) = self.create_or_adopt(&body).await?;
-                self.ops
-                    .claim(self, operation, &created.id, adopted)
+                self.claim_sandbox(operation, &created, &contract, None, adopted, key)
                     .await?;
                 let settled = self.wait_settled(&created.id, key).await?;
                 let observation = self.observe(&settled, Some(&contract), None).await?;
@@ -990,9 +1036,15 @@ impl MachinesProvider for DaytonaProvider {
                     let body =
                         map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
                     let (created, adopted) = self.create_or_adopt(&body).await?;
-                    self.ops
-                        .claim(self, operation, &created.id, adopted)
-                        .await?;
+                    self.claim_sandbox(
+                        operation,
+                        &created,
+                        &contract,
+                        Some(checkpoint),
+                        adopted,
+                        key,
+                    )
+                    .await?;
                     ids.push(created.id);
                 }
                 let children = self

@@ -329,6 +329,7 @@ async fn failed_admission_performs_no_native_dispatch() -> TestResult {
 }
 
 struct NativeLifecycle {
+    provider: &'static str,
     value: tokio::sync::Mutex<MachineObservation>,
     mutations: AtomicUsize,
     reads: AtomicUsize,
@@ -336,9 +337,14 @@ struct NativeLifecycle {
 
 #[async_trait]
 impl RawMachines for NativeLifecycle {
+    fn name(&self) -> &str {
+        self.provider
+    }
+
     async fn raw_observe(
         &self,
         _: MachineId,
+        _: Option<&NativeBinding>,
         _: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
@@ -382,6 +388,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
     };
     let machine = value.id;
     let native = NativeLifecycle {
+        provider: "internal",
         value: tokio::sync::Mutex::new(value),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
@@ -493,5 +500,110 @@ async fn failed_fork_round_still_joins_every_started_sibling() -> TestResult {
     .await;
     assert!(matches!(result, Err(ProviderError::Failed)));
     assert_eq!(completed.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_binding_observation_event_and_ownership_reopen_from_one_commit() -> TestResult {
+    // This is an internal raw-adapter oracle, not an external provider capture.
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let native = NativeLifecycle {
+        provider: "internal",
+        value: tokio::sync::Mutex::new(value.clone()),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let streams = Arc::new(LocalStream::open(dir.path(), LocalStreamLimits::default()).await?);
+    let core = OperationRegistry::new(streams.clone(), "account")?;
+    let key = IdempotencyKey::new();
+    let operation = fresh(core.admit(key, &"create").await?)?;
+    let binding = NativeBinding {
+        provider: "internal".into(),
+        handle: "opaque-native-id".into(),
+        endpoint: Some("https://internal.invalid".into()),
+    };
+    core.claim_machine(&native, operation, value.clone(), binding.clone(), false)
+        .await?;
+    let mut commits = Vec::new();
+    for (suffix, from) in [
+        (value.id.to_string(), 0),
+        (format!("{}/events", value.id), 0),
+        (format!("ops/{operation}"), 1),
+    ] {
+        let record = streams
+            .read(ReadRequest {
+                path: StreamPath::new(format!("machines/account/{suffix}"))?,
+                from,
+                limit: 1,
+            })
+            .await?
+            .try_next()
+            .await?
+            .ok_or("missing atomic publication")?;
+        commits.push(record.commit_id);
+    }
+    assert!(commits.windows(2).all(|pair| pair.first() == pair.get(1)));
+    drop(core);
+    drop(streams);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.native_binding(value.id, "internal").await?,
+        Some(binding)
+    );
+    assert_eq!(core.created(operation).await?, ["opaque-native-id"]);
+    let other = NativeLifecycle {
+        provider: "other",
+        value: tokio::sync::Mutex::new(value.clone()),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    assert!(matches!(
+        core.inspect_machine(&other, value.id, 3).await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert_eq!(other.reads.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        core.cancel_with(&other, operation).await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert!(matches!(
+        core.apply_with(&other, key, &"create", async |_| {
+            other.mutations.fetch_add(1, Ordering::SeqCst);
+            Ok(MutationOutcome::Suspended(value.id))
+        })
+        .await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert_eq!(other.mutations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        core.inspect(operation).await?.map(|value| value.phase),
+        Some(OperationPhase::Pending)
+    );
+    core.cancel(operation).await?;
+    let mut late = value;
+    late.id = MachineId::new();
+    let binding = NativeBinding {
+        provider: "internal".into(),
+        handle: "late-native-id".into(),
+        endpoint: None,
+    };
+    assert!(matches!(
+        core.claim_machine(&native, operation, late.clone(), binding.clone(), false)
+            .await,
+        Err(ProviderError::Cancelled)
+    ));
+    assert_eq!(
+        core.native_binding(late.id, "internal").await?,
+        Some(binding)
+    );
+    assert_eq!(
+        core.created(operation).await?,
+        ["opaque-native-id", "late-native-id"]
+    );
     Ok(())
 }

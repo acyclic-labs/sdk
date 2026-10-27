@@ -20,6 +20,22 @@ pub(super) struct Row<T> {
     pub value: Option<T>,
 }
 
+impl<T> Row<T> {
+    pub fn condition(&self) -> CommitCondition {
+        match self.anchor {
+            Some(commit_id) => CommitCondition::Head {
+                path: self.path.clone(),
+                expected: self.tail,
+                commit_id,
+            },
+            None => CommitCondition::Tail {
+                path: self.path.clone(),
+                expected: 0,
+            },
+        }
+    }
+}
+
 pub(super) fn storage(error: StreamError) -> ProviderError {
     tracing::error!(
         error = error.code(),
@@ -37,6 +53,70 @@ pub(super) struct Blob {
 }
 
 impl Journal {
+    pub fn append<T: Serialize>(
+        &self,
+        suffix: &str,
+        value: &T,
+    ) -> Result<CommitMutation, ProviderError> {
+        Ok(CommitMutation::Append {
+            path: self.path(suffix)?,
+            records: vec![
+                serde_json::to_vec(value)
+                    .map_err(|_| storage(StreamError::InvalidArgument))?
+                    .into(),
+            ],
+        })
+    }
+
+    pub fn operation_log<T: Serialize>(
+        &self,
+        suffix: &str,
+        value: &T,
+    ) -> Result<CommitMutation, ProviderError> {
+        self.append(
+            "ops",
+            &serde_json::json!({"operation":suffix.strip_prefix("ops/"),"record":value}),
+        )
+    }
+
+    /// One atomic publication attempt. Only a definite conflict permits a new
+    /// read/compute attempt; a lost reply must never redispatch a native action.
+    pub async fn publish(
+        &self,
+        conditions: Vec<CommitCondition>,
+        mutations: Vec<CommitMutation>,
+        durable_path: StreamPath,
+        durable_tail: u64,
+    ) -> Result<bool, ProviderError> {
+        match self
+            .provider
+            .commit(CommitRequest {
+                conditions,
+                mutations,
+                idempotency_key: acyclic_stream::IdempotencyKey::new(
+                    uuid::Uuid::new_v4().as_bytes().to_vec(),
+                )
+                .map_err(storage)?,
+            })
+            .await
+            .map_err(storage)?
+        {
+            CommitOutcome::Committed(_) => {
+                if self
+                    .provider
+                    .durable_receipt(durable_path, durable_tail)
+                    .await
+                    .map_err(storage)?
+                    .is_none()
+                {
+                    return Err(storage(StreamError::Unavailable));
+                }
+                Ok(true)
+            }
+            CommitOutcome::Conflict(_) => Ok(false),
+        }
+    }
+
     pub fn new(provider: Arc<dyn StreamProvider>, account: &str) -> Result<Self, ProviderError> {
         let root = StreamPath::new(format!("machines/{account}")).map_err(|_| ProviderError::Invalid("Machines account admission failed; recovery: supply one canonical account path segment".into()))?;
         if account.is_empty() || account.contains('/') {
@@ -251,6 +331,7 @@ impl Journal {
             let row = self.load::<T>(suffix).await?;
             let before = serde_json::to_vec(&row.value)
                 .map_err(|_| storage(StreamError::InvalidArgument))?;
+            let condition = row.condition();
             let mut value = row.value;
             let (result, mut mutations) = change(&mut value)?;
             let after =
@@ -258,51 +339,19 @@ impl Journal {
             if before == after {
                 return Ok(result);
             }
-            let condition = match row.anchor {
-                Some(commit_id) => CommitCondition::Head {
-                    path: row.path.clone(),
-                    expected: row.tail,
-                    commit_id,
-                },
-                None => CommitCondition::Tail {
-                    path: row.path.clone(),
-                    expected: 0,
-                },
-            };
             mutations.push(CommitMutation::Append {
                 path: row.path.clone(),
                 records: vec![after.clone().into()],
             });
             if suffix.starts_with("ops/") {
                 // The account operation log and point projection settle in one commit.
-                mutations.push(CommitMutation::Append { path: self.path("ops")?, records: vec![serde_json::to_vec(&serde_json::json!({"operation": suffix.strip_prefix("ops/"), "record": value})).map_err(|_| storage(StreamError::InvalidArgument))?.into()] });
+                mutations.push(self.operation_log(suffix, &value)?);
             }
-            match self
-                .provider
-                .commit(CommitRequest {
-                    conditions: vec![condition],
-                    mutations,
-                    idempotency_key: acyclic_stream::IdempotencyKey::new(
-                        uuid::Uuid::new_v4().as_bytes().to_vec(),
-                    )
-                    .map_err(storage)?,
-                })
-                .await
-                .map_err(storage)?
+            if self
+                .publish(vec![condition], mutations, row.path, row.tail + 1)
+                .await?
             {
-                CommitOutcome::Committed(_) => {
-                    if self
-                        .provider
-                        .durable_receipt(row.path, row.tail + 1)
-                        .await
-                        .map_err(storage)?
-                        .is_none()
-                    {
-                        return Err(storage(StreamError::Unavailable));
-                    }
-                    return Ok(result);
-                }
-                CommitOutcome::Conflict(_) => {}
+                return Ok(result);
             }
         }
     }

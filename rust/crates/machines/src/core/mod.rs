@@ -3,7 +3,9 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+mod bindings;
 mod journal;
+pub use bindings::NativeBinding;
 mod raw;
 pub use raw::{RawMachines, RawObservation};
 mod fork;
@@ -19,6 +21,8 @@ use journal::{Journal, storage};
 struct StoredMachine {
     observation: MachineObservation,
     event_sequence: u64,
+    #[serde(default)]
+    native: Option<NativeBinding>,
 }
 
 /// Native resource ownership and the admitted intent, retained across restarts.
@@ -27,6 +31,7 @@ pub struct OperationRecord {
     pub id: OperationId,
     pub key: IdempotencyKey,
     pub intent_digest: [u8; 32],
+    pub provider: Option<String>,
     pub created: Vec<String>,
     pub targets: Vec<String>,
     pub phase: OperationPhase,
@@ -49,6 +54,8 @@ struct StoredOperation {
     id: OperationId,
     key: IdempotencyKey,
     intent_digest: [u8; 32],
+    #[serde(default)]
+    provider: Option<String>,
     created: Vec<String>,
     targets: Vec<String>,
     phase: OperationPhase,
@@ -118,10 +125,20 @@ impl OperationRegistry {
         key: IdempotencyKey,
         intent: &T,
     ) -> Result<Admission, ProviderError> {
+        self.admit_in(key, intent, None).await
+    }
+
+    async fn admit_in<T: Serialize + Sync>(
+        &self,
+        key: IdempotencyKey,
+        intent: &T,
+        provider: Option<&str>,
+    ) -> Result<Admission, ProviderError> {
         let digest = intent_digest(intent)?;
         let id = operation_id(key);
         let fresh = self.journal.update(&format!("ops/{id}"), move |entry: &mut Option<StoredOperation>| {
             if let Some(record) = entry {
+                if let Some(provider) = provider { bindings::check_driver(record, provider)?; }
                 if record.intent_digest != digest {
                     return Err(ProviderError::Conflict("Machines key is bound to another intent; recovery: inspect the original key or use a fresh key for a different intent".into()));
                 }
@@ -132,7 +149,7 @@ impl OperationRegistry {
                     _ => Err(ProviderError::Indeterminate(key)),
                 };
             }
-            *entry = Some(StoredOperation { id, key, intent_digest: digest, created: Vec::new(), targets: Vec::new(), phase: OperationPhase::Pending, outcome: None });
+            *entry = Some(StoredOperation { id, key, intent_digest: digest, provider: provider.map(str::to_owned), created: Vec::new(), targets: Vec::new(), phase: OperationPhase::Pending, outcome: None });
             Ok(true)
         }).await?;
         if fresh {
@@ -285,6 +302,7 @@ impl OperationRegistry {
             id: record.id,
             key: record.key,
             intent_digest: record.intent_digest,
+            provider: record.provider,
             created: record.created,
             targets: record.targets,
             phase: record.phase,
@@ -368,6 +386,7 @@ impl OperationRegistry {
         driver: &(impl RawMachines + ?Sized),
         operation: OperationId,
     ) -> Result<(), ProviderError> {
+        self.check_driver(operation, driver.name()).await?;
         for resource in self.created(operation).await?.into_iter().rev() {
             match driver.destroy(&resource).await {
                 Ok(()) | Err(ProviderError::NotFound(_)) => {
@@ -386,6 +405,7 @@ impl OperationRegistry {
         driver: &(impl RawMachines + ?Sized),
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
+        self.check_driver(operation, driver.name()).await?;
         let (observation, _) = self
             .cancel(operation)
             .await?
@@ -404,6 +424,7 @@ impl OperationRegistry {
         resource: &str,
         adopted: bool,
     ) -> Result<(), ProviderError> {
+        self.bind_driver(operation, driver.name()).await?;
         if adopted {
             return if self.bind_adopted(operation, resource).await? {
                 Ok(())
@@ -513,25 +534,8 @@ impl OperationRegistry {
         let event_path = self.journal.path(&format!("{suffix}/events"))?;
         self.journal
             .update_with(&suffix, |entry: &mut Option<StoredMachine>| {
-                if entry
-                    .as_ref()
-                    .is_some_and(|entry| entry.observation.state == MachineState::Destroyed)
-                {
-                    return Ok(((), Vec::new()));
-                }
-                let changed = entry
-                    .as_ref()
-                    .is_none_or(|entry| entry.observation.state != observation.state);
-                let sequence =
-                    entry.as_ref().map_or(0, |entry| entry.event_sequence) + u64::from(changed);
                 let mut mutations = Vec::new();
-                if changed {
-                    let event = MachineEvent {
-                        machine: observation.id,
-                        sequence,
-                        observed_at_unix_ms: at,
-                        fact: EventFact::State(observation.state),
-                    };
+                if let Some(event) = bindings::project(entry, &observation, at)? {
                     mutations.push(acyclic_stream::CommitMutation::Append {
                         path: event_path.clone(),
                         records: vec![
@@ -541,10 +545,6 @@ impl OperationRegistry {
                         ],
                     });
                 }
-                *entry = Some(StoredMachine {
-                    observation: observation.clone(),
-                    event_sequence: sequence,
-                });
                 Ok(((), mutations))
             })
             .await
@@ -703,7 +703,47 @@ impl OperationRegistry {
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
         R: AsyncFnOnce(OperationId) -> Result<(), ProviderError>,
     {
-        let operation = match self.admit(key, intent).await? {
+        self.apply_in(None, key, intent, action, rollback).await
+    }
+
+    /// The driver identity is part of canonical admission, before native IO.
+    /// A different composed backend cannot clean up or reinterpret these handles.
+    pub async fn apply_with<D, T, F>(
+        &self,
+        driver: &D,
+        key: IdempotencyKey,
+        intent: &T,
+        action: F,
+    ) -> Result<MutationOutcome, ProviderError>
+    where
+        D: RawMachines + ?Sized,
+        T: Serialize + Sync,
+        F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
+    {
+        self.apply_in(
+            Some(driver.name()),
+            key,
+            intent,
+            action,
+            async |operation| self.cleanup(driver, operation).await,
+        )
+        .await
+    }
+
+    async fn apply_in<T, F, R>(
+        &self,
+        provider: Option<&str>,
+        key: IdempotencyKey,
+        intent: &T,
+        action: F,
+        rollback: R,
+    ) -> Result<MutationOutcome, ProviderError>
+    where
+        T: Serialize + Sync,
+        F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
+        R: AsyncFnOnce(OperationId) -> Result<(), ProviderError>,
+    {
+        let operation = match self.admit_in(key, intent, provider).await? {
             Admission::Replay(outcome) => return Ok(*outcome),
             Admission::Fresh(operation) => operation,
         };
