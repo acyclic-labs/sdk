@@ -66,9 +66,11 @@ try {
   assertReserved("CommitMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
   assertFields("CommittedMutation", [["append", 1], ["fork", 2]]);
   assertReserved("CommittedMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
-  assertFields("CommitCondition", [["tail", 1], ["absent", 2], ["head", 3]]);
+  assertFields("CommitCondition", [["tail", 1], ["absent", 2], ["head", 3], ["present", 4]]);
   assertFields("HeadCondition", [["path", 1], ["expected", 2], ["commit_id", 3]]);
-  assertFields("CommitConflict", [["tail", 1], ["exists", 2], ["head", 4]]);
+  assertFields("CommitConflict", [["tail", 1], ["exists", 2], ["head", 4], ["missing", 5]]);
+  assertFields("PresentCondition", [["path", 1]]);
+  assertFields("MissingCommitConflict", [["path", 1]]);
   assertFields("HeadCommitConflict", [["path", 1], ["expected", 2], ["actual", 3]]);
   assertReserved("CommitConflict", [[3, 4]], ["retired"]);
   assertFields("IdempotencyObservation", [

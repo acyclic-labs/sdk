@@ -23,12 +23,14 @@ fn backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_rea
                         commit_id: expected_head,
                     },
                     CommitCondition::Absent { path: path.clone() },
+                    CommitCondition::Present { path: path.clone() },
                 ];
                 let tail_matches = actual == Some(expected);
                 let accepted = [
                     actual.unwrap_or(0) == expected,
                     tail_matches && matching_head,
                     actual.is_none(),
+                    actual.is_some(),
                 ];
                 for (index, (condition, accepted)) in conditions.iter().zip(accepted).enumerate() {
                     let reads = Cell::new(0);

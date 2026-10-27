@@ -9,6 +9,7 @@ import type {
   CommitMutation as WireCommitMutation,
   CommitConflict as WireCommitConflict, TailCommitConflict as WireTailCommitConflict,
   ExistsCommitConflict as WireExistsCommitConflict,
+  MissingCommitConflict as WireMissingCommitConflict,
   HeadCommitConflict as WireHeadCommitConflict,
   ForkReceipt as WireForkReceipt,
   ForkRequest as WireForkRequest, ReadRequest as WireReadRequest,
@@ -32,11 +33,11 @@ type _CommitOutcomes = AssertNever<Exclude<CommitOutcomeKind, "committed" | "con
 type IdempotencyKind = Exclude<WireIdempotencyObservation["outcome"]["case"], undefined>;
 type _IdempotencyKinds = AssertNever<Exclude<IdempotencyKind, "append" | "fork" | "commit"> | Exclude<"append" | "fork" | "commit", IdempotencyKind>>;
 type ProviderConditionKind = Exclude<WireCommitCondition["condition"]["case"], undefined>;
-type _ProviderConditionKinds = AssertNever<Exclude<ProviderConditionKind, "tail" | "absent" | "head"> | Exclude<"tail" | "absent" | "head", ProviderConditionKind>>;
+type _ProviderConditionKinds = AssertNever<Exclude<ProviderConditionKind, "tail" | "absent" | "head" | "present"> | Exclude<"tail" | "absent" | "head" | "present", ProviderConditionKind>>;
 type ProviderMutationKind = Exclude<WireCommitMutation["mutation"]["case"], undefined>;
 type _ProviderMutationKinds = AssertNever<Exclude<ProviderMutationKind, "append" | "fork"> | Exclude<"append" | "fork", ProviderMutationKind>>;
 type CommitConflictKind = Exclude<WireCommitConflict["conflict"]["case"], undefined>;
-type _CommitConflictKinds = AssertNever<Exclude<CommitConflictKind, "tail" | "exists" | "head"> | Exclude<"tail" | "exists" | "head", CommitConflictKind>>;
+type _CommitConflictKinds = AssertNever<Exclude<CommitConflictKind, "tail" | "exists" | "head" | "missing"> | Exclude<"tail" | "exists" | "head" | "missing", CommitConflictKind>>;
 
 declare const streamIdentityBrand: unique symbol;
 /** Exact unsigned 64-bit protocol position. */
@@ -83,7 +84,8 @@ export type ForkReceipt = PublicWire<WireForkReceipt, { readonly commitId: Commi
 
 export type CommitCondition =
   | { readonly stream: import("./client.js").Stream<unknown>; readonly ifTail: Sequence; readonly ifCommitId?: CommitId }
-  | { readonly path: string; readonly ifAbsent: true };
+  | { readonly path: string; readonly ifAbsent: true }
+  | { readonly path: string; readonly ifPresent: true };
 export type CommitMutation =
   | { readonly append: { readonly stream: import("./client.js").Stream<unknown>; readonly values: readonly unknown[] } }
   | { readonly fork: { readonly source: import("./client.js").Stream<unknown>; readonly destination: string; readonly atTail: Sequence; readonly exclude?: readonly string[]; readonly values?: readonly unknown[] } };
@@ -92,6 +94,7 @@ export type CommittedMutation =
   | (PublicWire<WireCommittedFork, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "fork"> });
 export type CommittedEnvelope = PublicWire<WireCommittedEnvelope, { readonly commitId: CommitId; readonly mutations: readonly CommittedMutation[] }>;
 export type CommitConflict =
+  | (PublicWire<WireMissingCommitConflict, { readonly expectedPresent: true }> & { readonly actual: Extract<CommitConflictKind, "missing"> })
   | PublicWire<WireHeadCommitConflict, { readonly expectedCommitId: CommitId; readonly actualCommitId: CommitId }, "expected" | "actual">
   | PublicWire<WireTailCommitConflict, {
       readonly expectedTail: WireTailCommitConflict["expected"];
@@ -113,7 +116,7 @@ export type CreateTokenRequest = PublicWire<WireCreateTokenRequest, { readonly a
 export interface AccessToken { readonly token: string; readonly expiresAt: Date }
 
 export interface ProviderCommitRequest {
-  readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence; readonly ifCommitId?: CommitId } | { readonly path: string; readonly ifAbsent: true })[];
+  readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence; readonly ifCommitId?: CommitId } | { readonly path: string; readonly ifAbsent: true } | { readonly path: string; readonly ifPresent: true })[];
   readonly mutations: readonly (
     | { readonly append: { readonly path: string; readonly values: readonly Uint8Array[] } }
     | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence; readonly exclude?: readonly string[]; readonly values: readonly Uint8Array[] } }

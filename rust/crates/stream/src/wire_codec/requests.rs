@@ -77,7 +77,7 @@ fn condition_len(condition: &CommitCondition) -> usize {
         CommitCondition::Tail { path, expected } => {
             block_len(path.as_str().len()) + uint_len((*expected != 0).then_some(*expected))
         }
-        CommitCondition::Absent { path } => block_len(path.as_str().len()),
+        CommitCondition::Absent { path } | CommitCondition::Present { path } => block_len(path.as_str().len()),
     })
 }
 #[cfg(any(
@@ -261,6 +261,10 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     for condition in &request.conditions {
         header(out, 1, condition_len(condition));
         match condition {
+            CommitCondition::Present { path } => {
+                header(out, 4, block_len(path.as_str().len()));
+                bytes(out, 1, path.as_str().as_bytes());
+            }
             CommitCondition::Head {
                 path,
                 expected,
@@ -354,6 +358,9 @@ mod tests {
                 let records: Vec<AppendRecord> = vec![OwnedBytes::from(vec![7; length]).into()];
                 let request = CommitRequest {
                     conditions: vec![
+                        CommitCondition::Present {
+                            path: path.clone(),
+                        },
                         CommitCondition::Absent {
                             path: destination.clone(),
                         },

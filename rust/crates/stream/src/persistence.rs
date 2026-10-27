@@ -115,7 +115,7 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
                         }
                         path
                     }
-                    CommitConflict::Exists { path } => path,
+                    CommitConflict::Exists { path } | CommitConflict::Missing { path } => path,
                 };
                 if previous.is_some_and(|previous| previous >= path) {
                     return Err(StreamError::InvalidArgument);

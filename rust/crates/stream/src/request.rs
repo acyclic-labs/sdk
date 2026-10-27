@@ -129,6 +129,10 @@ pub fn validate_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
 pub(crate) fn hash_conditions(hash: &mut Sha256, conditions: &[CommitCondition]) {
     for condition in conditions {
         match condition {
+            CommitCondition::Present { path } => {
+                hash.update([4]);
+                hash_path(hash, path);
+            }
             CommitCondition::Head {
                 path,
                 expected,
@@ -179,7 +183,7 @@ pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
             .map(|condition| match condition {
                 CommitCondition::Head { path, .. } => 1 + path_hash_bytes(path) + 8 + 32,
                 CommitCondition::Tail { path, .. } => 1 + path_hash_bytes(path) + 8,
-                CommitCondition::Absent { path } => 1 + path_hash_bytes(path),
+                CommitCondition::Absent { path } | CommitCondition::Present { path } => 1 + path_hash_bytes(path),
             })
             .sum::<u64>()
         + request
@@ -236,7 +240,8 @@ pub(crate) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Tail { path, .. }
         | CommitCondition::Head { path, .. }
-        | CommitCondition::Absent { path } => path,
+        | CommitCondition::Absent { path }
+        | CommitCondition::Present { path } => path,
     }
 }
 

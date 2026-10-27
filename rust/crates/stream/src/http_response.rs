@@ -147,6 +147,11 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
 
 fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
     Ok(match value.conflict.as_ref().ok_or("invalid_response")? {
+        wire::commit_conflict::Conflict::Missing(value) => json!({
+            "path": value.path,
+            "expectedPresent": true,
+            "actual": "missing",
+        }),
         wire::commit_conflict::Conflict::Head(value) => json!({
             "path": value.path,
             "expectedCommitId": STANDARD.encode(&value.expected),

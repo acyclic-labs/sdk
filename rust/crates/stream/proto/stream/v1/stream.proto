@@ -202,11 +202,16 @@ message AbsentCondition {
   string path = 1;
 }
 
+message PresentCondition {
+  string path = 1;
+}
+
 message CommitCondition {
   oneof condition {
     TailCondition tail = 1;
     AbsentCondition absent = 2;
     HeadCondition head = 3;
+    PresentCondition present = 4;
   }
 }
 
@@ -290,6 +295,9 @@ message TailCommitConflict {
 message ExistsCommitConflict {
   string path = 1;
 }
+message MissingCommitConflict {
+  string path = 1;
+}
 message CommitConflict {
   reserved 3;
   reserved "retired";
@@ -297,6 +305,7 @@ message CommitConflict {
     TailCommitConflict tail = 1;
     ExistsCommitConflict exists = 2;
     HeadCommitConflict head = 4;
+    MissingCommitConflict missing = 5;
   }
 }
 

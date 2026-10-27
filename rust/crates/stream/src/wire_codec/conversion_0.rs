@@ -26,6 +26,11 @@ pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError>
 
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     let condition = match value {
+        CommitCondition::Present { path } => {
+            wire::commit_condition::Condition::Present(wire::PresentCondition {
+                path: path.to_string(),
+            })
+        }
         CommitCondition::Head {
             path,
             expected,
@@ -56,6 +61,9 @@ pub(crate) fn condition_from_wire(
     value: wire::CommitCondition,
 ) -> Result<CommitCondition, StreamError> {
     match value.condition.ok_or(StreamError::InvalidArgument)? {
+        wire::commit_condition::Condition::Present(value) => Ok(CommitCondition::Present {
+            path: path(value.path)?,
+        }),
         wire::commit_condition::Condition::Head(value) => Ok(CommitCondition::Head {
             path: path(value.path)?,
             expected: value.expected,
@@ -559,6 +567,9 @@ pub(crate) fn conflict_from_wire(
     value: wire::CommitConflict,
 ) -> Result<CommitConflict, StreamError> {
     match value.conflict.ok_or(StreamError::Unavailable)? {
+        wire::commit_conflict::Conflict::Missing(value) => Ok(CommitConflict::Missing {
+            path: path(value.path)?,
+        }),
         wire::commit_conflict::Conflict::Head(value) => Ok(CommitConflict::Head {
             path: path(value.path)?,
             expected: CommitId::from_bytes(
@@ -589,6 +600,11 @@ pub(crate) fn conflict_from_wire(
 
 pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
     let conflict = match value {
+        CommitConflict::Missing { path } => {
+            wire::commit_conflict::Conflict::Missing(wire::MissingCommitConflict {
+                path: path.to_string(),
+            })
+        }
         CommitConflict::Head {
             path,
             expected,

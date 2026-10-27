@@ -1,5 +1,50 @@
 use super::super::*;
 
+#[tokio::test]
+async fn present_send_requires_the_precommit_path_and_preserves_retry_and_close_fences()
+-> Result<(), StreamError> {
+    let provider = MemoryStream::default();
+    let inbox = StreamPath::new("mail/inbox")?;
+    let closed = StreamPath::new("mail/inbox/closed")?;
+    let request = CommitRequest {
+        conditions: vec![
+            CommitCondition::Present { path: inbox.clone() },
+            CommitCondition::Absent { path: closed.clone() },
+        ],
+        mutations: vec![CommitMutation::Append {
+            path: inbox.clone(),
+            records: vec![Bytes::from_static(b"message").into()],
+        }],
+        idempotency_key: IdempotencyKey::new(b"send".as_slice())?,
+    };
+    assert_eq!(provider.commit(request.clone()).await?, CommitOutcome::Conflict(vec![
+        CommitConflict::Missing { path: inbox.clone() },
+    ]));
+    assert!(provider.inspect_idempotency(request.idempotency_key.clone()).await?.is_none());
+    assert_eq!(provider.tail(inbox.clone()).await, Err(StreamError::NotFound));
+
+    append(&provider, "seed", "seed").await?;
+    provider.fork(ForkRequest {
+        source: StreamPath::new("seed")?,
+        destination: inbox.clone(),
+        at_tail: Some(0),
+        exclude: Vec::new(),
+        idempotency_key: Some(IdempotencyKey::new(b"open".as_slice())?),
+    }).await?;
+    assert_eq!(provider.tail(inbox.clone()).await?, 0);
+    let sent = provider.commit(request.clone()).await?;
+    assert!(matches!(sent, CommitOutcome::Committed(_)));
+    append(&provider, closed.as_str(), "close").await?;
+    assert_eq!(provider.commit(request.clone()).await?, sent);
+
+    let next = CommitRequest { idempotency_key: IdempotencyKey::new(b"next".as_slice())?, ..request };
+    assert_eq!(provider.commit(next).await?, CommitOutcome::Conflict(vec![
+        CommitConflict::Exists { path: closed },
+    ]));
+    assert_eq!(provider.tail(inbox).await?, 1);
+    Ok(())
+}
+
 async fn append(provider: &MemoryStream, path: &str, key: &str) -> Result<(), StreamError> {
     let outcome = provider.append(AppendRequest {
         path: StreamPath::new(path)?,

@@ -689,7 +689,8 @@ fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Head { path, .. }
         | CommitCondition::Tail { path, .. }
-        | CommitCondition::Absent { path } => path,
+        | CommitCondition::Absent { path }
+        | CommitCondition::Present { path } => path,
     }
 }
 

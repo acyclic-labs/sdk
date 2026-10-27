@@ -372,7 +372,13 @@ mod http {
         path(field(item, "path")?)?;
         let result = Object::new();
         set(&result, "path", &string_js(field(item, "path")?)?)?;
-        if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
+        if item.get("expectedPresent") == Some(&Value::Bool(true)) {
+            if string(field(item, "actual")?)? != "missing" {
+                return Err("invalid presence conflict state");
+            }
+            set(&result, "expectedPresent", &JsValue::TRUE)?;
+            set(&result, "actual", &string_js(field(item, "actual")?)?)?;
+        } else if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
             match string(field(item, "actual")?)? {
                 "exists" => {}
                 _ => return Err("invalid conflict state"),

@@ -344,6 +344,11 @@ pub struct CommittedEnvelope {
 /// Exact optimistic condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitCondition {
+    /// Path must exist, including an empty fork root. No head read is required.
+    Present {
+        /// Permanently named path that must already exist.
+        path: StreamPath,
+    },
     /// Existing tail and the immutable record immediately before it must match.
     Head {
         /// Existing nonempty path.
@@ -454,6 +459,11 @@ impl UnixMillisClock for SystemUnixMillisClock {
 /// Failed exact condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitConflict {
+    /// Requested present path does not exist.
+    Missing {
+        /// Path that must already exist.
+        path: StreamPath,
+    },
     /// The tail matched but the preceding record belonged to another history.
     Head {
         /// Path.

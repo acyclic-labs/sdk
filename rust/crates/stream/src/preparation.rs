@@ -29,6 +29,9 @@ pub(crate) fn condition_conflict(
 ) -> Result<Option<CommitConflict>, StreamError> {
     let path = crate::request::condition_path(condition);
     Ok(match condition {
+        CommitCondition::Present { .. } if actual.is_none() => {
+            Some(CommitConflict::Missing { path: path.clone() })
+        }
         CommitCondition::Tail { expected, .. } if actual.unwrap_or(0) != *expected => {
             Some(CommitConflict::Tail {
                 path: path.clone(),

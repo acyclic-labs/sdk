@@ -163,7 +163,12 @@ fn validate_fork_receipt(value: &Value) -> Result {
 fn validate_conflict(value: &Value) -> Result {
     let item = object(value)?;
     path(field(item, "path")?)?;
-    if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
+    if item.get("expectedPresent") == Some(&Value::Bool(true)) {
+        if string(field(item, "actual")?)? != "missing" {
+            return Err("invalid presence conflict state");
+        }
+        Ok(())
+    } else if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
         match string(field(item, "actual")?)? {
             "exists" => Ok(()),
             _ => Err("invalid conflict state"),

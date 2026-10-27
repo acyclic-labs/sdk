@@ -129,6 +129,10 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
         .conditions
         .iter()
         .map(|condition| match condition {
+            crate::CommitCondition::Present { path } => json!({
+                "path": path.to_string(),
+                "ifPresent": true,
+            }),
             crate::CommitCondition::Head { .. } => {
                 unreachable!("head conditions require a negotiated hosted capability")
             }
