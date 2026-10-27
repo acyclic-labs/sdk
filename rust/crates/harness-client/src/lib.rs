@@ -10,15 +10,9 @@ pub use connection::{
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::preset::Preset;
 
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod control;
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use control::{
     AgentBinding, AgentCall, AgentControls, AgentExchangeError, PreparedAgentInvocation,
 };
@@ -38,15 +32,9 @@ pub use reply::{
     decode_agent_reply, encode_agent_reply,
 };
 
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod agents;
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::agent::{
     AgentId, AgentPath, AgentRecord, ConversationEntry, Delivered, Error as AgentError, IntentId,
     Phase, Reply, StatusRecord,
@@ -56,34 +44,19 @@ pub use acyclic_harness_core::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 mod demand;
 pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "session", feature = "wasm"))]
 mod session;
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "session", feature = "wasm"))]
 pub use session::{WireSession, WireSessionError};
 
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "session", feature = "wasm"))]
 mod stream_view;
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "session", feature = "wasm"))]
 pub use stream_view::{StreamView, StreamViewPolicy};
 
 use std::{
