@@ -8,6 +8,20 @@ mod transitions;
 pub struct GitCompatRepository<S> {
     pub(super) workspace_id: WorkspaceId,
     pub(super) store: S,
+    pub(super) request: Option<GitRequest>,
+}
+
+/// Whether a request still awaits its durable reply; its saved result is
+/// kept exactly as long, after which the reply answers any replay.
+pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Send + Sync>;
+
+/// The request a command runs as.
+#[derive(Clone)]
+pub struct GitRequest {
+    /// The request's operation, which keys its saved result.
+    pub operation: OperationId,
+    /// Whether a request still awaits its durable reply.
+    pub unanswered: GitRequestUnanswered,
 }
 
 /// Compatibility history record produced by one distributed publication.
@@ -37,7 +51,25 @@ impl<S> GitCompatRepository<S> {
         Self {
             workspace_id,
             store,
+            request: None,
         }
+    }
+
+    /// Runs commands as `request`: each state-changing command saves its
+    /// result under the request that started it, with its effect, and
+    /// [`Self::request_result`] returns it on replay.
+    #[must_use]
+    pub fn for_request(mut self, request: GitRequest) -> Self {
+        self.request = Some(request);
+        self
+    }
+
+    pub(super) fn request_operation(&self) -> Option<OperationId> {
+        self.request.as_ref().map(|request| request.operation)
+    }
+
+    pub(super) fn unanswered(&self) -> Option<&GitRequestUnanswered> {
+        self.request.as_ref().map(|request| &request.unanswered)
     }
 
     /// Returns the repository's workspace identity.
@@ -47,6 +79,16 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// The saved result of this repository's request, if it already ran.
+    pub async fn request_result(
+        &self,
+    ) -> Result<Option<GitCommandOutput>, GitCompatError<S::Error>> {
+        let Some(operation) = self.request_operation() else {
+            return Ok(None);
+        };
+        Ok(self.load().await?.request(operation).cloned())
+    }
+
     /// Reads the selected workspace and its pending native publication at one durable cut.
     pub async fn checkout_selection(
         &self,

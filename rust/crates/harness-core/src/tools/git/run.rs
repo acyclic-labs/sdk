@@ -25,11 +25,16 @@ pub struct Workspace<'a> {
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.
     pub authored_at_seconds: i64,
+    /// The request this command runs as: a state-changing command saves its
+    /// result with its effect, and a replay returns that result.
+    pub request: Option<acyclic_fs::GitRequest>,
 }
 
 /// A facade result and any branch view selected by checkout.
 pub struct Output {
-    /// Absent when an earlier pending transition was recovered instead.
+    /// The request's saved result, or absent when another request's pending
+    /// transition was recovered instead: the caller selects the recovered
+    /// view and retries.
     pub command: Option<GitCommandOutput>,
     /// The newly selected view, if the command switched branches.
     pub switched: Option<OwnedView>,
@@ -55,6 +60,21 @@ where
 {
     before_effect().await?;
     workspace.access.require(workspace.view.workspace()).await?;
+    // A replayed request returns its saved result before reading any
+    // command input (a patch file it consumed may be gone by now).
+    if let Some(request) = workspace.request.clone()
+        && let Some(output) =
+            GitCompatRepository::new(workspace.repository, workspace.store.clone())
+                .for_request(request)
+                .request_result()
+                .await
+                .map_err(super::errors::compat_error)?
+    {
+        return Ok(Output {
+            command: Some(output),
+            switched: None,
+        });
+    }
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
@@ -143,8 +163,12 @@ async fn execute<E: GitFilesystemExecutor<Error = Error>>(
     patch: Option<&[u8]>,
     executor: &E,
 ) -> crate::Result<Option<GitCommandOutput>> {
+    let repository = GitCompatRepository::new(workspace.repository, workspace.store.clone());
     run_git_command(
-        &GitCompatRepository::new(workspace.repository, workspace.store.clone()),
+        &match workspace.request.clone() {
+            Some(request) => repository.for_request(request),
+            None => repository,
+        },
         args,
         tree,
         patch,

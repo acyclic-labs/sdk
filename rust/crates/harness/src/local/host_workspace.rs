@@ -181,6 +181,7 @@ impl HostWorkspace {
         &self,
         operation: OperationId,
         command: &str,
+        request: Option<acyclic_fs::GitRequest>,
     ) -> Result<acyclic_fs::GitCommandOutput> {
         self.verify().await?;
         verify_root(&self.mount_root)?;
@@ -214,6 +215,7 @@ impl HostWorkspace {
                     owner,
                     operation,
                     scope: &self.scope,
+                    request,
                 },
                 &mut state,
                 &physical,
@@ -230,7 +232,7 @@ impl HostWorkspace {
     /// Mounts spawned child `child`'s project view, idempotently, and names it
     /// `agents/<reference>` in this view's git facade. The child's volumes
     /// already exist, forked in the spawn's own commit, so this binds the
-    /// lazy fork [`Self::prepare_spawn`] retained and mounts them; a reopened
+    /// lazy fork its spawn retained and mounts them; a reopened
     /// owner mounts the same fork.
     pub(super) async fn open_child(
         &self,
@@ -327,24 +329,6 @@ impl HostWorkspace {
         result.verify().await?;
         result.activate_volumes().await?;
         Ok(result)
-    }
-
-    /// Retains this agent's project cut for spawned `child`'s lazy fork.
-    /// Capture this agent's host-authored work first; the spawn commit
-    /// must follow, forking the same head.
-    pub(super) async fn prepare_spawn(&self, child: &AgentPath) -> Result<()> {
-        self.verify().await?;
-        let (destination, operation) = crate::filesystem::spawned_volume(
-            child,
-            &VolumeBinding {
-                name: "project".to_owned(),
-                volume: self.project.clone(),
-            },
-        )
-        .map_err(storage)?;
-        self.workspace
-            .prepare_spawned_project(&self.project, &destination, operation)
-            .await
     }
 
     /// Fails once the owner lost the view, its volume grants, or its root.

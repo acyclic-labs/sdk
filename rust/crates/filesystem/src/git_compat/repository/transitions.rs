@@ -48,6 +48,22 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         transition: GitTransitionId,
         result: &GitFilesystemResult,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
+        self.settle(transition, result, false, None).await
+    }
+
+    /// Settles `transition` and saves its result with it, under the request
+    /// that started it rather than the one resuming it: the
+    /// filesystem result itself, for a transition that settles to no state
+    /// change, when `filesystem` is set. A request that explicitly
+    /// `continues` the transition saves the result under itself too, in the
+    /// same update, so its own replay finds it.
+    pub(super) async fn settle(
+        &self,
+        transition: GitTransitionId,
+        result: &GitFilesystemResult,
+        filesystem: bool,
+        continues: Option<OperationId>,
+    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         self.update(|state| {
             let pending = state
                 .pending
@@ -55,11 +71,20 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .filter(|pending| pending.id == transition)
                 .ok_or(GitCompatError::StaleTransition)?;
             validate_completion_result(state, &pending, result)?;
-            match complete_pending(state, pending.mutation, result) {
-                Ok(output) => Ok(Some(output)),
-                Err(GitCompatError::NothingToCommit) => Ok(None),
-                Err(error) => Err(error),
+            let request = pending.request;
+            let output = match complete_pending(state, pending.mutation, result) {
+                Ok(GitCommandOutput::NoOp) if filesystem => {
+                    GitCommandOutput::Filesystem(result.clone())
+                }
+                Ok(output) => output,
+                Err(GitCompatError::NothingToCommit) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            state.record_request(request, self.unanswered(), &output);
+            if continues != request {
+                state.record_request(continues, self.unanswered(), &output);
             }
+            Ok(Some(output))
         })
         .await?
         .ok_or(GitCompatError::NothingToCommit)

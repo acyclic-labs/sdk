@@ -99,10 +99,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let result = self
             .perform(transition.operation_id(), action, executor)
             .await?;
-        match self.complete_transition_result(transition, &result).await? {
-            GitCommandOutput::NoOp => Ok(GitCommandOutput::Filesystem(result)),
-            output => Ok(output),
-        }
+        self.settle(transition, &result, true, None)
+            .await
+            .map_err(Into::into)
     }
 
     async fn perform<E: GitFilesystemExecutor>(
@@ -136,7 +135,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .validate_merge_resolution(pending.id.operation_id(), &pending.action, workspace_tree)
             .await
             .map_err(GitCompatRunError::Executor)?;
-        self.complete_transition_result(pending.id, &result)
+        self.settle(pending.id, &result, false, self.request_operation())
             .await
             .map_err(Into::into)
     }
@@ -165,8 +164,18 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 executor,
             )
             .await?;
-        self.abort_transition(pending.id).await?;
-        Ok(GitCommandOutput::Filesystem(result))
+        let output = GitCommandOutput::Filesystem(result);
+        self.update(|state| {
+            if state.pending.as_ref().map(|pending| pending.id) != Some(pending.id) {
+                return Err(GitCompatError::StaleTransition);
+            }
+            state.pending = None;
+            // An abort is its own command, not recovery of the merge.
+            state.record_request(self.request_operation(), self.unanswered(), &output);
+            Ok(())
+        })
+        .await?;
+        Ok(output)
     }
 
     async fn pending_join(
@@ -235,7 +244,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 }
                 output => output,
             };
-            if state == before || self.publish(state).await? {
+            if state == before {
+                return Ok(output);
+            }
+            if let Some(pending) = state.pending.as_mut() {
+                // Prepared work settles under the request that started it.
+                pending.request = self.request_operation();
+            } else {
+                state.record_request(self.request_operation(), self.unanswered(), &output);
+            }
+            if self.publish(state).await? {
                 return Ok(output);
             }
         }

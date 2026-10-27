@@ -100,6 +100,9 @@ pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
     native: agents::NativeAgents,
     views: BTreeMap<AgentPath, host_workspace::HostWorkspace>,
+    /// The native owner directory, whose `requests` and `results` files say
+    /// which requests still await their reply.
+    requests: Option<std::path::PathBuf>,
     #[cfg(test)]
     retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
 }
@@ -116,9 +119,18 @@ impl HostWorkspaceOwner {
             native: agents::NativeAgents::new(&local)?,
             local,
             views: BTreeMap::new(),
+            requests: None,
             #[cfg(test)]
             retirement_observer: None,
         })
+    }
+
+    /// Keeps each native request's saved result until its reply under
+    /// `directory`'s `results` is durable: the reply then answers a replay.
+    #[must_use]
+    pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
+        self.requests = Some(directory);
+        self
     }
 
     /// Joins native view retirement while the coordination runtime can still
@@ -271,7 +283,23 @@ impl HostWorkspaceOwner {
                 ));
             }
         }
-        serde_json::to_value(self.view(task)?.fs(operation, command).await?).map_err(storage)
+        // A native request's saved result lives until its reply is written
+        // (the owner serves requests one at a time, so at most the requests
+        // in flight when it stopped are unanswered), or until its client
+        // withdrew the request.
+        let request = self
+            .requests
+            .clone()
+            .map(|directory| acyclic_fs::GitRequest {
+                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
+                    let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
+                    directory.join("requests").join(&file).exists()
+                        && !directory.join("results").join(&file).exists()
+                }),
+            });
+        serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)
+            .map_err(storage)
     }
 
     fn view(&self, agent: &AgentPath) -> Result<&host_workspace::HostWorkspace> {

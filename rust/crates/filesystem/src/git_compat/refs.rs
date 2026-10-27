@@ -55,6 +55,16 @@ pub struct GitCompatState {
     pub write_capture: Option<(OperationId, GitGenerationRef)>,
     /// Active first-parent bisection, if any.
     pub bisect: Option<GitBisectState>,
+    /// The results of state-changing requests, each keyed by the request
+    /// that started the command and committed with the command's own effect,
+    /// so a replayed request returns its saved result instead of running
+    /// again. A result is kept only until its request is answered: once the
+    /// reply is durable it is the request's record, so this holds only the
+    /// results of requests still awaiting their reply (at most the requests
+    /// in flight when an owner stopped), never a history.
+    /// Records written before it existed hold none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requests: BTreeMap<OperationId, GitCommandOutput>,
 }
 
 impl GitCompatState {
@@ -87,6 +97,33 @@ impl GitCompatState {
             checkout_reconciliation: None,
             write_capture: None,
             bisect: None,
+            requests: BTreeMap::new(),
+        }
+    }
+
+    /// The saved result of request `operation`.
+    #[must_use]
+    pub fn request(&self, operation: OperationId) -> Option<&GitCommandOutput> {
+        self.requests.get(&operation)
+    }
+
+    /// Saves `output` as the result of `operation`, the request that started
+    /// the command, in the commit that carries its effect, dropping the
+    /// results of requests `unanswered` reports answered. Only unanswered
+    /// results are ever kept, so the sweep visits only those.
+    pub(super) fn record_request(
+        &mut self,
+        operation: Option<OperationId>,
+        unanswered: Option<&GitRequestUnanswered>,
+        output: &GitCommandOutput,
+    ) {
+        if let Some(unanswered) = unanswered {
+            self.requests.retain(|request, _| unanswered(*request));
+        }
+        if let Some(operation) = operation
+            && unanswered.is_none_or(|unanswered| unanswered(operation))
+        {
+            self.requests.insert(operation, output.clone());
         }
     }
 
@@ -226,6 +263,11 @@ pub struct GitBisectResult {
 pub struct GitPendingTransition {
     /// Stable retry identity.
     pub id: GitTransitionId,
+    /// The request that started the command, whose result its settlement
+    /// saves, whichever request resumes it. Records written before it
+    /// existed name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<OperationId>,
     /// Filesystem action to execute idempotently.
     pub action: GitFilesystemAction,
     /// Mutation finalized only after successful action execution.

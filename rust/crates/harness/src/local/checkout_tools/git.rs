@@ -36,6 +36,7 @@ impl CheckoutTools {
                     owner: context.task(),
                     operation: context.operation_id(),
                     scope: context.effective_scope(),
+                    request: None,
                 },
                 state,
                 workspace,

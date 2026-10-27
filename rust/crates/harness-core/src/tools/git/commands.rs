@@ -33,7 +33,10 @@ pub(crate) fn git_transition_command(argv: &[String]) -> bool {
     ) || argv.first().is_some_and(|command| command == "add")
 }
 
-/// Recovers a pending transition or executes one facade command.
+/// Settles any pending transition under the request that started it, or
+/// executes this command; the caller already returned a saved result.
+/// Recovering another request's transition returns `None`: the command's
+/// view and tree predate that recovery.
 pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     repository: &GitCompatRepository<LocalCoreStateStore>,
     argv: &[String],
@@ -50,7 +53,11 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
             .map_err(super::errors::run_error)?
             .is_some()
     {
-        return Ok(None);
+        // The recovered transition may be this request's own.
+        return repository
+            .request_result()
+            .await
+            .map_err(super::errors::compat_error);
     }
     let output = if let Some(patch) = patch {
         repository

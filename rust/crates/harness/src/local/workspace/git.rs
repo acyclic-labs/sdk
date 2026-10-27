@@ -7,6 +7,9 @@ pub(in crate::local) struct CommandContext<'a> {
     pub(in crate::local) owner: &'a dyn ViewOwner,
     pub(in crate::local) operation: OperationId,
     pub(in crate::local) scope: &'a RuntimeScope,
+    /// The native request this command runs as, whose saved result a
+    /// replay returns.
+    pub(in crate::local) request: Option<acyclic_fs::GitRequest>,
 }
 
 pub(in crate::local) struct Commands<'a> {
@@ -295,6 +298,7 @@ impl Commands<'_> {
                 author: "LocalHarness",
                 authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),
+                request: context.request.clone(),
             },
             arguments,
             || owner.verify(),

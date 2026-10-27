@@ -37,7 +37,7 @@ mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
 mod spawn_volumes;
-pub use spawn_volumes::{FilesystemSpawnVolumes, spawned_volume};
+pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts};
 mod agent_turns;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,

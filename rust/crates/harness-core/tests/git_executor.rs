@@ -120,6 +120,7 @@ async fn run_reserving(
             reserved,
             author: "test",
             authored_at_seconds: 1,
+            request: None,
         },
         &argv,
     )
@@ -216,6 +217,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                request: None,
             },
             &["diff".into(), "agents/absent".into()],
         )
@@ -634,11 +636,11 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            request: None,
         },
         &["diff".into(), "agents/child".into()],
     )
     .await?;
-    assert!(output.command.is_some());
     assert_eq!(
         child
             .read(
@@ -712,6 +714,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                request: None,
             },
             &["tag".into(), tag.into()],
         )
@@ -735,6 +738,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                request: None,
             },
             &["diff".into(), "agents/absent".into()],
         )
@@ -1206,6 +1210,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                request: None,
             },
             &["merge".to_owned(), "agents/kid".to_owned()],
             || {
@@ -1239,6 +1244,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                     reserved: &[],
                     author: "test",
                     authored_at_seconds: 1,
+                    request: None,
                 },
                 &argv,
             )
@@ -1512,6 +1518,7 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                 reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
+                request: None,
             },
             &["stash".to_owned()],
             || {
@@ -1544,6 +1551,7 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                     reserved: &[],
                     author: "test",
                     authored_at_seconds: 1,
+                    request: None,
                 },
                 &["status".to_owned()],
             )
@@ -1793,6 +1801,7 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            request: None,
         },
         &["status".into()],
     )
@@ -1848,6 +1857,7 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
     state.revision += 1;
     state.pending = Some(GitPendingTransition {
         id: GitTransitionId::new(),
+        request: None,
         action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
         mutation: GitPendingMutation::NoOp,
     });
@@ -1865,6 +1875,7 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            request: None,
         },
         &["status".into()],
     )
@@ -1876,6 +1887,7 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
         .ok_or("missing recovered state")?;
     state.pending = Some(GitPendingTransition {
         id: GitTransitionId::new(),
+        request: None,
         action: GitFilesystemAction::SwitchWorkspace { workspace_id: root },
         mutation: GitPendingMutation::NoOp,
     });

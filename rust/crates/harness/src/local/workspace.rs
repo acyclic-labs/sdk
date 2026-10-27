@@ -17,6 +17,7 @@ mod children;
 pub(in crate::local) mod git;
 mod mounts;
 pub(in crate::local) mod owner;
+pub(in crate::local) use children::LazyForkCuts;
 pub(super) mod projection;
 mod task_views;
 pub(super) mod volumes;
