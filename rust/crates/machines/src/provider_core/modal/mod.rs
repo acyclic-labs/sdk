@@ -225,6 +225,53 @@ impl SandboxDriver for Modal {
     fn supports_suspend(&self) -> bool {
         false
     }
+    fn supports_disk_snapshots(&self) -> bool {
+        true
+    }
+    fn snapshot_retention(&self) -> Option<Duration> {
+        Some(Duration::from_secs(30 * 24 * 60 * 60))
+    }
+    async fn snapshot(
+        &self,
+        instance: &SandboxInstance,
+        request_id: &str,
+    ) -> Result<String, ProviderError> {
+        let guest = self.guests.get(instance)?;
+        let response: wire::ImageId = guest
+            .router
+            .unary(
+                ROUTER,
+                "TaskSnapshotFilesystem",
+                wire::TaskSnapshotFilesystemRequest {
+                    task_id: guest.task,
+                    snapshot_id: request_id.into(),
+                    ttl_seconds: Some(30 * 24 * 60 * 60),
+                },
+                Duration::from_secs(55),
+            )
+            .await?;
+        if response.image_id.is_empty() {
+            return Err(ProviderError::Unavailable);
+        }
+        Ok(response.image_id)
+    }
+    async fn release_snapshot(
+        &self,
+        snapshot: &super::ProviderSnapshot,
+    ) -> Result<super::SnapshotRelease, ProviderError> {
+        let _: wire::Empty = self
+            .control
+            .unary(
+                CONTROL,
+                "ImageDelete",
+                wire::ImageId {
+                    image_id: snapshot.handle.clone(),
+                },
+                Duration::from_secs(10),
+            )
+            .await?;
+        Ok(super::SnapshotRelease::Deleted)
+    }
     fn maximum_lifetime(&self) -> Option<Duration> {
         Some(Duration::from_secs(24 * 3600))
     }
@@ -255,7 +302,10 @@ impl SandboxDriver for Modal {
                     app_id: self.app.clone(),
                     definition: Some(wire::Sandbox {
                         entrypoint_args: vec!["sleep".into(), "infinity".into()],
-                        image_id: spec.image.clone(),
+                        image_id: spec
+                            .snapshot
+                            .as_ref()
+                            .map_or_else(|| spec.image.clone(), |snapshot| snapshot.handle.clone()),
                         resources: Some(wire::Resources {
                             memory_mb: 1024,
                             milli_cpu: 1000,

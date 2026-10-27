@@ -95,8 +95,42 @@ impl SandboxDriver for Cloudflare {
     fn supports_suspend(&self) -> bool {
         false
     }
+    fn supports_disk_snapshots(&self) -> bool {
+        true
+    }
+    fn snapshot_retention(&self) -> Option<Duration> {
+        Some(Duration::from_secs(30 * 24 * 60 * 60))
+    }
+    async fn snapshot(&self, instance: &SandboxInstance, _: &str) -> Result<String, ProviderError> {
+        let snapshot: serde_json::Value = Http::checked(
+            self.request(Method::POST, &instance.id, &["snapshot"])?
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await,
+        )
+        .await?
+        .json()
+        .await
+        .map_err(|_| ProviderError::Unavailable)?;
+        if snapshot
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(ProviderError::Unavailable);
+        }
+        serde_json::to_string(&snapshot).map_err(|_| ProviderError::Unavailable)
+    }
+    async fn release_snapshot(
+        &self,
+        _: &super::ProviderSnapshot,
+    ) -> Result<super::SnapshotRelease, ProviderError> {
+        // Native Worker snapshots expose no deletion API. The core revokes the
+        // SDK reference; data remains under Cloudflare's documented native TTL.
+        Ok(super::SnapshotRelease::ProviderRetained)
+    }
     fn maximum_lifetime(&self) -> Option<Duration> {
-        Some(Duration::from_secs(24 * 60 * 60))
+        Some(Duration::from_secs(6 * 60 * 60))
     }
     fn validate(&self, spec: &SandboxSpec) -> Result<(), ProviderError> {
         if !matches!(spec.network, NetworkPolicy::BlockAll) {
@@ -106,10 +140,15 @@ impl SandboxDriver for Cloudflare {
     }
 
     async fn create(&self, spec: &SandboxSpec) -> Result<SandboxInstance, ProviderError> {
+        let mut body = serde_json::json!({"image": spec.image, "env": spec.env, "internet": false});
+        if let Some(snapshot) = &spec.snapshot {
+            body["snapshot"] =
+                serde_json::from_str(&snapshot.handle).map_err(|_| ProviderError::Unavailable)?;
+        }
         Http::checked(
             self.request(Method::POST, &spec.name, &[])?
                 .timeout(Duration::from_secs(20))
-                .json(&serde_json::json!({"image": spec.image, "env": spec.env, "internet": false}))
+                .json(&body)
                 .send()
                 .await,
         )

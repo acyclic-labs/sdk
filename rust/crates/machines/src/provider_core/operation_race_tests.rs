@@ -22,6 +22,82 @@ fn machine() -> Result<MachineObservation, ProviderError> {
     })
 }
 
+// Internal custody records, not fabricated provider replies or fixtures.
+fn native_checkpoint()
+-> Result<(CheckpointObservation, operations::NativeCheckpoint), ProviderError> {
+    let source = machine()?;
+    Ok((
+        CheckpointObservation {
+            id: CheckpointId::new(),
+            source: source.id,
+            contract: source.contract,
+            forkable: true,
+            created_at_unix_ms: 1,
+        },
+        operations::NativeCheckpoint {
+            image: "registered-image".into(),
+            snapshot: ProviderSnapshot {
+                handle: "internal-custody-token".into(),
+                expires_at_unix_ms: None,
+            },
+        },
+    ))
+}
+
+#[test]
+fn cancelled_snapshot_reply_remains_owned_and_cannot_accept_forks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let registry = OperationRegistry::default();
+    let Admission::Fresh(operation) = registry.admit(IdempotencyKey::new(), &"snapshot")? else {
+        return Err("expected fresh snapshot admission".into());
+    };
+    let _ = registry.cancel(operation).ok_or("missing operation")?;
+    let (checkpoint, native) = native_checkpoint()?;
+    assert!(!registry.bind_native_checkpoint(operation, checkpoint.clone(), native));
+    assert!(
+        !registry
+            .checkpoint(checkpoint.id)
+            .ok_or("missing checkpoint")?
+            .forkable
+    );
+    assert_eq!(
+        registry.take_created_checkpoints(operation),
+        [checkpoint.id]
+    );
+    registry.restore_created_checkpoints(operation, vec![checkpoint.id]);
+    assert_eq!(
+        registry.take_created_checkpoints(operation),
+        [checkpoint.id]
+    );
+    Ok(())
+}
+
+#[test]
+fn successful_snapshot_transfers_custody_and_terminal_cancel_cannot_reclaim_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let registry = OperationRegistry::default();
+    let key = IdempotencyKey::new();
+    let Admission::Fresh(operation) = registry.admit(key, &"snapshot")? else {
+        return Err("expected fresh snapshot admission".into());
+    };
+    let (checkpoint, native) = native_checkpoint()?;
+    assert!(registry.bind_native_checkpoint(operation, checkpoint.clone(), native));
+    registry.complete(operation, MutationOutcome::Checkpointed(checkpoint.clone()));
+    let (state, _) = registry.cancel(operation).ok_or("missing operation")?;
+    assert_eq!(state.phase, OperationPhase::Succeeded);
+    assert!(registry.take_created_checkpoints(operation).is_empty());
+    assert!(
+        registry
+            .checkpoint(checkpoint.id)
+            .ok_or("missing checkpoint")?
+            .forkable
+    );
+    assert!(
+        matches!(registry.admit(key, &"snapshot")?, Admission::Replay(outcome) if *outcome == MutationOutcome::Checkpointed(checkpoint))
+    );
+    Ok(())
+}
+
 #[test]
 fn terminal_cancel_and_rollback_cannot_reclaim_a_successful_create()
 -> Result<(), Box<dyn std::error::Error>> {

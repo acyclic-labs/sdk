@@ -8,6 +8,9 @@ use crate::*;
 use std::sync::{Mutex as StdMutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "remote_snapshots.rs"]
+mod snapshots;
+
 /// Application bindings for a remote machine provider.
 #[derive(Clone, Debug)]
 pub struct RemoteMachinesConfig {
@@ -33,14 +36,20 @@ impl Default for RemoteMachinesConfig {
 #[derive(Clone)]
 struct Binding {
     instance: SandboxInstance,
+    image: String,
+}
+
+struct Boot {
+    image: String,
+    snapshot: Option<super::ProviderSnapshot>,
 }
 
 /// Machines lifecycle shared by sandbox transports.
 ///
 /// Resource ownership, events and replay are process-local.
 /// The adapter supplies the actual execution/isolation boundary. Keep this
-/// provider instance alive while using its machine identities. Snapshot operations
-/// are refused until a real atomic snapshot boundary is available.
+/// provider instance alive while using its machine identities. Disk fork is
+/// admitted only when the transport supplies a real atomic snapshot boundary.
 pub struct RemoteMachines<D> {
     driver: Arc<D>,
     config: RemoteMachinesConfig,
@@ -76,6 +85,9 @@ impl<D: SandboxDriver> RemoteMachines<D> {
         if self.driver.supports_suspend() {
             capabilities.insert(Capability::SuspendResume);
         }
+        if self.driver.supports_disk_snapshots() {
+            capabilities.insert(Capability::DiskFork);
+        }
         capabilities
     }
 
@@ -83,12 +95,12 @@ impl<D: SandboxDriver> RemoteMachines<D> {
         Sha256::digest(format!("acyclic-machines-remote-v1/{}", self.driver.name())).into()
     }
 
-    fn image(&self, image: &Image) -> Result<String, ProviderError> {
+    fn image(&self, image: &Image) -> Result<Boot, ProviderError> {
         let digest = match image {
             Image::Custom(digest) | Image::ManagedOci(digest) => digest.as_bytes(),
-            Image::Checkpoint(_) => return Err(snapshot_unavailable()),
+            Image::Checkpoint(checkpoint) => return self.checkpoint_boot(*checkpoint),
         };
-        self.config.images.get(&digest).cloned().ok_or_else(|| ProviderError::Unsupported(
+        self.config.images.get(&digest).cloned().map(|image| Boot { image, snapshot: None }).ok_or_else(|| ProviderError::Unsupported(
             format!("unregistered immutable image {}; recovery: register its provider image in RemoteMachinesConfig::images", hex::encode(digest))
         ))
     }
@@ -135,6 +147,19 @@ impl<D: SandboxDriver> RemoteMachines<D> {
         }
         remaining.reverse();
         self.ops.restore_created(operation, remaining);
+        let mut remaining = Vec::new();
+        for checkpoint in self
+            .ops
+            .take_created_checkpoints(operation)
+            .into_iter()
+            .rev()
+        {
+            if self.release_checkpoint(checkpoint).await.is_err() {
+                remaining.push(checkpoint);
+            }
+        }
+        remaining.reverse();
+        self.ops.restore_created_checkpoints(operation, remaining);
     }
 
     async fn apply<F>(
@@ -159,7 +184,7 @@ impl<D: SandboxDriver> RemoteMachines<D> {
         key: IdempotencyKey,
         index: u32,
         mut contract: MachineContract,
-        image: String,
+        boot: Boot,
     ) -> Result<MachineObservation, ProviderError> {
         let now = now_unix_ms();
         if let Some(maximum) = self.driver.maximum_lifetime() {
@@ -180,7 +205,8 @@ impl<D: SandboxDriver> RemoteMachines<D> {
         let name = format!("acyclic-{}-{key}-{index}", self.config.namespace);
         let spec = SandboxSpec {
             name: name.clone(),
-            image: image.clone(),
+            image: boot.image.clone(),
+            snapshot: boot.snapshot,
             contract: contract.clone(),
             network,
             env: BTreeMap::new(),
@@ -197,6 +223,7 @@ impl<D: SandboxDriver> RemoteMachines<D> {
                 id,
                 Binding {
                     instance: instance.clone(),
+                    image: boot.image,
                 },
             );
         let mut observation = MachineObservation {
@@ -396,17 +423,23 @@ impl<D: SandboxDriver> MachinesProvider for RemoteMachines<D> {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, &MutationIntent::Checkpoint(machine), async |_| {
-            Err(snapshot_unavailable())
-        })
+        self.apply(
+            key,
+            &MutationIntent::Checkpoint(machine),
+            async |operation| {
+                self.capture_checkpoint(machine, key, operation, true)
+                    .await
+                    .map(MutationOutcome::Checkpointed)
+            },
+        )
         .await
     }
 
     async fn inspect_checkpoint(
         &self,
-        _checkpoint: CheckpointId,
+        checkpoint: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
-        Err(snapshot_unavailable())
+        self.checkpoint_observation(checkpoint)
     }
 
     async fn fork(
@@ -418,7 +451,16 @@ impl<D: SandboxDriver> MachinesProvider for RemoteMachines<D> {
         self.apply(
             key,
             &MutationIntent::Fork(checkpoint, count.get()),
-            async |_| Err(snapshot_unavailable()),
+            async |operation| {
+                self.require_snapshots()?;
+                let source = self.checkpoint_observation(checkpoint)?;
+                let mut contract = source.contract;
+                contract.image = Image::Checkpoint(checkpoint);
+                let children = self
+                    .fork_checkpoint(checkpoint, contract, count, key, operation)
+                    .await?;
+                Ok(MutationOutcome::Forked(children))
+            },
         )
         .await
     }
@@ -432,7 +474,22 @@ impl<D: SandboxDriver> MachinesProvider for RemoteMachines<D> {
         self.apply(
             key,
             &MutationIntent::ForkMachine(machine, count.get()),
-            async |_| Err(snapshot_unavailable()),
+            async |operation| {
+                self.require_snapshots()?;
+                Self::validate_fork_count(count)?;
+                let checkpoint = self
+                    .capture_checkpoint(machine, key, operation, false)
+                    .await?;
+                let children = self
+                    .fork_checkpoint(checkpoint.id, checkpoint.contract, count, key, operation)
+                    .await?;
+                self.release_checkpoint(checkpoint.id).await?;
+                Ok(MutationOutcome::MachineForked {
+                    source: machine,
+                    fidelity: ForkFidelity::DiskOnly,
+                    children,
+                })
+            },
         )
         .await
     }
@@ -575,7 +632,13 @@ impl<D: SandboxDriver> MachinesProvider for RemoteMachines<D> {
         self.apply(
             key,
             &MutationIntent::DestroyCheckpoint(checkpoint),
-            async |_| Err(snapshot_unavailable()),
+            async |operation| {
+                self.require_snapshots()?;
+                self.checkpoint_observation(checkpoint)?;
+                self.ops.bind_target(operation, &checkpoint.to_string());
+                self.release_checkpoint(checkpoint).await?;
+                Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
+            },
         )
         .await
     }

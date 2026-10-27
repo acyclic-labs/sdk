@@ -32,6 +32,8 @@ pub struct OperationRecord {
     pub intent_digest: [u8; 32],
     /// provider resource ids the operation created. Cancelling the operation deletes these.
     pub created: Vec<String>,
+    /// Native checkpoints still owned by this unfinished operation.
+    pub created_checkpoints: Vec<CheckpointId>,
     /// Existing provider resource ids the operation acts on (suspend, wake, policy, checkpoint,
     /// destroy). They belong to the machine, not to the operation, so cancellation never
     /// deletes them.
@@ -68,7 +70,19 @@ struct Inner {
     by_key: BTreeMap<IdempotencyKey, OperationId>,
     machines: BTreeMap<MachineId, MachineObservation>,
     events: BTreeMap<MachineId, Vec<MachineEvent>>,
-    checkpoints: BTreeMap<CheckpointId, CheckpointObservation>,
+    checkpoints: BTreeMap<CheckpointId, StoredCheckpoint>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct NativeCheckpoint {
+    pub snapshot: super::ProviderSnapshot,
+    pub image: String,
+}
+
+struct StoredCheckpoint {
+    observation: CheckpointObservation,
+    native: Option<NativeCheckpoint>,
+    released: bool,
 }
 
 impl Inner {
@@ -162,9 +176,11 @@ impl OperationRegistry {
                 }
             }
             Err(error) => {
-                let touched = self
-                    .record(operation)
-                    .is_some_and(|record| !record.created.is_empty() || !record.targets.is_empty());
+                let touched = self.record(operation).is_some_and(|record| {
+                    !record.created.is_empty()
+                        || !record.created_checkpoints.is_empty()
+                        || !record.targets.is_empty()
+                });
                 let before_side_effect = matches!(
                     error,
                     ProviderError::Invalid(_)
@@ -238,6 +254,7 @@ impl OperationRegistry {
                 key,
                 intent_digest: digest,
                 created: Vec::new(),
+                created_checkpoints: Vec::new(),
                 targets: Vec::new(),
                 phase: OperationPhase::Pending,
                 outcome: None,
@@ -294,6 +311,7 @@ impl OperationRegistry {
             // Success transfers resource ownership to the returned outcome.
             // A later terminal cancel or rollback must never reclaim it.
             record.created.clear();
+            record.created_checkpoints.clear();
         }
         self.changed.notify_waiters();
     }
@@ -540,19 +558,102 @@ impl OperationRegistry {
 
     /// Records a checkpoint observation.
     pub fn remember_checkpoint(&self, checkpoint: CheckpointObservation) {
-        self.lock().checkpoints.insert(checkpoint.id, checkpoint);
+        self.lock()
+            .checkpoints
+            .entry(checkpoint.id)
+            .and_modify(|entry| entry.observation = checkpoint.clone())
+            .or_insert(StoredCheckpoint {
+                observation: checkpoint,
+                native: None,
+                released: false,
+            });
     }
 
     /// Last recorded observation of a checkpoint.
     #[must_use]
     pub fn checkpoint(&self, checkpoint: CheckpointId) -> Option<CheckpointObservation> {
-        self.lock().checkpoints.get(&checkpoint).cloned()
+        self.lock()
+            .checkpoints
+            .get(&checkpoint)
+            .map(|entry| entry.observation.clone())
     }
 
     /// Records that a checkpoint no longer accepts forks.
     pub fn mark_checkpoint_destroyed(&self, checkpoint: CheckpointId) {
         if let Some(value) = self.lock().checkpoints.get_mut(&checkpoint) {
-            value.forkable = false;
+            value.observation.forkable = false;
+        }
+    }
+
+    /// Publishes native custody in the existing checkpoint registry. A late
+    /// reply after cancellation remains owned for rollback; it cannot be used.
+    pub(super) fn bind_native_checkpoint(
+        &self,
+        operation: OperationId,
+        mut observation: CheckpointObservation,
+        native: NativeCheckpoint,
+    ) -> bool {
+        let mut inner = self.lock();
+        let Some(record) = inner.operations.get_mut(&operation) else {
+            return false;
+        };
+        let pending = record.phase == OperationPhase::Pending;
+        record.created_checkpoints.push(observation.id);
+        observation.forkable = pending;
+        inner.checkpoints.insert(
+            observation.id,
+            StoredCheckpoint {
+                observation,
+                native: Some(native),
+                released: false,
+            },
+        );
+        pending
+    }
+
+    pub(super) fn native_checkpoint(&self, checkpoint: CheckpointId) -> Option<NativeCheckpoint> {
+        self.lock()
+            .checkpoints
+            .get(&checkpoint)
+            .and_then(|entry| entry.native.clone())
+    }
+
+    pub(super) fn unreleased_checkpoints(&self) -> Vec<CheckpointId> {
+        self.lock()
+            .checkpoints
+            .iter()
+            .filter_map(|(id, entry)| (entry.native.is_some() && !entry.released).then_some(*id))
+            .collect()
+    }
+
+    pub(super) fn checkpoint_released(&self, checkpoint: CheckpointId) -> bool {
+        self.lock()
+            .checkpoints
+            .get(&checkpoint)
+            .is_some_and(|entry| entry.released)
+    }
+
+    pub(super) fn mark_checkpoint_released(&self, checkpoint: CheckpointId) {
+        if let Some(entry) = self.lock().checkpoints.get_mut(&checkpoint) {
+            entry.released = true;
+        }
+    }
+
+    pub(super) fn take_created_checkpoints(&self, operation: OperationId) -> Vec<CheckpointId> {
+        self.lock()
+            .operations
+            .get_mut(&operation)
+            .map(|record| std::mem::take(&mut record.created_checkpoints))
+            .unwrap_or_default()
+    }
+
+    pub(super) fn restore_created_checkpoints(
+        &self,
+        operation: OperationId,
+        checkpoints: Vec<CheckpointId>,
+    ) {
+        if let Some(record) = self.lock().operations.get_mut(&operation) {
+            record.created_checkpoints.extend(checkpoints);
         }
     }
 }

@@ -184,6 +184,43 @@ impl SandboxDriver for E2b {
     fn supports_suspend(&self) -> bool {
         false
     }
+    fn supports_disk_snapshots(&self) -> bool {
+        true
+    }
+    async fn snapshot(&self, instance: &SandboxInstance, _: &str) -> Result<String, ProviderError> {
+        let response: serde_json::Value = Http::checked(
+            self.api
+                .request(Method::POST, &["sandboxes", &instance.id, "snapshots"])?
+                .timeout(Duration::from_secs(30))
+                .json(&serde_json::json!({"memory": false}))
+                .send()
+                .await,
+        )
+        .await?
+        .json()
+        .await
+        .map_err(|_| ProviderError::Unavailable)?;
+        response
+            .get("snapshotID")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or(ProviderError::Unavailable)
+    }
+    async fn release_snapshot(
+        &self,
+        snapshot: &super::ProviderSnapshot,
+    ) -> Result<super::SnapshotRelease, ProviderError> {
+        Http::checked(
+            self.api
+                .request(Method::DELETE, &["templates", &snapshot.handle])?
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await,
+        )
+        .await?;
+        Ok(super::SnapshotRelease::Deleted)
+    }
     fn maximum_lifetime(&self) -> Option<Duration> {
         Some(self.maximum_lifetime)
     }
@@ -198,7 +235,7 @@ impl SandboxDriver for E2b {
         let created: Created = Http::checked(self.api.request(Method::POST, &["v2", "sandboxes"])?
             .header("idempotency-key", &spec.name)
             .timeout(Duration::from_secs(30))
-            .json(&serde_json::json!({"templateID": spec.image, "metadata": {"acyclic.machine": spec.name}, "envVars": spec.env,
+            .json(&serde_json::json!({"templateID": spec.snapshot.as_ref().map_or(spec.image.as_str(), |snapshot| snapshot.handle.as_str()), "metadata": {"acyclic.machine": spec.name}, "envVars": spec.env,
                 "timeout": spec.lifetime_seconds()?, "allow_internet_access": false, "autoPause": false, "secure": true}))
             .send().await).await?.json().await.map_err(|_| ProviderError::Unavailable)?;
         if created.id.is_empty()

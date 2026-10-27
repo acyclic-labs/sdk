@@ -5,6 +5,7 @@ import { Files } from "@cloudflare/sandbox";
 
 interface Env { MACHINES: DurableObjectNamespace<Machine>; TRANSPORT_TOKEN?: string }
 type Event = { stream: "stdout" | "stderr"; value: number[] } | { stream: "exit"; value: number } | { stream: "error"; value: string };
+const MAXIMUM_LIFETIME_MS = 6 * 60 * 60 * 1000;
 
 export class Machine extends DurableObject<Env> {
   readonly container: Container;
@@ -16,6 +17,7 @@ export class Machine extends DurableObject<Env> {
     if (ctx.container === undefined) throw new Error("Container binding missing; recovery: deploy wrangler.jsonc with its containers binding");
     this.container = ctx.container;
     this.files = new Files(this.container);
+    if (this.container.running) ctx.blockConcurrencyWhile(() => this.container.setInactivityTimeout(MAXIMUM_LIFETIME_MS));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -36,7 +38,7 @@ export class Machine extends DurableObject<Env> {
         this.container.start({ ...(body.snapshot === undefined ? { image: this.container.images.workspace } : { containerSnapshot: body.snapshot }), instance: "lite", enableInternet: false, env: body.env });
         // An explicit Machines contract owns lifetime. Provider idle shutdown must
         // not silently replace it while a quiet command is running.
-        await this.container.setInactivityTimeout(24 * 60 * 60 * 1000);
+        await this.container.setInactivityTimeout(MAXIMUM_LIFETIME_MS);
         // Exec is a readiness barrier, with no user command side effects.
         const ready = await this.container.exec(["/bin/true"]);
         if (await ready.exitCode !== 0) return failure(503, "Container readiness failed; recovery: inspect the registered image");

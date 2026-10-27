@@ -4,6 +4,20 @@
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct Empty {}
 #[derive(Clone, PartialEq, prost::Message)]
+pub struct TaskSnapshotFilesystemRequest {
+    #[prost(string, tag = "1")]
+    pub task_id: String,
+    #[prost(string, tag = "2")]
+    pub snapshot_id: String,
+    #[prost(int64, optional, tag = "3")]
+    pub ttl_seconds: Option<i64>,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ImageId {
+    #[prost(string, tag = "1")]
+    pub image_id: String,
+}
+#[derive(Clone, PartialEq, prost::Message)]
 pub struct Sandbox {
     #[prost(string, repeated, tag = "1")]
     pub entrypoint_args: Vec<String>,

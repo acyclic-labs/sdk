@@ -60,6 +60,9 @@ pub async fn run<D: SandboxDriver>(
         }
     }
     let mut failures = Vec::new();
+    if let Err(error) = provider.retire_checkpoints().await {
+        failures.push(format!("native checkpoint cleanup failed ({}); inspect provider resources in the printed namespace before rerunning", error.kind()));
+    }
     for (suite, result) in [("lifecycle", lifecycle), ("shell", shell)] {
         match result {
             Ok(()) => println!("{name} {suite} suite passed (unchanged)"),

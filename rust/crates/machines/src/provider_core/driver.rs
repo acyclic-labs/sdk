@@ -22,12 +22,33 @@ pub struct SandboxSpec {
     pub name: String,
     /// Provider image/template registered for the immutable contract image.
     pub image: String,
+    /// An immutable native snapshot to restore instead of booting the image.
+    pub snapshot: Option<ProviderSnapshot>,
     /// Exact admitted contract.
     pub contract: MachineContract,
     /// Authorized outbound policy.
     pub network: NetworkPolicy,
     /// Environment supplied by the application, never included in diagnostics.
     pub env: BTreeMap<String, String>,
+}
+
+/// A provider's atomic disk snapshot, never a copy assembled by reading files.
+#[derive(Clone, Debug)]
+pub struct ProviderSnapshot {
+    /// Opaque restore handle interpreted only by the originating adapter.
+    pub handle: String,
+    /// Conservative availability deadline, if the provider expires snapshots.
+    pub expires_at_unix_ms: Option<u64>,
+}
+
+/// Physical disposition after the shared core revokes a checkpoint reference.
+#[derive(Clone, Copy, Debug)]
+pub enum SnapshotRelease {
+    /// The provider acknowledged deletion (or reported it already missing).
+    Deleted,
+    /// The provider retains data under its native retention policy. This is not
+    /// evidence of physical deletion; only the SDK reference has been revoked.
+    ProviderRetained,
 }
 
 impl SandboxSpec {
@@ -80,6 +101,35 @@ pub trait SandboxDriver: Send + Sync + 'static {
 
     /// Whether this transport implements memory-preserving suspend and wake.
     fn supports_suspend(&self) -> bool;
+
+    /// True only for a native boundary covering every writer at one instant,
+    /// whose children cold boot without inheriting memory or running processes.
+    fn supports_disk_snapshots(&self) -> bool {
+        false
+    }
+
+    /// Native minimum retention, measured conservatively from dispatch time.
+    fn snapshot_retention(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// Captures one immutable disk generation while leaving its source running.
+    /// Lost replies must remain uncertain and must never authorize redispatch.
+    async fn snapshot(
+        &self,
+        _instance: &SandboxInstance,
+        _request_id: &str,
+    ) -> Result<String, ProviderError> {
+        Err(super::snapshot_unavailable())
+    }
+
+    /// Releases a native handle after SDK fork admission has been revoked.
+    async fn release_snapshot(
+        &self,
+        _snapshot: &ProviderSnapshot,
+    ) -> Result<SnapshotRelease, ProviderError> {
+        Err(super::snapshot_unavailable())
+    }
 
     /// Provider's enforced lifetime ceiling. A `ProviderDefault` request negotiates
     /// to this explicit maximum age in the returned contract. Explicit deadlines
