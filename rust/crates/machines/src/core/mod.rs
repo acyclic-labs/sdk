@@ -1,0 +1,681 @@
+//! G29: one operation owner over the caller-selected canonical StreamProvider.
+//! Backends must never reconstruct an absent operation by redispatching it.
+use crate::*;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+mod journal;
+mod settle;
+pub use settle::settle;
+#[cfg(test)]
+mod tests;
+use journal::{Journal, storage};
+
+#[derive(Serialize, Deserialize)]
+struct StoredMachine {
+    observation: MachineObservation,
+    event_sequence: u64,
+}
+
+/// Native resource ownership and the admitted intent, retained across restarts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperationRecord {
+    pub id: OperationId,
+    pub key: IdempotencyKey,
+    pub intent_digest: [u8; 32],
+    pub created: Vec<String>,
+    pub targets: Vec<String>,
+    pub phase: OperationPhase,
+    pub outcome: Option<MutationOutcome>,
+}
+
+impl OperationRecord {
+    #[must_use]
+    pub const fn observation(&self) -> OperationObservation {
+        OperationObservation {
+            id: self.id,
+            phase: self.phase,
+        }
+    }
+}
+
+/// The point projection stays bounded even when a fork result spans many records.
+#[derive(Clone, Serialize, Deserialize)]
+struct StoredOperation {
+    id: OperationId,
+    key: IdempotencyKey,
+    intent_digest: [u8; 32],
+    created: Vec<String>,
+    targets: Vec<String>,
+    phase: OperationPhase,
+    outcome: Option<journal::Blob>,
+}
+
+impl StoredOperation {
+    const fn observation(&self) -> OperationObservation {
+        OperationObservation {
+            id: self.id,
+            phase: self.phase,
+        }
+    }
+}
+
+/// Exact settlement, suitable for control planes which must not rebuild a wait loop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettledMutation {
+    pub operation: OperationId,
+    pub settlement: acyclic_stream::CommitId,
+    pub outcome: MutationOutcome,
+}
+
+#[derive(Clone, Debug)]
+pub enum Admission {
+    Replay(Box<MutationOutcome>),
+    Fresh(OperationId),
+}
+
+/// Stable operation addressing preserves the original Daytona retry identity.
+#[must_use]
+pub fn operation_id(key: IdempotencyKey) -> OperationId {
+    let mut hash = Sha256::new();
+    hash.update(b"acyclic-machines-daytona/operation");
+    hash.update(key.as_bytes());
+    OperationId::from_digest(hash.finalize().into())
+}
+
+/// A view of the canonical Streams authority; it contains no outcome cache.
+#[derive(Clone)]
+pub struct OperationRegistry {
+    journal: Journal,
+}
+
+impl std::fmt::Debug for OperationRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperationRegistry")
+            .field("root", &self.journal.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OperationRegistry {
+    /// The account belongs to the supplied authenticated Streams session.
+    /// Passing a different account string conveys no additional authority.
+    pub fn new(
+        provider: Arc<dyn acyclic_stream::StreamProvider>,
+        account: &str,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self {
+            journal: Journal::new(provider, account)?,
+        })
+    }
+
+    pub async fn admit<T: Serialize + Sync>(
+        &self,
+        key: IdempotencyKey,
+        intent: &T,
+    ) -> Result<Admission, ProviderError> {
+        let digest = intent_digest(intent)?;
+        let id = operation_id(key);
+        let fresh = self.journal.update(&format!("ops/{id}"), move |entry: &mut Option<StoredOperation>| {
+            if let Some(record) = entry {
+                if record.intent_digest != digest {
+                    return Err(ProviderError::Conflict("Machines key is bound to another intent; recovery: inspect the original key or use a fresh key for a different intent".into()));
+                }
+                return match (record.phase, &record.outcome) {
+                    (OperationPhase::Succeeded, Some(_)) => Ok(false),
+                    (OperationPhase::Failed, _) => Err(ProviderError::Failed),
+                    (OperationPhase::Cancelled, _) => Err(ProviderError::Cancelled),
+                    _ => Err(ProviderError::Indeterminate(key)),
+                };
+            }
+            *entry = Some(StoredOperation { id, key, intent_digest: digest, created: Vec::new(), targets: Vec::new(), phase: OperationPhase::Pending, outcome: None });
+            Ok(true)
+        }).await?;
+        if fresh {
+            Ok(Admission::Fresh(id))
+        } else {
+            Ok(Admission::Replay(Box::new(
+                self.settled(key).await?.outcome,
+            )))
+        }
+    }
+
+    async fn change<R>(
+        &self,
+        id: OperationId,
+        mut f: impl FnMut(&mut StoredOperation) -> R + Send,
+    ) -> Result<R, ProviderError> {
+        self.journal
+            .update(
+                &format!("ops/{id}"),
+                move |entry: &mut Option<StoredOperation>| {
+                    entry
+                        .as_mut()
+                        .map(&mut f)
+                        .ok_or_else(|| ProviderError::NotFound(id.to_string()))
+                },
+            )
+            .await
+    }
+
+    pub async fn bind_created(
+        &self,
+        id: OperationId,
+        resource: &str,
+    ) -> Result<bool, ProviderError> {
+        self.change(id, |record| {
+            if record.phase == OperationPhase::Succeeded {
+                return false;
+            }
+            if !record.created.iter().any(|id| id == resource) {
+                record.created.push(resource.into());
+            }
+            record.phase == OperationPhase::Pending
+        })
+        .await
+    }
+
+    pub async fn bind_adopted(
+        &self,
+        id: OperationId,
+        resource: &str,
+    ) -> Result<bool, ProviderError> {
+        self.change(id, |record| {
+            if record.phase != OperationPhase::Pending {
+                return false;
+            }
+            if !record.targets.iter().any(|id| id == resource) {
+                record.targets.push(resource.into());
+            }
+            true
+        })
+        .await
+    }
+
+    pub async fn bind_target(&self, id: OperationId, resource: &str) -> Result<(), ProviderError> {
+        let pending = self.bind_adopted(id, resource).await?;
+        if pending {
+            Ok(())
+        } else {
+            Err(ProviderError::Cancelled)
+        }
+    }
+
+    pub async fn complete(
+        &self,
+        id: OperationId,
+        outcome: MutationOutcome,
+    ) -> Result<(), ProviderError> {
+        let current = self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?
+            .value
+            .ok_or_else(|| ProviderError::NotFound(id.to_string()))?;
+        if current.phase != OperationPhase::Pending {
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&outcome)
+            .map_err(|_| storage(acyclic_stream::StreamError::InvalidArgument))?;
+        let outcome = self.journal.store_outcome(id, &bytes).await?;
+        self.change(id, |record| {
+            if record.phase == OperationPhase::Pending {
+                record.phase = OperationPhase::Succeeded;
+                record.outcome = Some(outcome.clone());
+                record.created.clear();
+            }
+        })
+        .await
+    }
+
+    pub async fn fail(&self, id: OperationId, error: &ProviderError) -> Result<(), ProviderError> {
+        let phase = match error {
+            ProviderError::Indeterminate(_) | ProviderError::Unavailable => {
+                OperationPhase::Indeterminate
+            }
+            ProviderError::Cancelled => OperationPhase::Cancelled,
+            _ => OperationPhase::Failed,
+        };
+        self.change(id, |record| {
+            if record.phase == OperationPhase::Pending {
+                record.phase = phase;
+            }
+        })
+        .await
+    }
+
+    async fn forget(&self, id: OperationId) -> Result<(), ProviderError> {
+        self.journal
+            .update(
+                &format!("ops/{id}"),
+                |entry: &mut Option<StoredOperation>| match entry {
+                    Some(record)
+                        if record.phase == OperationPhase::Pending
+                            && record.created.is_empty()
+                            && record.targets.is_empty() =>
+                    {
+                        *entry = None;
+                        Ok(())
+                    }
+                    Some(record) => Err(ProviderError::Indeterminate(record.key)),
+                    None => Ok(()),
+                },
+            )
+            .await
+    }
+
+    pub async fn record(&self, id: OperationId) -> Result<Option<OperationRecord>, ProviderError> {
+        let Some(record) = self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?
+            .value
+        else {
+            return Ok(None);
+        };
+        let outcome = match &record.outcome {
+            Some(blob) => Some(self.journal.outcome(id, blob).await?),
+            None => None,
+        };
+        Ok(Some(OperationRecord {
+            id: record.id,
+            key: record.key,
+            intent_digest: record.intent_digest,
+            created: record.created,
+            targets: record.targets,
+            phase: record.phase,
+            outcome,
+        }))
+    }
+
+    pub async fn record_for_key(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<Option<OperationRecord>, ProviderError> {
+        self.record(operation_id(key)).await
+    }
+
+    pub async fn inspect(
+        &self,
+        id: OperationId,
+    ) -> Result<Option<OperationObservation>, ProviderError> {
+        Ok(self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?
+            .value
+            .map(|record| record.observation()))
+    }
+
+    /// Cleanup ownership is retained until a successful delete is acknowledged.
+    /// A process dying during cleanup therefore cannot lose an orphan list.
+    pub async fn cancel(
+        &self,
+        id: OperationId,
+    ) -> Result<Option<(OperationObservation, Vec<String>)>, ProviderError> {
+        if self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?
+            .value
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.change(id, |record| {
+            if matches!(
+                record.phase,
+                OperationPhase::Pending | OperationPhase::Indeterminate
+            ) {
+                record.phase = OperationPhase::Cancelled;
+            }
+            let created = if record.phase == OperationPhase::Succeeded {
+                Vec::new()
+            } else {
+                record.created.clone()
+            };
+            Some((record.observation(), created))
+        })
+        .await
+    }
+
+    pub async fn created(&self, id: OperationId) -> Result<Vec<String>, ProviderError> {
+        Ok(self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?
+            .value
+            .map(|record| record.created)
+            .unwrap_or_default())
+    }
+
+    /// Release only this acknowledged deletion, preserving concurrent late creates.
+    pub async fn deleted(&self, id: OperationId, resource: &str) -> Result<(), ProviderError> {
+        self.change(id, |record| {
+            record.created.retain(|id| id != resource);
+        })
+        .await
+    }
+
+    pub async fn settled(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {
+        let id = operation_id(key);
+        let row = self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?;
+        let record = row
+            .value
+            .ok_or_else(|| ProviderError::NotFound(key.to_string()))?;
+        match (record.phase, record.outcome, row.anchor) {
+            (OperationPhase::Succeeded, Some(outcome), Some(settlement)) => Ok(SettledMutation {
+                operation: id,
+                settlement,
+                outcome: self.journal.outcome(id, &outcome).await?,
+            }),
+            (OperationPhase::Failed, _, _) => Err(ProviderError::Failed),
+            (OperationPhase::Cancelled, _, _) => Err(ProviderError::Cancelled),
+            _ => Err(ProviderError::Indeterminate(key)),
+        }
+    }
+
+    /// Join through the durable follow, then read the immutable settlement.
+    /// Lost observations never authorize another dispatch.
+    pub async fn join(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {
+        use futures::TryStreamExt;
+        let mut observations = self.watch(operation_id(key)).await?;
+        while let Some(observation) = observations.try_next().await? {
+            if observation.phase != OperationPhase::Pending {
+                return self.settled(key).await;
+            }
+        }
+        Err(ProviderError::Indeterminate(key))
+    }
+
+    /// Replay and live changes share the Streams follow cursor, with no poll timer.
+    pub async fn watch(&self, id: OperationId) -> Result<OperationStream, ProviderError> {
+        use futures::{StreamExt, TryStreamExt};
+        let row = self
+            .journal
+            .load::<StoredOperation>(&format!("ops/{id}"))
+            .await?;
+        let current = row
+            .value
+            .ok_or_else(|| ProviderError::NotFound(id.to_string()))?
+            .observation();
+        let first = futures::stream::once(async move { Ok(current) });
+        if current.phase != OperationPhase::Pending {
+            return Ok(first.boxed());
+        }
+        let records = self
+            .journal
+            .provider
+            .follow_checked(
+                row.path,
+                row.tail,
+                row.anchor
+                    .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?,
+                acyclic_stream::FollowFilter::default(),
+            )
+            .await
+            .map_err(storage)?;
+        let changes =
+            futures::stream::try_unfold((records, current), |(mut records, previous)| async move {
+                if previous.phase != OperationPhase::Pending {
+                    return Ok(None);
+                }
+                while let Some(record) = records.try_next().await.map_err(storage)? {
+                    let value: Option<StoredOperation> = serde_json::from_slice(&record.value)
+                        .map_err(|_| storage(acyclic_stream::StreamError::InvalidResponse))?;
+                    let current = value
+                        .ok_or_else(|| ProviderError::NotFound(previous.id.to_string()))?
+                        .observation();
+                    if current != previous {
+                        return Ok(Some((current, (records, current))));
+                    }
+                }
+                Err(storage(acyclic_stream::StreamError::Unavailable))
+            });
+        Ok(first.chain(changes).boxed())
+    }
+
+    /// The observation and its public state event have the same commit identity.
+    pub async fn observe_machine(
+        &self,
+        observation: MachineObservation,
+        at: u64,
+    ) -> Result<(), ProviderError> {
+        let suffix = observation.id.to_string();
+        let event_path = self.journal.path(&format!("{suffix}/events"))?;
+        self.journal
+            .update_with(&suffix, |entry: &mut Option<StoredMachine>| {
+                if entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.observation.state == MachineState::Destroyed)
+                {
+                    return Ok(((), Vec::new()));
+                }
+                let changed = entry
+                    .as_ref()
+                    .is_none_or(|entry| entry.observation.state != observation.state);
+                let sequence =
+                    entry.as_ref().map_or(0, |entry| entry.event_sequence) + u64::from(changed);
+                let mut mutations = Vec::new();
+                if changed {
+                    let event = MachineEvent {
+                        machine: observation.id,
+                        sequence,
+                        observed_at_unix_ms: at,
+                        fact: EventFact::State(observation.state),
+                    };
+                    mutations.push(acyclic_stream::CommitMutation::Append {
+                        path: event_path.clone(),
+                        records: vec![
+                            serde_json::to_vec(&event)
+                                .map_err(|_| storage(acyclic_stream::StreamError::InvalidArgument))?
+                                .into(),
+                        ],
+                    });
+                }
+                *entry = Some(StoredMachine {
+                    observation: observation.clone(),
+                    event_sequence: sequence,
+                });
+                Ok(((), mutations))
+            })
+            .await
+    }
+
+    pub async fn machine(
+        &self,
+        id: MachineId,
+    ) -> Result<Option<MachineObservation>, ProviderError> {
+        Ok(self
+            .journal
+            .load::<StoredMachine>(&id.to_string())
+            .await?
+            .value
+            .map(|entry| entry.observation))
+    }
+
+    pub async fn mark_destroyed(&self, id: MachineId, at: u64) -> Result<(), ProviderError> {
+        if let Some(mut observation) = self.machine(id).await? {
+            observation.state = MachineState::Destroyed;
+            observation.changed_at_unix_ms = at;
+            self.observe_machine(observation, at).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn machines(&self) -> Result<Vec<MachineObservation>, ProviderError> {
+        let mut values = Vec::new();
+        let mut after = None;
+        let mut hierarchy_version = None;
+        loop {
+            let page = self
+                .journal
+                .provider
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    parent: Some(self.journal.root.clone()),
+                    after,
+                    hierarchy_version,
+                    tail_stream: None,
+                    limit: acyclic_stream::MAX_ITEMS as u32,
+                })
+                .await
+                .map_err(storage)?;
+            for child in page.children {
+                if let Some(name) = child.path.as_str().rsplit('/').next()
+                    && let Ok(id) = MachineId::parse(name)
+                    && let Some(machine) = self.machine(id).await?
+                {
+                    values.push(machine);
+                }
+            }
+            hierarchy_version = Some(page.hierarchy_version);
+            after = page.next_after;
+            if after.is_none() {
+                break;
+            }
+        }
+        values.sort_by_key(|value| value.id);
+        Ok(values)
+    }
+
+    pub async fn events(
+        &self,
+        id: MachineId,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<MachineEvent>, Option<u64>), ProviderError> {
+        use futures::TryStreamExt;
+        if limit == 0 || limit > acyclic_stream::MAX_ITEMS {
+            return Err(ProviderError::Invalid(
+                "Machines event page admission failed; recovery: request 1..1024 events".into(),
+            ));
+        }
+        let path = self.journal.path(&format!("{id}/events"))?;
+        let tail = match self.journal.provider.tail(path.clone()).await {
+            Ok(tail) => tail,
+            Err(acyclic_stream::StreamError::NotFound) => return Ok((Vec::new(), None)),
+            Err(error) => return Err(storage(error)),
+        };
+        let mut records = match self
+            .journal
+            .provider
+            .read(acyclic_stream::ReadRequest {
+                path,
+                from: after.unwrap_or(0),
+                limit: limit as u32,
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(acyclic_stream::StreamError::NotFound) => return Ok((Vec::new(), None)),
+            Err(error) => return Err(storage(error)),
+        };
+        let mut events: Vec<MachineEvent> = Vec::new();
+        while let Some(record) = records.try_next().await.map_err(storage)? {
+            events.push(
+                serde_json::from_slice(&record.value)
+                    .map_err(|_| storage(acyclic_stream::StreamError::InvalidResponse))?,
+            );
+        }
+        let next = events
+            .last()
+            .filter(|event| event.sequence < tail)
+            .map(|event| event.sequence);
+        Ok((events, next))
+    }
+
+    pub async fn remember_checkpoint(
+        &self,
+        observation: CheckpointObservation,
+    ) -> Result<(), ProviderError> {
+        self.journal
+            .update(
+                &format!("checkpoints/{}", observation.id),
+                |entry: &mut Option<CheckpointObservation>| {
+                    if !entry.as_ref().is_some_and(|entry| !entry.forkable) {
+                        *entry = Some(observation.clone());
+                    }
+                    Ok(())
+                },
+            )
+            .await
+    }
+
+    pub async fn checkpoint(
+        &self,
+        id: CheckpointId,
+    ) -> Result<Option<CheckpointObservation>, ProviderError> {
+        Ok(self.journal.load(&format!("checkpoints/{id}")).await?.value)
+    }
+
+    pub async fn mark_checkpoint_destroyed(&self, id: CheckpointId) -> Result<(), ProviderError> {
+        self.journal
+            .update(
+                &format!("checkpoints/{id}"),
+                |entry: &mut Option<CheckpointObservation>| {
+                    if let Some(entry) = entry {
+                        entry.forkable = false;
+                    }
+                    Ok(())
+                },
+            )
+            .await
+    }
+
+    /// Shared dispatch ownership; adapters supply only one native action and cleanup.
+    pub async fn apply<T, F, R>(
+        &self,
+        key: IdempotencyKey,
+        intent: &T,
+        action: F,
+        rollback: R,
+    ) -> Result<MutationOutcome, ProviderError>
+    where
+        T: Serialize + Sync,
+        F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
+        R: AsyncFnOnce(OperationId) -> Result<(), ProviderError>,
+    {
+        let operation = match self.admit(key, intent).await? {
+            Admission::Replay(outcome) => return Ok(*outcome),
+            Admission::Fresh(operation) => operation,
+        };
+        match action(operation).await {
+            Ok(outcome) => {
+                self.complete(operation, outcome).await?;
+                Ok(self.settled(key).await?.outcome)
+            }
+            Err(error) => {
+                let touched = self
+                    .journal
+                    .load::<StoredOperation>(&format!("ops/{operation}"))
+                    .await?
+                    .value
+                    .is_some_and(|record| !record.created.is_empty() || !record.targets.is_empty());
+                let before_dispatch = matches!(
+                    error,
+                    ProviderError::Invalid(_)
+                        | ProviderError::Unsupported(_)
+                        | ProviderError::NotFound(_)
+                        | ProviderError::Conflict(_)
+                        | ProviderError::Rejected(_)
+                );
+                if !touched && before_dispatch {
+                    self.forget(operation).await?;
+                } else {
+                    self.fail(operation, &error).await?;
+                    if !matches!(
+                        error,
+                        ProviderError::Indeterminate(_)
+                            | ProviderError::Unavailable
+                            | ProviderError::Cancelled
+                    ) {
+                        rollback(operation).await?;
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+}

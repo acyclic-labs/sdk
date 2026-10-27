@@ -58,6 +58,9 @@ mod contract;
 pub use contract::*;
 mod provider;
 pub use provider::*;
+/// Shared Machines lifecycle authority on the caller's canonical Streams backend.
+#[cfg(all(feature = "core", not(target_arch = "wasm32")))]
+pub mod core;
 mod simulation;
 pub use simulation::*;
 

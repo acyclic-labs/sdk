@@ -18,7 +18,7 @@ crosses into the harness, and switching providers changes bindings, not orchestr
 | `destroy_*`             | `DELETE /sandbox/{id}` / `DELETE /snapshots/{id}`                             |
 | `events`                | poll `GET /sandbox/{id}` and diff state                                       |
 | `usage`                 | allocation estimate, marked provisional (Daytona has no per-sandbox meter)    |
-| `recover`               | registry, then `GET /sandbox?labels=` on the `acyclic.key` label              |
+| `recover`               | canonical Streams settlement; labels never prove completion                |
 
 Live fork goes through the trait (`MachinesProvider::fork_machine`); callers read the fidelity
 from the machine contract or the outcome, never from the provider type:
@@ -54,8 +54,9 @@ from the machine contract or the outcome, never from the provider type:
 
 Every live-fork child carries `acyclic.kind=live-fork`, `acyclic.parent=<requested machine>`,
 `acyclic.fork_source=<sandbox it was forked from>`, its index and the requested count, and
-`acyclic.ready=true` once complete, so `recover` rebuilds the outcome after a restart and
-reports a partial or unfinished fork as indeterminate. Containers cannot pause, checkpoint memory, or
+`acyclic.ready=true` once complete. These labels support native ownership checks;
+only a durable Streams settlement proves success after restart. An admitted but
+unsettled operation remains indeterminate and never authorizes redispatch. Containers cannot pause, checkpoint memory, or
 auto-suspend: their contracts carry `SuspensionPolicy::Manual`, and `suspend`, `wake`,
 `set_suspension_policy`, and `checkpoint` return `ProviderError::Unsupported`.
 
@@ -69,20 +70,26 @@ Safety rules the provider enforces:
   with exactly that policy (`networkBlockAll` / `domainAllowList`). An unregistered digest is
   refused instead of falling back to the organization default.
 - **Tenancy.** Every sandbox carries `acyclic.tenant` (or none when no tenant is configured);
-  listing, reads, and label recovery ignore sandboxes of any other tenant.
+  listing and reads ignore sandboxes of any other tenant.
 - **Adoption.** A replayed create or fork adopts the holder of its deterministic name only when
   the holder carries exactly this request's provider labels (key, kind, fork slot, parent,
   tenant, contract); a native fork child must also be listed among the parent's forks.
 - **Cancellation.** `cancel` deletes only sandboxes the operation created, including one whose
   create returned after the cancellation, never the machine a suspend, wake, policy change,
   checkpoint, or destroy acts on.
-- **Recovery.** Fork children record the requested count; label recovery returns a fork only
-  when every index is present and reports a partial one as indeterminate.
+- **Recovery.** The shared Streams core retains the exact successful result and settlement
+  identity. Native labels cannot turn an absent or partial operation into success.
 - **Toolbox.** `DaytonaApi::execute`, `download_file`, and `upload_file` read the sandbox by id
   and send the API key only to a toolbox proxy on the API host or its subdomains (or
   `toolbox_proxy_hosts`).
 
-Live checks, all ignored by default and gated on `DAYTONA_API_KEY`:
+Lifecycle operation ownership, idempotency, state events and watch use
+[`acyclic_machines::core`](../../../docs/backends/machines-core.md). Construction
+requires an explicit `OperationRegistry` over the application's canonical Streams
+backend. Restart with that same store; pending outcomes never authorize redispatch.
+
+Live checks are ignored by default and require `DAYTONA_API_KEY`. Provider checks
+also require `DAYTONA_MACHINES_JOURNAL=/durable/account-specific/directory`:
 
 ```sh
 # Container smoke test of the REST client (create, exec, delete; bounded TTL):

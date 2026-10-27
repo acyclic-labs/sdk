@@ -10,7 +10,6 @@ pub mod map;
     reason = "test-only HTTP stand-in; a broken mock should fail the test loudly"
 )]
 mod mock;
-pub mod ops;
 pub mod usage;
 
 use std::{
@@ -25,16 +24,17 @@ use acyclic_machines::{
     ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
     MAX_EVENT_PAGE_SIZE, MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId,
     MachineObservation, MachineOutput, MachinePage, MachineState, MachinesProvider,
-    MutationOutcome, OperationId, OperationObservation, OperationPhase, OperationStream,
-    ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
+    MutationOutcome, OperationId, OperationObservation, OperationStream, ProviderAssurance,
+    ProviderError, SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
-use futures::StreamExt as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
+#[cfg(test)]
+use acyclic_machines::core as ops;
+use acyclic_machines::core::OperationRegistry;
 use api::{CreateSnapshotRequest, DaytonaApi, ExecuteRequest, ForkRequest, Sandbox, Snapshot};
-use ops::{Admission, OperationRegistry};
 
 /// Default Daytona API base URL.
 pub const DEFAULT_API_URL: &str = "https://app.daytona.io/api";
@@ -268,12 +268,12 @@ impl DaytonaProvider {
     ///
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when the configuration cannot produce a client.
-    pub fn new(config: DaytonaConfig) -> Result<Self, ProviderError> {
+    pub fn new(config: DaytonaConfig, ops: OperationRegistry) -> Result<Self, ProviderError> {
         let api = DaytonaApi::new(&config)?;
         Ok(Self {
             config,
             api,
-            ops: OperationRegistry::default(),
+            ops,
             boot_env: Mutex::default(),
             snapshot_classes: Mutex::default(),
         })
@@ -409,7 +409,7 @@ impl DaytonaProvider {
     }
 
     /// Records a sandbox observation, filling gaps from what the registry already knows.
-    fn observe(
+    async fn observe(
         &self,
         sandbox: &Sandbox,
         fallback: Option<&MachineContract>,
@@ -420,25 +420,27 @@ impl DaytonaProvider {
         if !map::owned_by(sandbox, self.tenant()) {
             return Err(ProviderError::NotFound(sandbox.id.clone()));
         }
-        let known = map::machine_id(&sandbox.id)
-            .ok()
-            .and_then(|id| self.ops.machine(id));
+        let known = match map::machine_id(&sandbox.id) {
+            Ok(id) => self.ops.machine(id).await?,
+            Err(_) => None,
+        };
         let fallback = fallback.or(known.as_ref().map(|value| &value.contract));
         let last_checkpoint =
             last_checkpoint.or(known.as_ref().and_then(|value| value.last_checkpoint));
         let now = now_unix_ms();
         let observation = map::sandbox_to_observation(sandbox, fallback, last_checkpoint, now)?;
-        self.ops.observe_machine(observation.clone(), now);
+        self.ops.observe_machine(observation.clone(), now).await?;
         Ok(observation)
     }
 
     /// Reads a machine from Daytona, falling back to the registry once Daytona forgot it.
     async fn fetch_machine(&self, machine: MachineId) -> Result<MachineObservation, ProviderError> {
         match self.api.get(&machine.to_string()).await {
-            Ok(sandbox) => self.observe(&sandbox, None, None),
+            Ok(sandbox) => self.observe(&sandbox, None, None).await,
             Err(ProviderError::NotFound(_)) => self
                 .ops
                 .machine(machine)
+                .await?
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string())),
             Err(error) => Err(error),
         }
@@ -450,21 +452,22 @@ impl DaytonaProvider {
         sandbox_id: &str,
         key: IdempotencyKey,
     ) -> Result<Sandbox, ProviderError> {
-        let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
-        loop {
-            let sandbox = self.api.get(sandbox_id).await?;
-            if map::is_settled(sandbox.state.as_deref()) {
+        acyclic_machines::core::settle(
+            key,
+            self.config.poll_interval,
+            self.config.ready_timeout,
+            || async {
+                let sandbox = self.api.get(sandbox_id).await?;
+                if !map::is_settled(sandbox.state.as_deref()) {
+                    return Ok(None);
+                }
                 if map::machine_state(sandbox.state.as_deref()) == MachineState::Failed {
-                    tracing::error!(sandbox_id, "Daytona sandbox failed");
                     return Err(ProviderError::Failed);
                 }
-                return Ok(sandbox);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ProviderError::Indeterminate(key));
-            }
-            tokio::time::sleep(self.config.poll_interval).await;
-        }
+                Ok(Some(sandbox))
+            },
+        )
+        .await
     }
 
     /// Polls a snapshot by id or name until it is active or failed. A snapshot that does not
@@ -475,28 +478,29 @@ impl DaytonaProvider {
         snapshot: &str,
         key: IdempotencyKey,
     ) -> Result<Snapshot, ProviderError> {
-        let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
-        loop {
-            match self.api.get_snapshot(snapshot).await {
-                Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
-                    if value
-                        .state
-                        .as_deref()
-                        .is_some_and(|state| state.eq_ignore_ascii_case("active"))
-                    {
-                        return Ok(value);
+        acyclic_machines::core::settle(
+            key,
+            self.config.poll_interval,
+            self.config.ready_timeout,
+            || async {
+                match self.api.get_snapshot(snapshot).await {
+                    Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
+                        if value
+                            .state
+                            .as_deref()
+                            .is_some_and(|state| state.eq_ignore_ascii_case("active"))
+                        {
+                            Ok(Some(value))
+                        } else {
+                            Err(ProviderError::Failed)
+                        }
                     }
-                    tracing::error!(snapshot_id = snapshot, "Daytona snapshot failed");
-                    return Err(ProviderError::Failed);
+                    Ok(_) | Err(ProviderError::NotFound(_)) => Ok(None),
+                    Err(error) => Err(error),
                 }
-                Ok(_) | Err(ProviderError::NotFound(_)) => {}
-                Err(error) => return Err(error),
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ProviderError::Indeterminate(key));
-            }
-            tokio::time::sleep(self.config.poll_interval).await;
-        }
+            },
+        )
+        .await
     }
 
     /// Creates a sandbox, or adopts the one an earlier attempt under the same deterministic
@@ -535,22 +539,18 @@ impl DaytonaProvider {
 
     /// Deletes, best-effort and newest first, the sandboxes a failed operation created. Any
     /// that cannot be deleted stay recorded, so a later `cancel` retries them.
-    async fn roll_back(&self, operation: OperationId) {
-        let mut remaining = Vec::new();
-        for sandbox in self.ops.take_created(operation).into_iter().rev() {
+    async fn roll_back(&self, operation: OperationId) -> Result<(), ProviderError> {
+        for sandbox in self.ops.created(operation).await?.into_iter().rev() {
             match self.api.delete(&sandbox).await {
-                Ok(()) | Err(ProviderError::NotFound(_)) => {}
+                Ok(()) | Err(ProviderError::NotFound(_)) => {
+                    self.ops.deleted(operation, &sandbox).await?
+                }
                 Err(error) => {
-                    tracing::warn!(
-                        sandbox_id = sandbox,
-                        error.kind = error.kind(),
-                        "rollback delete of a failed operation's sandbox failed"
-                    );
-                    remaining.push(sandbox);
+                    tracing::warn!(sandbox, %error, "Machines cleanup failed; recovery: cancel the original operation again to retry deletion")
                 }
             }
         }
-        self.ops.restore_created(operation, remaining);
+        Ok(())
     }
 
     /// Records a sandbox this attempt produced: [`Self::claim_created`] for one it created, and
@@ -567,7 +567,7 @@ impl DaytonaProvider {
         if !adopted {
             return self.claim_created(operation, sandbox_id).await;
         }
-        if self.ops.bind_adopted(operation, sandbox_id) {
+        if self.ops.bind_adopted(operation, sandbox_id).await? {
             Ok(())
         } else {
             Err(ProviderError::Cancelled)
@@ -582,15 +582,16 @@ impl DaytonaProvider {
         operation: OperationId,
         sandbox_id: &str,
     ) -> Result<(), ProviderError> {
-        if self.ops.bind_created(operation, sandbox_id) {
+        if self.ops.bind_created(operation, sandbox_id).await? {
             return Ok(());
         }
-        if let Err(error) = self.api.delete(sandbox_id).await {
-            tracing::warn!(
-                sandbox_id,
-                error.kind = error.kind(),
-                "best-effort delete of a sandbox created after cancellation failed"
-            );
+        match self.api.delete(sandbox_id).await {
+            Ok(()) | Err(ProviderError::NotFound(_)) => {
+                self.ops.deleted(operation, sandbox_id).await?
+            }
+            Err(error) => {
+                tracing::warn!(sandbox_id, %error, "Machines late-create cleanup failed; recovery: cancel the original operation again to retry deletion")
+            }
         }
         Err(ProviderError::Cancelled)
     }
@@ -647,51 +648,11 @@ impl DaytonaProvider {
     where
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
     {
-        let operation = match self.ops.admit(key, intent)? {
-            Admission::Replay(outcome) => return Ok(*outcome),
-            Admission::Fresh(operation) => operation,
-        };
-        match action(operation).await {
-            Ok(outcome) => {
-                self.ops.complete(operation, outcome.clone());
-                match self.ops.inspect(operation).map(|value| value.phase) {
-                    Some(OperationPhase::Cancelled) => Err(ProviderError::Cancelled),
-                    _ => Ok(outcome),
-                }
-            }
-            Err(error) => {
-                let touched = self
-                    .ops
-                    .record(operation)
-                    .is_some_and(|record| !record.created.is_empty() || !record.targets.is_empty());
-                let before_side_effect = matches!(
-                    error,
-                    ProviderError::Invalid(_)
-                        | ProviderError::Unsupported(_)
-                        | ProviderError::NotFound(_)
-                        | ProviderError::Conflict(_)
-                        | ProviderError::Rejected(_)
-                );
-                if !touched && before_side_effect {
-                    self.ops.forget(operation);
-                } else {
-                    self.ops.fail(operation, &error);
-                    // A definite failure leaves nothing the caller can use or replay, so undo
-                    // whatever the operation created (for example fork children whose
-                    // workspace never unpacked). An indeterminate outcome keeps its sandboxes
-                    // for `recover`, and `cancel` undoes it.
-                    if !matches!(
-                        error,
-                        ProviderError::Indeterminate(_)
-                            | ProviderError::Unavailable
-                            | ProviderError::Cancelled
-                    ) {
-                        self.roll_back(operation).await;
-                    }
-                }
-                Err(error)
-            }
-        }
+        self.ops
+            .apply(key, intent, action, async |operation| {
+                self.roll_back(operation).await
+            })
+            .await
     }
 
     /// Waits for fork children to start and observes them under `contract`.
@@ -705,7 +666,7 @@ impl DaytonaProvider {
         let mut children = Vec::with_capacity(ids.len());
         for id in ids {
             let settled = self.wait_settled(&id, key).await?;
-            let observation = self.observe(&settled, Some(contract), checkpoint)?;
+            let observation = self.observe(&settled, Some(contract), checkpoint).await?;
             if observation.state != MachineState::Running {
                 return Err(ProviderError::Failed);
             }
@@ -913,7 +874,7 @@ impl DaytonaProvider {
             // Only now is the child a complete copy; label recovery requires this marker.
             labels.insert(map::LABEL_READY.to_owned(), "true".to_owned());
             self.api.replace_labels(&id, labels).await?;
-            let observation = self.observe(&settled, Some(&parent.contract), None)?;
+            let observation = self.observe(&settled, Some(&parent.contract), None).await?;
             if observation.state != MachineState::Running {
                 return Err(ProviderError::Failed);
             }
@@ -957,67 +918,6 @@ impl DaytonaProvider {
             Err(ProviderError::Conflict(format!(
                 "machine has {live} live fork children; destroy them first"
             )))
-        }
-    }
-
-    async fn recover_by_label(
-        &self,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        let tenant = self.tenant();
-        let sandboxes: Vec<Sandbox> = self
-            .api
-            .list(Some(&map::key_filter(key, tenant)))
-            .await?
-            .into_iter()
-            .filter(|sandbox| map::owned_by(sandbox, tenant))
-            .collect();
-        let Some(first) = sandboxes.first() else {
-            return Err(ProviderError::NotFound(key.to_string()));
-        };
-        let kind = first
-            .labels
-            .get(map::LABEL_KIND)
-            .cloned()
-            .unwrap_or_default();
-        match kind.as_str() {
-            map::KIND_CREATE => match sandboxes.as_slice() {
-                [only] => Ok(MutationOutcome::Created(self.observe(only, None, None)?)),
-                _ => Err(ProviderError::Indeterminate(key)),
-            },
-            map::KIND_FORK | map::KIND_LIVE_FORK => {
-                // A fork interrupted after some children were created is not a success: the
-                // caller asked for `count` workers. Report it as still indeterminate so the
-                // caller cancels or retries instead of proceeding with fewer.
-                let Some(ordered) = map::complete_fork(&sandboxes) else {
-                    return Err(ProviderError::Indeterminate(key));
-                };
-                let source = ordered
-                    .first()
-                    .and_then(|sandbox| sandbox.labels.get(map::LABEL_PARENT))
-                    .map(|parent| map::machine_id(parent))
-                    .transpose()?;
-                let children = ordered
-                    .into_iter()
-                    .map(|sandbox| self.observe(sandbox, None, None))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if kind != map::KIND_LIVE_FORK {
-                    return Ok(MutationOutcome::Forked(children));
-                }
-                let source = source.ok_or(ProviderError::Indeterminate(key))?;
-                let fidelity = children
-                    .first()
-                    .and_then(|child| child.contract.fork_fidelity())
-                    .ok_or(ProviderError::Indeterminate(key))?;
-                Ok(MutationOutcome::MachineForked {
-                    source,
-                    fidelity,
-                    children,
-                })
-            }
-            other => Err(ProviderError::Rejected(format!(
-                "sandbox under key {key} has unknown kind {other:?}"
-            ))),
         }
     }
 }
@@ -1076,7 +976,7 @@ impl MachinesProvider for DaytonaProvider {
                 let (created, adopted) = self.create_or_adopt(&body).await?;
                 self.claim(operation, &created.id, adopted).await?;
                 let settled = self.wait_settled(&created.id, key).await?;
-                let observation = self.observe(&settled, Some(&contract), None)?;
+                let observation = self.observe(&settled, Some(&contract), None).await?;
                 if observation.state != MachineState::Running {
                     return Err(ProviderError::Failed);
                 }
@@ -1114,6 +1014,7 @@ impl MachinesProvider for DaytonaProvider {
         let mut merged: BTreeMap<MachineId, MachineObservation> = self
             .ops
             .machines()
+            .await?
             .into_iter()
             .map(|value| (value.id, value))
             .collect();
@@ -1123,7 +1024,7 @@ impl MachinesProvider for DaytonaProvider {
             .iter()
             .filter(|sandbox| map::owned_by(sandbox, tenant))
         {
-            match self.observe(sandbox, None, None) {
+            match self.observe(sandbox, None, None).await {
                 Ok(observation) => {
                     merged.insert(observation.id, observation);
                 }
@@ -1167,7 +1068,7 @@ impl MachinesProvider for DaytonaProvider {
             }
             let id = machine.to_string();
             let name = map::checkpoint_name(key);
-            self.ops.bind_target(operation, &id);
+            self.ops.bind_target(operation, &id).await?;
             let request = CreateSnapshotRequest {
                 name: name.clone(),
                 include_memory: true,
@@ -1187,11 +1088,11 @@ impl MachinesProvider for DaytonaProvider {
                 true,
                 now,
             )?;
-            self.ops.remember_checkpoint(checkpoint.clone());
+            self.ops.remember_checkpoint(checkpoint.clone()).await?;
             let mut updated = source;
             updated.last_checkpoint = Some(checkpoint.id);
             updated.changed_at_unix_ms = now;
-            self.ops.observe_machine(updated, now);
+            self.ops.observe_machine(updated, now).await?;
             Ok(MutationOutcome::Checkpointed(checkpoint))
         })
         .await
@@ -1201,7 +1102,7 @@ impl MachinesProvider for DaytonaProvider {
         &self,
         checkpoint: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
-        let known = self.ops.checkpoint(checkpoint);
+        let known = self.ops.checkpoint(checkpoint).await?;
         match self.api.get_snapshot(&checkpoint.to_string()).await {
             Ok(snapshot) => {
                 let (source, contract, forkable) = if let Some(known) = &known {
@@ -1226,7 +1127,7 @@ impl MachinesProvider for DaytonaProvider {
                     forkable,
                     now_unix_ms(),
                 )?;
-                self.ops.remember_checkpoint(observation.clone());
+                self.ops.remember_checkpoint(observation.clone()).await?;
                 Ok(observation)
             }
             Err(ProviderError::NotFound(_)) => known
@@ -1341,10 +1242,10 @@ impl MachinesProvider for DaytonaProvider {
                 }
             }
             let id = machine.to_string();
-            self.ops.bind_target(operation, &id);
+            self.ops.bind_target(operation, &id).await?;
             self.api.pause(&id).await?;
             let settled = self.wait_settled(&id, key).await?;
-            if self.observe(&settled, None, None)?.state != MachineState::Suspended {
+            if self.observe(&settled, None, None).await?.state != MachineState::Suspended {
                 return Err(ProviderError::Failed);
             }
             Ok(MutationOutcome::Suspended(machine))
@@ -1370,10 +1271,10 @@ impl MachinesProvider for DaytonaProvider {
                 }
             }
             let id = machine.to_string();
-            self.ops.bind_target(operation, &id);
+            self.ops.bind_target(operation, &id).await?;
             self.api.start(&id).await?;
             let settled = self.wait_settled(&id, key).await?;
-            if self.observe(&settled, None, None)?.state != MachineState::Running {
+            if self.observe(&settled, None, None).await?.state != MachineState::Running {
                 return Err(ProviderError::Failed);
             }
             Ok(MutationOutcome::Woken(machine))
@@ -1396,14 +1297,14 @@ impl MachinesProvider for DaytonaProvider {
                 ));
             }
             let id = machine.to_string();
-            self.ops.bind_target(operation, &id);
+            self.ops.bind_target(operation, &id).await?;
             self.api
                 .set_autopause(&id, map::autopause_minutes(policy))
                 .await?;
             let now = now_unix_ms();
             current.contract.suspension = policy;
             current.changed_at_unix_ms = now;
-            self.ops.observe_machine(current, now);
+            self.ops.observe_machine(current, now).await?;
             Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
         })
         .await
@@ -1421,12 +1322,12 @@ impl MachinesProvider for DaytonaProvider {
             }
             self.require_no_live_fork_children(&current).await?;
             let id = machine.to_string();
-            self.ops.bind_target(operation, &id);
+            self.ops.bind_target(operation, &id).await?;
             match self.api.delete(&id).await {
                 Ok(()) | Err(ProviderError::NotFound(_)) => {}
                 Err(error) => return Err(error),
             }
-            self.ops.mark_destroyed(machine, now_unix_ms());
+            self.ops.mark_destroyed(machine, now_unix_ms()).await?;
             Ok(MutationOutcome::MachineDestroyed(machine))
         })
         .await
@@ -1447,7 +1348,7 @@ impl MachinesProvider for DaytonaProvider {
                     Ok(()) | Err(ProviderError::NotFound(_)) => {}
                     Err(error) => return Err(error),
                 }
-                self.ops.mark_checkpoint_destroyed(checkpoint);
+                self.ops.mark_checkpoint_destroyed(checkpoint).await?;
                 Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
             },
         )
@@ -1469,7 +1370,7 @@ impl MachinesProvider for DaytonaProvider {
         self.fetch_machine(machine).await?;
         let limit = usize::try_from(limit)
             .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?;
-        let (events, next_sequence) = self.ops.events(machine, after_sequence, limit);
+        let (events, next_sequence) = self.ops.events(machine, after_sequence, limit).await?;
         Ok(EventPage {
             events,
             next_sequence,
@@ -1490,7 +1391,7 @@ impl MachinesProvider for DaytonaProvider {
         }
         let id = machine.to_string();
         let sandbox = self.api.get(&id).await?;
-        let observation = self.observe(&sandbox, None, None)?;
+        let observation = self.observe(&sandbox, None, None).await?;
         let allocation = usage::Allocation {
             cpu: sandbox.cpu.unwrap_or(0),
             memory_gib: sandbox.memory.unwrap_or(0),
@@ -1507,20 +1408,13 @@ impl MachinesProvider for DaytonaProvider {
     }
 
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        if let Some(record) = self.ops.record_for_key(key) {
-            return match (record.phase, record.outcome) {
-                (OperationPhase::Succeeded, Some(outcome)) => Ok(outcome),
-                (OperationPhase::Failed, _) => Err(ProviderError::Failed),
-                (OperationPhase::Cancelled, _) => Err(ProviderError::Cancelled),
-                _ => Err(ProviderError::Indeterminate(key)),
-            };
-        }
-        self.recover_by_label(key).await
+        Ok(self.ops.settled(key).await?.outcome)
     }
 
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         self.ops
             .record_for_key(key)
+            .await?
             .map(|record| record.id)
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))
     }
@@ -1531,51 +1425,26 @@ impl MachinesProvider for DaytonaProvider {
     ) -> Result<OperationObservation, ProviderError> {
         self.ops
             .inspect(operation)
+            .await?
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))
     }
 
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        let (observation, sandboxes) = self
+        let (observation, _) = self
             .ops
             .cancel(operation)
+            .await?
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-        // Newest first: a fork child's own fork children were created after it, and Daytona
-        // refuses to delete a sandbox that still has live fork children. Anything that cannot
-        // be deleted stays recorded, so cancelling again retries it.
-        let mut remaining = Vec::new();
-        for sandbox in sandboxes.into_iter().rev() {
-            match self.api.delete(&sandbox).await {
-                Ok(()) | Err(ProviderError::NotFound(_)) => {}
-                Err(error) => {
-                    tracing::warn!(sandbox, %error, "delete of a cancelled operation's sandbox failed; cancel again to retry");
-                    remaining.push(sandbox);
-                }
-            }
-        }
-        remaining.reverse();
-        self.ops.restore_created(operation, remaining);
+        self.roll_back(operation).await?;
         Ok(observation)
     }
 
-    /// Mutations complete inline, so the stream yields the current observation and, while it
-    /// is still pending, one more once it leaves `Pending` or the ready timeout elapses.
+    /// Current and future observations follow the canonical Streams cursor.
     async fn watch_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
-        let current = self.inspect_operation(operation).await?;
-        if current.phase != OperationPhase::Pending {
-            return Ok(futures::stream::once(async move { Ok(current) }).boxed());
-        }
-        let last = self
-            .ops
-            .watch(
-                operation,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-            )
-            .await;
-        Ok(futures::stream::iter([Ok(current), last]).boxed())
+        self.ops.watch(operation).await
     }
 }
 
@@ -1681,13 +1550,22 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use acyclic_machines::OperationPhase;
+
+    fn registry() -> OperationRegistry {
+        OperationRegistry::new(
+            Arc::new(acyclic_stream::MemoryStream::new(Default::default())),
+            "test",
+        )
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn guest_io_is_unsupported_without_making_daytona_requests() {
         let mock = mock::Mock::start(|_| async { (500, "unexpected request".into()) }).await;
         let mut config = DaytonaConfig::new("fake");
         config.api_url = mock.url.clone();
-        let provider = DaytonaProvider::new(config).unwrap();
+        let provider = DaytonaProvider::new(config, registry()).unwrap();
         let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
         let command = ExecCommand::new(vec!["echo".into()], 1).unwrap();
         assert!(matches!(
@@ -1714,7 +1592,7 @@ mod tests {
 
     #[test]
     fn debug_output_never_renders_staged_boot_values() {
-        let provider = DaytonaProvider::new(DaytonaConfig::new("api-secret")).unwrap();
+        let provider = DaytonaProvider::new(DaytonaConfig::new("api-secret"), registry()).unwrap();
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000003").unwrap();
         provider.stage_boot_env(
             key,
@@ -1741,7 +1619,7 @@ mod tests {
 
     #[test]
     fn staged_boot_env_reaches_the_create_body() {
-        let provider = DaytonaProvider::new(DaytonaConfig::new("k")).unwrap();
+        let provider = DaytonaProvider::new(DaytonaConfig::new("k"), registry()).unwrap();
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000002").unwrap();
         assert!(provider.staged_boot_env(key).is_none());
         let env = BTreeMap::from([("ACYCLIC_BOOT_TOKEN".to_owned(), "t".to_owned())]);
@@ -1761,7 +1639,7 @@ mod tests {
     fn image_resolution_follows_registration_then_default() {
         let mut config = DaytonaConfig::new("k");
         config.register_snapshot([7; 32], "registered");
-        let provider = DaytonaProvider::new(config).unwrap();
+        let provider = DaytonaProvider::new(config, registry()).unwrap();
         assert_eq!(
             provider
                 .resolve_snapshot(&Image::custom([7; 32]).unwrap())
@@ -1774,7 +1652,7 @@ mod tests {
         ));
         let mut config = DaytonaConfig::new("k");
         config.default_snapshot = Some("fallback".into());
-        let provider = DaytonaProvider::new(config).unwrap();
+        let provider = DaytonaProvider::new(config, registry()).unwrap();
         assert_eq!(
             provider
                 .resolve_snapshot(&Image::custom([9; 32]).unwrap())
@@ -1790,7 +1668,7 @@ mod tests {
     async fn unmappable_requests_fail_before_any_side_effect_and_release_the_key() {
         let mut config = DaytonaConfig::new("k");
         config.default_snapshot = Some("base".into());
-        let provider = DaytonaProvider::new(config).unwrap();
+        let provider = DaytonaProvider::new(config, registry()).unwrap();
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001").unwrap();
         let mut request = CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32]);
         request.budgets.spend_micros = 5;
@@ -1802,7 +1680,14 @@ mod tests {
             provider.create(request.clone()).await,
             Err(ProviderError::Unsupported(_))
         ));
-        assert!(provider.registry().record_for_key(key).is_none());
+        assert!(
+            provider
+                .registry()
+                .record_for_key(key)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(
             provider.staged_boot_env(key).is_none(),
             "a terminal create failure clears the staged boot environment"
@@ -1828,7 +1713,7 @@ mod tests {
 
     #[tokio::test]
     async fn fork_counts_are_bounded_before_any_request() {
-        let provider = DaytonaProvider::new(DaytonaConfig::new("k")).unwrap();
+        let provider = DaytonaProvider::new(DaytonaConfig::new("k"), registry()).unwrap();
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000004").unwrap();
         let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap();
         assert!(matches!(
@@ -1922,7 +1807,54 @@ mod tests {
         config.poll_interval = Duration::from_millis(1);
         config.ready_timeout = Duration::from_secs(5);
         config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
-        Arc::new(DaytonaProvider::new(config).unwrap())
+        Arc::new(DaytonaProvider::new(config, registry()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn restart_replays_settlement_without_native_label_lookup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The HTTP stand-in below is an internal dispatch oracle, not a provider capture.
+        let key = test_key(18);
+        let mock = mock::Mock::start(move |request| async move {
+            if request.path.starts_with("/snapshots/") {
+                (200, r#"{"id":"s","sandboxClass":"linux-vm"}"#.into())
+            } else {
+                (200, sandbox(MACHINE, "started", &owned_labels(key, None)))
+            }
+        })
+        .await;
+        let dir = tempfile::tempdir()?;
+        let mut config = DaytonaConfig::new("internal-test");
+        config.api_url = mock.url.clone();
+        config.default_snapshot = Some("base".into());
+        config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
+        let streams = acyclic_stream::LocalStream::open(
+            dir.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await?;
+        let provider = DaytonaProvider::new(
+            config.clone(),
+            OperationRegistry::new(Arc::new(streams), "account")?,
+        )?;
+        let original = provider.create(request(key)).await?;
+        let settlement = provider.registry().settled(key).await?;
+        let calls = mock.requests().len();
+        drop(provider);
+        let streams = acyclic_stream::LocalStream::open(
+            dir.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await?;
+        let provider = DaytonaProvider::new(
+            config,
+            OperationRegistry::new(Arc::new(streams), "account")?,
+        )?;
+        assert_eq!(provider.create(request(key)).await?, original);
+        assert_eq!(provider.recover(key).await?, original);
+        assert_eq!(provider.registry().join(key).await?, settlement);
+        assert_eq!(mock.requests().len(), calls);
+        Ok(())
     }
 
     fn sandbox(id: &str, state: &str, labels: &BTreeMap<String, String>) -> String {
@@ -2253,43 +2185,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn label_recovery_reports_a_partial_fork_as_indeterminate() {
+    async fn provider_labels_cannot_invent_a_settled_operation() {
         let key = test_key(10);
-        let child = |id: &str, index: u32| {
-            let slot = map::ForkSlot { index, count: 3 };
-            sandbox(
-                id,
-                "started",
-                &map::labels(key, Some(slot), None, &contract()),
-            )
-        };
-        let partial = format!(r#"{{"items":[{},{}]}}"#, child(MACHINE, 0), child(CHILD, 2));
-        let full = format!(
-            r#"{{"items":[{},{},{}]}}"#,
-            child(CHILD, 2),
-            child(MACHINE, 0),
-            child(OTHER, 1)
-        );
-        for (items, complete) in [(partial, false), (full, true)] {
-            let mock = mock::Mock::start(move |_| {
-                let items = items.clone();
-                async move { (200, items) }
-            })
-            .await;
-            let outcome = mocked(&mock, None).recover(key).await;
-            if complete {
-                let Ok(MutationOutcome::Forked(children)) = outcome else {
-                    panic!("{outcome:?}")
-                };
-                let ids: Vec<String> = children.iter().map(|c| c.id.to_string()).collect();
-                assert_eq!(ids, [MACHINE, OTHER, CHILD]);
-            } else {
-                assert!(
-                    matches!(outcome, Err(ProviderError::Indeterminate(k)) if k == key),
-                    "{outcome:?}"
-                );
-            }
-        }
+        let mock = mock::Mock::start(|_| async {
+            (500, "journal recovery must not use provider labels".into())
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        assert!(matches!(
+            provider.recover(key).await,
+            Err(ProviderError::NotFound(_))
+        ));
+        assert!(mock.requests().is_empty());
     }
 
     #[tokio::test]
@@ -2744,9 +2651,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_a_replay_never_deletes_the_sandbox_it_adopted() {
-        // After a restart the registry is empty, so a replayed create adopts the sandbox an
-        // earlier (possibly reported-successful) attempt made. Cancelling the replay must not
-        // destroy it.
+        // A name conflict can expose a sandbox created by another attempt.
+        // Cancelling this attempt must never delete an adopted sandbox.
         let key = test_key(16);
         let release = gate();
         let hold = Arc::clone(&release);
@@ -2800,16 +2706,25 @@ mod tests {
         .await;
         let provider = mocked(&mock, None);
         let key = test_key(17);
-        let ops::Admission::Fresh(operation) = provider.registry().admit(key, &"fork").unwrap()
+        let ops::Admission::Fresh(operation) =
+            provider.registry().admit(key, &"fork").await.unwrap()
         else {
             panic!("expected fresh")
         };
         for id in ["a", "b", "c"] {
-            assert!(provider.registry().bind_created(operation, id));
+            assert!(
+                provider
+                    .registry()
+                    .bind_created(operation, id)
+                    .await
+                    .unwrap()
+            );
         }
         provider
             .registry()
-            .fail(operation, &ProviderError::Indeterminate(key));
+            .fail(operation, &ProviderError::Indeterminate(key))
+            .await
+            .unwrap();
         provider.cancel(operation).await.unwrap();
         let deletes = |mock: &mock::Mock| -> Vec<String> {
             mock.requests()
@@ -2820,7 +2735,13 @@ mod tests {
         };
         assert_eq!(deletes(&mock), ["/sandbox/c", "/sandbox/b", "/sandbox/a"]);
         assert_eq!(
-            provider.registry().record(operation).unwrap().created,
+            provider
+                .registry()
+                .record(operation)
+                .await
+                .unwrap()
+                .unwrap()
+                .created,
             ["a"]
         );
         provider.cancel(operation).await.unwrap();
@@ -2832,6 +2753,8 @@ mod tests {
             provider
                 .registry()
                 .record(operation)
+                .await
+                .unwrap()
                 .unwrap()
                 .created
                 .is_empty()

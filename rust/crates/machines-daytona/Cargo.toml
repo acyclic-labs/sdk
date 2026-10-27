@@ -13,7 +13,7 @@ keywords = ["machines", "daytona", "sandbox"]
 categories = ["api-bindings"]
 
 [dependencies]
-acyclic-machines = { version = "=0.2.0", path = "../machines" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["core"] }
 async-trait.workspace = true
 futures.workspace = true
 reqwest.workspace = true
@@ -24,8 +24,10 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-conformance = { path = "../conformance" }
+tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 
 [lints]

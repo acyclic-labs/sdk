@@ -144,7 +144,8 @@ async fn conformance_suite_against_linux_vms() {
         config.default_snapshot.is_some(),
         "DAYTONA_SNAPSHOT must name a registered Linux VM snapshot"
     );
-    let provider = DaytonaProvider::new(config).expect("provider builds from configuration");
+    let provider =
+        DaytonaProvider::new(config, journal().await).expect("provider builds from configuration");
     acyclic_conformance::machines(&provider)
         .await
         .expect("machines conformance suite passes");
@@ -164,7 +165,7 @@ async fn container_disk_fork_copies_the_workspace() {
     let snapshot =
         std::env::var("DAYTONA_SMOKE_SNAPSHOT").unwrap_or_else(|_| "daytona-small".to_owned());
     let workspace = config.workspace_dir.clone();
-    let provider = DaytonaProvider::new(config.clone()).expect("provider builds");
+    let provider = DaytonaProvider::new(config.clone(), journal().await).expect("provider builds");
     let api = provider.api().clone();
     let create_key = IdempotencyKey::new();
     let contract = MachineContract {
@@ -306,4 +307,11 @@ async fn disk_fork(
         }
     }
     Ok(())
+}
+
+async fn journal() -> acyclic_machines::core::OperationRegistry {
+    let path = std::env::var("DAYTONA_MACHINES_JOURNAL").expect("journal admission failed; recovery: set DAYTONA_MACHINES_JOURNAL to a durable, account-specific local directory");
+    let streams = acyclic_stream::LocalStream::open(path, acyclic_stream::LocalStreamLimits::default()).await.expect("journal open failed; recovery: restore DAYTONA_MACHINES_JOURNAL storage and rerun with the original keys");
+    acyclic_machines::core::OperationRegistry::new(std::sync::Arc::new(streams), "live")
+        .expect("journal account admission")
 }
