@@ -11,7 +11,7 @@ use super::*;
 use acyclic_native_runtime::{ProcessInput, ProcessTree};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[test]
 #[ignore = "requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
@@ -200,6 +200,10 @@ fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
             ));
         command
     };
-    command.env_remove("RUST_LOG");
+    command
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     command
 }

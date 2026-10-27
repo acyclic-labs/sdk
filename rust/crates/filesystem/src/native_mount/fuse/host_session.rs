@@ -3,7 +3,7 @@
 use super::host_io::{HostIo, Received};
 use super::notification::{CacheNotifier, PacketSink};
 use super::packet::PacketRequest;
-use super::packet_buffers::{PacketBuffers, maximum_write};
+use super::packet_buffers::{PacketBufferPool, maximum_write};
 use super::packet_router::PacketRouter;
 use super::packet_session::PacketSession;
 use super::*;
@@ -18,7 +18,7 @@ pub(super) struct HostSession {
     io: Arc<HostIo>,
     work: NativeMaterializationWork,
     owner_uid: u32,
-    packet_capacity: usize,
+    buffers: PacketBufferPool,
     #[cfg(test)]
     capture: Option<Arc<super::tests::packets::Capture>>,
 }
@@ -36,6 +36,7 @@ impl HostSession {
             .map_err(|_| libc::EOVERFLOW)?;
         let page_size = std::num::NonZeroU32::new(page_size).ok_or(libc::EIO)?;
         let maximum_write = maximum_write(work, workers, page_size)?;
+        let buffers = PacketBufferPool::new(workers, maximum_write as usize + 4096, work)?;
         let io = Arc::new(HostIo::new(device, work)?);
         let cancellation = super::packet_cancellation::register(work, &io)?;
         Ok(Self {
@@ -44,7 +45,7 @@ impl HostSession {
             io,
             work: work.clone(),
             owner_uid: nix::unistd::geteuid().as_raw(),
-            packet_capacity: maximum_write as usize + 4096,
+            buffers,
             #[cfg(test)]
             capture: super::tests::packets::Capture::current(),
         })
@@ -56,13 +57,14 @@ impl HostSession {
 
     pub(super) fn initialize(&self) -> Result<(), NativeMountError> {
         let _stop_on_failure = HandshakeStop(self);
-        let mut buffers = PacketBuffers::new(self.packet_capacity, &self.work)?;
+        let mut buffers = self.buffers.take(0)?;
         while !self.protocol.ready() {
             if !self.serve(&mut buffers.input, &mut buffers.output)? {
                 self.work.admit(crate::WorkCounters::UNCHARGED)?;
                 return Err(libc::ENODEV.into());
             }
         }
+        self.buffers.put(0, buffers)?;
         Ok(())
     }
 
@@ -70,7 +72,6 @@ impl HostSession {
         super::packet_workers::run(
             &self,
             std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS).ok_or(libc::EINVAL)?,
-            &self.work,
         )
     }
 
@@ -118,8 +119,8 @@ impl super::packet_workers::PacketWorkers for HostSession {
         self.protocol.close();
     }
 
-    fn run_worker(&self, _index: u32) -> Result<(), NativeMountError> {
-        let mut buffers = PacketBuffers::new(self.packet_capacity, &self.work)?;
+    fn run_worker(&self, index: u32) -> Result<(), NativeMountError> {
+        let mut buffers = self.buffers.take(index)?;
         while self.serve(&mut buffers.input, &mut buffers.output)? {}
         Ok(())
     }

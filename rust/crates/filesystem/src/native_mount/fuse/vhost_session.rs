@@ -3,6 +3,7 @@
 //! Construction here does not admit a filesystem source or a guest cache
 //! contract. The public admitted source entry must supply the PacketSession.
 
+use super::packet_buffers::PacketBufferPool;
 use super::packet_session::PacketSession;
 use super::packet_workers::{self, PacketWorkers};
 use super::vhost_control::VhostControl;
@@ -18,6 +19,7 @@ pub(super) struct VhostSession {
     protocol: PacketSession,
     core: Arc<ProjectionCore>,
     handler: Mutex<BackendReqHandler<Mutex<VhostControl>>>,
+    buffers: PacketBufferPool,
     _cancellation: crate::Cancelled<'static>,
     control: Arc<VringControl>,
     // Includes the handler Arc and helper framing storage, retained through
@@ -55,6 +57,11 @@ impl VhostSession {
         // One standard volume attachment retains its exact admitted source.
         // Shared host namespace routing is not a guest source admission.
         let core = Arc::clone(protocol.single_core().ok_or(libc::ENOTSUP)?);
+        let buffers = PacketBufferPool::new(
+            NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32 - 1),
+            protocol.packet_capacity(),
+            work,
+        )?;
         // The maintained decoder is blocking. Shutdown on this duplicate
         // interrupts it without closing an fd under a recvmsg/sendmsg borrower.
         connection.set_nonblocking(false)?;
@@ -66,6 +73,7 @@ impl VhostSession {
             protocol,
             core,
             handler: Mutex::new(BackendReqHandler::from_stream(connection, handler)),
+            buffers,
             _cancellation: cancellation,
             control,
             _allocation: allocation,
@@ -73,11 +81,7 @@ impl VhostSession {
     }
 
     pub(super) fn run(self) -> VhostRetired {
-        let result = packet_workers::run(
-            &self,
-            NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32),
-            &self.control.work,
-        );
+        let result = packet_workers::run(&self, NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32));
         // Only the owner reaches this point, after the actual control and data
         // workers have ALL joined. A socket errno cannot replace the original
         // callback/admission/publication failure retained before shutdown.
@@ -122,12 +126,9 @@ impl PacketWorkers for VhostSession {
         let result = if index == QUEUE_COUNT as u32 {
             self.serve_control()
         } else {
-            super::vring_worker::run(
-                &self.control,
-                &self.protocol,
-                index,
-                self.protocol.packet_capacity(),
-            )
+            self.buffers.take(index).and_then(|buffers| {
+                super::vring_worker::run(&self.control, &self.protocol, index, buffers)
+            })
         };
         if let Err(error) = result {
             // Retain before wake; otherwise control could observe its induced

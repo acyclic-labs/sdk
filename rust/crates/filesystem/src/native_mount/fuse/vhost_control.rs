@@ -134,11 +134,11 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
     }
 
     fn get_protocol_features(&mut self) -> Result<VhostUserProtocolFeatures> {
-        self.owner(|_| Ok(Self::protocol_features()))
+        self.apply(|_| Ok(Self::protocol_features()))
     }
 
     fn set_protocol_features(&mut self, features: u64) -> Result<()> {
-        self.owner(|_| {
+        self.apply(|_| {
             if features & !Self::protocol_features().bits() != 0 {
                 return Err(libc::ENOTSUP.into());
             }
@@ -147,7 +147,7 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
     }
 
     fn get_queue_num(&mut self) -> Result<u64> {
-        self.owner(|_| Ok(QUEUE_COUNT as u64))
+        self.apply(|_| Ok(QUEUE_COUNT as u64))
     }
 
     fn set_mem_table(&mut self, ctx: &[VhostUserMemoryRegion], files: Vec<File>) -> Result<()> {
@@ -192,11 +192,11 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
     }
 
     fn set_vring_call(&mut self, index: u8, fd: Option<File>) -> Result<()> {
-        self.active(|device| device.set_call(u32::from(index), fd))
+        self.owner(|device| device.set_call(u32::from(index), fd))
     }
 
-    fn set_vring_err(&mut self, _index: u8, _fd: Option<File>) -> Result<()> {
-        self.unsupported()
+    fn set_vring_err(&mut self, index: u8, fd: Option<File>) -> Result<()> {
+        self.owner(|device| device.set_error(u32::from(index), fd))
     }
 
     fn set_vring_enable(&mut self, index: u32, enable: bool) -> Result<()> {
@@ -209,7 +209,7 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
         size: u32,
         flags: VhostUserConfigFlags,
     ) -> Result<Vec<u8>> {
-        self.owner(|device| {
+        self.apply(|device| {
             if !flags.is_empty() {
                 return Err(libc::EINVAL.into());
             }

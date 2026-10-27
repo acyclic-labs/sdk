@@ -1,7 +1,7 @@
 //! Original physical queue custody; filesystem state belongs to PacketSession.
 
 use super::NativeMountError;
-use super::vring_control::{QueueCall, QueueKick};
+use super::vring_control::{QueueKick, QueueSignal};
 use std::sync::Arc;
 use virtio_queue::{Queue, QueueT};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
@@ -17,7 +17,8 @@ pub(super) struct PacketVring {
     // A worker retains the actual event while polling outside the queue lock.
     // Drain can detach it without closing an fd under that borrower.
     pub(super) kick: Option<Arc<QueueKick>>,
-    pub(super) call: Option<QueueCall>,
+    pub(super) call: Option<QueueSignal>,
+    pub(super) error: Option<QueueSignal>,
     pub(super) enabled: bool,
     failed: bool,
     sized: bool,
@@ -30,6 +31,7 @@ impl PacketVring {
             queue: Queue::new(maximum.get()).map_err(std::io::Error::other)?,
             kick: None,
             call: None,
+            error: None,
             enabled: false,
             failed: false,
             sized: false,
@@ -58,12 +60,22 @@ impl PacketVring {
     pub(super) fn fail(&mut self) {
         self.failed = true;
         self.enabled = false;
+        if let Some(error) = &self.error {
+            // This optional signal cannot replace the typed failure retained
+            // by the session or acknowledge an uncertain physical completion.
+            let _ = error.event.notify();
+        }
     }
 
-    pub(super) fn configurable(&self) -> Result<(), NativeMountError> {
+    pub(super) fn settled(&self) -> Result<(), NativeMountError> {
         if self.failed || self.queue.next_avail() != self.queue.next_used() {
             return Err(NativeMountError::VirtioFsCompletionUnknown);
         }
+        Ok(())
+    }
+
+    pub(super) fn configurable(&self) -> Result<(), NativeMountError> {
+        self.settled()?;
         if self.enabled {
             return Err(libc::EBUSY.into());
         }
@@ -164,6 +176,7 @@ impl PacketVring {
         self.queue.set_ready(false);
         self.kick = None;
         self.call = None;
+        self.error = None;
         Ok(self.queue.next_avail())
     }
 }

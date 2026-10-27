@@ -30,9 +30,14 @@ pub(super) struct QueueKick {
     _allocation: crate::NativeAllocation,
 }
 
-pub(super) struct QueueCall {
+pub(super) struct QueueSignal {
     pub(super) event: EventNotifier,
     pub(super) id: CounterId,
+}
+
+enum SignalTarget {
+    Call,
+    Error,
 }
 
 impl std::ops::Deref for QueueKick {
@@ -249,10 +254,10 @@ impl VringControl {
                         .kick
                         .as_ref()
                         .is_some_and(|kick| kick.id == replacement.id))
-                    || queue
-                        .call
-                        .as_ref()
-                        .is_some_and(|call| call.id == replacement.id)
+                    || [queue.call.as_ref(), queue.error.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|signal| signal.id == replacement.id)
                 {
                     return Err(libc::EINVAL.into());
                 }
@@ -270,6 +275,23 @@ impl VringControl {
         index: u32,
         file: Option<std::fs::File>,
     ) -> Result<(), NativeMountError> {
+        self.set_signal(index, file, SignalTarget::Call)
+    }
+
+    pub(super) fn set_error(
+        &self,
+        index: u32,
+        file: Option<std::fs::File>,
+    ) -> Result<(), NativeMountError> {
+        self.set_signal(index, file, SignalTarget::Error)
+    }
+
+    fn set_signal(
+        &self,
+        index: u32,
+        file: Option<std::fs::File>,
+        target: SignalTarget,
+    ) -> Result<(), NativeMountError> {
         self.check()?;
         let replacement = match file {
             Some(file) => {
@@ -277,7 +299,7 @@ impl VringControl {
                 super::transport_io::nonblocking(&file)?;
                 // SAFETY: consume the SCM_RIGHTS File's ownership exactly once.
                 let event = unsafe { EventNotifier::from_raw_fd(file.into_raw_fd()) };
-                Some(QueueCall { event, id })
+                Some(QueueSignal { event, id })
             }
             None => None,
         };
@@ -294,8 +316,14 @@ impl VringControl {
             }
         }
         let queue = queues.get_mut(index as usize).ok_or(libc::EINVAL)?;
-        queue.configurable()?;
-        queue.call = replacement;
+        // Standard frontends replace CALL after enabling a queue. Acquiring
+        // the physical queue lock waits for its current publication; no
+        // descriptor or callback interpretation changes with this notifier.
+        queue.settled()?;
+        match target {
+            SignalTarget::Call => queue.call = replacement,
+            SignalTarget::Error => queue.error = replacement,
+        }
         self.changed(index)?;
         Ok(())
     }

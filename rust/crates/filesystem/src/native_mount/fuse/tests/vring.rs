@@ -39,7 +39,10 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
         matches!(device.set_kick(1, Some(same_counter.try_clone()?)), Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EINVAL))
     );
     assert!(
-        matches!(device.set_call(1, Some(same_counter)), Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EINVAL))
+        matches!(device.set_call(1, Some(same_counter.try_clone()?)), Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EINVAL))
+    );
+    assert!(
+        matches!(device.set_error(1, Some(same_counter)), Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EINVAL))
     );
 
     let (independent, _) = counter()?;
@@ -47,6 +50,11 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
     let (shared_call, duplicate_call) = counter()?;
     device.set_call(0, Some(shared_call))?;
     device.set_call(1, Some(duplicate_call))?;
+    let (error, duplicate_error) = counter()?;
+    device.set_error(0, Some(error))?;
+    assert!(
+        matches!(device.set_kick(1, Some(duplicate_error)), Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EINVAL))
+    );
 
     let polled = device
         .queue(0)?
