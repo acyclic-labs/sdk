@@ -3,12 +3,16 @@ use super::*;
 use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
 use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 use native::Connect;
-#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(test, acyclic_stream_loom),
+    feature = "grpc",
+    not(target_arch = "wasm32")
+))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
@@ -17,12 +21,12 @@ mod admissions;
 mod call;
 mod data;
 use admissions::Admissions;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
 mod deadline;
 mod observation;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use cache::Cache;
 use observation::Observation;
 mod outbound;
@@ -55,8 +59,9 @@ mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]
 pub use progress::verify_latest_progress;
+// The client tests drive the native gRPC transport.
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;

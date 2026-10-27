@@ -528,6 +528,22 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
     );
 }
 #[test]
+fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
+    let auth = Arc::new(authority(State::new()));
+    let mut slots = Slots::default();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume/public/", |_| {}), 2)
+        .unwrap();
+    let (_, filter, context) = auth
+        .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+        .unwrap();
+    let indexed = context.filter_paths("fs:/volume", &filter).unwrap();
+    let matches = |key: &[u8]| {
+        indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap())
+    };
+    assert!(matches(b"public/file"));
+    assert!(!matches(b"public-other"));
+}
+#[test]
 fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure() {
     for revoke in [false, true] {
         let state = State::new();

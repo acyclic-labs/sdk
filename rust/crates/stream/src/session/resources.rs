@@ -147,6 +147,13 @@ impl ResourceAuthorization {
                     .strip_prefix(volume_resource)
                     .and_then(|tail| tail.strip_prefix('/'))
                 {
+                    // A prefix pattern's trailing `/` is not a component,
+                    // exactly as `resource_matches` reads it.
+                    let path = if resource.resource.prefix {
+                        path.trim_end_matches('/')
+                    } else {
+                        path
+                    };
                     path_ranges(path, resource.resource.prefix, &mut ranges)?;
                 }
             }

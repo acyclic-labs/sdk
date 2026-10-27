@@ -44,6 +44,8 @@ pub use agent_turns::{
     TurnExecutors, TurnLimits, agent_authority,
 };
 pub(crate) mod bounded_io;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod tool_output;
 #[doc(hidden)]
 pub use bounded_io::PreparationRecord;
 pub(crate) use bounded_io::PreparationScope;
@@ -54,6 +56,8 @@ use bounded_io::decode_record;
 pub(crate) use bounded_io::native_decoded;
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
 pub use bounded_io::{PreparationCustody, PreparationIo};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use tool_output::{TOOL_OUTPUT, ToolOutputFollow};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod memory;

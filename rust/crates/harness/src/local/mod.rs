@@ -44,6 +44,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 mod tool_metadata;
+mod tool_output;
 #[cfg(feature = "search-http")]
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
@@ -51,6 +52,7 @@ mod workspace;
 pub use agents::{AgentFailure, LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
+pub use tool_output::{OutputTail, ToolOutput};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
 
