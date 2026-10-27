@@ -66,11 +66,20 @@ pub(crate) fn clone_envelope(
                 path: append.path.clone(), start: append.start, end: append.end,
                 tail: append.tail, records,
             }),
-            CommittedMutation::Fork(fork) => CommittedMutation::Fork(CommittedFork {
-                exclude: fork.exclude.clone(), source: fork.source.clone(),
-                destination: fork.destination.clone(), forked_at: fork.forked_at,
-                tail: fork.tail, records,
-            }),
+            CommittedMutation::Fork(fork) => {
+                let mut exclude = vector(fork.exclude.len(), meter, &mut allocation)?;
+                for path in &fork.exclude {
+                    let copied = std::mem::size_of::<crate::RelativePath>() as u64;
+                    meter.admit_examination(1, copied)?;
+                    exclude.push(path.clone());
+                    meter.record_examination(1, copied)?;
+                }
+                CommittedMutation::Fork(CommittedFork {
+                    exclude, source: fork.source.clone(),
+                    destination: fork.destination.clone(), forked_at: fork.forked_at,
+                    tail: fork.tail, records,
+                })
+            },
         });
         meter.record_examination(1, 0)?;
     }

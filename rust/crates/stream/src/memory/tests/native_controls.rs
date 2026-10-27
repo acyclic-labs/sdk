@@ -7,6 +7,41 @@ use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test]
+async fn retained_fork_inspection_owns_every_exclusion_buffer() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("inspection-source")?;
+    let destination = StreamPath::new("inspection-fork")?;
+    provider.append(AppendRequest {
+        path: source.clone(), records: vec![OwnedBytes::from_static(b"seed").into()],
+        if_tail: Some(0), idempotency_key: Some(IdempotencyKey::new("inspection-seed")?),
+    }).await?;
+    let key = IdempotencyKey::new("inspection-exclusions")?;
+    provider.commit(CommitRequest {
+        deadline_unix_millis: None,
+        conditions: vec![CommitCondition::Absent { path: destination.clone() }],
+        mutations: vec![CommitMutation::Fork {
+            source, destination, at_tail: 1, records: Vec::new(),
+            exclude: vec![crate::RelativePath::new("private")?, crate::RelativePath::new("secret")?],
+        }],
+        idempotency_key: key.clone(),
+    }).await?;
+    let meter = Arc::new(Meter::default());
+    let output = provider.native_inspect_idempotency(key, meter.original()).await??;
+    let observation = output.value().as_ref().ok_or(StreamError::Unavailable)?;
+    let IdempotencyOutcome::Commit(facts) = &observation.outcome else { panic!("full commit facts") };
+    let [CommittedMutation::Fork(fork)] = facts.mutations.as_slice() else { panic!("one fork") };
+    assert_eq!(fork.exclude.len(), 2);
+    let expected = (facts.mutations.capacity() * std::mem::size_of::<CommittedMutation>()
+        + fork.exclude.capacity() * std::mem::size_of::<crate::RelativePath>()
+        + fork.records.capacity() * std::mem::size_of::<Record>()) as u64;
+    assert_eq!(output.allocation.bytes(), expected);
+    assert_eq!(meter.held.load(Ordering::SeqCst), expected);
+    drop(output);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> MemoryResult<()> {
     let provider = MemoryStream::default();
     let meter = Arc::new(Meter::default());
