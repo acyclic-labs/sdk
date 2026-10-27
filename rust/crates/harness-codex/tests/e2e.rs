@@ -299,3 +299,104 @@ async fn the_step_cap_ends_the_turn() {
     assert!(error.to_string().contains("step"), "{error}");
     assert_eq!(upstream.requests().len(), 1);
 }
+
+/// Live: the pinned codex against `OpenAI` itself, through the proxy and executor a swarm agent
+/// uses. Each call is journaled with `OpenAI`'s response id, the meter is told the same ids,
+/// and the reasoning summaries Codex asks for reach the observer. Run with `OPENAI_API_KEY` and
+/// `ACYCLIC_CODEX_BIN`; `OPENAI_MODEL` picks the model (default gpt-6-luna).
+#[tokio::test]
+#[ignore = "needs ACYCLIC_CODEX_BIN, OPENAI_API_KEY and network access"]
+async fn live_codex_against_openai_names_responses_and_reports_reasoning() {
+    #[derive(Default)]
+    struct Reasoning(Mutex<Vec<String>>);
+    impl CodexObserver for Reasoning {
+        fn event(&self, event: &CodexEvent) {
+            if let CodexEvent::ItemCompleted(item) = event
+                && let ItemKind::Reasoning { text } = &item.kind
+            {
+                self.0.lock().expect("observer").push(text.clone());
+            }
+        }
+    }
+    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY");
+    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-6-luna".into());
+    // `OpenAI` leaves the summary out of some calls entirely (it did in 1 of 2 here, and in about
+    // 1 of 4 streamed calls measured directly), so the reasoning gets three tries; every try
+    // must name its responses and answer.
+    for attempt in 1..=3 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let meter = Arc::new(RecordingMeter::default());
+        let observer = Arc::new(Reasoning::default());
+        let journal = Journal::default();
+        let turn = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text(
+                "Three payers underpaid us: P1 paid 82% of 4,310.50, P2 paid 91% of 12,004.20 minus \
+                 a 150 adjustment, P3 paid 77% of 980. Which payer owes the most dollars, and how \
+                 much in total is owed? Work it out yourself without running commands, then answer \
+                 in one line."
+                    .into(),
+            ),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let operation = turn.operation_id;
+        let output = CodexExecutor::new(
+            CodexConfig {
+                binary: codex(),
+                model: model.clone(),
+                upstream: Upstream {
+                    base_url: "https://api.openai.com/v1".into(),
+                    api_key: api_key.clone(),
+                    extra_body: json!({}),
+                },
+                workspace: dir.path().to_owned(),
+                instructions: "Answer the question.".into(),
+                subagents: false,
+                max_steps: 4,
+                deadline: Some(Instant::now() + Duration::from_secs(180)),
+                state_dir: dir.path().with_extension("state"),
+                resume_thread: None,
+            },
+            support::registry(),
+        )
+        .with_tool_authority(support::scope(), None)
+        .expect("authority")
+        .with_meter(meter.clone())
+        .with_observer(observer.clone())
+        .execute(turn, &journal)
+        .await
+        .expect("turn succeeds");
+        let ids: Vec<Value> = journal
+            .events(operation)
+            .iter()
+            .filter_map(|event| match event {
+                ExecutionEvent::Model { event, .. } => Some(journal.json(event)),
+                _ => None,
+            })
+            .filter(|event| {
+                event["kind"] == "completed" && event["metadata"].get("usage").is_some()
+            })
+            .filter(|event| event["metadata"].get("harness").is_none())
+            .map(|event| event["metadata"]["id"].clone())
+            .collect();
+        let reasoning = observer.0.lock().expect("observer").clone();
+        eprintln!(
+            "answer {:?}; ids {ids:?}; reasoning {reasoning:?}",
+            output.text
+        );
+        assert!(output.text.contains("P2"), "{}", output.text);
+        assert!(!ids.is_empty(), "no metered call");
+        assert!(
+            ids.iter()
+                .all(|id| id.as_str().is_some_and(|id| id.starts_with("resp_"))),
+            "{ids:?}"
+        );
+        let told = meter.response_ids.lock().expect("meter").clone();
+        assert_eq!(told.iter().map(|id| json!(id)).collect::<Vec<_>>(), ids);
+        if reasoning.iter().any(|text| !text.trim().is_empty()) {
+            return;
+        }
+        assert!(attempt < 3, "no reasoning reported in three turns");
+    }
+}
