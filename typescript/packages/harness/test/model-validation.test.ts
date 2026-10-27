@@ -339,16 +339,6 @@ async function nativeOptionPart() {
   } } };
 }
 
-test("Rust inventory includes nested tool media and options while preserving original revisions", async () => {
-  const part = await nativeOptionPart();
-  const inventory = contracts.modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
-    content: { kind: "parts", parts: [{ kind: "text", text: "attachment" }, part] } }, DEFAULT_LIMITS);
-  expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
-  expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
-  expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
-  expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
-});
-
 test("synthetic accounting counts nested media and native options with wide revisions", async () => {
   const part = await nativeOptionPart();
   const request: import("../src/model.js").ModelRequest = {
@@ -394,15 +384,6 @@ test("local model dispatch rejects claimed native options before invoking a cust
   await expect(runtime.run({ prompt: "", content: [await nativeOptionPart()] })).rejects.toThrow(
     );
   expect(calls).toBe(0);
-});
-
-test("Rust model event admission rejects duplicate tool identities and accepts camelCase call IDs", () => {
-  const limits = { ...DEFAULT_LIMITS, tool_calls_per_step: 1 };
-  const first = contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits);
-  expect(first.event).toEqual({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} });
-  expect(first.state.calls).toEqual(["call-1"]);
-  expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits, first.state)).toThrow();
-  expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "bad/name", name: "lookup", arguments: {} }, limits)).toThrow();
 });
 
 test("model admission enforces portable tool integers and preserves full-width completion metadata", () => {

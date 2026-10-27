@@ -77,3 +77,12 @@ test("public projection validator enforces complete JSON and Parts envelope byte
       { ...fixtureLimits, render_bytes: exact - 1 })).toThrow();
   }
 });
+
+test("Rust model event admission rejects duplicate tool identities and accepts camelCase call IDs", () => {
+  const limits = { ...fixtureLimits, tool_calls_per_step: 1 };
+  const first = contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits, null);
+  expect(contracts.decodeClientJson(contracts.encodeCanonicalJson(first.event))).toEqual({ kind: "tool_call", call_id: "call-1", name: "lookup", arguments: {} });
+  expect(first.state.calls).toEqual(["call-1"]);
+  expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits, first.state)).toThrow();
+  expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "bad/name", name: "lookup", arguments: {} }, limits, null)).toThrow();
+});

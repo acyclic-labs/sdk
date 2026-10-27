@@ -53,3 +53,29 @@ test("WASM user-input validator rejects empty, tool, and malformed content", asy
   expect(() => validateUserInput({ kind: "tool_result", callId: "call", name: "lookup", content: { kind: "json", value: {} } })).toThrow();
   expect(() => validateUserInput({ kind: "file", file: { ...content, path: "../escape" }, policy: "reference" })).toThrow();
 });
+
+async function nativeOptionPart() {
+  const media = await file();
+  const options = { ...media, path: "messages/options.json", display_name: "options.json",
+    descriptor: contracts.fileDescriptor(new TextEncoder().encode("{}"), "application/json") };
+  const configuration = {
+    source: { authority: { kind: "agent" as const, id: "07070707-0707-0707-0707-070707070707" }, revision: 9_007_199_254_740_993n },
+    configuration: { extension: { name: "fixture.options", version: 1 },
+      schema_digest: Array(32).fill(1), content: options },
+    implementation_digest: Array(32).fill(2),
+  };
+  return { kind: "file" as const, file: media, policy: { native: {
+    intent: { kind: "image" as const, detail: "auto" as const },
+    maximum_bytes: 64, maximum_work: 8, configuration,
+  } } };
+}
+
+test("Rust inventory includes nested tool media and options while preserving original revisions", async () => {
+  const part = await nativeOptionPart();
+  const inventory = contracts.modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
+    content: { kind: "parts", parts: [{ kind: "text", text: "attachment" }, part] } }, fixtureLimits);
+  expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
+  expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
+  expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
+  expect(contracts.modelContentInventory("plain text", fixtureLimits)).toEqual({ files: [], nativeConfigurations: [] });
+});
