@@ -77,14 +77,15 @@ fn copy_tree_inner(source: &Path, destination: &Path, immutable: bool) {
 }
 
 pub(super) fn copy_historical_fixture(template: &(Fixture, PathBuf)) -> (Fixture, PathBuf) {
-    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let root = template.0.root.with_extension(format!("owner-{id}"));
-    let output = template.0.output.with_extension(format!("owner-{id}"));
+    let directory = fixture_directory();
+    let root = directory.path().join("source");
+    let output = directory.path().join("output");
     copy_tree(&template.0.root, &root);
     copy_tree(&template.0.output, &output);
     let support = output.join("test-support");
     (
         Fixture {
+            directory,
             root,
             rustdoc: output.join(".rustdoc"),
             output,

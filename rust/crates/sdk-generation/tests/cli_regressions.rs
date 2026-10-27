@@ -5,14 +5,22 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+use std::sync::Arc;
 
 struct Fixture {
+    directory: Arc<tempfile::TempDir>,
     root: PathBuf,
     rustdoc: PathBuf,
     output: PathBuf,
+}
+
+fn fixture_directory() -> Arc<tempfile::TempDir> {
+    Arc::new(
+        tempfile::Builder::new()
+            .prefix("sdk-generation-cli-")
+            .tempdir_in(runtime::temp_dir())
+            .unwrap(),
+    )
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -97,8 +105,8 @@ fn fixture(include_plugin: bool) -> Fixture {
 }
 
 fn copy_fixture(template: &Fixture) -> Fixture {
-    let suffix = format!("copy-{}", NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed));
-    let root = template.root.with_extension(&suffix);
+    let directory = fixture_directory();
+    let root = directory.path().join("source");
     replay::copy_tree(&template.root, &root);
     assert_ne!(
         sdk_file_identity::stamp(&template.root.join(".git/config")).unwrap(),
@@ -109,13 +117,14 @@ fn copy_fixture(template: &Fixture) -> Fixture {
         .output
         .strip_prefix(&template.root)
         .map(|path| root.join(path))
-        .unwrap_or_else(|_| template.output.with_extension(suffix));
+        .unwrap_or_else(|_| directory.path().join("output"));
     let rustdoc = template
         .rustdoc
         .strip_prefix(&template.root)
         .map(|path| root.join(path))
         .unwrap_or_else(|_| output.join(template.rustdoc.strip_prefix(&template.output).unwrap()));
     Fixture {
+        directory,
         rustdoc,
         output,
         root,
@@ -123,13 +132,8 @@ fn copy_fixture(template: &Fixture) -> Fixture {
 }
 
 fn build_fixture(include_plugin: bool) -> Fixture {
-    let root = runtime::temp_dir().join(format!(
-        "sdk-generation-cli-regression-{}-{}-{}",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
-        if include_plugin { "plugin" } else { "base" }
-    ));
-    let _ = fs::remove_dir_all(&root);
+    let directory = fixture_directory();
+    let root = directory.path().join("source");
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
     fs::create_dir_all(root.join("docs")).unwrap();
     fs::create_dir_all(root.join("src")).unwrap();
@@ -179,6 +183,7 @@ fn build_fixture(include_plugin: bool) -> Fixture {
     )
     .unwrap();
     Fixture {
+        directory,
         root,
         rustdoc,
         output,
@@ -195,12 +200,8 @@ fn feature_profile_fixture() -> Fixture {
 }
 
 fn feature_profile_source() -> Fixture {
-    let root = runtime::temp_dir().join(format!(
-        "sdk-generation-feature-profile-{}-{}",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&root);
+    let directory = fixture_directory();
+    let root = directory.path().join("source");
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
     fs::create_dir_all(root.join("release")).unwrap();
     fs::write(
@@ -231,13 +232,9 @@ fn feature_profile_source() -> Fixture {
         "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    let output = runtime::temp_dir().join(format!(
-        "sdk-generation-feature-profile-output-{}-{}",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&output);
+    let output = directory.path().join("output");
     Fixture {
+        directory,
         root,
         rustdoc: output.join(".rustdoc"),
         output,
@@ -479,12 +476,8 @@ fn generated_span_fixture_pair() -> (Fixture, Fixture) {
     });
     fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
 
-    let second_root = runtime::temp_dir().join(format!(
-        "sdk-generation-relocated-{}-{}",
-        std::process::id(),
-        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&second_root);
+    let directory = fixture_directory();
+    let second_root = directory.path().join("source");
     let clone = Command::new(runtime::git())
         .args([
             "clone",
@@ -527,6 +520,7 @@ fn generated_span_fixture_pair() -> (Fixture, Fixture) {
     fs::write(&second_receipt, serde_json::to_vec(&second_json).unwrap()).unwrap();
 
     let second = Fixture {
+        directory,
         root: second_root.clone(),
         rustdoc: second_root.join("rustdoc"),
         output: second_root.join("output"),
@@ -575,15 +569,10 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
         first_manifest["artifacts"], second_manifest["artifacts"],
         "every generated artifact hash must survive checkout relocation"
     );
-
-    let _ = fs::remove_dir_all(first.root);
-    let _ = fs::remove_dir_all(second.root);
 }
 
 fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
-    let mut path = fixture.root.as_os_str().to_owned();
-    path.push("-cargo-home");
-    path.into()
+    fixture.directory.path().join("cargo-home")
 }
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {

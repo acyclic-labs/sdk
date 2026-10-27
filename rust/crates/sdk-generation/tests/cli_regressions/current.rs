@@ -762,8 +762,9 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             "generated source relocation fixture",
         ],
     );
-    let relocated_root = fixture.root.with_extension("relocated");
-    let relocated_output = fixture.output.with_extension("relocated");
+    let directory = fixture_directory();
+    let relocated_root = directory.path().join("source");
+    let relocated_output = directory.path().join("output");
     assert!(Command::new(runtime::git())
         .args([
             "clone",
@@ -775,6 +776,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         .unwrap()
         .success());
     let relocated = Fixture {
+        directory,
         root: relocated_root,
         rustdoc: relocated_output.join(".rustdoc"),
         output: relocated_output,

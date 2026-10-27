@@ -59,14 +59,15 @@ pub(super) fn include_sources(package: &Path) {
 
 pub(super) fn source_fixture() -> (Fixture, PathBuf) {
     let template = shared_package();
-    let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let root = template.0.root.with_extension(format!("case-{id}"));
-    let output = template.0.output.with_extension(format!("case-{id}"));
+    let directory = fixture_directory();
+    let root = directory.path().join("source");
+    let output = directory.path().join("output");
     super::replay::copy_tree(&template.0.root, &root);
     let support = output.join("test-support");
     fs::create_dir_all(support.join("registry")).unwrap();
     (
         Fixture {
+            directory,
             root,
             rustdoc: output.join(".rustdoc"),
             output,
