@@ -293,6 +293,13 @@ def admission_drained(generation):
         yield
 
 
+def retire_cache(generation):
+    """End the cache server GENERATION started, using its own authority."""
+    if generation is not None and (Path(generation)/'bb-cache.py').exists():
+        retire=getattr(cache_authority(generation),'retire_owners',None)
+        if retire is not None:retire()
+
+
 @contextlib.contextmanager
 def generation_services(generation):
     """Host services follow the generation that owns them."""
@@ -302,9 +309,12 @@ def generation_services(generation):
             with authority.migration(drained=True):yield
             return
         # A predecessor's migration() takes upgrade.lock itself (held here):
-        # its service restarts on its own unit instead.
+        # the outgoing server is retired by its own authority, then the
+        # predecessor's unit starts its server.
+        outgoing=current_generation()
         yield
-        if CACHE_UNIT.exists():subprocess.run(['systemctl','try-restart','buildbox-cache.service'],check=True)
+        if CACHE_UNIT.exists():
+            retire_cache(outgoing);subprocess.run(['systemctl','try-restart','buildbox-cache.service'],check=True)
         return
     if CACHE_UNIT.exists():subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=True)
     yield
@@ -317,8 +327,10 @@ def service_state():
     return {'unit':CACHE_UNIT.read_bytes(),'enabled':status('is-enabled'),'active':status('is-active')}
 
 
-def restore_services(state):
-    """Return the cache service to STATE, whatever point a failed deployment reached."""
+def restore_services(state, failed=None):
+    """Return the cache service to STATE, whatever point a failed deployment
+    reached. The server the FAILED generation started is retired first."""
+    retire_cache(failed)
     if state is None:
         if CACHE_UNIT.exists():
             subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=False)
@@ -397,7 +409,7 @@ def deploy(generation, store):
                 adopt_entries(store,restore)  # A partial first adoption completes.
             # Whatever point failed (before or after the pointer rename), the
             # cache service returns to its pre-deployment state.
-            restore_services(services)
+            restore_services(services,generation)
             raise
     return previous
 

@@ -113,7 +113,7 @@ class InstallTests(unittest.TestCase):
                 stage='staged' if generation else 'live';calls.append((stage,Path(generation or installer.current_generation()).name))
                 if stage in fail:raise RuntimeError('kind=GENERATION_CANARY stage='+stage)
             state=lambda:calls.append(('state',))or'prior'
-            restored=lambda prior:calls.append(('restore',prior))
+            restored=lambda prior,failed=None:calls.append(('restore',prior))
             with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',drained), \
                  patch.object(installer,'generation_services',services),patch.object(installer,'canary',canary), \
                  patch.object(installer,'service_state',state),patch.object(installer,'restore_services',restored):
@@ -177,7 +177,7 @@ class InstallTests(unittest.TestCase):
             with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'exchange',interrupted), \
                  patch.object(installer,'admission_drained',nothing),patch.object(installer,'generation_services',nothing), \
                  patch.object(installer,'canary',lambda generation=None:None), \
-                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state:None):
+                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state,failed=None:None):
                 one=installer.materialize({'a':b'one-a'},'one')
                 with self.assertRaises(KeyboardInterrupt):installer.deploy(one,store)
                 # Every tool stayed reachable with its legacy bytes throughout.
@@ -186,7 +186,7 @@ class InstallTests(unittest.TestCase):
                                  [b'legacy-a',b'legacy-b',b'legacy-c',b'legacy-dir'])
             with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',nothing), \
                  patch.object(installer,'generation_services',nothing),patch.object(installer,'canary',lambda generation=None:None), \
-                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state:None):
+                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state,failed=None:None):
                 installer.deploy(one,store)  # The next run completes the adoption.
                 self.assertTrue(all(p.is_symlink() for p in store.iterdir()))
                 self.assertEqual(Path(os.readlink(root/'opt/previous')).name[:7],'legacy-')
@@ -204,6 +204,19 @@ class InstallTests(unittest.TestCase):
             with patch.object(installer,'CACHE_UNIT',unit),patch.object(installer.subprocess,'run',lambda command,**kw:calls.append(command)):
                 with installer.generation_services(legacy):pass
             self.assertEqual(calls,[['systemctl','try-restart','buildbox-cache.service']])
+
+    def test_switch_back_retires_the_failed_generations_cache_server_first(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            failed=Path(temporary)/'failed';failed.mkdir();order=[]
+            (failed/'bb-cache.py').write_text('import sys\ndef retire_owners():\n    sys.modules["installer_order"].append("retire")\n')
+            sys.modules['installer_order']=order
+            unit=Path(temporary)/'unit';unit.write_bytes(b'[Unit]\n')
+            with patch.object(installer,'CACHE_UNIT',unit), \
+                 patch.object(installer.subprocess,'run',lambda command,**kw:order.append(command[1])):
+                installer.restore_services({'unit':b'[Unit]\n','enabled':True,'active':True},failed)
+            del sys.modules['installer_order']
+            # KillMode=process: a restart alone leaves the failed server holding the endpoint.
+            self.assertEqual(order,['retire','enable','restart'])
 
     def test_stale_predecessor_refuses_publication_without_touching_live_tools(self):
         driver='''import importlib.util,sys,json,hashlib,tempfile,os
