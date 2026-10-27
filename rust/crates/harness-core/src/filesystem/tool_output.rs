@@ -39,6 +39,39 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         )?;
         let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
         let workspace = self.open(&reference, None).await?;
+        // A structured filesystem scope is only enforced by its compiled
+        // view, so prove it before minting: the derived credential may never
+        // reach a path or action the parent cannot. Conservatively, the parent
+        // must list and read every path on the volume.
+        if let Some(label) =
+            crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let io = PreparationIo::from_budget(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )?;
+            let view = super::access::access_view(
+                &workspace,
+                &authority.scope,
+                None,
+                super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
+                None,
+                &io,
+            )
+            .await?;
+            if !view.0.allows_every_path(
+                &[
+                    acyclic_fs::access::Action::List,
+                    acyclic_fs::access::Action::Read,
+                ],
+                super::access::access_now()?,
+            ) {
+                return Err(Error::Unauthorized(
+                    "tool output follow needs list and read on the whole volume".into(),
+                ));
+            }
+        }
         let resource = acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
             .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))?;
         let credential = authority
