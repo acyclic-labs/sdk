@@ -74,29 +74,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .bucket
         .ok_or("created bucket missing identity")?;
-    let fs = acyclic_fs::Fs::new(
-        acyclic_fs::StreamAuthorityStore::new(streams),
-        acyclic_fs::LogicalObjectStore::new(objects, bucket.clone()),
+    let backend = acyclic_fs::conformance::from_providers(
+        streams.as_ref().clone(),
+        objects.as_ref().clone(),
+        bucket.clone(),
         acyclic_fs::EmbeddedCapabilities { durable: true },
     );
     let step = Instant::now();
-    acyclic_conformance::filesystem_smoke(&fs).await?;
+    acyclic_fs::conformance::verify(&backend).await?;
     println!(
-        "Filesystem unchanged public smoke over Postgres + MinIO: {:?}",
+        "Filesystem shared public suite over Postgres + MinIO: {:?}",
         step.elapsed()
     );
-    filesystem::verify(&fs, async || {
-        Ok(acyclic_fs::Fs::new(
-            acyclic_fs::StreamAuthorityStore::new(Arc::new(
-                PostgresStream::connect(&database, &namespace).await?,
-            )),
-            acyclic_fs::LogicalObjectStore::new(
-                Arc::new(S3Objects::open(store.clone(), prefix, capabilities).await?),
-                bucket,
-            ),
-            acyclic_fs::EmbeddedCapabilities { durable: true },
-        ))
-    })
+    filesystem::verify(
+        acyclic_fs::conformance::Backend::filesystem(&backend),
+        async || {
+            Ok(acyclic_fs::Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(Arc::new(
+                    PostgresStream::connect(&database, &namespace).await?,
+                )),
+                acyclic_fs::LogicalObjectStore::new(
+                    Arc::new(S3Objects::open(store.clone(), prefix, capabilities).await?),
+                    bucket,
+                ),
+                acyclic_fs::EmbeddedCapabilities { durable: true },
+            ))
+        },
+    )
     .await?;
     host::verify(&database, store, capabilities).await?;
     println!("All storage suites: {:?}", start.elapsed());
