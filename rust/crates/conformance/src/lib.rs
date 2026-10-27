@@ -23,7 +23,7 @@ use acyclic_stream::StreamProvider;
 pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v1::conformance::SUITE;
 
 /// Canonical language-neutral harness conformance inventory.
-pub const HARNESS_SUITE: &[u8] = include_bytes!("../vectors/harness.json");
+pub const HARNESS_SUITE: &[u8] = acyclic_harness::conformance::LEGACY_MARKER_INVENTORY;
 
 /// Canonical language-neutral Machines conformance inventory.
 pub const MACHINES_SUITE: &[u8] = acyclic_machines::conformance::SUITE;

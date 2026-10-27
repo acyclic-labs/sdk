@@ -25,6 +25,10 @@ use std::sync::Arc;
 
 pub use performance::{Measurement, Scale, ScaleMeasurement, bench, scale};
 
+/// Historical package marker inventory retained for existing receipt producers.
+/// It does not establish execution of the current AgentHost vectors.
+pub const LEGACY_MARKER_INVENTORY: &[u8] = include_bytes!("../../conformance/legacy-harness.json");
+
 /// Register the same AgentHost suite for an async factory returning a backend.
 /// Use `suite!(local, Local::fresh)` to register several backends in one file.
 pub use crate::agent_conformance_suite as suite;

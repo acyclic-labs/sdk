@@ -29,7 +29,7 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-f
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
 rustls = { workspace = true, optional = true }
-acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["conformance"] }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["conformance"] }
