@@ -229,6 +229,26 @@ async fn a_head_conditioned_fork_of_an_unchanged_source_commits() -> Result<(), 
     Ok(())
 }
 
+/// Two children forking one source require its head once, and commit; one
+/// commit requiring two different heads of a source is refused.
+#[tokio::test]
+async fn one_source_required_twice_adds_one_condition() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let fs = placed(&stream)?;
+    let source = parent(&fs, &stream).await?;
+    let mut commit = compose(&fs, &source, true).await?;
+    unbounded!(fs, require_head(&source, &mut commit))?;
+    let conditions = commit.request().conditions.len();
+    unbounded!(fs, require_head(&source, &mut commit))?;
+    assert_eq!(commit.request().conditions.len(), conditions);
+    let parent = unbounded!(fs, open_workspace("root-project"))?;
+    parent.write_text("/plan.md", "changed").await?;
+    let advanced = unbounded!(parent, head())?;
+    assert!(unbounded!(fs, require_head(&advanced, &mut commit)).is_err());
+    assert_eq!(commit.request().conditions.len(), conditions);
+    Ok(())
+}
+
 /// Negative vector: the source publishes past the read generation before the
 /// spawn commits, so the head condition rejects the whole commit and nothing
 /// is published: no forked volume, no caller mutation, no new authority.

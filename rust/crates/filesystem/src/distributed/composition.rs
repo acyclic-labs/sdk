@@ -288,7 +288,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// when it applies: its lineage holds exactly the records up to and
     /// including `generation`. A source that published past `generation`
     /// between the caller's read and the commit makes the whole commit fail,
-    /// with nothing published.
+    /// with nothing published. Requiring the same head twice adds one
+    /// condition; requiring two different heads of one source is refused.
     pub(crate) async fn contribute_head(
         &self,
         commit: &mut FilesystemCommit,
@@ -304,6 +305,23 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let (path, expected) = self
             .resolve_source_fork_point(authority, generation, work)
             .await?;
+        if let Some(existing) = commit
+            .request
+            .conditions
+            .iter()
+            .find(|condition| match condition {
+                CommitCondition::Head { path: held, .. }
+                | CommitCondition::Tail { path: held, .. }
+                | CommitCondition::Absent { path: held } => *held == path,
+            })
+        {
+            return match existing {
+                CommitCondition::Tail { expected: held, .. } if *held == expected => Ok(()),
+                _ => Err(AuthorityStoreError::RejectedStatic(
+                    "a composed commit requires two heads of one source",
+                )),
+            };
+        }
         grow(&mut commit.request.conditions, 1, work)?;
         commit
             .request
