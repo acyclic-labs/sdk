@@ -37,15 +37,17 @@ compile-only checks with all three provider features, and the full unfiltered
 Machines library suite passed 72 tests. These checks do not qualify E2B's wire or
 native snapshot behavior. An isolated Embed host or coordinator captures are required.
 Shared transport and immutable image admission source
-`5deac2f509b0d9581bf2a1e6d2a713d249982a12` passed the compile gate and full
+`25830279bd2648d01670c6b6ebe00176967426b6` passed the compile gate and full
 conformance 24 / Machines 77 / Daytona 49 library suites on bb2. These checks
 include scoped credentials and refusal before transport dispatch for mutable
-template selectors. They do not qualify E2B runtime behavior.
+template selectors, plus shared RPC input pumping. Job
+`1793098004380-166798-be025746`, rc0, all four build cleanup fields true.
+They do not qualify E2B runtime behavior.
 MachineShell shares the unchanged native input schema. Supply an explicit
 timeout within 1..60 s: the native default 300 s exceeds canonical Machines admission
 and is refused before execution. Oversized guest arguments are refused there too.
 
-[E2B Embed](https://github.com/e2b-dev/runtime/tree/main/embed/compose) offers an
+[E2B Embed](https://github.com/e2b-dev/runtime/tree/7278c2a380767c9989da73cf4c04b1af1b32da18/embed/compose) offers an
 account-free Linux host. Its official Docker Compose stack alters host namespaces,
 networking, NBD and hugepages, needs nested virtualization and reserves fixed ports.
 Do not start it on the shared bb2 host until the coordinator allocates an isolated
@@ -54,10 +56,23 @@ window/host. The researched Compose environment pins infra commit
 
 ## Live steps
 
-1. On the coordinator's allocated Embed host, use the official pinned Compose
-   files and prerequisites. Run `docker compose up -d --wait`, then
-   `docker compose --profile test run --rm smoke`. Record host/kernel,
-   orchestrator/envd versions, template ID and complete command output.
+1. On the coordinator's allocated Embed host, satisfy the
+   [upstream prerequisites](https://github.com/e2b-dev/runtime/blob/7278c2a380767c9989da73cf4c04b1af1b32da18/embed/compose/README.md#requirements),
+   then install the exact researched Compose revision in a fresh directory:
+
+   ```bash
+   mkdir machines-e2b-embed
+   cd machines-e2b-embed
+   curl --fail --show-error --location --max-time 60 --retry 1 --output compose.yaml https://raw.githubusercontent.com/e2b-dev/runtime/7278c2a380767c9989da73cf4c04b1af1b32da18/embed/compose/compose.yaml
+   curl --fail --show-error --location --max-time 60 --retry 1 --output .env https://raw.githubusercontent.com/e2b-dev/runtime/7278c2a380767c9989da73cf4c04b1af1b32da18/embed/compose/.env
+   docker compose config --quiet
+   docker compose up -d --wait
+   docker compose --profile test run --rm smoke
+   ```
+
+   Record host/kernel, orchestrator/envd versions, template ID and complete
+   command output. This stack needs its allocated host because it uses fixed
+   host ports and changes host networking and kernel setup.
 2. Load the stack's generated SDK environment privately using
    `eval "$(docker compose exec ready cat /run/e2b/sdk.env)"`.
    It supplies `E2B_API_KEY` and `E2B_API_URL`. Set

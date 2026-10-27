@@ -44,6 +44,9 @@ true. Job `1793097182725-162966-0c28c563`, log
 including compilation. Source `01e90ce7cc56997b6d282933639e2f10d89d9e2c`
 also passed the full public native shell contract (2 tests). Hosted account
 validation remains a live step.
+Later shared RPC cleanup source `25830279bd2648d01670c6b6ebe00176967426b6`
+passed the compile gate and the same full library suites, with no new workerd
+run: job `1793098004380-166798-be025746`, rc0, all cleanup fields true.
 
 MachineShell shares the original native input schema: omitted timeout300s and
 positive checked-u32 millisecond deadlines. Supply an explicit timeout within
