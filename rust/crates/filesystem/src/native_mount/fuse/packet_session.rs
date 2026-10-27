@@ -222,7 +222,7 @@ impl PacketSession {
         input.end()?;
         let mut output = PacketOutput::new(response, 64)?;
         let flags = capabilities
-            & (REQUESTED_CAPABILITIES
+            & (self.router.cache_capabilities()?
                 | InitFlags::FUSE_ASYNC_READ
                 | InitFlags::FUSE_BIG_WRITES
                 | InitFlags::FUSE_MAX_PAGES);

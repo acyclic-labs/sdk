@@ -11,6 +11,13 @@ pub(super) enum PacketRouter {
 }
 
 impl PacketRouter {
+    pub(super) fn cache_capabilities(&self) -> Result<InitFlags, NativeMountError> {
+        match self {
+            Self::Single(projection) => Ok(projection.core.state()?.cache.capabilities()),
+            Self::Shared(_) => Ok(ProjectionCache::Notifications.capabilities()),
+        }
+    }
+
     pub(super) fn initialize(
         &self,
     ) -> Result<Option<crate::NativeMaterializationWork>, PacketFailure> {
