@@ -33,6 +33,9 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
         Err(self.ordinary_error())
     }
+    async fn head(&self, _: StreamPath) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        Err(self.ordinary_error())
+    }
     async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
         Err(self.ordinary_error())
     }

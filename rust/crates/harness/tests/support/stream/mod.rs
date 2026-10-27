@@ -62,6 +62,38 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         }
         Ok(observation)
     }
+    async fn head(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary head on native-only fixture"
+        );
+        self.observation_tails.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut head = self.inner.head(path.clone()).await?;
+        if path.as_str().starts_with("harness/v3/projection-checkpoints/") {
+            let stale = self.stale_projection_head_tail.swap(0, std::sync::atomic::Ordering::SeqCst);
+            if stale != 0 {
+                head.tail = stale - 1;
+                head.durable = head.durable.min(head.tail);
+                head.last = if head.tail == 0 {
+                    None
+                } else {
+                    futures::TryStreamExt::try_next(&mut self.inner.read(acyclic_stream::ReadRequest {
+                        path, from: head.tail - 1, limit: 1,
+                    }).await?).await?
+                };
+            }
+        }
+        #[cfg(feature = "filesystem")]
+        if let Some(cancellation) = self.history_cancel_after_tail.lock()
+            .map_err(|_| StreamError::Unavailable)?.take()
+        {
+            cancellation.cancel();
+        }
+        Ok(head)
+    }
     async fn tail(
         &self,
         path: acyclic_stream::StreamPath,
