@@ -94,61 +94,29 @@ pub(super) fn capture_sort_by<T>(
     mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    fn sift<T>(
-        values: &mut [T],
-        mut root: usize,
-        end: usize,
-        compare: &mut impl FnMut(&T, &T) -> std::cmp::Ordering,
-        meter: &NativeMaterializationWork,
-    ) -> Result<(), CaptureError> {
-        while root < end / 2 {
-            let mut child = root * 2 + 1;
-            if child + 1 < end {
-                capture_charge(
-                    meter,
-                    crate::materializer::NativeResourceCredit::Items.delta(2),
-                )?;
-                if compare(
-                    values.get(child).ok_or(WorkError::Overflow)?,
-                    values.get(child + 1).ok_or(WorkError::Overflow)?,
-                )
-                .is_lt()
-                {
-                    child += 1;
-                }
-            }
+    meter
+        .with_original_leaf(|work| work.check())
+        .map_err(capture_demand_error)?;
+    crate::kernel::sort::heap_sort(
+        values,
+        &mut (),
+        |left, right, _| {
             capture_charge(
                 meter,
                 crate::materializer::NativeResourceCredit::Items.delta(2),
             )?;
-            if !compare(
-                values.get(root).ok_or(WorkError::Overflow)?,
-                values.get(child).ok_or(WorkError::Overflow)?,
-            )
-            .is_lt()
-            {
-                break;
-            }
-            values.swap(root, child);
-            root = child;
-        }
-        Ok(())
-    }
-    meter
-        .with_original_leaf(|work| work.check())
-        .map_err(capture_demand_error)?;
-    let length = values.len();
-    for root in (0..length / 2).rev() {
-        sift(values, root, length, &mut compare, meter)?;
-    }
-    for end in (1..length).rev() {
-        meter
-            .with_original_leaf(|work| work.check())
-            .map_err(capture_demand_error)?;
-        values.swap(0, end);
-        sift(values, 0, end, &mut compare, meter)?;
-    }
-    Ok(())
+            Ok(compare(left, right))
+        },
+        |values, left, right, _| {
+            values.swap(left, right);
+            Ok(())
+        },
+        |_| {
+            meter
+                .with_original_leaf(|work| work.check())
+                .map_err(capture_demand_error)
+        },
+    )
 }
 
 pub(super) fn capture_charge(
