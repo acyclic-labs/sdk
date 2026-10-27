@@ -158,8 +158,13 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
             )
         };
         if status == libc::ERANGE {
-            let length = buffer.len().checked_mul(2).ok_or(io::ErrorKind::OutOfMemory)?;
-            buffer.try_reserve_exact(length - buffer.len()).map_err(io::Error::other)?;
+            let length = buffer
+                .len()
+                .checked_mul(2)
+                .ok_or(io::ErrorKind::OutOfMemory)?;
+            buffer
+                .try_reserve_exact(length - buffer.len())
+                .map_err(io::Error::other)?;
             buffer.resize(length, 0);
             continue;
         }
@@ -167,8 +172,10 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
             return Err(io::Error::from_raw_os_error(status));
         }
         if found.is_null() {
-            return Err(io::Error::new(io::ErrorKind::NotFound,
-                "credential lock account lookup failed; recovery: configure a persistent home for the effective OS account"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "credential lock account lookup failed; recovery: configure a persistent home for the effective OS account",
+            ));
         }
         // SAFETY: successful getpwuid_r with a nonnull result initialized
         // account; pw_dir is its NUL-terminated string in the live buffer.
@@ -178,8 +185,7 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
         }
         let home = unsafe { CStr::from_ptr(account.pw_dir) };
         let directory = fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(home.to_bytes())))?;
-        return persistent_user_directory(&directory)
-            .map(Path::to_path_buf);
+        return persistent_user_directory(&directory).map(Path::to_path_buf);
     }
 }
 
@@ -187,7 +193,9 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
 fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
     if !path.is_absolute()
         || ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
-            .iter().any(|temporary| path.starts_with(temporary)) {
+            .iter()
+            .any(|temporary| path.starts_with(temporary))
+    {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(path)
