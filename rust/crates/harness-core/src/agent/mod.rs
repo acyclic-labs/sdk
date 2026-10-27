@@ -69,6 +69,9 @@ pub enum Error {
     /// Turn driver failure.
     #[error(transparent)]
     Turn(Box<crate::Error>),
+    /// A well-formed request this host does not serve.
+    #[error("unsupported agent request: {0}")]
+    Unsupported(&'static str),
 }
 
 impl Error {
@@ -84,6 +87,7 @@ impl Error {
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",
             Self::Turn(_) => "agent_turn_error",
+            Self::Unsupported(_) => "agent_unsupported",
         }
     }
 
