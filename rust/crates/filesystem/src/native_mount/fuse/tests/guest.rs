@@ -128,12 +128,20 @@ fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
                 .any(|bytes| bytes == b"ACYCLIC_VIRTIOFS_PASS"),
             "{vmm} guest did not complete read/write/delete"
         );
-        let _retired = retired?;
+        let retired = retired?;
         assert!(callback_failure.is_none());
+        assert!(retired.completed_callback_work().items_examined > 0);
+        match retired.transport {
+            Ok(())
+            | Err(NativeMountError::Materialization(
+                crate::NativeTreeMaterializationError::Cancelled,
+            ))
+            | Err(NativeMountError::VirtioFsControl(vhost::vhost_user::Error::Disconnected)) => {}
+            Err(error) => return Err(error.into()),
+        }
         // A serial marker alone cannot prove that the source was exercised.
         // Every guest operation has physically completed before this lookup.
         assert!(source.lookup(&name("qualification"))?.is_none());
-        assert!(work.receipt().items_examined > 0);
     }
     Ok(())
 }

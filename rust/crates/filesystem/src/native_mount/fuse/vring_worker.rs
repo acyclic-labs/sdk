@@ -7,7 +7,7 @@ use super::vring_control::{QueueKick, VringControl};
 use super::vring_packet::{QueueProgress, serve_vring_packet};
 use acyclic_native_runtime::ProcessWake;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::sync::{Arc, PoisonError};
 use virtio_queue::QueueT;
 
@@ -107,39 +107,13 @@ fn batch(
 }
 
 fn wait(change: &ProcessWake, kick: Option<&Arc<QueueKick>>) -> io::Result<bool> {
-    let mut descriptors = [
-        libc::pollfd {
-            fd: change.as_fd().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: kick.map_or(-1, |kick| kick.as_raw_fd()),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-    ];
-    loop {
-        if change.is_stopped() {
-            return Ok(false);
+    use super::transport_io::{self, Ready};
+    match transport_io::wait(change, kick.map(|kick| kick.as_fd()), libc::POLLIN)? {
+        Ready::Closed => Ok(false),
+        Ready::Wake => Ok(true),
+        Ready::Device(events) if events & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 => {
+            Err(io::Error::from_raw_os_error(libc::EIO))
         }
-        // SAFETY: the change signal and actual kick Arc remain owned through
-        // poll. Queue reconfiguration cannot close either borrowed descriptor.
-        if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) } >= 0 {
-            if change.is_stopped() {
-                return Ok(false);
-            }
-            if descriptors
-                .iter()
-                .any(|fd| fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0)
-            {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
-            }
-            return Ok(true);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+        Ready::Device(_) => Ok(true),
     }
 }
