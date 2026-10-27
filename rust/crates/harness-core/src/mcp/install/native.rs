@@ -16,11 +16,18 @@ pub(super) async fn connect(
     server: &McpServer,
     workspace: &Path,
     limits: McpClientLimits,
+    secrets: &dyn crate::secrets::SecretSource,
 ) -> Result<Connected> {
     let (connection, binding) = match &server.transport {
         #[cfg(feature = "mcp-stdio")]
-        McpTransport::Stdio { .. } => {
-            let child = command_for(server, workspace, crate::native_environment::variable)?;
+        McpTransport::Stdio { env_vars, .. } => {
+            let credentials = credentials_for(env_vars.iter(), secrets).await?;
+            let child = command_for(
+                server,
+                workspace,
+                crate::native_environment::variable,
+                &credentials,
+            )?;
             let binding = command_binding(&child, server);
             (
                 Connection::Stdio(
@@ -43,12 +50,15 @@ pub(super) async fn connect(
         } => {
             use super::super::http::{HttpMcpTransport, McpHttpProvider, NativeMcpHttpProvider};
             let environment = crate::native_environment::variable;
+            let credentials =
+                credentials_for(env_headers.values().chain(bearer_token_env_var), secrets).await?;
             let headers = headers_for(
                 headers,
                 env_headers,
                 bearer_token_env_var.as_deref(),
                 server.dialect == Dialect::Claude,
                 environment,
+                &credentials,
             )?;
             let url = expand(url, server.dialect == Dialect::Claude, environment)?;
             let binding = http_binding(&url, &headers);
@@ -222,6 +232,26 @@ where
     Err(Error::Invalid("MCP discovery exceeds page bound".into()))
 }
 
+/// Resolves every credential reference of one server through the host's
+/// secret source, before any connection, so only the host ever holds them.
+/// A reference the source does not hold is absent from the result.
+pub(super) async fn credentials_for<'a>(
+    references: impl Iterator<Item = &'a String>,
+    secrets: &dyn crate::secrets::SecretSource,
+) -> Result<std::collections::BTreeMap<String, crate::secrets::Secret>> {
+    let mut resolved = std::collections::BTreeMap::new();
+    for name in references {
+        if resolved.contains_key(name) {
+            continue;
+        }
+        let reference = crate::secrets::SecretRef::new(name.clone())?;
+        if let Some(secret) = secrets.secret(&reference).await? {
+            resolved.insert(name.clone(), secret);
+        }
+    }
+    Ok(resolved)
+}
+
 #[cfg(feature = "mcp-http")]
 pub(super) fn headers_for(
     headers: &std::collections::BTreeMap<String, String>,
@@ -229,6 +259,7 @@ pub(super) fn headers_for(
     bearer: Option<&str>,
     expand_variables: bool,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+    credentials: &std::collections::BTreeMap<String, crate::secrets::Secret>,
 ) -> Result<reqwest::header::HeaderMap> {
     let invalid = || Error::Invalid("invalid MCP HTTP header configuration".into());
     let mut result = reqwest::header::HeaderMap::new();
@@ -242,10 +273,11 @@ pub(super) fn headers_for(
         );
     }
     for (name, variable) in env_headers {
-        let value = environment(variable)
-            .and_then(|value| value.into_string().ok())
-            .ok_or_else(|| Error::Invalid("MCP HTTP credential environment is missing".into()))?;
-        let mut value = reqwest::header::HeaderValue::from_str(&value).map_err(|_| invalid())?;
+        let value = credentials
+            .get(variable)
+            .ok_or_else(|| Error::Invalid("MCP HTTP credential is missing".into()))?;
+        let mut value =
+            reqwest::header::HeaderValue::from_str(value.expose()).map_err(|_| invalid())?;
         value.set_sensitive(true);
         result.insert(
             reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?,
@@ -253,9 +285,10 @@ pub(super) fn headers_for(
         );
     }
     if let Some(variable) = bearer {
-        let value = environment(variable)
-            .and_then(|value| value.into_string().ok())
-            .ok_or_else(|| Error::Invalid("MCP bearer credential environment is missing".into()))?;
+        let value = credentials
+            .get(variable)
+            .ok_or_else(|| Error::Invalid("MCP bearer credential is missing".into()))?
+            .expose();
         if value.trim().is_empty() || result.contains_key(reqwest::header::AUTHORIZATION) {
             return Err(invalid());
         }
@@ -272,6 +305,7 @@ pub(super) fn command_for(
     server: &McpServer,
     workspace: &Path,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+    credentials: &std::collections::BTreeMap<String, crate::secrets::Secret>,
 ) -> Result<std::process::Command> {
     let McpTransport::Stdio {
         command,
@@ -352,8 +386,8 @@ pub(super) fn command_for(
         child.arg(expand(argument, expand_variables, &environment)?.as_ref());
     }
     for name in env_vars {
-        if let Some(value) = environment(name) {
-            child.env(name, value);
+        if let Some(value) = credentials.get(name) {
+            child.env(name, value.expose());
         }
     }
     for (name, value) in env {

@@ -239,8 +239,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
-    /// Creates the unique physical workspace for a logical volume.
-    pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
+    /// The one storage name and creation operation of fresh `volume` on this
+    /// host, so every path creating it (alone or within another commit) names
+    /// the identical generation and a retry replays exactly.
+    pub(in crate::filesystem) fn volume_creation(
+        &self,
+        volume: &VolumeRef,
+    ) -> Result<(String, acyclic_fs::OperationId)> {
         volume.validate(&mut None)?;
         if volume.provider() != &self.provider {
             return Err(Error::Invalid(
@@ -252,11 +257,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             blake3::derive_key("acyclic harness volume initialization v1", name.as_bytes());
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest[..16]);
+        Ok((name, acyclic_fs::OperationId::from_bytes(operation)))
+    }
+
+    /// Creates the unique physical workspace for a logical volume.
+    pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
+        let (name, operation) = self.volume_creation(volume)?;
         self.filesystem
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 &name,
                 self.volume_initialization(),
-                acyclic_fs::OperationId::from_bytes(operation),
+                operation,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 None,

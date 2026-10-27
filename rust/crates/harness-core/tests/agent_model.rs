@@ -10,6 +10,9 @@ use std::{collections::VecDeque, sync::Mutex};
 
 #[path = "agent_model/driver.rs"]
 mod driver;
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
+#[path = "agent_model/hosting.rs"]
+mod hosting;
 #[path = "agent_model/runtime.rs"]
 mod runtime;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
