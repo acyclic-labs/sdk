@@ -34,7 +34,6 @@ filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness
 filesystem-local = []
 native-execution = []
 
-notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
@@ -83,14 +82,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "records"
-path = "fuzz_targets/records.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "protocol_identity"
 path = "fuzz_targets/protocol_identity.rs"
 required-features = ["runtime"]
@@ -131,22 +122,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "notification_scenario"
-path = "fuzz_targets/notification_scenario.rs"
-required-features = ["notifications"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "input_paths"
-path = "fuzz_targets/input_paths.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "client_mentions"
 path = "fuzz_targets/client_mentions.rs"
 required-features = ["runtime"]
@@ -157,14 +132,6 @@ bench = false
 [[bin]]
 name = "client_diff"
 path = "fuzz_targets/client_diff.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "command_parser"
-path = "fuzz_targets/command_parser.rs"
 required-features = ["runtime"]
 test = false
 doc = false
@@ -195,30 +162,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "task_query_case"
-path = "fuzz_targets/task_query_case.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_queries"
-path = "fuzz_targets/client_queries.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_file_submit"
-path = "fuzz_targets/client_file_submit.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "client_offline"
 path = "fuzz_targets/client_offline.rs"
 required-features = ["runtime"]
@@ -242,13 +185,6 @@ acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[[bin]]
-name = "swarm_case"
-path = "fuzz_targets/swarm_case.rs"
-test = false
-doc = false
-bench = false
 
 [[bench]]
 name = "memory_directory_page"

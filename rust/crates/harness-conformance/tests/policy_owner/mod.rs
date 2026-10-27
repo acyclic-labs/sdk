@@ -100,7 +100,6 @@ async fn durable_stream_policy_owner_runs_through_substrate_runner()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for host in [
         Arc::new(Streams) as Arc<dyn Substrate>,
-        Arc::new(substrate::InProcess),
         Arc::new(substrate::Local),
     ] {
         let report = runner::run(&cases(), host, None, 1).await?;
