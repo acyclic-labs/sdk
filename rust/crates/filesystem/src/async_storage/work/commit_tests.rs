@@ -8,6 +8,7 @@ use acyclic_stream::{
 fn request() -> Result<CommitRequest, acyclic_stream::StreamError> {
     let path = StreamPath::new("publication")?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent { path: path.clone() }],
         mutations: vec![CommitMutation::Append {
             path,

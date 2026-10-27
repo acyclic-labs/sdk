@@ -217,6 +217,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Err(error) => return Err(error.into()),
         }
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: work.vec(4)?,
             mutations: work.vec(4)?,
             idempotency_key: work.key(
@@ -342,6 +343,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             return Ok(CreateAuthorityOutcome::Existing(snapshot.head));
         }
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: work.vec(6)?,
             mutations: work.vec(6)?,
             idempotency_key: work.key(
@@ -503,6 +505,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         AuthorityStoreError,
     > {
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: work.vec(18)?,
             mutations: work.vec(17)?,
             idempotency_key: work.key(

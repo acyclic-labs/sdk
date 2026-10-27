@@ -239,6 +239,7 @@ mod cursor_tests {
             for start in 0..=2 {
                 for rows in 0..=5 {
                     let transaction = CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: vec![CommitCondition::Head {
                             path: records.clone(),
                             expected: start,

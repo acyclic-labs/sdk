@@ -183,6 +183,7 @@ fn request(
 ) -> CommitRequest {
     let path = stream_path(ID, suffix).unwrap();
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![match tail {
             Some(expected) => CommitCondition::Tail {
                 path: path.clone(),

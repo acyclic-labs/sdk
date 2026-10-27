@@ -59,6 +59,7 @@ fn spawn_request(stream_fork_at: u64, state_absent: bool) -> Result<CommitReques
         }
     });
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions,
         mutations: vec![
             CommitMutation::Append {
@@ -85,6 +86,7 @@ async fn parent(fs: &PlacedFs, stream: &MemoryStream) -> Result<PlacedGeneration
     let log = StreamPath::new("harness/agents/root/log")?;
     stream
         .commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Absent { path: log.clone() }],
             mutations: vec![CommitMutation::Append {
                 path: log,
@@ -490,6 +492,7 @@ async fn distinct_placements_keep_separate_change_streams() -> Result<(), Box<dy
                 .into(),
         }];
         let mut commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
             conditions: Vec::new(),
             mutations: Vec::new(),
             idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(key))?,

@@ -835,6 +835,7 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
             let provider = store.provider();
             let outcome = provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![CommitCondition::Tail {
                         path: locator.clone(),
                         expected: 1,

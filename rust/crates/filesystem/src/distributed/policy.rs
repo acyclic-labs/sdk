@@ -286,6 +286,7 @@ mod tests {
         }
         let outcome = provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions,
                 mutations: vec![CommitMutation::Append {
                     // The destination must have its own condition. Use the same

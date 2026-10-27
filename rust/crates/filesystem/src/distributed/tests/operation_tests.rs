@@ -649,6 +649,7 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
         };
         stream
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Absent { path: path.clone() }],
                 mutations: vec![CommitMutation::Append { path, records }],
                 idempotency_key: stream_key(b"forged-locator", &[invalid])?,

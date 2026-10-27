@@ -120,6 +120,7 @@ fn gate_commit(
 ) -> Result<CommitRequest, AuthorityStoreError> {
     let path = stream_path(reservation.authority_id, "/publication-gate")?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: reservation.gate_tail,
@@ -335,6 +336,7 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
         let stream = Arc::new(MemoryStream::default());
         let id = AuthorityId::from_bytes([1; 16]);
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: Vec::new(),
             mutations: Vec::new(),
             idempotency_key: stream_key(b"gateless", &id.into_bytes())?,
@@ -823,15 +825,6 @@ impl StreamProvider for ReleaseSpy {
         self.finish_commit(result).await
     }
 
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.interleave().await?;
-        let result = self.inner.commit_before(request, deadline).await?;
-        self.finish_commit(result).await
-    }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
         self.inner.bounds(path).await
