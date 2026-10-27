@@ -202,9 +202,9 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         }
     }
 
-    /// The outcome the step consuming inbox record `sequence` recorded, from
-    /// the actor state history at `path`: the first state whose inbox cursor
-    /// passes `sequence` is that step's commit. History is append-only and
+    /// The outcome of the spawn the step consuming inbox record `sequence`
+    /// applied, from the actor state history at `path`: the first state whose
+    /// inbox cursor passes `sequence` is that step's commit. History is append-only and
     /// cursors only advance, so this is O(log history) reads.
     async fn applied(
         &self,
@@ -238,12 +238,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         let checkpoint = state.checkpoint().ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
         ))?;
-        super::checkpoint_state(checkpoint)?
-            .spawn_outcome(intent)
-            .cloned()
-            .ok_or(Error::Record(
-                "the step consuming the spawn recorded no outcome",
-            ))
+        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
     }
 
     /// Actor state record `sequence` of the state stream at `path`.
@@ -263,7 +258,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
             .map_err(Error::Stream)?
             .filter(|record| record.sequence == sequence)
             .ok_or(Error::Record("actor state history is incomplete"))?;
-        serde_json::from_slice(&record.value).map_err(|_| Error::Record("actor state is malformed"))
+        State::decode(&record.value).map_err(actor_error)
     }
 
     /// Prepares, without IO, the one commit creating root agent

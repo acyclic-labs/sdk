@@ -1,5 +1,5 @@
 //! The unchanged host vectors over browser `IndexedDB` and the guest codec.
-#![cfg(all(feature = "browser", target_arch = "wasm32"))]
+#![cfg(target_arch = "wasm32")]
 
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
