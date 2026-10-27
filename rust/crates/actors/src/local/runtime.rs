@@ -256,7 +256,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Drain one tracked actor using finite reads of its committed input.
     /// Event-owned hosts cannot wait for a passive subscription's transport
-    /// wake before returning from their event. No live follow is opened here.
+    /// wake before returning from their event. Only declared interrupts retain
+    /// a follow while their handler is running; no idle follow is retained.
     pub async fn drain_actor(&self, actor: &ActorReference) -> Result<(), Error> {
         let slot = self
             .slot(actor)

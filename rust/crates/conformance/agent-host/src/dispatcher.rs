@@ -77,6 +77,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         return Err("activation open was not keyed".into());
     }
     drop(host);
+    drop(provider);
     let reopened = Arc::new(Observed::new(storage.open().await?));
     let host = vectors::host(backend, reopened.clone())?;
     host.send(&agent, &fixtures::sender(), &fixtures::request("after")?)
@@ -121,6 +122,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             .cloned()
             .ok_or("cursor commit was not attempted")?;
         drop(host);
+        drop(provider);
         let reopened = Arc::new(Observed::new(storage.open().await?));
         let host = vectors::host(backend, reopened.clone())?;
         until(&host, output(&host, &agent, 0, b"once")).await?;
