@@ -535,6 +535,51 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
 }
 
 #[tokio::test]
+async fn a_record_too_large_to_append_is_dropped_and_fails_the_agent() -> Result {
+    // A conversation entry past the record limit would make the step's
+    // commit unbuildable on every retry; it is dropped and the agent fails.
+    let parent = AgentPath::root(&id(1));
+    let (path, state) = child_of(&parent, 2)?;
+    let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
+    let driver = script(vec![TurnStep {
+        checkpoint: None,
+        outs: vec![
+            Out::Conversation(oversized.clone()),
+            Out::Conversation(b"fits".to_vec()),
+        ],
+        wait: Wait::Input,
+    }]);
+    let stepped = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+    )
+    .await?;
+    let failed = AgentOutcome::Failed {
+        message: OVERSIZED_RECORD.into(),
+    };
+    assert_eq!(
+        stepped.state.phase,
+        Phase::Done {
+            outcome: failed.clone()
+        }
+    );
+    assert!(!stepped.outs.contains(&Out::Conversation(oversized)));
+    assert!(stepped.outs.contains(&Out::Conversation(b"fits".to_vec())));
+    assert_eq!(stepped.state.conversation_tail, 1);
+    assert!(stepped.outs.iter().any(|out| matches!(
+        out,
+        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+    )));
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;

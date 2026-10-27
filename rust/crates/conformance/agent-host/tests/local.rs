@@ -1,5 +1,5 @@
 //! The unchanged host vectors over the native durable stream adapter.
-#![cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
