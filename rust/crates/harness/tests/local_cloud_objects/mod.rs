@@ -72,7 +72,11 @@ async fn objects_and_harness_content_match_the_local_cloud() -> TestResult {
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
     let objects = endpoints.objects.objects().await?;
-    acyclic_objects::v1::conformance::verify(objects.as_ref(), "conformance").await?;
+    acyclic_objects::v1::conformance::verify(&acyclic_objects::v1::conformance::Fixture::new(
+        objects.as_ref().clone(),
+        "conformance",
+    ))
+    .await?;
     let bytes = content::Content::exact(b"owner bytes");
     let cloud = content::run(objects, "harness-content", &bytes).await?;
     let local = content::run(memory()?, "harness-content", &bytes).await?;

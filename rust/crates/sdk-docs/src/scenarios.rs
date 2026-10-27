@@ -110,7 +110,7 @@ pub const SCENARIOS: &[Scenario] = &[
         operation: "tail",
         kind: ScenarioKind::StreamStreaming,
         mode: ScenarioMode::ExecuteWithEndpoint,
-        features: &["http"],
+        features: &["http", "conformance"],
         fixture_script: Some("typescript/packages/stream/test/http-provider-conformance.mjs"),
     },
     Scenario {

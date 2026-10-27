@@ -11,6 +11,7 @@ pub mod fixtures;
 mod identity;
 mod interrupt;
 mod observe;
+mod performance;
 pub mod protocol;
 mod publication;
 mod reply;
@@ -21,6 +22,8 @@ mod wire;
 use acyclic_actors::guest::Handler;
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform, StreamProvider};
 use std::sync::Arc;
+
+pub use performance::{Measurement, Scale, ScaleMeasurement, bench, scale};
 
 /// Register the same AgentHost suite for an async factory returning a backend.
 /// Use `suite!(local, Local::fresh)` to register several backends in one file.

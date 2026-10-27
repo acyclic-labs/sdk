@@ -12,9 +12,14 @@ use async_trait::async_trait;
 use std::future::Future;
 use thiserror::Error;
 
+#[cfg(any(
+    test,
+    feature = "conformance",
+    feature = "http",
+    feature = "test-support",
+    feature = "model-checking"
+))]
 pub mod conformance;
-#[cfg(any(test, feature = "conformance", feature = "test-support"))]
-pub mod testing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod filtered_follow_tests;
 #[cfg(test)]
@@ -37,6 +42,14 @@ pub mod runtime;
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub mod session;
+#[cfg(any(
+    test,
+    feature = "conformance",
+    feature = "http",
+    feature = "test-support",
+    feature = "model-checking"
+))]
+pub mod testing;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;

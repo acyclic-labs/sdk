@@ -28,8 +28,8 @@ acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-acyclic-objects = { version = "=0.2.0", path = "../objects" }
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["conformance"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
 async-trait = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 bytes.workspace = true

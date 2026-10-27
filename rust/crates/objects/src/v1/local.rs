@@ -403,10 +403,18 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let provider = create(root.path()).await?;
-        super::super::conformance::verify(&provider, "durable-v1").await?;
+        super::super::conformance::verify(&super::super::conformance::Fixture::new(
+            provider.clone(),
+            "durable-v1",
+        ))
+        .await?;
         drop(provider);
         let reopened = create(root.path()).await?;
-        super::super::conformance::verify(&reopened, "durable-v1-reopened").await?;
+        super::super::conformance::verify(&super::super::conformance::Fixture::new(
+            reopened.clone(),
+            "durable-v1-reopened",
+        ))
+        .await?;
         Ok(())
     }
     #[tokio::test]

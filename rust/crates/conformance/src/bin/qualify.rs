@@ -78,16 +78,19 @@ async fn qualify_stream_local(root: PathBuf) -> Result<(), String> {
     let provider = LocalStream::open(root, LocalStreamLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    acyclic_conformance::stream(&provider).await
+    acyclic_conformance::stream(&acyclic_stream::conformance::Fixture::new(provider)).await
 }
 
 async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
         .await
         .map_err(|error| error.to_string())?;
-    acyclic_objects::v1::conformance::verify(&provider, "conformance")
-        .await
-        .map_err(|error| error.to_string())
+    acyclic_objects::v1::conformance::verify(&acyclic_objects::v1::conformance::Fixture::new(
+        provider,
+        "conformance",
+    ))
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn qualify_filesystem_local(root: PathBuf) -> Result<(), String> {

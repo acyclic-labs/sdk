@@ -18,6 +18,7 @@ use acyclic_machines::{
     Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
     MachineState, MachinesProvider, MutationOutcome, OperationPhase, ProviderError,
 };
+#[cfg(test)]
 use acyclic_objects::v1::ObjectsProvider;
 use acyclic_stream::StreamProvider;
 use futures::StreamExt;
@@ -71,8 +72,8 @@ pub async fn filesystem_smoke<A: AsyncAuthorityStore + 'static, O: AsyncObjectSt
 }
 
 /// Runs the canonical Stream suite against a fresh, disposable provider.
-pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
-    acyclic_stream::conformance::verify(provider)
+pub async fn stream(backend: &dyn acyclic_stream::conformance::Backend) -> Result<(), String> {
+    acyclic_stream::conformance::verify(backend)
         .await
         .map_err(|error| error.to_string())
 }
@@ -80,8 +81,10 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
 /// Runs the canonical Objects suite against a fresh, disposable provider.
 ///
 /// The suite retains state and idempotency keys under the `conformance` namespace.
-pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
-    acyclic_objects::v1::conformance::verify(provider, "conformance")
+pub async fn objects(
+    backend: &dyn acyclic_objects::v1::conformance::Backend,
+) -> Result<(), String> {
+    acyclic_objects::v1::conformance::verify(backend)
         .await
         .map_err(|error| error.to_string())
 }
@@ -388,16 +391,6 @@ mod tests {
     use acyclic_stream::MemoryStream;
     use std::sync::Arc;
 
-    #[test]
-    fn exported_stream_inventory_matches_the_executable_suite() {
-        assert_eq!(STREAM_SUITE, include_bytes!("../vectors/stream.json"));
-    }
-
-    #[test]
-    fn exported_objects_inventory_matches_the_logical_suite() {
-        assert_eq!(OBJECTS_SUITE, include_bytes!("../vectors/objects-v1.json"));
-    }
-
     #[tokio::test]
     async fn family_memory_providers_conform() -> Result<(), String> {
         let stream_provider = MemoryStream::default();
@@ -442,8 +435,15 @@ mod tests {
             );
         }
 
-        stream(&stream_provider).await?;
-        objects(&objects_provider).await?;
+        stream(&acyclic_stream::conformance::Fixture::new(
+            stream_provider.clone(),
+        ))
+        .await?;
+        objects(&acyclic_objects::v1::conformance::Fixture::new(
+            objects_provider.clone(),
+            "conformance",
+        ))
+        .await?;
         machines(&SimulatedMachines::default()).await?;
         Ok(())
     }

@@ -63,7 +63,7 @@ def run(args, label, expected=0, env=None, fast=False):
 
 
 def build(kind, label, target):
-    command = ['cargo', kind, '--locked', '-p', 'acyclic-stream', '--features', 'http,local', '--message-format=json']
+    command = ['cargo', kind, '--locked', '-p', 'acyclic-stream', '--features', 'http,local,conformance', '--message-format=json']
     command += ['--test', target, '--no-run'] if kind == 'test' else ['--example', target]
     result = run(command, label)
     events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith(b'{')]
@@ -80,7 +80,7 @@ try:
     need(not OUT.exists() and not ARCHIVE.exists(), 'existing coverage output must be admitted/reused, never overwritten or identically rerun')
     need(shutil.which('cargo') and shutil.which('rustc'), 'cargo/rustc missing from admitted environment')
     package = tomllib.loads((ROOT / 'rust/crates/stream/Cargo.toml').read_text())
-    need(package['package']['name'] == 'acyclic-stream' and {'http', 'local'} <= package['features'].keys(), 'affected crate/features differ')
+    need(package['package']['name'] == 'acyclic-stream' and {'http', 'local', 'conformance'} <= package['features'].keys(), 'affected crate/features differ')
     for path in (SOURCE, TEST, ROOT / 'rust/crates/stream/examples/wave1-conformance.rs', ROOT / 'Cargo.lock'):
         need(path.is_file() and path.stat().st_size > 0, 'required input absent/empty: ' + str(path))
     original = SOURCE.read_bytes()

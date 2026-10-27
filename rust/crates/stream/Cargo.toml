@@ -23,7 +23,7 @@ required-features = ["http"]
 
 [[example]]
 name = "http-conformance"
-required-features = ["http"]
+required-features = ["http", "conformance"]
 
 [[example]]
 name = "browser-test-host"
@@ -125,11 +125,11 @@ workspace = true
 
 [[example]]
 name = "provider-conformance"
-required-features = ["http"]
+required-features = ["http", "conformance"]
 
 [[example]]
 name = "postgres-conformance"
-required-features = ["postgres"]
+required-features = ["postgres", "conformance"]
 
 [[test]]
 name = "browser_follow_model"
@@ -164,4 +164,14 @@ required-features = ["local", "model-checking"]
 [[test]]
 name = "wave1_recovery"
 path = "tests/wave1_recovery.rs"
-required-features = ["local"]
+required-features = ["local", "conformance"]
+
+[[test]]
+name = "wave1_keys"
+path = "tests/wave1_keys.rs"
+required-features = ["conformance"]
+
+[[test]]
+name = "wave1_coverage"
+path = "tests/wave1_coverage.rs"
+required-features = ["conformance"]

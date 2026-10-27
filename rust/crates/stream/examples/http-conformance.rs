@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let provider =
         HttpStream::with_ca_certificate(&endpoint, "conformance", 16 * 1024 * 1024, ca.as_deref())?;
-    conformance::verify(&provider).await?;
+    conformance::verify(&acyclic_stream::conformance::Fixture::new(provider.clone())).await?;
     let first = StreamPath::new("conformance/atomic-first")?;
     let second = StreamPath::new("conformance/atomic-second")?;
     let atomic_key = acyclic_stream::IdempotencyKey::new(acyclic_stream::OwnedBytes::from_static(

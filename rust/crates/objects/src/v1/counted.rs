@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(provider.requests().class(RequestClass::Head), 1);
         // Every logical operation, including multipart and conditional errors,
         // also passes through the same forwarding wrapper.
-        super::super::conformance::verify(&provider, "counted-suite").await?;
+        super::super::conformance::verify(&provider).await?;
         Ok(())
     }
 }

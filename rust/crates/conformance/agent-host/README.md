@@ -29,6 +29,24 @@ Run from the repository root on the build box:
 bash scripts/qualify-agent-host.sh
 ```
 
+For G46/G47, `acyclic_harness::conformance::bench(&backend)` sends and settles
+64 inputs after warmup, checks every conversation effect, and reports elapsed
+time plus data and control request counts. The shared `scale(&backend, Scale)`
+vector runs that workload at two independently provisioned idle populations. It
+uses the global scheduler drain and rejects more than a factor of two growth in
+either request class. A zero control baseline must remain zero. This measures
+dispatch work; it does not measure physical memory or allocations inside a
+provider. Reported control traffic remains visible even if the scale bound passes.
+
+Run the native 1,000 versus 10,000 idle-agent vector explicitly on bb2 or ivar:
+
+```sh
+build-slot --remote cargo test --locked -p acyclic-agent-host-conformance --features local --test local agent_scale -- --ignored --nocapture
+```
+
+No CI workflow or merge-gate step invokes this workload. Downstream adapters can
+call the same public `bench` and `scale` functions with their own `Backend`.
+
 To execute browser tests after compiling them, use the workspace's pinned `wasm-bindgen-test-runner` and Chrome driver:
 
 ```sh

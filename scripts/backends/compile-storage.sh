@@ -8,6 +8,6 @@ bash scripts/gate-rust-format.sh
 step=compile-storage-conformance
 cargo check --locked -p acyclic-conformance --features storage-backends,acyclic-objects/local --bin storage-conformance
 step=compile-postgres-checks
-cargo check --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
+cargo check --locked -p acyclic-stream --no-default-features --features postgres,conformance --example postgres-conformance
 step=compile-shared-objects-regressions
 cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run

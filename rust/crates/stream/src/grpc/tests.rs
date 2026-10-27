@@ -192,7 +192,7 @@ impl StreamProvider for EndingFollow {
 #[tokio::test]
 async fn grpc_transport_passes_the_public_suite() -> TestResult {
     let transport = client(MemoryStream::default())?;
-    crate::conformance::verify(&transport).await?;
+    crate::conformance::verify(&crate::conformance::Fixture::new(transport.clone())).await?;
     let path = StreamPath::new("accounts/many")?;
     let values = (0..20_u8)
         .map(|value| OwnedBytes::from(vec![value; 64]))

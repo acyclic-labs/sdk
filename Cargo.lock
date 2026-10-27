@@ -937,6 +937,7 @@ dependencies = [
  "tracing",
  "tracing-chrome",
  "tracing-subscriber",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

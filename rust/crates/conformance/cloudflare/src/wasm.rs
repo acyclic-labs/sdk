@@ -102,6 +102,47 @@ struct Domain(JsValue);
 struct Rpc(js_sys::Function, js_sys::Function);
 struct Port(JsValue);
 
+// Keep each concrete production provider available until Counted has installed
+// its ledger. An already erased Arc cannot transparently forward native work.
+trait StreamFixture {
+    fn stream(
+        &self,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_stream::conformance::Backend>>>;
+}
+
+impl StreamFixture for Sqlite {
+    fn stream(
+        &self,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_stream::conformance::Backend>>> {
+        Box::pin(async move {
+            let journal = self
+                .0
+                .call0(&JsValue::UNDEFINED)
+                .map_err(|error| format!("SQLite domain creation failed: {error:?}"))?;
+            let provider = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            Ok(
+                Box::new(acyclic_stream::conformance::Fixture::new(provider))
+                    as Box<dyn acyclic_stream::conformance::Backend>,
+            )
+        })
+    }
+}
+
+impl StreamFixture for Rpc {
+    fn stream(
+        &self,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_stream::conformance::Backend>>> {
+        Box::pin(async move {
+            let port = self
+                .0
+                .call0(&JsValue::UNDEFINED)
+                .map_err(|error| format!("RPC domain creation failed: {error:?}"))?;
+            Ok(Box::new(acyclic_stream::conformance::injected(port)?)
+                as Box<dyn acyclic_stream::conformance::Backend>)
+        })
+    }
+}
+
 impl Storage for Port {
     fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
         Box::pin(async move {
@@ -187,10 +228,9 @@ pub async fn qualify_rpc(
     verify(&Rpc(fresh, hosted)).await
 }
 
-async fn verify(backend: &dyn Backend) -> std::result::Result<(), JsValue> {
+async fn verify(backend: &(impl Backend + StreamFixture)) -> std::result::Result<(), JsValue> {
     let result: Result = async {
-        let storage = backend.fresh().await?;
-        let stream = storage.open().await?;
+        let stream = backend.stream().await?;
         acyclic_stream::conformance::verify(stream.as_ref()).await?;
         drop(stream);
         acyclic_agent_host_conformance::verify(backend).await

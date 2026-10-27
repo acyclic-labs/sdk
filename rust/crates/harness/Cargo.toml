@@ -193,7 +193,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util", "process"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support", "conformance"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rust SDK execution uses the real browser event loop even without exports.
