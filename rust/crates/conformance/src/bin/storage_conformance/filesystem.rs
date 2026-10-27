@@ -1,4 +1,4 @@
-//! Additional composition evidence; the canonical filesystem smoke is unchanged.
+//! Independent provider-reopen evidence retained alongside the public suite.
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, WorkBudget};
 use std::{error::Error, time::Instant};
 
