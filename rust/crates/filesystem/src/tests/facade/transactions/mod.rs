@@ -412,15 +412,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         .create_volume_with_id(VolumeId::from_bytes([122; 16]), config(), B, &cancellation)
         .await?
         .value;
-    let mut checkout = volume
-        .checkout(
-            GenerationSelector::Head,
-            writable_pinned(),
-            B,
-            &cancellation,
-        )
-        .await?
-        .value;
+    let mut checkout = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let source = path("source")?;
     let destination = path("destination")?;
     let removed = path("removed")?;

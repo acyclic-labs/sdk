@@ -11,14 +11,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         (fs.create_volume_with_id(VolumeId::from_bytes([189; 16]), limited, B, &cancellation))
             .await?
             .value;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let file = path("bounded")?;
     let failure = (checkout.create(
         AuthoredMutation::CreateFile {
@@ -220,13 +213,11 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
         (fs.create_volume_with_id(VolumeId::from_bytes([120; 16]), config(), B, &cancellation))
             .await?
             .value;
-    let first_head = (first.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+    let first_head = open_checkout(&first, pinned(), &cancellation)
         .await?
-        .value
         .generation_id();
-    let second_head = (second.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+    let second_head = open_checkout(&second, pinned(), &cancellation)
         .await?
-        .value
         .generation_id();
     assert!(
         (first.checkout(
@@ -254,9 +245,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             .is_err()
     );
 
-    let mut read_only = (first.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
-        .await?
-        .value;
+    let mut read_only = open_checkout(&first, pinned(), &cancellation).await?;
     assert!(
         (read_only.mutate(Vec::new(), B, &cancellation,))
             .await
@@ -290,14 +279,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             .is_err()
     );
 
-    let mut writable = (first.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut writable = open_checkout(&first, writable_pinned(), &cancellation).await?;
     let excessive_capacity = Vec::<Mutation>::with_capacity(
         usize::try_from(config().limits.maximum_mutations_per_batch)? + 1,
     );
@@ -308,14 +290,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     assert!(matches!(failure.error, FsError::ExcessiveMutationCapacity));
     assert_eq!(*failure.work, WorkCounters::default());
 
-    let mut clean = (first.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut clean = open_checkout(&first, writable_pinned(), &cancellation).await?;
     assert!(
         (clean.commit(
             OperationId::new(),
@@ -336,14 +311,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             .is_err()
     );
 
-    let mut manual_checkout = (first.checkout(
-        GenerationSelector::Head,
-        writable_manual(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut manual_checkout = open_checkout(&first, writable_manual(), &cancellation).await?;
     (manual_checkout.create(
         AuthoredMutation::CreateFile {
             path: path("dirty")?,

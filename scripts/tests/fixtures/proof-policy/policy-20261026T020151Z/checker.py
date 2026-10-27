@@ -125,7 +125,7 @@ def check_observations(reference):
     qualification = load("client/qualification.json")
     mac = load("client/macos/current-wasm-mac-receipt.json")
     artifacts = {name.removeprefix(".bb-client-current-wasm-runtime/"): item["sha256"] for name, item in qualification["admitted_runtime"].items()}
-    require(True, "mutation control bypasses one production check")
+    require(client["same_artifacts"] == mac["artifacts"] == artifacts, "Node same-artifact identity differs")
     require(client["head"] == qualification["head"] and client["archive_sha256"] == qualification["archive_sha256"], "Node source/archive identity differs")
     require(client["linux_node_cases"] == client["macos_node_cases"] == qualification["node"]["cases"] == json.loads(mac["output"])["cases"] == 1, "Node observed selection differs")
     require(client["bun_cases"] == qualification["bun_cases"] == 8 and mac["rc"] == 0 and 0 < mac["seconds"] < 10 and all(run["rc"] == 0 and 0 < run["seconds"] < 10 for run in qualification["results"]), "WASM observed result/runtime differs")
@@ -144,6 +144,40 @@ def check_observations(reference):
     require(observations["rbfs-session-transport"]["status"] == "owner_reported_no_raw_receipt", "Cloud report cannot claim raw execution admission")
 
 
+def check_append_eof(reference):
+    path = source_path(reference["repo_receipt"])
+    require(sha256(path) == reference["sha256"], "append EOF receipt changed")
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    require(receipt["kind"] == "partial_append_eof_proof_not_full_a5_qualification", "unsupported append EOF receipt")
+    require(not receipt["full_obligation_qualified"] and receipt["positive_proofs"] == receipt["negative_controls_detected"] == 0, "partial EOF proof cannot qualify complete A5")
+    for capture in receipt["captures"]:
+        captured = source_path(capture["repo_path"])
+        require(sha256(captured) == capture["sha256"] and captured.stat().st_size == capture["bytes"], "append EOF capture changed")
+    base = path.parent
+    oracle = receipt["oracle"]
+    source = receipt["mutation"]["path"]
+    for run_id in ("341", "342"):
+        admission = json.loads((base / run_id / "admission.json").read_text())
+        observed = receipt["runs"][run_id]
+        check = admission["checks"][0]
+        require(observed["archive_sha256"] == admission["archive_sha256"] and 0 < observed["seconds"] < 10, "append EOF run identity/runtime differs")
+        require(all(observed[key] == check[key] for key in ("exit", "seconds", "executable_sha256", "compiled_source_manifest_sha256")), "append EOF executable receipt differs")
+        for name, expected in admission["archive_members"].items():
+            captured = base / run_id / name.removeprefix(".bb-fs-segments-records/")
+            if captured.is_file():
+                require(sha256(captured) == expected, "append EOF archived member differs")
+        require(sha256(base / run_id / oracle["file"]) == oracle["sha256"], "append EOF oracle differs across production/control")
+    production = (base / "341" / source).read_bytes()
+    require(production == (base / "342" / source).read_bytes(), "append EOF original sources differ")
+    before, after = receipt["mutation"]["before"], receipt["mutation"]["after"]
+    require(before.endswith("cancellation, true)") and after == before.replace("cancellation, true)", "cancellation, false)"), "append EOF mutation selects wrong operation")
+    require(production.count(before.encode()) == 1 and production.replace(before.encode(), after.encode()) == (base / "342/mutant.rs").read_bytes(), "append EOF mutation changes more than terminal observation")
+    good = (base / "341/append-segments.out").read_text()
+    bad = (base / "342/negative-fence.out").read_text()
+    require("running 10 tests" in good and "10 passed; 0 failed; 0 ignored;" in good and f"::{oracle['test']} ... ok" in good and receipt["runs"]["341"]["exit"] == 0, "append EOF positive selection differs")
+    require("running 1 test" in bad and "0 passed; 1 failed; 0 ignored;" in bad and f"::{oracle['test']} ... FAILED" in bad and "assertion failed: matches!(appender.rebase" in bad and "TransactionRebase::Conflicted" in bad and receipt["runs"]["342"]["exit"] == 101, "append EOF control lacks exact rebase-conflict witness")
+
+
 def check(require_qualified):
     inventory = json.loads((ROOT / "docs/proofs/wave1-inventory.json").read_text(encoding="utf-8"))
     require(inventory["schema_version"] == 1 and inventory["scope"] == "approved_redesign_wave1", "unsupported inventory schema/scope")
@@ -160,6 +194,8 @@ def check(require_qualified):
         references.extend(entry["source"])
         if "source_review" in entry:
             require(entry["source_review"] in inventory["source_reviews"], f"missing source review: {entry['id']}")
+        if "partial_proof" in entry:
+            require(entry["partial_proof"] in inventory["partial_proofs"], f"missing partial proof: {entry['id']}")
         for control in entry["negative_controls"]:
             if control["status"] == "detected":
                 require(control["receipt"] in inventory["evidence"], f"missing control receipt: {entry['id']}")
@@ -171,6 +207,8 @@ def check(require_qualified):
         check_source_review(reference)
     for reference in inventory.get("owner_observations", {}).values():
         check_observations(reference)
+    for reference in inventory.get("partial_proofs", {}).values():
+        check_append_eof(reference)
     cleanliness = inventory["cleanliness"]
     capture = source_path(cleanliness["repo_capture"])
     require(sha256(capture) == cleanliness["capture_sha256"], "captured Clippy diagnostics changed")

@@ -300,10 +300,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
         EmbeddedCapabilities::MEMORY,
     );
     let volume = fs.create_volume(config(), B, &cancel).await?.value;
-    let mut seed = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut seed = open_checkout(&volume, writable_pinned(), &cancel).await?;
     for value in ["observed", "local", "remote"] {
         seed.create(
             AuthoredMutation::CreateFile {
@@ -316,25 +313,9 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
         )
         .await?;
     }
-    seed.commit(
-        OperationId::new(),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
-        B,
-        &cancel,
-        allow::<FsError>,
-    )
-    .await?;
-    let mut local = volume
-        .checkout(GenerationSelector::Head, writable_manual(), B, &cancel)
-        .await?
-        .value;
-    let mut remote = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    commit(&mut seed, &cancel).await?;
+    let mut local = open_checkout(&volume, writable_manual(), &cancel).await?;
+    let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
     local
         .read_file_range(
             &path("observed")?,
@@ -360,18 +341,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
             )
             .await?;
     }
-    remote
-        .commit(
-            OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            allow::<FsError>,
-        )
-        .await?;
+    commit(&mut remote, &cancel).await?;
     *unreadable.lock().map_err(|_| "fixture lock poisoned")? = Some(ObjectKind::Blob);
     // Negative control: the production full classifier must fetch the observed
     // byte range even though the intervening change touches another file.
@@ -393,18 +363,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
     let rebased = local.rebase_head(8, B, &cancel).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     *unreadable.lock().map_err(|_| "fixture lock poisoned")? = None;
-    local
-        .commit(
-            OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            allow::<FsError>,
-        )
-        .await?;
+    commit(&mut local, &cancel).await?;
     for value in ["local", "remote"] {
         assert_eq!(
             local

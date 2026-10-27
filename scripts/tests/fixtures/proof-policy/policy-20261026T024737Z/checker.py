@@ -125,7 +125,7 @@ def check_observations(reference):
     qualification = load("client/qualification.json")
     mac = load("client/macos/current-wasm-mac-receipt.json")
     artifacts = {name.removeprefix(".bb-client-current-wasm-runtime/"): item["sha256"] for name, item in qualification["admitted_runtime"].items()}
-    require(True, "mutation control bypasses one production check")
+    require(client["same_artifacts"] == mac["artifacts"] == artifacts, "Node same-artifact identity differs")
     require(client["head"] == qualification["head"] and client["archive_sha256"] == qualification["archive_sha256"], "Node source/archive identity differs")
     require(client["linux_node_cases"] == client["macos_node_cases"] == qualification["node"]["cases"] == json.loads(mac["output"])["cases"] == 1, "Node observed selection differs")
     require(client["bun_cases"] == qualification["bun_cases"] == 8 and mac["rc"] == 0 and 0 < mac["seconds"] < 10 and all(run["rc"] == 0 and 0 < run["seconds"] < 10 for run in qualification["results"]), "WASM observed result/runtime differs")
@@ -142,6 +142,51 @@ def check_observations(reference):
             metrics = load("client/before/queue/.bb-client-queue-before-records/metrics.json")
             require([row["count"] for row in metrics["rows"]] == [1000, 10000, 100000] and all(row["capacity"] == 1 and row["pending"] == row["count"] for row in metrics["rows"]), "old queue producer observations differ")
     require(observations["rbfs-session-transport"]["status"] == "owner_reported_no_raw_receipt", "Cloud report cannot claim raw execution admission")
+
+
+def check_hst_reporting(reference):
+    path = source_path(reference["repo_receipt"])
+    require(sha256(path) == reference["sha256"], "HST reporting admission changed")
+    admission = json.loads(path.read_text())
+    require(admission["kind"] == "hst_reporting_policy_admission_not_complete_history_proof" and not admission["full_obligation_qualified"] and admission["positive_proofs"] == admission["complete_hst_exports"] == 0, "HST reporting cannot qualify complete histories")
+    for capture in admission["captures"]:
+        captured = source_path(capture["repo_path"])
+        require(sha256(captured) == capture["sha256"] and captured.stat().st_size == capture["bytes"], "HST reporting capture changed")
+    base = path.parent
+    load = lambda name: json.loads((base / name).read_bytes())
+    producer = load("receipt.json")
+    source, positive, mutant = (load(name) for name in ("source.json", "positive-compiled-source.json", "mutant-compiled-source.json"))
+    require(source == positive and source.keys() == mutant.keys(), "HST reporting compiled input selection differs")
+    require(sha256(base / "source.json") == producer["source_sha256"] == admission["source_manifest_sha256"], "HST reporting source manifest differs")
+    changed = [name for name in source if source[name] != mutant[name]]
+    mutation = producer["mutation"]
+    require(changed == [mutation["path"]], "HST reporting mutation changes another input")
+    original = (base / "production.rs").read_bytes()
+    before, after = mutation["before"].encode(), mutation["after"].encode()
+    require(after == b"Ok(())" and before == b"Err(Unqualified {\n        missing: hst_coverage(),\n    })" and original.count(before) == 1 and original.replace(before, after) == (base / "mutant.rs").read_bytes(), "HST reporting control must bypass exactly the production refusal guard")
+    for name in (mutation["path"], "rust/crates/stream/src/conformance/wave1.rs", "rust/crates/stream/tests/wave1_coverage.rs", "rust/crates/stream/examples/wave1-conformance.rs", "scripts/qualify-wave1-coverage.py"):
+        require(sha256(source_path(name)) == source[name], "HST reporting current/executed source differs")
+    require(sha256(base / "production.rs") == source[mutation["path"]] and sha256(base / "mutant.rs") == mutant[mutation["path"]], "HST reporting production/mutant identities differ")
+    for label, expected in (("positive", 0), ("mutant", 101)):
+        run, executable = load(label + ".json"), load(label + "-compile-executable.json")
+        require(run["exit"] == expected and 0 < run["seconds"] < 10 and run["argv"][0] == executable["path"], "HST reporting executable/runtime differs")
+        require(executable["oracle_sha256"] == producer["oracle_sha256"] == sha256(base / "oracle.rs") and executable["production_sha256"] == sha256(base / ("production.rs" if label == "positive" else "mutant.rs")), "HST reporting production/oracle executable receipt differs")
+    require("3 passed; 0 failed; 0 ignored;" in (base / "positive.out").read_text() and "2 passed; 1 failed; 0 ignored;" in (base / "mutant.out").read_text() and "qualification_request_refuses_all_unexported_histories ... FAILED" in (base / "mutant.out").read_text() and "complete HST qualification must refuse unexported histories" in (base / "mutant.err").read_text(), "HST reporting control lacks exact semantic failure")
+    plan = json.loads(source_path("docs/proofs/wave1-history-plan.json").read_bytes())
+    require(sha256(source_path(plan["adopted_source"]["repo_path"])) == plan["adopted_source"]["sha256"], "adopted HST source changed")
+    require(sha256(source_path(plan["availability_source"]["repo_path"])) == plan["availability_source"]["sha256"], "HST availability source differs")
+    rows = [json.loads(line) for line in (base / "endpoint-unqualified.out").read_bytes().splitlines()]
+    require([row["history"] for row in rows] == [row["id"] for row in plan["cases"]] == [f"HST-{number:02}" for number in range(1, 13)], "HST reporting missing or reordered stable history")
+    require(all(row["outcome"] == "Unqualified" and row["reason"] == "CanonicalHistoryNotExported" for row in rows), "HST reporting cannot promote a missing history")
+    aliases = {"AppendRetry": "append_retry", "CommitRetry": "commit_retry", "AbsentZeroTail": "absent_zero_tail", "SubtreeFork": "subtree_fork", "ComposedFork": "composed_fork"}
+    require(all(row["partial_case_exports"] == [aliases[case] for case in history["partial_ordinary_cases"]] for row, history in zip(rows, plan["cases"])), "HST partial exports differ from adopted plan")
+    for label in ("endpoint-unqualified", "endpoint-invalid-option"):
+        run = load(label + ".json")
+        require(run["exit"] == 1 and 0 < run["seconds"] < 10 and run["argv"][0] == load("runner-compile-executable.json")["path"], "HST endpoint refusal executable/runtime differs")
+    require("step=require_hst_qualification" in (base / "endpoint-unqualified.err").read_text() and "step=read_environment" not in (base / "endpoint-unqualified.err").read_text(), "HST endpoint must refuse before provider setup")
+    require(not (base / "endpoint-invalid-option.out").read_bytes() and "step=parse_hst_requirement" in (base / "endpoint-invalid-option.err").read_text(), "HST invalid option must fail typed before work")
+    require(admission["build_slot_tree"] == load("job.json")["build_slot_tree"] and admission["build_slot_tree"] in (base / "build-slot.log").read_text(), "HST reporting exact job identity differs")
+    require(producer["positive_proofs"] == producer["complete_hst_exports"] == 0 and producer["selected"] == admission["selected_rust_tests"] == 3 and admission["endpoint_unqualified_rows"] == 12 and 0 < producer["seconds"] < 570, "HST reporting scope/selection/job budget differs")
 
 
 def check_handover(reference):
@@ -169,6 +214,40 @@ def check_handover(reference):
     require(all("tail_record: None" in (base / "streams/source" / name).read_text() for name in ("grpc/client.rs", "wasm/remote.rs")), "Streams unfinished projection source differs; new review required")
     require(receipt["actors"]["state"] == "sketch_only_no_signed_implementation_or_runtime_receipt", "actor sketch cannot qualify runtime proof")
     require(receipt["rb_fs"]["state"] == "owner_reported_no_raw_receipt", "hosted report cannot qualify raw execution")
+
+
+def check_actor_store(reference):
+    path = source_path(reference["repo_receipt"])
+    require(sha256(path) == reference["sha256"], "actor Store admission changed")
+    receipt = json.loads(path.read_bytes())
+    require(receipt["kind"] == "partial_actor_store_observation_not_full_a4_qualification" and not receipt["full_obligation_qualified"] and receipt["positive_proofs"] == receipt["negative_controls_detected"] == 0, "partial Store output cannot qualify full A4")
+    require(not receipt["qualified_modes"] and not receipt["runtime_qualified"] and not receipt["readiness_qualified"] and not receipt["keep_contract_qualified"], "Store cannot qualify Runtime, readiness, Keep or another mode")
+    require(not receipt["complete_executable_provenance"] and receipt["positive"]["executable_sha256"] is None, "missing Store executable hashes cannot become complete provenance")
+    require(receipt["owner"] == "rb-actors" and receipt["retired_owner"] == "b-runtime", "actor ownership transfer differs")
+    for capture in receipt["captures"]:
+        captured = source_path(capture["repo_path"])
+        require(sha256(captured) == capture["sha256"] and captured.stat().st_size == capture["bytes"], "actor Store capture changed")
+    base = path.parent
+    load = lambda name: json.loads((base / "run" / name).read_bytes())
+    formatted = load("formatted.json")
+    require(formatted == load("restored.json") == receipt["formatted_source"] and len(formatted) == 6 and receipt["formatted_files_match_signed_pin"] and receipt["restored_source_matches"], "actor Store restoration/source join differs")
+    for name, digest in formatted.items():
+        require(sha256(base / "source" / name) == digest, "actor Store formatted source differs")
+    require(sha256(base / "run/sources.json") == receipt["source_manifest_sha256"] and sha256(base / "producer.sh") == load("sources.json")[".bb-a4-store.sh"], "actor Store producer/input identity differs")
+    require(receipt["store_pin"] == "252c28c27fd490186f7e17e1d55b47ffe82a9e9a" and receipt["ready_pin"] == "4056b65d72ed901caef674a3ec01d93d630800fe", "actor Store and readiness pins differ")
+    for pin in (receipt["store_pin"], receipt["ready_pin"]):
+        require((base / ("signature-" + pin[:12] + ".txt")).read_text().startswith(pin + " G "), "actor signed source capture differs")
+    positive = (base / "run/positive.log").read_text()
+    tests = ["memory_atomic_history", "memory_epoch_alarm_pause_fences", "bounded_alarm_histories", "local_atomic_history", "reopen_preserves_the_complete_committed_tuple", "local_epoch_alarm_pause_fences"]
+    require(receipt["positive"]["selected"] == 6 and receipt["positive"]["runtime_reported_seconds"] == 0.05 and receipt["positive"]["modes"] == ["memory", "local"] and load("positive.json")["exit"] == 0 and "6 passed; 0 failed; 0 ignored;" in positive and "finished in 0.05s" in positive and all(f"local::tests::{test} ... ok" in positive for test in tests), "actor Store positive selection/outcomes differ")
+    expected = [("epoch", "epoch fencing", "memory_epoch_alarm_pause_fences"), ("alarm", "alarm generation fencing", "memory_epoch_alarm_pause_fences"), ("split", "one checkpoint/effect transaction", "memory_atomic_history")]
+    require(len(receipt["observed_controls"]) == 3, "actor Store control selection differs")
+    for observed, (label, assertion, test) in zip(receipt["observed_controls"], expected):
+        log = (base / "run" / (label + "-negative.log")).read_text()
+        require((observed["label"], observed["assertion"], observed["test"]) == (label, assertion, test) and observed["mode"] == "memory" and observed["executable_sha256"] is None and observed["mutant_source_sha256"] is None, "actor Store control scope/provenance differs")
+        require(load(label + "-negative.json")["exit"] == 101 and "0 passed; 1 failed; 0 ignored;" in log and "finished in 0.00s" in log and assertion in log and f"local::tests::{test} ... FAILED" in log and "error[E" not in log, "actor Store control lacks exact semantic failure")
+    source = (base / "source/rust/crates/actors/src/local.rs").read_text()
+    require("AlarmChange::Keep if matches!(trigger, Trigger::Alarm { .. }) => Some(None)" in source, "old Store Keep mismatch requires a new review")
 
 
 def check_append_eof(reference):
@@ -215,6 +294,7 @@ def check(require_qualified):
     risks = {name: index for index, name in enumerate(("data_loss_or_corruption", "authority_or_security", "liveness", "resource_bounds", "ergonomics"))}
     require(entries == sorted(entries, key=lambda entry: (risks[entry["risk"]], entry["id"])), "risk order differs from contract")
     references = inventory["entrypoints"] + [inventory["runner"]]
+    references.extend(inventory["hst_reporting"]["source"])
     for entry in entries:
         require(entry["invariant"] and entry["proof_specification"] and entry["negative_controls"], f"missing contract or negative control: {entry['id']}")
         require(set(entry["modes"]) == {"memory", "local", "hosted", "wasm_browser"}, f"missing mode: {entry['id']}")
@@ -225,6 +305,8 @@ def check(require_qualified):
             require(entry["partial_proof"] in inventory["partial_proofs"], f"missing partial proof: {entry['id']}")
         for observation in entry.get("handover_observations", []):
             require(observation in inventory["handover_observations"], f"missing handover observation: {entry['id']}")
+        if entry["id"].startswith("actors."):
+            require(entry["owner"] == "rb-actors" and entry.get("actor_store_observation") in inventory["actor_store_observations"], "actor entry requires current owner and scoped Store observation")
         for control in entry["negative_controls"]:
             if control["status"] == "detected":
                 require(control["receipt"] in inventory["evidence"], f"missing control receipt: {entry['id']}")
@@ -238,6 +320,9 @@ def check(require_qualified):
         check_observations(reference)
     for reference in inventory.get("handover_observations", {}).values():
         check_handover(reference)
+    check_hst_reporting(inventory["hst_reporting"])
+    for reference in inventory.get("actor_store_observations", {}).values():
+        check_actor_store(reference)
     for reference in inventory.get("partial_proofs", {}).values():
         check_append_eof(reference)
     cleanliness = inventory["cleanliness"]
@@ -248,7 +333,7 @@ def check(require_qualified):
     messages = [record for record in records if record.get("reason") == "compiler-message"]
     require(len(messages) == len(cleanliness["diagnostics"]) == 4, "captured baseline Clippy diagnostic count differs")
     require(not cleanliness["strict_clean_pass"] and cleanliness["new_proof_diagnostics"] == 0, "cannot relabel baseline warnings as a strict cleanliness pass")
-    require(all(not any("conformance/wave1" in span["file_name"] or "wave1_keys" in span["file_name"] or "wave1-conformance" in span["file_name"] for span in record["message"]["spans"] if span.get("is_primary")) for record in messages), "new proof Clippy diagnostic present")
+    require(all(not any("conformance/wave1" in span["file_name"] or "wave1_keys" in span["file_name"] or "wave1_coverage" in span["file_name"] or "wave1-conformance" in span["file_name"] for span in record["message"]["spans"] if span.get("is_primary")) for record in messages), "new proof Clippy diagnostic present")
     summary = inventory["qualification_summary"]
     require(summary["obligations"] == len(entries), "obligation count differs")
     require(summary["negative_tests_detected"] == max(receipt["test_count"] for receipt in inventory["evidence"].values()), "negative tests counted twice across repeated runs")

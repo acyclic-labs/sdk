@@ -8,14 +8,8 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
     let id = create(&mut seed, "identity", vec![b'a'; 128].into(), &cancel).await?;
     commit(&mut seed, &cancel).await?;
     for (local_offset, remote_offset, safe) in [(0, 64, true), (10, 12, false)] {
-        let mut local = volume
-            .checkout(GenerationSelector::Head, writable_tracking(), B, &cancel)
-            .await?
-            .value;
-        let mut remote = volume
-            .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-            .await?
-            .value;
+        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
         local
             .change_content(
                 id,
@@ -69,10 +63,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             );
         }
     }
-    let mut extending = volume
-        .checkout(GenerationSelector::Head, writable_tracking(), B, &cancel)
-        .await?
-        .value;
+    let mut extending = open_checkout(&volume, writable_tracking(), &cancel).await?;
     for change in [
         ContentChange::Write {
             offset: 128,

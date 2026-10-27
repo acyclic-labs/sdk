@@ -10,14 +10,7 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         (source.create_volume_with_id(VolumeId::from_bytes([97; 16]), config(), B, &cancellation))
             .await?
             .value;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     (checkout.create(
         AuthoredMutation::CreateFile {
             path: path("file")?,
@@ -124,10 +117,7 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
     .err()
     .ok_or("changed-operation restore unexpectedly succeeded")?;
     assert!(matches!(changed_operation.error, FsError::CreationRejected));
-    let mut restored_checkout =
-        (restored.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
-            .await?
-            .value;
+    let mut restored_checkout = open_checkout(&restored, pinned(), &cancellation).await?;
     let bytes = (restored_checkout.read_file_range(
         &path("file")?,
         ByteRange {

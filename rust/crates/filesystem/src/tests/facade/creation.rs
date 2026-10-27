@@ -28,10 +28,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
         .create_volume_with_id(id, config(), B, &cancel)
         .await?
         .value;
-    let head = first
-        .checkout(GenerationSelector::Head, pinned(), B, &cancel)
-        .await?
-        .value;
+    let head = open_checkout(&first, pinned(), &cancel).await?;
     let exact = retry
         .checkout(
             GenerationSelector::Exact(head.generation_id()),
@@ -98,10 +95,7 @@ async fn pre_cancelled_facade_operations_perform_zero_work() -> TestResult {
 async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> TestResult {
     let active = CancellationToken::new();
     let (volume, _) = fixture(config(), &active).await?;
-    let mut checkout = volume
-        .checkout(GenerationSelector::Head, writable_tracking(), B, &active)
-        .await?
-        .value;
+    let mut checkout = open_checkout(&volume, writable_tracking(), &active).await?;
     let file = path("cancelled-file")?;
     let id = create(
         &mut checkout,

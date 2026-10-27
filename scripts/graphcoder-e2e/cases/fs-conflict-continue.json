@@ -1,8 +1,10 @@
 {
-  "id": "fs-branch-merge-plain",
+  "id": "fs-conflict-continue",
   "workspace": {
-    "kind": "plain",
-    "files": {}
+    "kind": ["git", "plain"],
+    "files": {
+      "seed.txt": "base\n"
+    }
   },
   "model": {
     "steps": [
@@ -22,7 +24,7 @@
         "when": {},
         "tools": [
           {
-            "id": "switch",
+            "id": "topic",
             "name": "fs",
             "arguments": {
               "command": "switch topic"
@@ -34,13 +36,13 @@
         "when": {},
         "tools": [
           {
-            "id": "write",
+            "id": "topic-text",
             "name": "write",
             "arguments": {
-              "path": "topic.txt",
-              "text": "TOPIC_E2E\n",
+              "path": "seed.txt",
+              "text": "topic\n",
               "media_type": "text/plain",
-              "display_name": "topic.txt"
+              "display_name": "seed.txt"
             }
           }
         ]
@@ -49,10 +51,10 @@
         "when": {},
         "tools": [
           {
-            "id": "add",
+            "id": "topic-add",
             "name": "fs",
             "arguments": {
-              "command": "add topic.txt"
+              "command": "add seed.txt"
             }
           }
         ]
@@ -61,7 +63,7 @@
         "when": {},
         "tools": [
           {
-            "id": "commit",
+            "id": "topic-commit",
             "name": "fs",
             "arguments": {
               "command": "commit -m \"topic\""
@@ -85,7 +87,46 @@
         "when": {},
         "tools": [
           {
-            "id": "merge",
+            "id": "main-text",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "main\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main-add",
+            "name": "fs",
+            "arguments": {
+              "command": "add seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main-commit",
+            "name": "fs",
+            "arguments": {
+              "command": "commit -m \"main\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "conflict",
             "name": "fs",
             "arguments": {
               "command": "merge topic"
@@ -94,13 +135,18 @@
         ]
       },
       {
-        "when": {},
+        "when": {
+          "tool_result": "conflict"
+        },
         "tools": [
           {
-            "id": "diff",
-            "name": "fs",
+            "id": "resolve",
+            "name": "write",
             "arguments": {
-              "command": "diff"
+              "path": "seed.txt",
+              "text": "resolved\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
             }
           }
         ]
@@ -109,10 +155,22 @@
         "when": {},
         "tools": [
           {
-            "id": "log",
+            "id": "resolve-add",
             "name": "fs",
             "arguments": {
-              "command": "log"
+              "command": "add seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "continue",
+            "name": "fs",
+            "arguments": {
+              "command": "merge --continue"
             }
           }
         ]
@@ -124,13 +182,15 @@
             "id": "show",
             "name": "fs",
             "arguments": {
-              "command": "show HEAD"
+              "command": "show HEAD:seed.txt"
             }
           }
         ]
       },
       {
-        "when": {},
+        "when": {
+          "tool_result": "resolved"
+        },
         "text": [
           "done"
         ]
@@ -145,10 +205,20 @@
     }
   ],
   "assert": {
-    "requests": 11,
+    "requests": 15,
     "files": {
-      "topic.txt": "TOPIC_E2E\n"
-    }
+      "seed.txt": "resolved\n"
+    },
+    "model_contains": [
+      "conflict",
+      "resolved"
+    ],
+    "tool_errors": [
+      "conflict"
+    ],
+    "tool_contains": [
+      "conflict"
+    ]
   },
   "ntfs": true
 }

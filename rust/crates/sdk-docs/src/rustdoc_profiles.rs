@@ -193,27 +193,17 @@ impl ProfileSpec {
         let features = self
             .features
             .iter()
-            .map(|feature| hex(feature.as_bytes()))
+            .map(|feature| crate::hex_digest("", feature.as_bytes()))
             .collect::<Vec<_>>()
             .join(",");
         ProfileId(format!(
             "p{};t{};d{};f{}",
-            hex(self.package.as_bytes()),
-            hex(self.target.as_bytes()),
+            crate::hex_digest("", self.package.as_bytes()),
+            crate::hex_digest("", self.target.as_bytes()),
             u8::from(self.default_features),
             features
         ))
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        result.push(DIGITS[(byte >> 4) as usize] as char);
-        result.push(DIGITS[(byte & 0xf) as usize] as char);
-    }
-    result
 }
 
 /// Derive the bounded profile matrix from the package's actual Cargo feature

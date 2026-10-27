@@ -33,6 +33,6 @@ proptest::proptest! {
         let expected = format!("{:x}", reference.finalize());
         let one_shot = sha256_hex(&bytes);
         proptest::prop_assert_eq!(one_shot.as_str(), expected.as_str());
-        proptest::prop_assert_eq!(hex_digest(native.finish().as_ref()), expected);
+        proptest::prop_assert_eq!(hex_digest("", native.finish().as_ref()), expected);
     }
 }

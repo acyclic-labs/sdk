@@ -244,7 +244,7 @@ pub(super) fn build_data_inner(
             revision: input.revision.clone(),
             source_state: input.source_state.clone(),
             source_sha256: input.source_sha256.clone(),
-            input_sha256: hex_digest(input_digest.finish().as_ref()),
+            input_sha256: hex_digest("", input_digest.finish().as_ref()),
             rustdoc_format_versions: format_versions.into_iter().collect(),
             generator: format!("sdk-docs/{GENERATOR_VERSION}"),
         },

@@ -380,7 +380,8 @@ fn bytes_hex(value: &serde_json::Value) -> Result<String, Error> {
 }
 
 pub(super) fn digest_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("sha256:{:x}", hasher.finalize())
+    crate::hex_digest(
+        "sha256:",
+        ring::digest::digest(&ring::digest::SHA256, bytes).as_ref(),
+    )
 }

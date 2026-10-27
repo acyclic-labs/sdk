@@ -19,10 +19,7 @@ pub(super) async fn fixture(
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
     let volume = Fs::memory().create_volume(config, B, cancel).await?.value;
-    let checkout = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, cancel)
-        .await?
-        .value;
+    let checkout = open_checkout(&volume, writable_pinned(), cancel).await?;
     Ok((volume, checkout))
 }
 
@@ -46,7 +43,10 @@ pub(super) async fn create(
         .value)
 }
 
-pub(super) async fn commit(checkout: &mut TestCheckout, cancel: &CancellationToken) -> TestResult {
+pub(super) async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    checkout: &mut Checkout<A, O>,
+    cancel: &CancellationToken,
+) -> TestResult {
     checkout
         .commit(
             OperationId::new(),
@@ -76,11 +76,11 @@ pub(super) async fn read(
         .bytes)
 }
 
-pub(super) async fn open_checkout(
-    volume: &TestVolume,
+pub(super) async fn open_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
     mode: CheckoutMode,
     cancel: &CancellationToken,
-) -> Result<TestCheckout, OperationFailure<FsError>> {
+) -> Result<Checkout<A, O>, OperationFailure<FsError>> {
     volume
         .checkout(GenerationSelector::Head, mode, B, cancel)
         .await

@@ -6,7 +6,6 @@
 //! the returned source digest to its generation receipt.
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -15,9 +14,6 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScenarioMode {
-    /// Compile the Rust example with the pinned, locked toolchain.
-    #[allow(dead_code)]
-    Compile,
     /// Execute against the local, self-contained fixture.
     ExecuteLocal,
     /// Execute against a declared qualification endpoint during release or a
@@ -556,18 +552,18 @@ fn digest_files<'a>(
     root: &Path,
     files: impl IntoIterator<Item = &'a PathBuf>,
 ) -> Result<String, Error> {
-    let mut hasher = Sha256::new();
+    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
     for path in files {
         let relative = path.strip_prefix(root).map_err(|_| {
             Error::Invalid(format!("scenario source escapes root: {}", path.display()))
         })?;
         let bytes = std::fs::read(path).map_err(|error| Error::Io(error.to_string()))?;
         hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
-        hasher.update([0]);
+        hasher.update(&[0]);
         hasher.update(&bytes);
-        hasher.update([0]);
+        hasher.update(&[0]);
     }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(crate::hex_digest("sha256:", hasher.finish().as_ref()))
 }
 
 #[cfg(test)]

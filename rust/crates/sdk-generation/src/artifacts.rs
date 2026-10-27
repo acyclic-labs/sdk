@@ -443,28 +443,26 @@ pub(super) fn write_immutable(path: &Path, bytes: &[u8]) -> Result<(), CliError>
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temp)
+    let mut file = tempfile::Builder::new()
+        .prefix(".tmp-")
+        .make_in(path.parent().unwrap_or(path), |temp| {
+            fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(temp)
+        })
         .map_err(io_error)?;
     file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)?;
-    drop(file);
-    match fs::hard_link(&temp, path) {
-        Ok(()) => {
-            let _ = fs::remove_file(&temp);
-            Ok(())
-        }
+    file.as_file().sync_all().map_err(io_error)?;
+    match file.persist_noclobber(path) {
+        Ok(_) => Ok(()),
         Err(error) => {
-            let _ = fs::remove_file(&temp);
             if let Ok(existing) = fs::read(path) {
                 if existing == bytes {
                     return Ok(());
                 }
             }
-            Err(io_error(error))
+            Err(io_error(error.error))
         }
     }
 }

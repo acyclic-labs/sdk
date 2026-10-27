@@ -36,7 +36,7 @@ fn helper_fixture(root: &Path) -> Vec<String> {
 
 #[test]
 fn every_build_helper_input_changes_the_actual_attested_identity() {
-    let root = test_root("build-helper-inputs");
+    let (root_directory, root) = test_root("build-helper-inputs");
     let output = root.join("output");
     let inputs = helper_fixture(&root);
     let baseline = source_file_hashes(&root, &output).expect("source inventory should build");
@@ -61,7 +61,9 @@ fn every_build_helper_input_changes_the_actual_attested_identity() {
         assert_eq!(digest_map(&old(&baseline)), digest_map(&old(&actual)));
         write(&root, &relative, &original);
     }
-    fs::remove_dir_all(root).expect("source fixture should be removable");
+    root_directory
+        .close()
+        .expect("source fixture should be removable");
 }
 
 fn inputs_path(path: &str) -> bool {
@@ -79,7 +81,7 @@ proptest! {
         file in "[a-z][a-z0-9]{0,15}\\.(rs|bin|toml)",
         bytes in proptest::collection::vec(any::<u8>(), 0..256),
     ) {
-        let root = test_root("nested-helper-property");
+        let (root_directory, root) = test_root("nested-helper-property");
         let output = root.join("output");
         let relative = format!("compatibility/src/{directory}/{file}");
         write(&root, &relative, &bytes);
@@ -90,6 +92,6 @@ proptest! {
         write(&root, &relative, &changed);
         let after = source_file_hashes(&root, &output).expect("edited inventory should build");
         prop_assert_ne!(digest_map(&before), digest_map(&after));
-        fs::remove_dir_all(root).expect("source fixture should be removable");
+        root_directory.close().expect("source fixture should be removable");
     }
 }

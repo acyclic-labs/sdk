@@ -11,14 +11,7 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
             .value;
     assert_eq!(volume.id(), VolumeId::from_bytes([117; 16]));
     assert_eq!(volume.config(), config());
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_tracking(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout = open_checkout(&volume, writable_tracking(), &cancellation).await?;
     let source = path("source-path")?;
     let destination = path("destination-path")?;
     let source_id = (checkout.create(
@@ -82,48 +75,20 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         &cancellation,
     ))
     .await?;
+    let clone = FileCloneRequest {
+        source: source.clone(),
+        source_offset: 0,
+        destination: destination.clone(),
+        destination_offset: 32,
+        length: 96,
+    };
     (checkout.change_content(
-        FileCloneRequest {
-            source: source.clone(),
-            source_offset: 0,
-            destination: destination.clone(),
-            destination_offset: 32,
-            length: 96,
-        }
-        .destination,
+        clone.destination,
         ContentChange::CloneFrom {
-            source: FileCloneRequest {
-                source: source.clone(),
-                source_offset: 0,
-                destination: destination.clone(),
-                destination_offset: 32,
-                length: 96,
-            }
-            .source,
-            source_offset: FileCloneRequest {
-                source: source.clone(),
-                source_offset: 0,
-                destination: destination.clone(),
-                destination_offset: 32,
-                length: 96,
-            }
-            .source_offset,
-            offset: FileCloneRequest {
-                source: source.clone(),
-                source_offset: 0,
-                destination: destination.clone(),
-                destination_offset: 32,
-                length: 96,
-            }
-            .destination_offset,
-            length: FileCloneRequest {
-                source: source.clone(),
-                source_offset: 0,
-                destination: destination.clone(),
-                destination_offset: 32,
-                length: 96,
-            }
-            .length,
+            source: clone.source,
+            source_offset: clone.source_offset,
+            offset: clone.destination_offset,
+            length: clone.length,
         },
         ContentTimes::Preserve,
         B,

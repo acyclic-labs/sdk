@@ -14,14 +14,8 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
     };
     seed.set_attributes(id, times, None, B, &cancel).await?;
     commit(&mut seed, &cancel).await?;
-    let mut stamped = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
-    let mut separate = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut stamped = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    let mut separate = open_checkout(&volume, writable_pinned(), &cancel).await?;
     for (checkout, stamp) in [
         (&mut stamped, ContentTimes::Stamp(99)),
         (&mut separate, ContentTimes::Preserve),
@@ -149,10 +143,7 @@ async fn whole_file_rewrites_exceed_read_bounds_but_remain_generation_fenced() -
     )
     .await?;
     commit(&mut seed, &cancel).await?;
-    let mut replacement = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut replacement = open_checkout(&volume, writable_pinned(), &cancel).await?;
     rewrite(
         &mut replacement,
         b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk",
@@ -177,14 +168,8 @@ async fn whole_file_rewrites_exceed_read_bounds_but_remain_generation_fenced() -
             .as_ref(),
         b"rqponmlk"
     );
-    let mut first = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
-    let mut stale = volume
-        .checkout(GenerationSelector::Head, writable_pinned(), B, &cancel)
-        .await?
-        .value;
+    let mut first = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    let mut stale = open_checkout(&volume, writable_pinned(), &cancel).await?;
     rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12", &cancel).await?;
     assert!(matches!(
         first

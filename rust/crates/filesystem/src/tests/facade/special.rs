@@ -11,14 +11,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
         (fs.create_volume_with_id(VolumeId::from_bytes([115; 16]), posix, B, &cancellation))
             .await?
             .value;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let receipt = (checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateEmptySpecial {
@@ -94,14 +87,8 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
         (fs.create_volume_with_id(VolumeId::from_bytes([116; 16]), windows, B, &cancellation))
             .await?
             .value;
-    let mut windows_checkout = (windows_volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut windows_checkout =
+        open_checkout(&windows_volume, writable_pinned(), &cancellation).await?;
     let reparse = path("reparse")?;
     let reparse_payload = OwnedBytes::from_static(b"opaque-reparse-data");
     let receipt = (windows_checkout.apply_authored_transaction(
@@ -135,14 +122,7 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
         (fs.create_volume_with_id(VolumeId::from_bytes([98; 16]), windows, B, &cancellation))
             .await?
             .value;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let payload = OwnedBytes::from_static(b"opaque-reparse\0payload");
     (checkout.create(
         AuthoredMutation::CreateReparsePoint {
