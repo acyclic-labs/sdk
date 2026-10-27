@@ -39,7 +39,13 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
             #sig { <Self as #target>::#name(#(#args),*) #wait }
         });
     }
-    let attrs: Vec<_> = contract.attrs.iter().filter(|attr| attr.path().is_ident("cfg_attr")).collect();
+    // rustc expands cfg_attr before invoking this attribute macro. Preserve
+    // async_trait in either form so trait and forwarding impl have identical
+    // erased-future lifetimes on native and WASM targets.
+    let attrs: Vec<_> = contract.attrs.iter().filter(|attr| {
+        attr.path().is_ident("cfg_attr")
+            || attr.path().segments.last().is_some_and(|part| part.ident == "async_trait")
+    }).collect();
     let name = &contract.ident;
     let required = &explicit.ident;
     Ok(quote! {

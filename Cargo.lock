@@ -203,6 +203,7 @@ dependencies = [
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "heck",
  "proc-macro2",
  "prost",

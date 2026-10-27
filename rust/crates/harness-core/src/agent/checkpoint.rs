@@ -297,7 +297,9 @@ mod tests {
                 event: Box::new(file()),
             }),
         ];
-        for outcome in outcomes() {
+        for outcome in outcomes().into_iter().chain([AgentOutcome::Failed {
+            message: widest_text(MAX_MESSAGE_BYTES),
+        }]) {
             records.push(InboxRecord::ChildDone(ChildDone {
                 child: deepest.clone(),
                 outcome,
@@ -500,7 +502,10 @@ mod tests {
             let phases = [Phase::Idle, Phase::Running,
                 Phase::WaitingApproval { id: intent() },
                 Phase::WaitingAlarm { deadline_unix_ms: u64::MAX }];
-            for phase in phases.into_iter().chain(outcomes().into_iter().map(|outcome| Phase::Done { outcome })) {
+            let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
+                message: widest_text(MAX_MESSAGE_BYTES),
+            }]);
+            for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
                 let record = StatusRecord { phase, cursor: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);

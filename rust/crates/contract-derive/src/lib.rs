@@ -22,6 +22,20 @@ mod registration;
 /// assert_eq!(Provider::write(&Complete), 7);
 /// ```
 ///
+/// Conditional async-trait expansion must reach the forwarding impl too.
+/// ```
+/// use acyclic_contract_derive::explicit_provider;
+/// #[explicit_provider]
+/// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+/// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+/// trait Provider { async fn write(&self) -> u8 { 0 } }
+/// struct Complete;
+/// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+/// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+/// impl ExplicitProvider for Complete { async fn write(&self) -> u8 { 7 } }
+/// let _forwarded = Provider::write(&Complete);
+/// ```
+///
 /// ```compile_fail,E0046
 /// use acyclic_contract_derive::explicit_provider;
 /// #[explicit_provider]
