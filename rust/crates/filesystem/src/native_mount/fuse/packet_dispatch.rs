@@ -223,6 +223,13 @@ impl FuseProjection {
             retained_work = Some(work.clone());
             self.packet_operation(request, &mut output, owner, work)
         });
+        // A post-effect guard can retain its actual terminal cause while
+        // returning only errno from the semantic helper. Surface that same
+        // original receipt now, including accounting failure after success,
+        // so a quiet socket does not wait for another packet to retire.
+        if let Some(failure) = PacketFailure::retained(&self.core) {
+            return Err(failure.retaining_work(retained_work));
+        }
         match result {
             Ok(true) => Ok(PacketCompletion::no_reply().retaining_optional_work(retained_work)),
             Ok(false) => Ok(
