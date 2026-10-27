@@ -13,6 +13,7 @@
 use super::{
     FilesystemContentPublisher, FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost,
     TurnAdmission, TurnExecutors, TurnLimits, agent_authority,
+    attestation::{Attested, AttestedProvider, Attestor},
 };
 use crate::{
     OperationId,
@@ -28,11 +29,14 @@ use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clo
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, EmbeddedCapabilities,
     FilesystemCommit, FilesystemCommitOutcome, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
-    distributed::AuthorityProvider,
 };
 use std::sync::Arc;
 
-type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+/// The attested placement stream every agent and volume of a binding uses.
+pub type Stream<P> = Attested<P>;
+type Host<P, O> = FilesystemHost<StreamAuthorityStore<Stream<P>>, O>;
+/// The turn host of a binding's agents.
+pub type Turner<P, O> = FilesystemTurnHost<Stream<P>, StreamAuthorityStore<Stream<P>>, O>;
 
 /// The caller a host's platform verified for one request, before any of the
 /// request's IO: the audience its scope was issued for, and the scope itself.
@@ -123,6 +127,8 @@ pub struct Placement<P, O> {
     /// claims only these, so each tree served on a shared stream needs its
     /// own namespace, and one binding serves all of its roots' trees.
     pub within: ActorReference,
+    /// Evidence for each sealed write, when the provider requires it.
+    pub attestor: Option<Arc<dyn Attestor>>,
 }
 
 /// How hosted agents run their turns.
@@ -139,18 +145,19 @@ pub struct Turns {
 
 /// A host's custody, a caller's admission and the one placement they act on,
 /// bound once. Every root, turn and spawn of this binding uses this placement.
-pub struct Bound<P: AuthorityProvider + 'static, O: 'static> {
+pub struct Bound<P: AttestedProvider + 'static, O: 'static> {
     issuer: AuthorityRoot,
     admission: TurnAdmission,
     within: ActorReference,
     maximum_bytes: u64,
-    agents: Arc<AgentHost<P>>,
+    agents: Arc<AgentHost<Stream<P>>>,
+    turns: Arc<Turner<P, O>>,
     volumes: Arc<Host<P, O>>,
 }
 
 impl<P, O> Bound<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AttestedProvider + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Binds `caller`, as the host's platform verified it, to the host's
@@ -200,7 +207,9 @@ where
             capabilities,
             provider,
             within,
+            attestor,
         } = placement;
+        let stream = Arc::new(Attested::new(stream, attestor, admission.clone()));
         let volumes = FilesystemHost::new(
             Fs::new(
                 StreamAuthorityStore::new(Arc::clone(&stream)),
@@ -212,14 +221,15 @@ where
         )
         .map_err(turn)?;
         let maximum_bytes = turns.limits.maximum_bytes;
-        let driver = ExecutorDriver::new(Arc::new(FilesystemTurnHost::new(
+        let turner = Arc::new(FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
             issuer.clone(),
             admission.clone(),
             turns.executors,
             turns.limits,
-        )));
+        ));
+        let driver = ExecutorDriver::new(Arc::clone(&turner));
         let spawns = Arc::new(FilesystemSpawnVolumes::new(
             Arc::clone(&volumes),
             issuer.clone(),
@@ -240,6 +250,7 @@ where
             within,
             maximum_bytes,
             agents,
+            turns: turner,
             volumes,
         })
     }
@@ -254,8 +265,14 @@ where
 
     /// The agents this binding creates and hosts.
     #[must_use]
-    pub const fn agents(&self) -> &Arc<AgentHost<P>> {
+    pub const fn agents(&self) -> &Arc<AgentHost<Stream<P>>> {
         &self.agents
+    }
+
+    /// The turns of this binding's agents: their approvals and decisions.
+    #[must_use]
+    pub const fn turns(&self) -> &Arc<Turner<P, O>> {
+        &self.turns
     }
 
     /// Account and namespace of this binding's agent actors.

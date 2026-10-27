@@ -167,6 +167,20 @@ pub struct Approval {
     pub id: IntentId,
 }
 
+/// An authorized caller asks this agent to spawn a child. The agent's next
+/// step spawns it exactly as its own turn's spawn tool does; the child is
+/// named by this record's inbox sequence, so no two requests collide.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnRequest {
+    /// Who asked.
+    pub by: Sender,
+    /// Stable intent identity.
+    pub id: IntentId,
+    /// Task brief, at most [`MAX_MESSAGE_BYTES`].
+    pub brief: String,
+}
+
 /// A child delegates an approval request to this agent (the parent approver).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -219,6 +233,8 @@ pub enum InboxRecord {
     Archive(Control),
     /// A host plugin hook.
     Hook(Hook),
+    /// Spawn a child on an authorized caller's request.
+    Spawn(SpawnRequest),
 }
 
 /// Current phase of an agent, appended to its status stream on change and on
@@ -342,6 +358,12 @@ impl AgentRecord for InboxRecord {
             | Self::Cancel(Control { by: from, .. })
             | Self::Archive(Control { by: from, .. }) => check_sender(from),
             Self::Hook(hook) => check_text(&hook.host),
+            Self::Spawn(spawn) => {
+                if spawn.brief.is_empty() || spawn.brief.len() > MAX_MESSAGE_BYTES {
+                    return Err(Error::Record("spawn brief must be 1-4096 bytes"));
+                }
+                check_sender(&spawn.by)
+            }
             Self::Approval(_) | Self::ApprovalRequested(_) => Ok(()),
         }
     }
