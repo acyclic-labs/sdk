@@ -299,7 +299,8 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let repeated_fence = provider_receipt!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
+    let repeated_fence =
+        provider_receipt!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
     assert_eq!(
         repeated_fence.value,
         FenceOutcome::Conflict {

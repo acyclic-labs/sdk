@@ -446,7 +446,14 @@ pub(super) fn verify(
     }
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
     let authenticated = authenticate(&verifier.public, trust.as_ref(), scope, timestamp, work)?;
-    authorize_scope(trust.as_ref(), audience, scope, timestamp, &authenticated, work)
+    authorize_scope(
+        trust.as_ref(),
+        audience,
+        scope,
+        timestamp,
+        &authenticated,
+        work,
+    )
 }
 pub(super) fn verify_trusted(
     trust: &dyn verify::Trust,

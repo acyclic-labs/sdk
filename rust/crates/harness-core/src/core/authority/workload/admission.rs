@@ -69,8 +69,14 @@ pub(in crate::core::authority) fn record(
     let timestamp = now();
     let trust = runtime.public.trust.read().map_err(unauthorized)?;
     let authenticated = authenticate(&runtime.public, trust.as_ref(), scope, timestamp, work)?;
-    let capability =
-        authorize_scope(trust.as_ref(), audience, scope, timestamp, &authenticated, work)?;
+    let capability = authorize_scope(
+        trust.as_ref(),
+        audience,
+        scope,
+        timestamp,
+        &authenticated,
+        work,
+    )?;
     let name = resource(audience)?;
     let signer = runtime.workload.receipt_signer(id, timestamp)?;
     let receipt = RuntimeAdmission::new(&signer, trust.as_ref(), timestamp)

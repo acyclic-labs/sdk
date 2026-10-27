@@ -723,7 +723,6 @@ impl std::fmt::Debug for AuthorityVerifier {
     }
 }
 
-
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "effect_root_tests.rs"]
