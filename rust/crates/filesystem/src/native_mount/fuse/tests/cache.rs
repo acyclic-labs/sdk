@@ -773,7 +773,7 @@ fn direct_projection_does_not_admit_kernel_cache_leases() -> Result<(), Box<dyn 
     use super::super::{FopenFlags, FuseProjection, ProjectionCache, ProjectionConfig};
     use std::ffi::OsStr;
 
-    let (source, _) = shared_sources(posix_config())?;
+    let (source, around) = shared_sources(posix_config())?;
     let source: Arc<dyn MountFilesystem> = Arc::new(source);
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(FINITE_HANDLER_POLICY, &cancellation)
@@ -821,6 +821,10 @@ fn direct_projection_does_not_admit_kernel_cache_leases() -> Result<(), Box<dyn 
         projection.lookup_entry(ROOT_INODE, OsStr::new("absent"), &work),
         Err(error) if callback_errno(&error) == libc::ENOENT
     ));
+    around.create_file(&name("absent"), FileMetadata::default(), None, &work)?;
+    let external = projection.lookup_entry(ROOT_INODE, OsStr::new("absent"), &work)?;
+    assert_ne!(external.attr.ino.0, 0);
+    assert_eq!(external.ttl, Duration::ZERO);
     assert!(
         !projection
             .open_directory(ROOT_INODE, &work)?
@@ -845,5 +849,7 @@ fn direct_projection_does_not_admit_kernel_cache_leases() -> Result<(), Box<dyn 
         ProjectionCache::Direct.capabilities(),
         super::super::InitFlags::FUSE_PARALLEL_DIROPS
     );
+    drop(state);
+    projection.flush_handle(created.attr.ino.0, handle, false, true, &work)?;
     Ok(())
 }

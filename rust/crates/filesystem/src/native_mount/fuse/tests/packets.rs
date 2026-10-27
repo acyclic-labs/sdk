@@ -208,7 +208,11 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
                             assert_eq!(actual_header.remaining(), expected_header.remaining());
                         }
                     }
-                    _ => panic!("captured no-reply shape changed during replay"),
+                    _ => {
+                        return Err(NativeMountError::Lifecycle(
+                            "captured no-reply shape changed during replay",
+                        ));
+                    }
                 }
                 Ok(())
             })
