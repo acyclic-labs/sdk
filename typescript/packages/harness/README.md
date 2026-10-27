@@ -18,6 +18,10 @@ the exact original request; a transport error does not authorize a fresh intent.
 Use the exported Rust `encodeCanonicalJson` to construct command bytes; it accepts
 `BigInt` for exact counters and rejects unsafe integer Numbers. Command schema and
 byte-limit admission remain in `PreparedAgentCommand`.
+`prepareAgentInvocation(controls, command)` composes these Rust boundaries for a
+typed `AgentCommand` and releases the temporary command after preparation. It
+returns the caller-owned invocation without executing it. Keep that invocation
+through `execute()` errors; the helper opens no transport and retries nothing.
 Command delivery acknowledges inbox admission, while conversation/status records
 establish settlement. Approval answers use the observed immutable approval binding.
 
