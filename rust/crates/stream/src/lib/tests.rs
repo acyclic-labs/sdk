@@ -104,6 +104,9 @@ mod replay_tests {
         ) -> Result<Option<IdempotencyObservation>, StreamError> {
             self.inner.inspect_idempotency(key).await
         }
+        async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+            self.inner.head(path).await
+        }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await
         }

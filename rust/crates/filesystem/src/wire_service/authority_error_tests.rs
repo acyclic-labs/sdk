@@ -45,6 +45,12 @@ impl StreamProvider for FaultStream {
         self.inner.operation_claims()
     }
 
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        if let Some(error) = self.take_failure(&path) {
+            return Err(error);
+        }
+        self.inner.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         if let Some(error) = self.take_failure(&path) {
             return Err(error);

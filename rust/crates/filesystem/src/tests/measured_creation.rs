@@ -311,6 +311,9 @@ mod source_bound_lost_ack {
             self.inner.inspect_idempotency(key).await
         }
 
+        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+            self.inner.head(path).await
+        }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await
         }

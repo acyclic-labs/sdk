@@ -768,6 +768,13 @@ impl StreamProvider for ReleaseSpy {
         }
         Ok(result)
     }
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.reads.store(true, SeqCst);
+        if self.deny_probes_after_commit && self.writes.load(SeqCst) {
+            return Err(StreamError::InvalidArgument);
+        }
+        self.inner.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.reads.store(true, SeqCst);
         if self.deny_probes_after_commit && self.writes.load(SeqCst) {

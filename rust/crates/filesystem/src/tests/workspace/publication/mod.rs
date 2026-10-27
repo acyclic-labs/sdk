@@ -71,6 +71,15 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.inspect_idempotency(key).await
     }
 
+    async fn head(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::PathHead, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.head(path).await
+    }
     async fn tail(
         &self,
         path: acyclic_stream::StreamPath,

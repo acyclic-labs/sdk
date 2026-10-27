@@ -93,6 +93,9 @@ impl StreamProvider for ModelStream {
         self.inner.operation_claims()
     }
 
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.call(self.inner.head(path)).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.call(self.inner.tail(path)).await
     }

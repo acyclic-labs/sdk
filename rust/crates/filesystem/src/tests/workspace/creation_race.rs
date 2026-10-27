@@ -85,6 +85,13 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.inner.inspect_idempotency(key).await
     }
 
+    async fn head(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::PathHead, acyclic_stream::StreamError> {
+        self.pause().await;
+        self.inner.head(path).await
+    }
     async fn tail(
         &self,
         path: acyclic_stream::StreamPath,

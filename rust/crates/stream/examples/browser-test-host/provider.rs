@@ -8,6 +8,17 @@ pub(super) struct Provider {
     pub(super) saved: AtomicBool,
     pub(super) outbox_saved: AtomicU64,
 }
+impl Provider {
+    fn durable(&self, path: &StreamPath, accepted: u64) -> u64 {
+        if path.as_str() == "remote-outbox/files" {
+            accepted.min(self.outbox_saved.load(Ordering::Acquire))
+        } else if self.saved.load(Ordering::Acquire) {
+            accepted
+        } else {
+            0
+        }
+    }
+}
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
@@ -20,6 +31,11 @@ impl StreamProvider for Provider {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
+    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
+        let mut head = self.memory.head(path.clone()).await?;
+        head.durable = self.durable(&path, head.tail);
+        Ok(head)
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await
     }
@@ -30,13 +46,7 @@ impl StreamProvider for Provider {
         let accepted = self.memory.tail(path.clone()).await?;
         Ok(StreamWatermarks {
             accepted,
-            durable: if path.as_str() == "remote-outbox/files" {
-                accepted.min(self.outbox_saved.load(Ordering::Acquire))
-            } else if self.saved.load(Ordering::Acquire) {
-                accepted
-            } else {
-                0
-            },
+            durable: self.durable(&path, accepted),
         })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {

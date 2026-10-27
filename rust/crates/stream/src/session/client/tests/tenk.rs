@@ -29,6 +29,9 @@ impl StreamProvider for Owners {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        self.memory.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await
     }

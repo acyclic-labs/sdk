@@ -70,6 +70,7 @@ macro_rules! delegate {
 }
 
 delegate! {
+    head(path: StreamPath) -> acyclic_stream::PathHead;
     inspect_idempotency(key: IdempotencyKey) -> Option<IdempotencyObservation>;
     tail(path: StreamPath) -> u64;
     bounds(path: StreamPath) -> StreamBounds;
