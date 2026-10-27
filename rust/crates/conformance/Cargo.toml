@@ -25,7 +25,7 @@ graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:grap
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-agent-host-conformance = { path = "agent-host" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
-acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false, features = ["conformance"] }
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
 rustls = { workspace = true, optional = true }
@@ -95,21 +95,6 @@ required-features = ["local-runner"]
 name = "bench-objects"
 test = false
 path = "src/bin/bench_objects.rs"
-required-features = ["local-runner"]
-
-[[bench]]
-name = "filesystem"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
-name = "filesystem_alloc"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
-name = "objects"
-harness = false
 required-features = ["local-runner"]
 
 [[bench]]

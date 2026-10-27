@@ -151,7 +151,8 @@ Portable vectors check binary size boundaries, immutable history, typed read
 refusals, cancellation, fork isolation and removal. The checked benchmark reads
 one exact immutable 4-KiB value after warmup and rejects head, metadata, list,
 lease or token probes. Mount qualification additionally exercises the real mounted
-interface through the existing mount qualifier. Run the memory adapter on demand:
+interface through the existing mount qualifier. Run the memory and durable local
+adapters on demand (the default features include local storage):
 
 ```sh
 cargo test --locked -p acyclic-fs --features conformance,memory --test main public_conformance

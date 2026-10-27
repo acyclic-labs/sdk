@@ -124,3 +124,7 @@ impl Model {
         Ok(())
     }
 }
+
+/// Reusable streaming model provider vectors and dispatch budgets.
+#[cfg(feature = "conformance")]
+pub mod conformance;

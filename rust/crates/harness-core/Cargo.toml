@@ -38,6 +38,7 @@ path = "tests/skill_materializer_loom.rs"
 required-features = ["model-checking"]
 
 [features]
+conformance = ["acyclic-stream/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]
 tui = []

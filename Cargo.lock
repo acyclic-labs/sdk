@@ -913,6 +913,7 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
+ "divan",
  "futures",
  "getrandom 0.4.3",
  "hex",
