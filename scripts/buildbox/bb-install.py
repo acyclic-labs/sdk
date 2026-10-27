@@ -295,6 +295,9 @@ def canary(generation=None):
             steps.append('mount -o bind,ro '+shlex.quote(str(generation))+' /home/var/bin')
         # The staged generation's cache authority is not yet the host service.
         if generation is not None:run.append('--cold')
+        # Host precondition for every scope-leasing job (Cloud's lease reads its own cpu.max).
+        steps.append("systemd-run --scope -q --slice=bbjobs.slice --uid=var -- sh -c "
+                     "'test -r \"/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.max\"' && echo BB_CANARY_SCOPE_OK")
         steps+=['cd '+shlex.quote(str(crate)),
                 shlex.join([*run,'bash','-c','echo BB_CANARY_SCRIPT_OK']),
                 shlex.join([*run,'cargo','build','--offline','--quiet'])+' && echo BB_CANARY_CARGO_OK']
@@ -304,7 +307,7 @@ def canary(generation=None):
             if (admit/'admit.sock').exists():cache_authority(generation or ROOT/'current').drain_admission(admit)
         finally:
             output=result.stdout+result.stderr
-            if result.returncode or 'BB_CANARY_SCRIPT_OK' not in result.stdout or 'BB_CANARY_CARGO_OK' not in result.stdout:
+            if result.returncode or any(m not in result.stdout for m in ('BB_CANARY_SCOPE_OK','BB_CANARY_SCRIPT_OK','BB_CANARY_CARGO_OK')):
                 raise RuntimeError('kind=GENERATION_CANARY stage='+('staged' if generation else 'live')+
                                    ' rc='+str(result.returncode)+' output='+shlex.quote(output[-2000:]))
     finally:
