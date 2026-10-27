@@ -87,7 +87,7 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
                 provider.clone(),
                 "agent-guest".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(id(7)),
+                VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(7).to_bytes())),
                 &mut None,
             )?,
             posix: GuestPosixPolicy {
