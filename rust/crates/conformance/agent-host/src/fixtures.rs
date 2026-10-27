@@ -73,10 +73,10 @@ impl TurnDriver for Driver {
         &'a self,
         _agent: &'a AgentState,
         _cursor: u64,
-        input: Option<TurnInput>,
+        input: Option<Queued>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let id = match input {
+            let id = match input.map(|queued| queued.input) {
                 Some(TurnInput::ApprovalRequested { id, .. } | TurnInput::Message { id, .. }) => id,
                 _ => return Err(Error::Record("unexpected conformance input")),
             };
@@ -93,6 +93,7 @@ impl TurnDriver for Driver {
                 checkpoint: None,
                 outs,
                 wait: Wait::Input,
+                drops: None,
             })
         })
     }

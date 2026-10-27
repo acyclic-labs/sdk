@@ -6,8 +6,10 @@
 //! commit.
 
 use super::checkpoint::{self, MAX_CHECKPOINT_BYTES, TAIL_SLACK};
+pub use super::input::{Progress, Queued, TurnInput};
+use super::input::{awaits, input};
 use super::{
-    AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase, Sender,
+    AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase,
     StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
@@ -63,66 +65,6 @@ pub enum SpawnOutcome {
     },
 }
 
-/// Input queued for the turn, in inbox order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum TurnInput {
-    /// The adoption brief.
-    Brief {
-        /// Brief file.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
-        brief: Box<FileRef>,
-    },
-    /// A message.
-    Message {
-        /// Sender.
-        from: Sender,
-        /// Message identity.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        id: IntentId,
-        /// Body.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
-        body: Box<FileRef>,
-        /// Inbox sequence of the message record, as returned
-        /// by `Delivered::Committed`; it correlates a settled turn with
-        /// its prompt, including a replayed send.
-        inbox: u64,
-    },
-    /// A child finished.
-    ChildDone {
-        /// Child and outcome.
-        done: ChildDone,
-    },
-    /// A child delegated an approval request.
-    ApprovalRequested {
-        /// The child.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        child: AgentPath,
-        /// Request identity.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        id: IntentId,
-    },
-    /// A response file exists for this agent's approval request.
-    Approval {
-        /// Request identity.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        id: IntentId,
-    },
-    /// A host hook event.
-    Hook {
-        /// Host.
-        host: String,
-        /// Hook identity.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        id: IntentId,
-        /// Event file.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
-        event: Box<FileRef>,
-    },
-}
-
 /// Durable agent state, carried in the actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +79,9 @@ pub struct AgentState {
     pub policy: Option<FileRef>,
     /// Exact conversation tail; the agent is its only writer.
     pub conversation_tail: u64,
+    /// Inherited conversation tail at adoption: this agent's own entries are
+    /// `[conversation_base, conversation_tail)`, in increasing inbox order.
+    pub conversation_base: u64,
     /// Exact status tail; the agent is its only writer.
     pub status_tail: u64,
     /// Last published phase.
@@ -146,7 +91,7 @@ pub struct AgentState {
     /// Open children that still have to receive `Archive`.
     pub archive_pending: BTreeSet<AgentPath>,
     /// Inputs waiting for the turn, in inbox order.
-    pub queued: VecDeque<TurnInput>,
+    pub queued: VecDeque<Queued>,
     /// Inbox sequence of the first input not held in `queued`. It and every
     /// later input are read back from the inbox, in order, as `queued` drains.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,8 +104,8 @@ pub struct AgentState {
     pub closed: bool,
     /// `ChildDone` has been sent to the parent.
     pub reported: bool,
-    /// Turn driver checkpoint while a turn is in progress.
-    pub turn: Option<Vec<u8>>,
+    /// The turn in progress.
+    pub turn: Option<Progress>,
     /// While a turn is in progress, the children its recorded spawns open
     /// when it settles, beyond those already open: slots a spawn requested
     /// meanwhile cannot take, so every spawn a tool reported succeeds.
@@ -182,6 +127,7 @@ impl AgentState {
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             conversation_tail: adopted.conversation_tail,
+            conversation_base: adopted.conversation_tail,
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
@@ -244,7 +190,12 @@ impl AgentState {
             return true;
         }
         let bytes = |input: &TurnInput| serde_json::to_vec(input).map_or(usize::MAX, |b| b.len());
-        let held: usize = self.queued.iter().skip(1).map(bytes).sum();
+        let held: usize = self
+            .queued
+            .iter()
+            .skip(1)
+            .map(|queued| bytes(&queued.input))
+            .sum();
         self.queued.len() < MAX_QUEUED && held.saturating_add(bytes(input)) <= MAX_QUEUED_BYTES
     }
 
@@ -253,6 +204,16 @@ impl AgentState {
         self.queued.clear();
         self.overflow = None;
         self.taken.clear();
+    }
+
+    /// Drops every pending input before inbox sequence `end`; the inbox
+    /// read-back resumes at `end`.
+    fn drop_before(&mut self, end: u64) {
+        self.queued.retain(|queued| queued.inbox >= end);
+        self.taken.retain(|sequence| *sequence >= end);
+        if self.overflow.is_some_and(|from| from < end) {
+            self.overflow = Some(end);
+        }
     }
 
     /// The overflowed inbox records to read back before inbox sequence `end`:
@@ -278,7 +239,7 @@ impl AgentState {
             let Some(input) = input(sequence, record) else {
                 continue;
             };
-            if !self.holds(&input) {
+            if !self.holds(&input.input) {
                 self.overflow = Some(sequence);
                 return;
             }
@@ -331,6 +292,10 @@ pub enum Wait {
     Continue,
     /// Wait for the response to this approval request.
     Approval(IntentId),
+    /// Wait for an event hook from this host, such as a native process
+    /// claiming or settling the turn's input. Like an approval response, the
+    /// hook is taken ahead of the input queued behind the turn.
+    Host(String),
     /// Wait until this Unix millisecond deadline.
     Until(u64),
     /// The turn finished; wait for more input.
@@ -350,6 +315,9 @@ pub struct TurnStep {
     pub outs: Vec<Out>,
     /// What to wait for next.
     pub wait: Wait,
+    /// Drops every input pending before this inbox sequence, held or still
+    /// in the inbox: the host's own cancel or archive, taken out of order.
+    pub drops: Option<u64>,
 }
 
 /// Future returned by a turn driver: `Send` on native hosts, event-loop
@@ -366,7 +334,7 @@ pub trait TurnDriver: acyclic_stream::ProviderPlatform {
         &'a self,
         agent: &'a AgentState,
         cursor: u64,
-        input: Option<TurnInput>,
+        input: Option<Queued>,
     ) -> TurnFuture<'a>;
 }
 
@@ -444,11 +412,12 @@ pub async fn step<T: TurnDriver + ?Sized>(
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
             let mut state = AgentState::adopted(path.clone(), &adopted);
-            state
-                .queued
-                .extend(adopted.brief.map(|brief| TurnInput::Brief {
+            state.queued.extend(adopted.brief.map(|brief| Queued {
+                inbox: adopted.forked_at,
+                input: TurnInput::Brief {
                     brief: Box::new(brief),
-                }));
+                },
+            }));
             state
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
@@ -522,7 +491,7 @@ fn control(state: &AgentState) -> Control {
         mode: match &state.phase {
             Phase::Idle => Mode::Idle,
             Phase::Running => Mode::Running,
-            Phase::WaitingApproval { .. } => Mode::Approval,
+            Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
             Phase::WaitingAlarm { deadline_unix_ms } => Mode::Alarm(*deadline_unix_ms),
             Phase::Done { .. } => Mode::Done,
         },
@@ -563,49 +532,18 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         // this step consumes it. Any other input joins the window, or, once
         // the window is full or already overflowed, stays in the inbox to be
         // read back in order. No admitted input is ever dropped.
-        let awaited = matches!(
-            (&state.phase, &input),
-            (Phase::WaitingApproval { id }, TurnInput::Approval { id: response }) if id == response
-        );
-        if awaited {
+        if awaits(&state.phase, &input.input) {
             if state.overflow.is_some() {
                 state.taken.insert(sequence);
             }
             state.queued.push_back(input);
-        } else if state.overflow.is_none() && state.holds(&input) {
+        } else if state.overflow.is_none() && state.holds(&input.input) {
             state.queued.push_back(input);
         } else {
             state.overflow.get_or_insert(sequence);
         }
     }
     Ok(state)
-}
-
-/// The turn input an inbox record at `sequence` carries.
-pub(super) fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
-    match record {
-        InboxRecord::Message(message) => Some(TurnInput::Message {
-            from: message.from,
-            id: message.id,
-            body: message.body,
-            inbox: sequence,
-        }),
-        InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
-        InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
-        InboxRecord::ApprovalRequested(request) => Some(TurnInput::ApprovalRequested {
-            child: request.child,
-            id: request.id,
-        }),
-        InboxRecord::Hook(hook) => Some(TurnInput::Hook {
-            host: hook.host,
-            id: hook.id,
-            event: hook.event,
-        }),
-        InboxRecord::ForkAdopted(_)
-        | InboxRecord::Cancel(_)
-        | InboxRecord::Archive(_)
-        | InboxRecord::Spawn(_) => None,
-    }
 }
 
 /// Whether a driver's effect fits the record that carries it.
@@ -623,15 +561,12 @@ fn admissible(out: &Out) -> bool {
     }
 }
 
-/// Position of the queued response to the approval the turn waits for.
+/// Position of the queued input the waiting turn takes next (see [`awaits`]).
 fn approval_position(state: &AgentState) -> Option<usize> {
-    let Phase::WaitingApproval { id } = &state.phase else {
-        return None;
-    };
     state
         .queued
         .iter()
-        .position(|input| matches!(input, TurnInput::Approval { id: queued } if queued == id))
+        .position(|queued| awaits(&state.phase, &queued.input))
 }
 
 /// Runs at most one turn step, as chosen by [`kernel::pick`].
@@ -654,6 +589,11 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
+    // A resumed turn keeps the input that started it.
+    let started = match (&state.turn, &input) {
+        (Some(turn), _) => Some(turn.inbox),
+        (None, input) => input.as_ref().map(|input| input.inbox),
+    };
     let mut turn = driver.step(state, cursor, input).await?;
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
@@ -666,7 +606,11 @@ async fn run<T: TurnDriver + ?Sized>(
             wait: Wait::Done(AgentOutcome::Failed {
                 message: INADMISSIBLE_EFFECT.into(),
             }),
+            drops: None,
         };
+    }
+    if let Some(end) = turn.drops {
+        state.drop_before(end);
     }
     outs.extend(turn.outs);
     let wait = match turn.wait {
@@ -675,13 +619,25 @@ async fn run<T: TurnDriver + ?Sized>(
     };
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
-        Wait::Approval(id) => (kernel::Wait::Approval, Some(id), None),
+        Wait::Approval(id) => (
+            kernel::Wait::Approval,
+            Some(Phase::WaitingApproval { id }),
+            None,
+        ),
+        Wait::Host(host) => (
+            kernel::Wait::Approval,
+            Some(Phase::WaitingHost { host }),
+            None,
+        ),
         Wait::Until(deadline) => (kernel::Wait::Until(deadline), None, None),
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
     let (next, send) = kernel::settle(control(state), wait);
-    state.turn = next.turn.then(|| turn.checkpoint.unwrap_or_default());
+    state.turn = started.filter(|_| next.turn).map(|inbox| Progress {
+        inbox,
+        checkpoint: turn.checkpoint.unwrap_or_default(),
+    });
     state.reserved_children = match state.turn {
         Some(_) => u16::try_from(turn.reserved_children.min(MAX_OPEN_CHILDREN)).unwrap_or(u16::MAX),
         None => 0,
@@ -689,7 +645,7 @@ async fn run<T: TurnDriver + ?Sized>(
     state.reported = next.reported;
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
-        (Mode::Approval, Some(id), _) => Phase::WaitingApproval { id },
+        (Mode::Approval, Some(waiting), _) => waiting,
         (Mode::Alarm(deadline_unix_ms), ..) => Phase::WaitingAlarm { deadline_unix_ms },
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();

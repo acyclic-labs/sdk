@@ -109,6 +109,7 @@ impl<'de> Deserialize<'de> for AgentPageRequest {
 /// operation before provider I/O and stages content through its existing owner.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
     /// Discover the root admitted by this session's credential.
@@ -176,6 +177,18 @@ pub enum AgentCommand {
         approved: bool,
         /// Optional explanation, charged to the command byte limit.
         reason: Option<String>,
+    },
+    /// The committed reply to message `id`, accepted at inbox sequence
+    /// `inbox` (see `acyclic_harness_core::agent::reply`).
+    Reply {
+        /// Agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Message identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Inbox sequence `Delivered::Committed` returned for the message.
+        inbox: u64,
     },
 }
 

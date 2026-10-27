@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     Error, Result,
-    agent::{AgentPath, ConversationEntry, StatusRecord, TurnInput},
+    agent::{AgentPath, ConversationEntry, StatusRecord},
     conversation::{ContentAccess, ContentResidencyVerifier, VolumeRef},
     filesystem::{FilesystemContentVerifier, TOOL_OUTPUT, TurnAdmission, agent_authority},
 };
@@ -26,13 +26,9 @@ const CREDENTIAL: u32 = 0;
 pub enum Event {
     /// The agent's phase after a transition, with its consumed inbox cursor.
     Status(StatusRecord),
-    /// One settled turn: its message's inbox sequence, if a message started it.
-    Turn {
-        /// Inbox sequence of the message that started the turn.
-        inbox: Option<u64>,
-        /// The settled conversation entry.
-        entry: ConversationEntry,
-    },
+    /// One settled turn's conversation entry, at the inbox sequence of the
+    /// record that started it.
+    Turn(ConversationEntry),
     /// New tool output was announced; [`Observer::absorb`] reads it.
     Output,
     /// The runtime failed the agent's delivery; it stays queued for a retry
@@ -229,11 +225,7 @@ impl Observer {
                         .map_err(storage)?
                         .next_sequence();
                     self.tail.reset(end);
-                    let inbox = match &entry.input {
-                        TurnInput::Message { inbox, .. } => Some(*inbox),
-                        _ => None,
-                    };
-                    return Ok(Event::Turn { inbox, entry });
+                    return Ok(Event::Turn(entry));
                 }
                 Ok(AgentEvent::Resource { .. }) => return Ok(Event::Output),
                 Ok(AgentEvent::Progress) => {}

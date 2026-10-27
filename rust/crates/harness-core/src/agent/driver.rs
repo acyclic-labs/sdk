@@ -8,7 +8,7 @@
 
 use super::{
     AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, Error, InboxRecord,
-    IntentId, Out, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
+    IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
     OperationId,
@@ -126,8 +126,12 @@ impl TurnStop {
 /// One conversation record: a settled turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ConversationEntry {
+    /// Inbox sequence of the record that started the turn (see [`Queued`]).
+    /// An agent appends its own entries in strictly increasing inbox order.
+    pub inbox: u64,
     /// Input that started the turn.
     pub input: TurnInput,
     /// The executor's complete output, staged on the agent's private volume.
@@ -164,15 +168,24 @@ pub fn turn_id(agent: &AgentState, input: &TurnInput) -> Result<OperationId, Err
     Ok(OperationId::from_bytes(bytes))
 }
 
-fn encode(input: &TurnInput) -> Result<Vec<u8>, Error> {
+fn encode(input: &impl Serialize) -> Result<Vec<u8>, Error> {
     crate::contract::canonical_json_bytes(input)
         .map_err(|_| Error::Record("turn input does not encode"))
 }
 
 /// The input of the turn a step continues (kept in the checkpoint), or new input.
-fn starting(agent: &AgentState, input: Option<TurnInput>) -> Result<TurnInput, Error> {
+fn starting(agent: &AgentState, input: Option<Queued>) -> Result<Queued, Error> {
     match (&agent.turn, input) {
-        (Some(bytes), None | Some(TurnInput::Approval { .. })) => serde_json::from_slice(bytes)
+        (
+            Some(Progress {
+                checkpoint: bytes, ..
+            }),
+            None
+            | Some(Queued {
+                input: TurnInput::Approval { .. },
+                ..
+            }),
+        ) => serde_json::from_slice(bytes)
             .map_err(|_| Error::Record("turn checkpoint is not a turn input")),
         (None, Some(input)) => Ok(input),
         (Some(_), Some(_)) => Err(Error::Record("new input while a turn is in progress")),
@@ -254,10 +267,10 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         &'a self,
         agent: &'a AgentState,
         cursor: u64,
-        input: Option<TurnInput>,
+        input: Option<Queued>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let input = starting(agent, input)?;
+            let Queued { inbox, input } = starting(agent, input)?;
             let turn = turn_id(agent, &input)?;
             let content = model_input(&input)?;
             let stop = TurnStop::new(agent.path.clone(), cursor);
@@ -286,6 +299,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
+                    drops: None,
                 });
             }
             let failed = |message: &str| TurnStep {
@@ -295,6 +309,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 wait: Wait::Done(AgentOutcome::Failed {
                     message: message.to_owned(),
                 }),
+                drops: None,
             };
             let progress = match progress {
                 Ok(progress) => progress,
@@ -322,6 +337,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         None => None,
                     };
                     let entry = ConversationEntry {
+                        inbox,
                         input,
                         output: output.clone(),
                     };
@@ -344,6 +360,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         checkpoint: None,
                         outs,
                         wait,
+                        drops: None,
                     }
                 }
                 ExecutionProgress::Pending(approval) => {
@@ -373,10 +390,11 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         None => 0,
                     };
                     return Ok(TurnStep {
-                        checkpoint: Some(encode(&input)?),
+                        checkpoint: Some(encode(&Queued { inbox, input })?),
                         reserved_children,
                         outs,
                         wait: Wait::Approval(id),
+                        drops: None,
                     });
                 }
                 ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),

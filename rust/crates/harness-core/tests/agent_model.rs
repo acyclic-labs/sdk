@@ -13,6 +13,8 @@ mod driver;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
+#[path = "agent_model/reply.rs"]
+mod reply;
 #[path = "agent_model/runtime.rs"]
 mod runtime;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
@@ -424,7 +426,7 @@ impl TurnDriver for Scripted {
         &'a self,
         _agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<TurnInput>,
+        _input: Option<Queued>,
     ) -> TurnFuture<'a> {
         let next = self.0.lock().expect("script lock").pop_front();
         Box::pin(async move { next.ok_or(Error::Record("script exhausted")) })
@@ -452,6 +454,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
         checkpoint: None,
         outs: vec![Out::Conversation(b"answer".to_vec())],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
+        drops: None,
     }]);
     let approval = InboxRecord::Approval(Approval { id: intent("q1") });
     let first = step(
@@ -500,6 +503,7 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
         checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
         outs: vec![Out::Conversation(b"partial".to_vec())],
         wait: Wait::Continue,
+        drops: None,
     }]);
     let stepped = step(
         &driver,
@@ -547,6 +551,7 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
         wait: Wait::Done(AgentOutcome::Failed {
             message: "x".repeat(MAX_OUTCOME_BYTES),
         }),
+        drops: None,
     }]);
     let stepped = step(
         &driver,
@@ -589,7 +594,10 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
     state.phase = Phase::WaitingApproval { id: intent("q") };
-    state.turn = Some(Vec::new());
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
     let request = |n: u64| -> Result<InboxRecord> {
         Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
             child: path.child(&id(2))?,
@@ -600,7 +608,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         state
             .queued
             .iter()
-            .filter_map(|input| match input {
+            .filter_map(|queued| match &queued.input {
                 TurnInput::ApprovalRequested { id, .. } => Some(id.as_str().to_owned()),
                 _ => None,
             })
@@ -625,6 +633,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
+        drops: None,
     }]);
     let approval = InboxRecord::Approval(Approval { id: intent("q") });
     let wake = Wake::Inbox {
@@ -893,7 +902,7 @@ impl TurnDriver for ToolSpawner {
         &'a self,
         agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<TurnInput>,
+        _input: Option<Queued>,
     ) -> TurnFuture<'a> {
         *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
         Box::pin(async move {
@@ -906,6 +915,7 @@ impl TurnDriver for ToolSpawner {
                     volumes: Vec::new(),
                 }],
                 wait: Wait::Input,
+                drops: None,
             })
         })
     }
@@ -914,9 +924,10 @@ impl TurnDriver for ToolSpawner {
 #[tokio::test]
 async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
     let (root, mut state) = one_below_the_child_limit()?;
-    state
-        .queued
-        .push_back(TurnInput::Approval { id: intent("q") });
+    state.queued.push_back(Queued {
+        inbox: 1,
+        input: TurnInput::Approval { id: intent("q") },
+    });
     let driver = ToolSpawner(Mutex::new(None));
     // The spawn's step carries only the spawn: no turn runs while its child
     // is being created, so none can write to it in the creating commit.
@@ -959,7 +970,10 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
 async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> Result {
     // The turn's tool recorded a spawn into the last slot, then paused.
     let (root, mut state) = one_below_the_child_limit()?;
-    state.turn = Some(Vec::new());
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
     state.phase = Phase::WaitingApproval { id: intent("q") };
     state.reserved_children = 1;
     let driver = script(vec![TurnStep {
@@ -971,6 +985,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
             volumes: Vec::new(),
         }],
         wait: Wait::Input,
+        drops: None,
     }]);
     // A client's spawn meanwhile is refused rather than taking that slot.
     let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
@@ -1013,6 +1028,7 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
             Out::Conversation(b"fits".to_vec()),
         ],
         wait: Wait::Input,
+        drops: None,
     }]);
     let stepped = step(
         &driver,

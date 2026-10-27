@@ -6,8 +6,8 @@
 use crate::{
     Error, LocalHarness, Result,
     agent::{
-        AgentPath, Control, ConversationEntry, Delivered, InboxRecord, IntentId, Phase, Sender,
-        StatusRecord, TurnInput,
+        AgentPath, Control, ConversationEntry, Delivered, InboxRecord, IntentId, Phase, Reply,
+        Sender, StatusRecord, TurnInput,
     },
     approvals::{ApprovalPolicy, ApprovalResponder, Approver},
     conversation::{ContentResidencyVerifier, FileRef},
@@ -168,23 +168,32 @@ impl Conversation {
         Ok((prompt, output.text))
     }
 
-    /// Whether message `inbox`, which a status cursor already passed, was
-    /// dropped without a turn (cancelled): it is neither queued, unread nor in
-    /// a running turn. Returns the conversation tail that holds every turn
-    /// settled by then, so an entry for it below that tail still answers it.
+    /// The committed reply to message `id`, which [`Self::send`] committed at
+    /// inbox sequence `inbox`: its settled entry, pending, or dropped.
+    ///
+    /// # Errors
+    /// Harness, storage or decoding failures, and an entry at `inbox` that
+    /// settled another request.
+    pub async fn reply(&self, id: &str, inbox: u64) -> Result<Reply> {
+        let (agents, _) = self.local.agents().await?;
+        agents
+            .reply(&self.agent, &intent(id)?, inbox)
+            .await
+            .map_err(|error| match error {
+                crate::agent::Error::Conflict(reason) => Error::Conflict(reason.into()),
+                error => failed(error),
+            })
+    }
+
+    /// Why a dropped prompt got no turn: the agent finished, or a cancel
+    /// cleared it.
     ///
     /// # Errors
     /// Harness, storage or decoding failures.
-    pub async fn dropped(&self, inbox: u64) -> Result<Option<u64>> {
+    pub async fn dropped(&self) -> Result<String> {
         let (agents, _) = self.local.agents().await?;
         let state = agents.state(&self.agent).await.map_err(failed)?;
-        let queued = state.queued.iter().any(
-            |input| matches!(input, TurnInput::Message { inbox: queued, .. } if *queued == inbox),
-        );
-        let unread = state
-            .overflow
-            .is_some_and(|first| inbox >= first && !state.taken.contains(&inbox));
-        Ok((!queued && !unread && state.turn.is_none()).then_some(state.conversation_tail))
+        Ok(finished(&state.phase).unwrap_or_else(|| "the prompt was cancelled".into()))
     }
 
     /// Number of settled turns.
@@ -217,7 +226,11 @@ impl Conversation {
 /// finished.
 #[must_use]
 pub fn ended(status: &StatusRecord) -> Option<String> {
-    match &status.phase {
+    finished(&status.phase)
+}
+
+fn finished(phase: &Phase) -> Option<String> {
+    match phase {
         Phase::Done { outcome } => Some(format!("conversation ended: {outcome:?}")),
         _ => None,
     }

@@ -85,7 +85,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let entries = settled(&agents, &root).await?;
     assert_eq!(entries.len(), 1);
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
-    assert!(matches!(entry.input, TurnInput::Message { inbox: settled, .. } if settled == inbox));
+    assert_eq!(entry.inbox, inbox);
+    assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.requests().len(), 1);
     // A client reads the settled output from the root's private volume.
     let output = harness

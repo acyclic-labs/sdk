@@ -38,11 +38,11 @@ pub(crate) fn codec() -> CodecIdentity {
 }
 
 /// The agent state a committed checkpoint carries.
-pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
+pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<(AgentState, u64), Error> {
     if checkpoint.codec != codec() {
         return Err(Error::Record("agent checkpoint codec differs"));
     }
-    decode(&checkpoint.bytes).map(|(state, _)| state)
+    decode(&checkpoint.bytes)
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -62,6 +62,9 @@ struct Encoded {
     /// Turn driver checkpoint.
     #[prost(bytes = "vec", optional, tag = "5")]
     turn: Option<Vec<u8>>,
+    /// Inbox sequence of the input that started the turn.
+    #[prost(uint64, optional, tag = "6")]
+    turn_inbox: Option<u64>,
 }
 
 /// `state`, after consuming the inbox records before `cursor`, as checkpoint
@@ -108,7 +111,8 @@ pub(crate) fn encode(state: &AgentState, cursor: u64) -> Result<Vec<u8>, Error> 
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         open_children: ids,
         archive_pending: bitmap,
-        turn,
+        turn_inbox: turn.as_ref().map(|turn| turn.inbox),
+        turn: turn.map(|turn| turn.checkpoint),
     }
     .encode_to_vec())
 }
@@ -143,7 +147,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(AgentState, u64), Error> {
     }
     state.open_children = open_children;
     state.archive_pending = archive_pending;
-    state.turn = encoded.turn;
+    state.turn = match (encoded.turn, encoded.turn_inbox) {
+        (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
+        (None, None) => None,
+        _ => return Err(malformed()),
+    };
     Ok((state, encoded.cursor))
 }
 
@@ -319,7 +327,9 @@ mod tests {
             brief: Box::new(file()),
         }];
         for (sequence, record) in inbox_records().into_iter().enumerate() {
-            inputs.extend(super::super::machine::input(sequence as u64, record));
+            inputs.extend(
+                super::super::input::input(sequence as u64, record).map(|queued| queued.input),
+            );
         }
         inputs
     }
@@ -363,6 +373,7 @@ mod tests {
         }
         for input in turn_inputs() {
             ConversationEntry {
+                inbox: u64::MAX,
                 input,
                 output: file(),
             }
@@ -389,6 +400,7 @@ mod tests {
                     path: path.clone(),
                     volumes: adopted.volumes.clone(),
                     policy: adopted.policy.clone(),
+                    conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },

@@ -119,7 +119,7 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-fn prompt() -> Result<acyclic_harness_core::conversation::FileRef> {
+pub(crate) fn prompt() -> Result<acyclic_harness_core::conversation::FileRef> {
     use acyclic_harness_core::{conversation::*, resources::ProviderRef};
     let provider = ProviderRef::new(
         "conformance".into(),

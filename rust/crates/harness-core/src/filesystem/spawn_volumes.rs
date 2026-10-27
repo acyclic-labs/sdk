@@ -386,9 +386,9 @@ where
         participant: &Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
         let requested = requested(participant)?;
-        let next = crate::agent::checkpoint_state(next).map_err(guest)?;
+        let next = crate::agent::checkpoint_state(next).map_err(guest)?.0;
         let parent = match (previous, delivered) {
-            (Some(previous), _) => crate::agent::checkpoint_state(previous).map_err(guest)?,
+            (Some(previous), _) => crate::agent::checkpoint_state(previous).map_err(guest)?.0,
             (None, Some(record)) => match InboxRecord::decode(&record.value).map_err(guest)? {
                 InboxRecord::ForkAdopted(adopted) => {
                     let path = match &adopted.parent {

@@ -59,15 +59,13 @@ impl View {
 
     async fn apply(&mut self, conversation: &Conversation, event: Event) -> Result<(), Failure> {
         match event {
-            Event::Turn { inbox, entry } => {
+            Event::Turn(entry) => {
                 let (prompt, answer) = conversation.turn(&entry).await?;
-                let sent = inbox.and_then(|inbox| {
-                    let at = self
-                        .pending
-                        .iter()
-                        .position(|(pending, _)| *pending == inbox)?;
-                    Some(self.pending.remove(at).1)
-                });
+                let sent = self
+                    .pending
+                    .iter()
+                    .position(|(pending, _)| *pending == entry.inbox)
+                    .map(|at| self.pending.remove(at).1);
                 if let Some(text) = sent.or(prompt) {
                     self.blocks.push(Block { prompt: true, text });
                 }

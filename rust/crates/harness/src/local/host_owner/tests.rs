@@ -290,6 +290,20 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
         )
         .await?;
     assert_eq!(agents["agents"].as_array().map(Vec::len), Some(2));
+    // A cancel drops the input queued behind a claimed turn at once.
+    let spawn = SessionAction::Spawn {
+        prompt: "claimed".into(),
+    };
+    fixture.session("claimed", spawn).await?;
+    fixture.session("claimed", SessionAction::Next).await?;
+    let behind = SessionAction::Send {
+        prompt: "behind".into(),
+    };
+    assert_eq!(fixture.session("claimed", behind).await?["pending"], 1);
+    let cancel = SessionAction::Control {
+        control: Control::Cancel,
+    };
+    assert_eq!(fixture.session("claimed", cancel).await?["pending"], 0);
     Ok(())
 }
 

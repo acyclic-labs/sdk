@@ -22,7 +22,7 @@ impl TurnDriver for Spawner {
         &'a self,
         _agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<TurnInput>,
+        _input: Option<Queued>,
     ) -> TurnFuture<'a> {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
@@ -39,6 +39,7 @@ impl TurnDriver for Spawner {
                     Vec::new()
                 },
                 wait: Wait::Input,
+                drops: None,
             })
         })
     }
