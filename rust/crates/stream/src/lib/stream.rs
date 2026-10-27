@@ -28,6 +28,11 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self.path
     }
 
+    /// One atomic observation of history, durability and inherited origin.
+    pub async fn head(&self) -> Result<PathHead, StreamError> {
+        self.provider.head(self.path.clone()).await
+    }
+
     /// Current tail.
     pub async fn tail(&self) -> Result<u64, StreamError> {
         self.provider.tail(self.path.clone()).await
