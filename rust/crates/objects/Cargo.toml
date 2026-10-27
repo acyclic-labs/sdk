@@ -15,6 +15,7 @@ categories = ["api-bindings", "filesystem"]
 
 
 [features]
+model-checking = ["dep:loom"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
@@ -24,6 +25,7 @@ local = ["dep:libc", "tokio/rt"]
 s3 = ["dep:object_store", "dep:reqwest-s3", "dep:rustls", "tokio/rt", "tokio/macros"]
 
 [dependencies]
+loom = { version = "0.7.2", optional = true }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
@@ -83,6 +85,3 @@ tokio = { version = "1.48.0", default-features = false, features = ["macros", "r
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
-
-[target.'cfg(objects_loom)'.dependencies]
-loom = "0.7.2"

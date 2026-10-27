@@ -1,26 +1,26 @@
 //! Publication lock order: state (1) < cursor key (2) < journal tail (3).
 //! These synchronous guards never cross an await. Release in reverse order.
-#[cfg(objects_loom)]
+#[cfg(loom)]
 pub(crate) use loom::sync::Arc;
-#[cfg(objects_loom)]
+#[cfg(loom)]
 use loom::sync::{Mutex as RawMutex, MutexGuard as RawGuard};
-#[cfg(not(objects_loom))]
+#[cfg(not(loom))]
 pub(crate) use std::sync::Arc;
-#[cfg(not(objects_loom))]
+#[cfg(not(loom))]
 use std::sync::{Mutex as RawMutex, MutexGuard as RawGuard};
 use std::{
     ops::{Deref, DerefMut},
     sync::{LockResult, PoisonError},
 };
 
-#[cfg(all(debug_assertions, not(objects_loom)))]
+#[cfg(all(debug_assertions, not(loom)))]
 std::thread_local! { static HELD: std::cell::Cell<u8> = const { std::cell::Cell::new(0) }; }
-#[cfg(objects_loom)]
+#[cfg(loom)]
 loom::thread_local! { static HELD: std::cell::Cell<u8> = std::cell::Cell::new(0); }
 
-#[cfg(any(debug_assertions, objects_loom))]
+#[cfg(any(debug_assertions, loom))]
 struct Rank<const ORDER: u8>(u8);
-#[cfg(any(debug_assertions, objects_loom))]
+#[cfg(any(debug_assertions, loom))]
 impl<const ORDER: u8> Drop for Rank<ORDER> {
     fn drop(&mut self) {
         HELD.with(|held| {
@@ -43,11 +43,11 @@ impl<T, const ORDER: u8> Mutex<T, ORDER> {
     }
     #[track_caller]
     pub(crate) fn lock(&self) -> LockResult<MutexGuard<'_, T, ORDER>> {
-        #[cfg(any(debug_assertions, objects_loom))]
+        #[cfg(any(debug_assertions, loom))]
         HELD.with(|held| assert!(held.get() < ORDER, "lock order: acquisition inversion"));
         let wrap = |inner| MutexGuard {
             inner,
-            #[cfg(any(debug_assertions, objects_loom))]
+            #[cfg(any(debug_assertions, loom))]
             _rank: Rank(HELD.with(|held| held.replace(ORDER))),
         };
         match self.0.lock() {
@@ -60,7 +60,7 @@ impl<T, const ORDER: u8> Mutex<T, ORDER> {
 pub(crate) struct MutexGuard<'a, T, const ORDER: u8 = 1> {
     // Field order unlocks before retiring this thread's rank.
     inner: RawGuard<'a, T>,
-    #[cfg(any(debug_assertions, objects_loom))]
+    #[cfg(any(debug_assertions, loom))]
     _rank: Rank<ORDER>,
 }
 impl<T, const ORDER: u8> Deref for MutexGuard<'_, T, ORDER> {
@@ -76,7 +76,7 @@ impl<T, const ORDER: u8> DerefMut for MutexGuard<'_, T, ORDER> {
 }
 
 #[cfg(test)]
-#[cfg(all(not(objects_loom), debug_assertions))]
+#[cfg(all(not(loom), debug_assertions))]
 mod tests {
     use super::*;
 
