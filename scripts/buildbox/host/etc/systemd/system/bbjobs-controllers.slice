@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep cpu and cpuset delegated to every bbjobs.slice child (job scopes read their own cpu.max/cpuset)
+# systemd enables a controller in a slice's cgroup.subtree_control only when a member
+# unit needs it; this permanent member makes cpu+cpuset available to all job scopes.
+[Slice]
+CPUWeight=100
+AllowedCPUs=0-191
+[Install]
+WantedBy=multi-user.target

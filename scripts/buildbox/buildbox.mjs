@@ -61,7 +61,9 @@ const UNAVAILABLE = 222;
 export let cause = ''; export let causeDetail = '';
 const unavailable = (c, d = '') => { cause = c; causeDetail = String(d).slice(0, 240); return UNAVAILABLE; };
 const LOGDIR = '/home/var/log/buildbox';
-const SSH = ['-F', '/home/var/.ssh/buildbox/config', '-o', 'BatchMode=yes', '-o', 'ControlPath=none'];
+// BUILD_SLOT_SSH_CONFIG: a relaunch candidate's private endpoint for its own canaries (relaunch.py commit()); the
+// host is still bb2 only, and ordinary jobs keep the shared config until the replacement is published.
+const SSH = ['-F', process.env.BUILD_SLOT_SSH_CONFIG || '/home/var/.ssh/buildbox/config', '-o', 'BatchMode=yes', '-o', 'ControlPath=none'];
 const REATTACH_SEC = Number(process.env.BUILD_SLOT_BUILDBOX_REATTACH_SEC || 1200);
 // Windows adapter (2026-10-26): bs.ps1 runs only `snapshot`/`snapshot-attest` here with native git.exe; the shared WSL
 // client does everything else. No log, ssh or cache state is created on the Windows side.

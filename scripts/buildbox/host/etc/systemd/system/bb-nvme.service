@@ -1,0 +1,11 @@
+[Unit]
+Description=Build box local NVMe scratch
+DefaultDependencies=no
+After=local-fs.target
+Before=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/bb-nvme
+[Install]
+WantedBy=multi-user.target

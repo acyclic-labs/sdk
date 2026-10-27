@@ -1,0 +1,6 @@
+[Unit]
+Description=Build box sync and prep (bb-rsync-recv, bb-git-prep): preempts build jobs in user.slice
+
+[Slice]
+CPUWeight=1000
+IOWeight=1000
