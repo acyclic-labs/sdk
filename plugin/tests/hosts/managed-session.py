@@ -70,7 +70,7 @@ if prompt=='recursive':
   return json.loads(result['content'][0]['text'])
  try:
   grandchild=call(1,'spawn');finished=call(2,'wait')
-  assert finished['kind']=='answered' and finished['outcome'].get('Succeeded') is not None,finished
+  assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
   merged=subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],capture_output=True,text=True)
   assert merged.returncode==0,merged.stderr
   assert (cwd/'first.txt').read_text()=='native'
@@ -151,7 +151,7 @@ if prompt=='resumed':
   print('NATIVE_FIXTURE_PASS root-launch',flush=True)
   if scenario=='lifecycle':
    failed=tool('spawn','failed','failed');finished=tool('wait','failed')
-   assert finished['kind']=='answered' and finished['outcome'].get('Failed'),finished
+   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Failed'),finished
    assert not (workspace/'failed.txt').exists(),'failed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/failed'});assert (workspace/'failed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS failed-capture-merge',flush=True)
@@ -174,7 +174,7 @@ if prompt=='resumed':
    recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
    assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
    error=pathlib.Path(recursive['cwd'])/'.volumes/scratch/native-error.txt'
-   assert finished['kind']=='answered' and finished['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
+   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
    assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)

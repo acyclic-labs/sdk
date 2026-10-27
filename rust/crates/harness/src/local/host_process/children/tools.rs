@@ -1,12 +1,15 @@
 //! The coordination tools a native host's model calls, served through the
 //! shared stdio MCP tool server. Native CLIs own agent loops, tools and
 //! policy; these tools only map onto [`NativeChildren`], and a wait parks
-//! until its child is idle.
+//! until its child is idle. Between passes the server sleeps on its client
+//! and every child's readiness together: no thread, timer or poll per child.
 use super::*;
-use crate::mcp::stdio::{ToolCall, ToolProvider, ToolServer};
+use crate::mcp::stdio::{ToolCall, ToolProvider, ToolServer, Wake};
 use serde_json::json;
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::future::Future as _;
+use std::pin::Pin;
+use std::task::Poll;
 
 /// Waits parked at once, bounded like the host's request concurrency.
 const WAITS: usize = 16;
@@ -92,7 +95,7 @@ impl ToolProvider for Coordination {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Value)>,
-    ) -> Result<Option<Duration>> {
+    ) -> Result<Option<Wake>> {
         let Some(children) = self.children.as_mut() else {
             return Ok(None);
         };
@@ -105,12 +108,25 @@ impl ToolProvider for Coordination {
             }
         }
         // Only this owner's own processes can settle a wait, so with none
-        // running it blocks on its host. Ready output schedules another
-        // bounded pass; idle waiting cannot throttle a backpressured pipe.
-        Ok(children.running().then_some(if flowed {
-            Duration::ZERO
-        } else {
-            Duration::from_millis(20)
-        }))
+        // running it blocks on its host. Output a bounded pass left unread
+        // schedules the next pass at once; otherwise the pass runs when a
+        // child's pipe or exit is ready.
+        if !children.running() {
+            return Ok(None);
+        }
+        if flowed {
+            return Ok(Some(Box::pin(std::future::ready(()))));
+        }
+        let mut waits = children.readiness()?;
+        Ok(Some(Box::pin(std::future::poll_fn(move |context| {
+            if waits
+                .iter_mut()
+                .any(|wait| Pin::new(wait).poll(context).is_ready())
+            {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }))))
     }
 }

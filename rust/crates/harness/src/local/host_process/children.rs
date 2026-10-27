@@ -135,6 +135,15 @@ impl NativeChildren {
         !self.children.is_empty()
     }
 
+    /// One wait per running child that fires when its pipes have data or
+    /// room, or it exits, all served by the shared process-event hub.
+    pub fn readiness(&mut self) -> Result<Vec<acyclic_native_runtime::ProcessReadiness>> {
+        self.children
+            .values_mut()
+            .map(|running| running.process.readiness())
+            .collect()
+    }
+
     /// Spawns `reference` with its first prompt, or names the existing child.
     pub fn spawn(&mut self, reference: &str, prompt: String) -> Result<Value> {
         self.accept(reference, SessionAction::Spawn { prompt })
@@ -393,10 +402,10 @@ impl NativeChildren {
     }
 
     /// Archives `reference`, cancelling its running turn and queued inputs.
+    /// Its last accepted prompt stays recorded, so every wait, parked or
+    /// later, answers with that prompt's reply.
     pub fn archive(&mut self, reference: &str) -> Result<Value> {
-        let value = self.stop(reference, Control::Archive)?;
-        self.prompts.remove(reference);
-        Ok(value)
+        self.stop(reference, Control::Archive)
     }
 
     fn stop(&mut self, reference: &str, control: Control) -> Result<Value> {

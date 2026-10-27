@@ -26,4 +26,4 @@ use super::services;
 #[cfg(all(feature = "mcp-stdio", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(all(feature = "mcp-stdio", not(target_arch = "wasm32")))]
-pub use native::{JsonLineReader, StdioMcpTransport, ToolCall, ToolProvider, ToolServer};
+pub use native::{JsonLineReader, StdioMcpTransport, ToolCall, ToolProvider, ToolServer, Wake};

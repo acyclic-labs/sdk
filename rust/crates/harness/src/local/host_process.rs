@@ -334,6 +334,12 @@ impl HostSessionProcess {
         Ok(drained.closed)
     }
 
+    /// Arms one wait for this child's next pipe data, writable stdin or exit,
+    /// served by the shared process-event hub without a thread or timer.
+    pub fn readiness(&mut self) -> Result<acyclic_native_runtime::ProcessReadiness> {
+        self.live_io()?.readiness().map_err(storage)
+    }
+
     /// Takes the actual I/O progress edge; quiet polls never manufacture one.
     pub fn take_output_progress(&mut self) -> bool {
         std::mem::take(&mut self.output_progress)
@@ -434,7 +440,12 @@ mod tests {
         let before = work.remaining().map_err(storage)?;
         let live = work.live_allocation_bytes();
         let mut progressed = false;
-        for _ in 0..32_768 {
+        // Each poll is metered; run past one invocation budget. Pipes at EOF
+        // are released, so a reaped child's polls cost one exit observation.
+        for _ in 0..262_144 {
+            if work.receipt().backend_read_operations > 65_536 {
+                break;
+            }
             process.read_stdout(&mut [0; 8192])?;
             process.drain_stderr()?;
             process.try_wait()?;

@@ -399,6 +399,7 @@ async fn serve_requests(
         let waiting = changed.notified();
         let mut present = BTreeSet::new();
         let mut changed_keys = BTreeSet::new();
+        let mut pending = Vec::new();
         for entry in std::fs::read_dir(directory.join("requests")).map_err(storage)? {
             let path = entry.map_err(storage)?.path();
             if path.extension().is_none_or(|extension| extension != "json") {
@@ -439,21 +440,10 @@ async fn serve_requests(
                 present.remove(&operation);
                 continue;
             };
-            let key = status_key(&request.action);
-            let status = published.statuses.entry(key.clone()).or_default();
-            let size = serde_json::to_vec(&status.1).map_err(storage)?.len() as u64;
-            if size + MAXIMUM_BYTES > STATUS_BYTES {
-                // Full of unread replies: dispatch once a client withdraws.
-                continue;
-            }
-            let outcome = owner.dispatch(request.operation, request.action).await;
-            let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-            let reply = serde_json::from_slice(&bytes).map_err(storage)?;
-            status.1.replies.insert(operation, reply);
-            published.answered.insert(operation, key.clone());
-            changed_keys.insert(key);
+            pending.push(request);
         }
-        // A withdrawn request's reply is read: drop it from its status.
+        // A withdrawn request's reply is read: drop it from its status before
+        // any capacity check, so the space it frees serves this same scan.
         for (operation, key) in published
             .answered
             .extract_if(.., |operation, _| !present.contains(operation))
@@ -461,6 +451,22 @@ async fn serve_requests(
             if let Some((_, status)) = published.statuses.get_mut(&key) {
                 status.replies.remove(&operation);
             }
+            changed_keys.insert(key);
+        }
+        for request in pending {
+            let key = status_key(&request.action);
+            let status = published.statuses.entry(key.clone()).or_default();
+            let size = serde_json::to_vec(&status.1).map_err(storage)?.len() as u64;
+            if size + MAXIMUM_BYTES > STATUS_BYTES {
+                // Full of unread replies: dispatch once a client withdraws.
+                continue;
+            }
+            let operation = request.operation;
+            let outcome = owner.dispatch(request.operation, request.action).await;
+            let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+            let reply = serde_json::from_slice(&bytes).map_err(storage)?;
+            status.1.replies.insert(operation, reply);
+            published.answered.insert(operation, key.clone());
             changed_keys.insert(key);
         }
         for key in changed_keys {

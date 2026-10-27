@@ -3,15 +3,19 @@
 //! Newline-delimited JSON-RPC over blocking pipes, read through the shared
 //! [`JsonLineReader`] codec. A provider answers each call at once or parks it
 //! under a key until its work settles; the server owns the protocol, the
-//! parked calls and client cancellation, and blocks on input whenever the
-//! provider has nothing running.
+//! parked calls and client cancellation, and between passes blocks on input
+//! and the provider's armed wake-up together, so idle work costs no timer.
 use super::JsonLineReader;
 use crate::{Error, Result};
+use futures::channel::mpsc;
+use futures::executor::block_on;
+use futures::future::{self, Either};
+use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::io::{self, Read, Write};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::pin::Pin;
 
 /// Bound of one request line.
 const FRAME_BYTES: u32 = 65_536;
@@ -26,7 +30,11 @@ pub enum ToolCall {
     Park(String),
 }
 
-/// A tool provider served by [`serve_tools`].
+/// A provider's armed wake-up: it completes once its work can progress, such
+/// as when a child's pipe has data or the child exits.
+pub type Wake = Pin<Box<dyn Future<Output = ()>>>;
+
+/// A tool provider served by [`ToolServer`].
 pub trait ToolProvider {
     /// The `tools/list` result.
     fn tools(&self) -> Value;
@@ -35,14 +43,14 @@ pub trait ToolProvider {
     fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolCall>;
 
     /// Advances the provider's work and pushes each `parked` key it settles
-    /// with its result. Returns how long input may be awaited before the next
-    /// pass, or `None` when nothing runs and input alone can make progress.
-    /// An error ends the server.
+    /// with its result. Returns the wake-up that schedules the next pass
+    /// alongside input, or `None` when nothing runs and input alone can make
+    /// progress. An error ends the server.
     fn progress(
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Value)>,
-    ) -> Result<Option<Duration>>;
+    ) -> Result<Option<Wake>>;
 }
 
 /// The server's identity and the bound of calls parked at once.
@@ -63,35 +71,35 @@ impl ToolServer {
         input: impl Read + Send + 'static,
         mut output: impl Write,
     ) -> Result<()> {
-        let messages = lines(input);
+        let mut messages = lines(input);
         let mut parked: Vec<(Value, String)> = Vec::new();
         let mut keys = BTreeSet::new();
         let mut settled = Vec::new();
         loop {
-            let wait = provider.progress(&keys, &mut settled)?;
+            let wake = provider.progress(&keys, &mut settled)?;
             for (key, value) in settled.drain(..) {
                 for (id, _) in parked.extract_if(.., |(_, parked)| *parked == key) {
                     emit(&mut output, &answer(&id, Ok(value.clone())))?;
                 }
                 keys.remove(&key);
             }
-            let message = match wait {
-                Some(wait) => messages.recv_timeout(wait),
-                None => messages
-                    .recv()
-                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            let message = match wake {
+                Some(wake) => match block_on(future::select(messages.next(), wake)) {
+                    Either::Left((message, _)) => message,
+                    Either::Right(((), _)) => continue,
+                },
+                None => block_on(messages.next()),
             };
             let message = match message {
-                Ok(Ok(message)) => message,
-                Ok(Err(_)) => {
+                Some(Ok(message)) => message,
+                Some(Err(_)) => {
                     emit(
                         &mut output,
                         &json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON"}}),
                     )?;
                     continue;
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                None => return Ok(()),
             };
             let params = message.get("params").unwrap_or(&Value::Null);
             let method = message.get("method").and_then(Value::as_str);
@@ -158,10 +166,10 @@ fn emit(output: &mut impl Write, value: &Value) -> Result<()> {
 /// Requests from `input`, read on their own thread so the provider's work
 /// proceeds while the client is quiet.
 fn lines(input: impl Read + Send + 'static) -> mpsc::Receiver<io::Result<Value>> {
-    let (send, receive) = mpsc::sync_channel(16);
+    let (mut send, receive) = mpsc::channel(16);
     std::thread::spawn(move || {
         for message in JsonLineReader::new(input, FRAME_BYTES) {
-            if send.send(message).is_err() {
+            if block_on(send.send(message)).is_err() {
                 break;
             }
         }

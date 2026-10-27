@@ -48,6 +48,11 @@ impl ProcessTreeIo<'_> {
     pub fn pump_stdin(&mut self) -> io::Result<bool> {
         self.tree.pump_stdin_controlled(Some(self.meter.as_ref()))
     }
+    /// Arms one wait for this process's next readiness; see
+    /// [`ProcessTree::readiness`].
+    pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
+        self.tree.readiness()
+    }
     /// Reads bounded stdout without waiting for data.
     pub fn read_stdout(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
         self.tree

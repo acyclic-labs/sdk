@@ -109,9 +109,29 @@ pub struct ProcessTree {
     /// Input owned by an incremental native-session supervisor. The writer
     /// drops before this storage, including a pending overlapped operation.
     queued_stdin: Option<PendingStdin<'static>>,
+    /// Completion-port readiness of the retained stdout and stderr pipes,
+    /// associated by the first [`ProcessTree::readiness`].
+    #[cfg(windows)]
+    readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     /// The process-event hub every wait of this tree arms, held from before
     /// its child is created.
     _events: events::Events,
+}
+
+/// One armed wait on a process tree's retained pipes and direct child, served
+/// by the shared process-event hub: epoll, kqueue or an I/O completion port.
+/// It holds no thread and fires once.
+pub struct ProcessReadiness(events::Wait);
+
+impl std::future::Future for ProcessReadiness {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        std::pin::Pin::new(&mut self.0).poll(context)
+    }
 }
 
 impl ProcessTree {
@@ -470,6 +490,72 @@ impl ProcessTree {
         self.child.as_mut()?.stderr.take()
     }
 
+    /// Arms one wait that fires when retained stdout or stderr has data or
+    /// closed, queued stdin accepts bytes, or the direct child exits. Its
+    /// owner then reads without waiting, as before; no thread or timer runs
+    /// while it waits.
+    pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
+        let writing = self
+            .queued_stdin
+            .as_ref()
+            .is_some_and(PendingStdin::writing);
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd as _;
+            if self.child.is_some() {
+                self.prepare_exit_source()?;
+            }
+            let mut sources = Vec::with_capacity(4);
+            if let Some(child) = &self.child {
+                if let Some(pipe) = &child.stdout {
+                    sources.push(events::Source::Readable(pipe.as_fd()));
+                }
+                if let Some(pipe) = &child.stderr {
+                    sources.push(events::Source::Readable(pipe.as_fd()));
+                }
+                if writing && let Some(pipe) = &child.stdin {
+                    sources.push(events::Source::Writable(pipe.as_fd()));
+                }
+            }
+            sources.extend(self.exit_source()?);
+            events::arm(&sources, None).map(ProcessReadiness)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsHandle as _;
+            let Some(child) = &self.child else {
+                return events::arm(&[], None).map(ProcessReadiness);
+            };
+            let [stdout, stderr] = &mut self.readers;
+            if stdout.is_none()
+                && let Some(pipe) = &child.stdout
+            {
+                *stdout = Some(events::PipeOperation::reader(pipe)?);
+            }
+            if stderr.is_none()
+                && let Some(pipe) = &child.stderr
+            {
+                *stderr = Some(events::PipeOperation::reader(pipe)?);
+            }
+            let mut sources = Vec::with_capacity(4);
+            if child.stdout.is_some()
+                && let Some(reader) = &self.readers[0]
+            {
+                sources.push(events::Source::Pipe(reader));
+            }
+            if child.stderr.is_some()
+                && let Some(reader) = &self.readers[1]
+            {
+                sources.push(events::Source::Pipe(reader));
+            }
+            if writing && let Some(writer) = &self.writer.0 {
+                sources.push(events::Source::Pipe(writer));
+            }
+            sources.push(events::Source::Exit(child.as_handle()));
+            events::arm(&sources, None).map(ProcessReadiness)
+        }
+    }
+
     /// Reads owned stdout without waiting for data.
     pub fn read_stdout(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
         self.read_stdout_controlled(buffer, None)
@@ -516,6 +602,15 @@ impl ProcessTree {
             return Ok(Some(0));
         };
         let (read, recorded) = result?;
+        // A pipe at end of file is released, so no later readiness wait
+        // reports its permanent EOF; reads then report EOF as before.
+        if read == Some(0) {
+            if stderr {
+                drop(child.stderr.take());
+            } else {
+                drop(child.stdout.take());
+            }
+        }
         recorded?;
         Ok(read)
     }
