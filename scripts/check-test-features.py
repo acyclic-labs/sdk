@@ -7,6 +7,60 @@ import sys
 import tomllib
 
 
+def gate_requirements(gate):
+    """Return alternative positive requirements; platform cfgs are independent."""
+    tokens = re.findall(r'"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]', gate)
+    position = 0
+
+    def parse():
+        nonlocal position
+        name = tokens[position]
+        position += 1
+        if position < len(tokens) and tokens[position] == "=":
+            value = tokens[position + 1].strip('"')
+            position += 2
+            return (name, value)
+        if position < len(tokens) and tokens[position] == "(":
+            position += 1
+            children = []
+            while tokens[position] != ")":
+                children.append(parse())
+                if tokens[position] == ",":
+                    position += 1
+            position += 1
+            return (name, children)
+        return (name, None)
+
+    def has_feature(node):
+        return node[0] == "feature" or (isinstance(node[1], list)
+                and any(has_feature(child) for child in node[1]))
+
+    def requirements(node):
+        name, value = node
+        if name == "feature":
+            return [{value}]
+        if name in ("loom", "kani"):
+            return [{"model-checking"}]
+        if name == "not":
+            if has_feature(node):
+                raise ValueError("negated feature gate cannot be represented by required-features; "
+                                 "move this gate inside the test target")
+            return [set()]
+        if name == "any":
+            return [option for child in value for option in requirements(child)]
+        if name == "all":
+            options = [set()]
+            for child in value:
+                options = [left | right for left in options for right in requirements(child)]
+            return options
+        return [set()]
+
+    tree = parse()
+    if position != len(tokens):
+        raise ValueError(f"unsupported cfg gate: {gate}")
+    return requirements(tree)
+
+
 def violations(manifest):
     data = tomllib.loads(manifest.read_text(encoding="utf-8"))
     package = data.get("package")
@@ -26,12 +80,6 @@ def violations(manifest):
         source = manifest.parent / path
         text = source.read_text(encoding="utf-8")
         gates = re.findall(r"#!\[cfg\((.*?)\)\]", text, re.S)
-        needed = {feature for gate in gates
-                  for feature in re.findall(r'feature\s*=\s*"([^"]+)"', gate)}
-        # Model binaries also need an explicit opt-in in normal Cargo runs.
-        if any(re.search(r"\b(?:loom|kani)\b", gate)
-               and not re.search(r"not\(loom\)", gate) for gate in gates):
-            needed.add("model-checking")
         enabled = set(target.get("required-features", []))
         pending = list(enabled)
         while pending:
@@ -39,9 +87,16 @@ def violations(manifest):
                 if feature not in enabled:
                     enabled.add(feature)
                     pending.append(feature)
-        if missing := needed - enabled:
-            errors.append(f"{source}: add required-features for {', '.join(sorted(missing))} "
-                          f"to its [[test]] in {manifest}")
+        for gate in gates:
+            try:
+                options = gate_requirements(gate)
+            except (ValueError, IndexError) as error:
+                errors.append(f"{source}: {error}")
+                continue
+            if not any(option <= enabled for option in options):
+                choices = " OR ".join(", ".join(sorted(option - enabled)) for option in options)
+                errors.append(f"{source}: add required-features satisfying ({choices}) "
+                              f"to its [[test]] in {manifest}")
     return errors
 
 

@@ -3,12 +3,12 @@ use super::*;
 // The pool fixtures and searches drive the native gRPC transport.
 #[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
 pub(super) mod fixture;
-#[cfg(loom)]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub(super) mod model;
 #[cfg(test)]
 #[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
 mod ordering;
-#[cfg(loom)]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub(super) mod retry_model;
 #[cfg(test)]
 #[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]

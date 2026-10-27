@@ -57,6 +57,27 @@ name = "case"
 required-features = ["model-checking"]
 ''', '#![cfg(loom)]\n'), [])
 
+    def test_negated_feature_is_rejected_without_wrong_advice(self):
+        errors = self.check("", '#![cfg(not(feature = "remote"))]\n')
+        self.assertEqual(len(errors), 1)
+        self.assertIn("negated feature gate", errors[0])
+        self.assertNotIn("add required-features", errors[0])
+
+    def test_alternative_gate_accepts_either_feature(self):
+        source = '#![cfg(any(feature = "local", feature = "remote"))]\n'
+        for feature in ("local", "remote"):
+            manifest = f'[[test]]\nname = "case"\nrequired-features = ["{feature}"]\n'
+            self.assertEqual(self.check(manifest, source), [])
+        self.assertEqual(len(self.check("", source)), 1)
+
+    def test_nested_alternatives_and_negated_platform(self):
+        self.assertEqual(self.check('''
+[[test]]
+name = "case"
+required-features = ["local", "auth"]
+''', '''#![cfg(all(not(target_arch = "wasm32"), feature = "auth",
+any(feature = "local", feature = "remote")))]'''), [])
+
 
 if __name__ == "__main__":
     unittest.main()
