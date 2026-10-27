@@ -230,14 +230,14 @@ fn concurrent_owner_migration_cannot_publish_another_callers_provisional_key() -
         .map_err(storage)?;
         let first = SigningKeyReference::retain(seed).map_err(storage)?;
         let first_ref = first.reference();
-            TRY_OWNER_LOCK.set(true);
-            let contender = Owner::load(&path);
-            TRY_OWNER_LOCK.set(false);
-            assert!(
-                matches!(contender, Err(Error::Storage(_))),
-                "contender bypassed publication ownership"
-            );
-            assert_eq!(fs::read(&path).map_err(storage)?.first(), Some(&b'{'));
+        TRY_OWNER_LOCK.set(true);
+        let contender = Owner::load(&path);
+        TRY_OWNER_LOCK.set(false);
+        assert!(
+            matches!(contender, Err(Error::Storage(_))),
+            "contender bypassed publication ownership"
+        );
+        assert_eq!(fs::read(&path).map_err(storage)?.first(), Some(&b'{'));
         drop(first);
         assert!(first_ref.with_seed(|_| ()).is_err());
         drop(lock);

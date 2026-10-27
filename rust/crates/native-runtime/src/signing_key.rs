@@ -222,7 +222,10 @@ mod tests {
                     &root.path().join("copied-owner"),
                     &root.path().join("copied-next"),
                     |file| file.write_all(&bytes),
-                    |stage| { key.observe_publication(stage); Ok(()) },
+                    |stage| {
+                        key.observe_publication(stage);
+                        Ok(())
+                    },
                 )?);
                 Ok(())
             };
@@ -230,13 +233,18 @@ mod tests {
                 let contender = contender?;
                 publish(&contender)?;
             } else {
-                assert!(matches!(contender, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+                assert!(
+                    matches!(contender, Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+                );
             }
             let failed = private_file::publish_new(
                 &root.path().join("original-owner"),
                 &root.path().join("original-next"),
                 |_| Err(io::ErrorKind::Interrupted.into()),
-                |stage| { first.observe_publication(stage); Ok(()) },
+                |stage| {
+                    first.observe_publication(stage);
+                    Ok(())
+                },
             );
             assert!(failed.is_err());
             drop(first);
@@ -246,11 +254,17 @@ mod tests {
             }
             assert!(root.path().join("copied-owner").is_file());
             let reopened = reference.with_seed(|stored| bool::from(stored.ct_eq(&*seed)));
-            assert_eq!(reopened.is_ok(), !former_unlocked,
-                "abandonment deleted another published owner's credential");
+            assert_eq!(
+                reopened.is_ok(),
+                !former_unlocked,
+                "abandonment deleted another published owner's credential"
+            );
             if !former_unlocked {
                 assert!(reopened?);
-                reference.entry()?.delete_credential().map_err(|_| unavailable())?;
+                reference
+                    .entry()?
+                    .delete_credential()
+                    .map_err(|_| unavailable())?;
             }
         }
         Ok(())
