@@ -21,11 +21,7 @@ pub trait Substrate: ProviderPlatform {
 pub struct Local;
 impl Substrate for Local {
     fn capabilities(&self) -> BTreeSet<String> {
-        BTreeSet::from([
-            "executor".into(),
-            "composer".into(),
-            "filesystem-policy".into(),
-        ])
+        BTreeSet::from(["executor".into(), "filesystem-policy".into()])
     }
     fn execute(
         &self,

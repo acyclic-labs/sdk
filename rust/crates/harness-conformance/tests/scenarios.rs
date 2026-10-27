@@ -1,7 +1,7 @@
 //! Corpus parity, oracle fault injection and executable report qualification.
 mod policy_owner;
 use acyclic_harness_conformance::{
-    check_local, check_local_composer,
+    check_local,
     runner::{self, Status},
     scenario_data, substrate,
 };
@@ -23,17 +23,14 @@ async fn original_corpus(root: PathBuf) -> Result<usize, Box<dyn std::error::Err
             async move {
                 let mut value = scenario_data::load_value(&root, &path)?;
                 let requirements = runner::requirements(&value)?;
-                if requirements == ["executor"] || requirements == ["composer"] {
+                if requirements == ["executor"] {
                     value
                         .as_object_mut()
                         .ok_or("missing recipe")?
                         .remove("driver");
-                    let result = if requirements == ["composer"] {
-                        check_local_composer(value).await
-                    } else {
-                        check_local(value).await
-                    };
-                    result.map_err(|e| format!("{}: {e}", path.display()))?;
+                    check_local(value)
+                        .await
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
             }
@@ -183,7 +180,6 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
         "swarm",
         "plans",
         "executor",
-        "composer",
     ];
     for driver in drivers {
         std::fs::write(
@@ -251,56 +247,6 @@ async fn client_oracles_reject_mutations() -> Result<(), Box<dyn std::error::Err
             .insert(field.into(), mutation);
         std::fs::write(
             directory.path().join(format!("{field}.json")),
-            serde_json::to_vec(&value)?,
-        )?;
-    }
-    let report = runner::run(directory.path(), Arc::new(substrate::Local), None, 4).await?;
-    assert_eq!(report.records.len(), count);
-    assert_eq!(report.failed, count, "{report:?}");
-    assert!(!report.success());
-    Ok(())
-}
-
-#[tokio::test]
-async fn composer_oracle_mutations_fail() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let directory = tempfile::tempdir()?;
-    let mutations = [
-        (
-            "composer/mentions/pinned.json",
-            "result",
-            serde_json::json!({"kind":"WRONG"}),
-        ),
-        (
-            "composer/mentions/pinned.json",
-            "mention_files",
-            serde_json::json!(["WRONG"]),
-        ),
-        (
-            "composer/mentions/pinned.json",
-            "files",
-            serde_json::json!({"missing.txt":"WRONG"}),
-        ),
-        (
-            "composer/mentions/pinned.json",
-            "file_values",
-            serde_json::json!({"missing.json":{}}),
-        ),
-        (
-            "composer/builtins/completion-all.json",
-            "completions",
-            serde_json::json!(["WRONG"]),
-        ),
-    ];
-    let count = mutations.len();
-    for (index, (path, field, mutation)) in mutations.into_iter().enumerate() {
-        let mut value = scenario_data::load_value(&corpus(), &corpus().join(path))?;
-        value
-            .get_mut("expect")
-            .and_then(Value::as_object_mut)
-            .ok_or("missing expectations")?
-            .insert(field.into(), mutation);
-        std::fs::write(
-            directory.path().join(format!("{index}.json")),
             serde_json::to_vec(&value)?,
         )?;
     }

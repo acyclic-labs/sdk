@@ -1,6 +1,6 @@
 use crate::{
-    CaseObservation, TestResult, composer::Composer, observation, scenario::Scenario,
-    scenario_data, substrate::Substrate,
+    CaseObservation, TestResult, observation, scenario::Scenario, scenario_data,
+    substrate::Substrate,
 };
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,6 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
     match value.get("driver") {
         None => Ok(vec!["executor".into()]),
         Some(Value::String(driver)) if driver == "executor" => Ok(vec!["executor".into()]),
-        Some(Value::String(driver)) if driver == "composer" => Ok(vec!["composer".into()]),
         Some(Value::String(driver)) if driver == "filesystem-policy" => {
             Ok(vec!["filesystem-policy".into()])
         }
@@ -261,7 +260,6 @@ fn fixture_reason(value: &Value) -> &'static str {
 
 enum Case {
     Executor(Box<Scenario>),
-    Composer(Box<Composer>),
     FilesystemPolicy(crate::policy_owner::Case),
 }
 impl Case {
@@ -274,7 +272,6 @@ impl Case {
             Some("filesystem-policy") => Ok(Self::FilesystemPolicy(
                 crate::policy_owner::Case::parse(value.clone())?,
             )),
-            Some("composer") => Ok(Self::Composer(Box::new(Composer::parse(value.clone())?))),
             Some("executor") => Ok(Self::Executor(Box::new(Scenario::from_value(
                 value.clone(),
             )?))),
@@ -285,7 +282,6 @@ impl Case {
     fn paths(&self) -> Vec<String> {
         match self {
             Self::Executor(case) => case.expect.files.keys().cloned().collect(),
-            Self::Composer(case) => case.paths(),
             Self::FilesystemPolicy(_) => Vec::new(),
         }
     }
@@ -295,9 +291,6 @@ impl Case {
         match self {
             Self::FilesystemPolicy(_) => {
                 object.insert("driver".into(), "filesystem-policy".into());
-            }
-            Self::Composer(_) => {
-                object.insert("driver".into(), "composer".into());
             }
             Self::Executor(case) => {
                 // Resume strings are error oracles; the host needs only their count.
@@ -314,7 +307,6 @@ impl Case {
             (Self::Executor(case), CaseObservation::Executor(actual)) => {
                 observation::check(case, actual)
             }
-            (Self::Composer(case), CaseObservation::Composer(actual)) => case.check(actual),
             (Self::FilesystemPolicy(case), CaseObservation::FilesystemPolicy(actual)) => {
                 case.check(actual)
             }

@@ -3,7 +3,6 @@
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-mod composer;
 mod native_schema;
 mod policy_owner;
 pub use policy_owner::Observation as PolicyOwnerObservation;
@@ -25,7 +24,6 @@ mod matchers {
     pub use crate::{ordered_matcher::ordered, scenario_matchers::subset};
 }
 
-pub use composer::Capture as ComposerObservation;
 pub use execution::observation;
 /// Raw outputs from each portable driver, without a host-side verdict.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -33,8 +31,6 @@ pub use execution::observation;
 pub enum CaseObservation {
     /// Stock executor observations.
     Executor(observation::Observation),
-    /// Command catalog, completion, mention and fs observations.
-    Composer(ComposerObservation),
     /// Filesystem policy authority and fork observations.
     FilesystemPolicy(PolicyOwnerObservation),
 }
@@ -59,11 +55,6 @@ where
                 let driver: acyclic_stream::BoxProviderFuture<'_, TestResult<_>> =
                     Box::pin(observation::collect_on(recipe, paths, filesystem, stream));
                 Ok(CaseObservation::Executor(driver.await?))
-            }
-            Some("composer") => {
-                let driver: acyclic_stream::BoxProviderFuture<'_, TestResult<_>> =
-                    Box::pin(composer::collect(recipe, paths, filesystem, stream));
-                Ok(CaseObservation::Composer(driver.await?))
             }
             Some("filesystem-policy") => {
                 let driver: acyclic_stream::BoxProviderFuture<'_, TestResult<_>> =
@@ -94,11 +85,6 @@ pub mod substrate;
 /// Original direct driver, retained as an independent parity oracle.
 pub async fn check_local(recipe: serde_json::Value) -> TestResult {
     execution::run(scenario::Scenario::parse(&serde_json::to_vec(&recipe)?)?).await
-}
-
-/// Native composer driver, retained as the direct parity oracle.
-pub async fn check_local_composer(recipe: serde_json::Value) -> TestResult {
-    composer::Composer::parse(recipe)?.run().await
 }
 
 /// Original journal trace, available for detailed cross-substrate comparisons.

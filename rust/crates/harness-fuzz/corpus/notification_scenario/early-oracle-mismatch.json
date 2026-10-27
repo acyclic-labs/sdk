@@ -1,1 +1,0 @@
-{"records":[{"task":"task-1","sequence":0,"event":"task_failed","detail":"Ready"},{"task":"task-1","sequence":2,"event":"goal_done","detail":"Ready"}],"remove":[],"mode":"on","protocol":"osc9","focused":false,"expect":{"output":"wrong","presented":1,"view":[{"task":"task-1","sequence":2,"event":"goal_done","detail":"Ready"}]}}
