@@ -1,167 +1,70 @@
 import { expect, test } from "bun:test";
-import { DEFAULT_LIMITS, ExecutionScope, Harness, NativeContracts, ParentProjectController, providerOperationId,
-  type Authority, type ConversationMessageId, type OperationId, type ParentProjectBinding,
-  type ProjectMergeReceipt, type ProjectWorkspaceProvider, type ResourceRef } from "../src/index.js";
+import { decodeClientJson, encodeCanonicalJson, initializeClientQueries } from "../src/client.js";
+import { validateContract } from "../generated/wasm/acyclic_harness_wasm.js";
+import { MODEL_TEST_LIMITS as limits } from "./support/model-limits.mjs";
 
-const provider = { namespace: "test", family: "filesystem", version: "2" } as const;
-const owner = { kind: "project", id: "project" } as const;
-const parent = { provider, id: "root", class: "project", owner } as const;
-const child = { provider, id: "child", class: "project", owner } as const;
-const generation = (byte: number): ResourceRef<"generation"> => ({ kind: "generation", provider, key: [byte], version: null });
-const contracts = await NativeContracts.create();
+await initializeClientQueries();
 
-test("project workspace bindings need authority and scoped views cannot regain them", async () => {
-  const workspaces: ProjectWorkspaceProvider = {
-    provider, project: parent,
-    async forkProject() { throw new Error("unused"); },
-    async prepareProjectMerge() { throw new Error("unused"); },
-  };
-  await expect(Harness.builder(contracts).workspaces(workspaces).build()).rejects.toThrow();
-  const runtime = await Harness.builder(contracts).workspaces(workspaces).grant("project:merge").build();
-  expect(runtime.projectWorkspaces()).toBe(workspaces);
-  const ungranted = await runtime.scoped(new ExecutionScope().onlyGrants());
-  expect(() => ungranted.projectWorkspaces()).toThrow();
-  const unbound = await runtime.scoped(new ExecutionScope().onlyGrants("project:merge"));
-  expect(() => unbound.projectWorkspaces()).toThrow();
+const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/project-merge-receipt.json", import.meta.url)).text()).trim();
+const receipt = () => decodeClientJson(new TextEncoder().encode(fixture));
+const admit = (value: unknown) => validateContract("project_merge_receipt", value, undefined);
+
+// Shape admission is separate from a provider's authorized join and publication.
+// There is no JavaScript parent controller or opaque plan.
+test("Rust and TypeScript share the canonical v2 project merge receipt", () => {
+  const original = receipt();
+  const admitted = admit(original);
+  expect(admitted.child.kind).toBe("conversation");
+  expect(admitted.source_project.class).toBe("project");
+  expect(admitted.target_project.class).toBe("project");
+  expect(admitted.notice.kind).toBe("merge");
+  expect(admitted.provider_operation_id).toHaveLength(16);
+  expect(admitted.provider_proof.provider).toEqual(admitted.target_project.provider);
+  expect(typeof admitted.notice.sequence).toBe("bigint");
+  validateContract("conversation_message", admitted.notice, limits);
+  expect(encodeCanonicalJson(admitted)).toEqual(encodeCanonicalJson(original));
 });
 
-test("Rust and TypeScript share the canonical v2 project merge receipt", async () => {
-  const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/project-merge-receipt.json", import.meta.url)).text()).trim();
-  const decoded = JSON.parse(fixture) as ProjectMergeReceipt;
-  const fixtureSequence: unknown = decoded.notice.sequence;
-  if (typeof fixtureSequence !== "number" || !Number.isSafeInteger(fixtureSequence)) {
-    throw new TypeError("golden merge notice sequence is not an exact JSON integer");
+test("merge receipt admission rejects inconsistent provider and generation identities", () => {
+  const original = receipt();
+  expect(() => admit({ ...original,
+    provider_proof: { ...original.provider_proof,
+      provider: { ...original.provider_proof.provider, namespace: "foreign" } },
+  })).toThrow();
+  expect(() => admit({ ...original,
+    source_generation: { ...original.source_generation,
+      provider: { ...original.source_generation.provider, namespace: "foreign" } },
+  })).toThrow();
+  expect(() => admit({ ...original, source_project: original.target_project })).toThrow();
+  expect(() => admit({ ...original, result_generation: original.expected_target_generation })).toThrow();
+  expect(() => admit({ ...original, child: { kind: "agent", id: "child" } })).toThrow();
+  expect(() => admit({ ...original, notice: { ...original.notice, kind: "assistant" } })).toThrow();
+});
+
+test("merge receipts retain nonempty provider operation identity and portable proof numbers", () => {
+  const original = receipt();
+  expect(() => admit({ ...original, provider_operation_id: [] })).toThrow();
+  expect(() => admit({ ...original, provider_operation_id: [0] })).toThrow();
+  // The retired JS brand imposed no 64-byte identity ceiling. Keep the existing
+  // accepted input at the actual receipt boundary.
+  expect(admit({ ...original, provider_operation_id: Array(65).fill(1) }).provider_operation_id).toHaveLength(65);
+  for (const unsafe of [Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, 9_007_199_254_740_992n]) {
+    expect(() => admit({ ...original,
+      provider_proof: { ...original.provider_proof, statement: { unsafe } },
+    })).toThrow();
   }
-  const receipt: ProjectMergeReceipt = {
-    ...decoded,
-    source_project: contracts.validate("volume_ref", decoded.source_project),
-    source_generation: contracts.validate("resource_ref", decoded.source_generation),
-    target_project: contracts.validate("volume_ref", decoded.target_project),
-    expected_target_generation: contracts.validate("resource_ref", decoded.expected_target_generation),
-    result_generation: contracts.validate("resource_ref", decoded.result_generation),
-    provider_operation_id: providerOperationId(decoded.provider_operation_id),
-    provider_proof: decoded.provider_proof,
-    notice: { ...decoded.notice, sequence: BigInt(fixtureSequence) },
-  };
-  expect(receipt.child.kind).toBe("conversation");
-  expect(receipt.source_project.class).toBe("project");
-  expect(receipt.target_project.class).toBe("project");
-  expect(receipt.notice.kind).toBe("merge");
-  expect(receipt.provider_operation_id).toHaveLength(16);
-  expect(receipt.provider_proof.provider).toEqual(receipt.target_project.provider);
-  (await NativeContracts.create()).validate("conversation_message", receipt.notice, DEFAULT_LIMITS);
-  expect(JSON.stringify(receipt, (_key, value: unknown) => {
-    if (typeof value !== "bigint") return value;
-    const exact = Number(value);
-    if (!Number.isSafeInteger(exact)) throw new RangeError("golden JSON cannot encode an unsafe u64");
-    return exact;
-  })).toBe(fixture);
 });
 
-test("project fork and merge publication remain bound to the parent controller", async () => {
-  let granted = true;
-  let publications = 0;
-  let notices = 0;
-  const mergeOperation = "01010101-0101-0101-0101-010101010101" as OperationId;
-  const raw = Object.freeze({ secret: "raw-plan" });
-  const binding: ParentProjectBinding<typeof raw, string, "theirs", string, readonly string[]> = {
-    parent: { kind: "conversation", id: "parent" }, project: parent,
-    async authorize(capability, operation) {
-      if (!granted || (capability === "project:merge" && operation !== "write")
-        || (capability === "fork:publish" && operation !== "read")) throw new Error("parent grant missing");
-    },
-    async forkProject(source, selected) {
-      expect(source).toEqual(generation(1));
-      expect(selected).toEqual(child);
-      return generation(2);
-    },
-    async prepareProjectMerge(selected) {
-      expect(selected).toEqual(child);
-      return { plan: raw, source: generation(2), target: generation(1), commonAncestor: generation(0) };
-    },
-    async describeProjectMergeConflicts(plan, conflicts) {
-      expect(plan).toBe(raw);
-      return [...conflicts];
-    },
-    async applyProjectMerge(plan, target, operationId, resolution) {
-      expect(plan).toBe(raw);
-      expect(target).toEqual(generation(1));
-      expect(operationId).toBe(mergeOperation);
-      expect(resolution).toBe("theirs");
-      publications++;
-      return "applied";
-    },
-    async publishProjectMergeReceipt(receipt) {
-      expect(receipt.notice.kind).toBe("merge");
-      notices++;
-    },
-  };
-  const controller = new ParentProjectController(contracts, binding);
-  expect(() => providerOperationId([])).toThrow();
-  expect(providerOperationId(Array(65).fill(1))).toHaveLength(65);
-  expect(await controller.forkProject(generation(1), child, "fork-1")).toEqual(generation(2));
-  const plan = await controller.prepareProjectMerge(child);
-  expect(Object.keys(plan)).toEqual(["child", "source", "target", "commonAncestor"]);
-  expect(await controller.describeProjectMergeConflicts(plan, ["conflict"], false)).toEqual(["conflict"]);
-  const other = new ParentProjectController(contracts, binding);
-  await expect(other.applyProjectMerge(plan, mergeOperation, "theirs")).rejects.toThrow();
-  await expect(controller.applyProjectMerge({ ...plan }, mergeOperation, "theirs")).rejects.toThrow();
-  granted = false;
-  await expect(controller.applyProjectMerge(plan, mergeOperation, "theirs")).rejects.toThrow();
-  expect(publications).toBe(0);
-  granted = true;
-  expect(await controller.applyProjectMerge(plan, mergeOperation, "theirs")).toBe("applied");
-  await expect(controller.applyProjectMerge(plan, "03030303-0303-0303-0303-030303030303" as OperationId, "theirs"))
-    .rejects.toThrow();
-  expect(publications).toBe(1);
-  const receipt: ProjectMergeReceipt = {
-    operation_id: mergeOperation,
-    child: { kind: "conversation", id: "child-conversation" },
-    source_project: child, source_generation: plan.source,
-    target_project: parent, expected_target_generation: plan.target,
-    result_generation: generation(3), provider_operation_id: providerOperationId(Array(16).fill(1)),
-    provider_proof: { provider, format: "filesystem.join.v2", statement: { generation: "3" } },
-    notice: {
-      id: "02020202-0202-0202-0202-020202020202" as ConversationMessageId, sequence: 1n, kind: "merge",
-      content: { volume: parent, path: "notices/merge.txt", version: "1",
-        descriptor: { sha256: Array(32).fill(1), byte_length: 0, media_type: "text/plain" }, display_name: "merge.txt" },
-      attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: null, extensions: {},
-    },
-  };
+test("merge proof admission snapshots mutable properties once", () => {
+  const original = receipt();
   let proofReads = 0;
-  const unstableProof = Object.defineProperty({}, "unsafe", {
+  const statement = Object.defineProperty({}, "unsafe", {
     enumerable: true,
     get: () => ++proofReads === 1 ? 1 : Number.POSITIVE_INFINITY,
-  }) as Readonly<{ unsafe: number }>;
-  let admittedReceipt: ProjectMergeReceipt | undefined;
-  try {
-    admittedReceipt = contracts.validate("project_merge_receipt", {
-      ...receipt,
-      provider_proof: { ...receipt.provider_proof, statement: unstableProof },
-    });
-  } catch { /* Rejecting an accessor is also safe. */ }
-  if (admittedReceipt !== undefined) expect(admittedReceipt.provider_proof.statement).toEqual({ unsafe: 1 });
-  expect(proofReads).toBeLessThanOrEqual(1);
-  expect(() => contracts.validate("project_merge_receipt", { ...receipt,
-    provider_proof: { ...receipt.provider_proof, statement: { unsafe: Number.MAX_SAFE_INTEGER + 1 } },
-  })).toThrow();
-  await expect(other.publishProjectMergeReceipt(plan, receipt)).rejects.toThrow();
-  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    operation_id: "03030303-0303-0303-0303-030303030303" as OperationId })).rejects.toThrow();
-  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    expected_target_generation: generation(9) })).rejects.toThrow();
-  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    provider_proof: { ...receipt.provider_proof, provider: { ...provider, namespace: "foreign" } } })).rejects.toThrow();
-  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    provider_proof: { ...receipt.provider_proof, statement: { unsafe: Number.POSITIVE_INFINITY } } })).rejects.toThrow();
-  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    provider_operation_id: [] as unknown as typeof receipt.provider_operation_id })).rejects.toThrow();
-  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    notice: { ...receipt.notice, kind: "assistant" } as unknown as typeof receipt.notice })).rejects.toThrow();
-  expect(notices).toBe(0);
-  await controller.publishProjectMergeReceipt(plan, receipt);
-  expect(notices).toBe(1);
-  expect(() => new ParentProjectController(contracts, { ...binding,
-    parent: { kind: "agent", id: "child" } as unknown as Authority<"conversation"> })).toThrow();
-  await expect(controller.prepareProjectMerge(parent)).rejects.toThrow();
+  });
+  const admitted = admit({ ...original,
+    provider_proof: { ...original.provider_proof, statement },
+  });
+  expect(proofReads).toBe(1);
+  expect(encodeCanonicalJson(admitted.provider_proof.statement)).toEqual(encodeCanonicalJson({ unsafe: 1 }));
 });
