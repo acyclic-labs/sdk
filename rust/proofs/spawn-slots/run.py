@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 parser = argparse.ArgumentParser(__doc__)
-parser.add_argument("mode", choices=["rust", "docs", "finish", "kani", "mutants", "type-control", "check"])
+parser.add_argument("mode", choices=["rust", "docs", "finish", "remaining", "kani", "mutants", "type-control", "check"])
 parser.add_argument("--evidence", type=Path, required=True)
 args = parser.parse_args()
 start = time.monotonic()
@@ -50,8 +51,12 @@ def run(label, command, cwd=ROOT, env=None, failure=None, passed=None):
             refuse(label, f"exit {result.returncode}; read {log} and fix the failing input before a changed-source run")
     elif result.returncode == 0 or failure not in log.read_text(errors="replace"):
         refuse(label, f"control did not fail its unchanged semantic oracle ({failure})")
-    if passed is not None and f"test result: ok. {passed} passed;" not in log.read_text(errors="replace"):
-        refuse(label, f"expected exactly {passed} nonempty passing tests")
+    if passed is not None:
+        # rustdoc reports runnable and compile-fail examples in separate
+        # groups; both must contribute to the nonempty test count.
+        total = sum(map(int, re.findall(r"test result: ok\. (\d+) passed;", log.read_text(errors="replace"))))
+        if total != passed:
+            refuse(label, f"expected exactly {passed} nonempty passing tests, observed {total}")
     return log
 
 
@@ -127,10 +132,11 @@ try:
         run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=2)
         run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
                                       "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
-    elif args.mode in ("docs", "finish"):
-        run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
-                                      "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
-        if args.mode == "finish":
+    elif args.mode in ("docs", "finish", "remaining"):
+        if args.mode != "remaining":
+            run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
+                                          "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
+        if args.mode != "docs":
             run("affected-check", ["cargo", "check", "--locked", "--all-features", "-p", "acyclic-harness-core",
                                    "-p", "acyclic-stream", "-p", "acyclic-contract-derive"])
             changed = variant("missing-method", "rust/crates/harness-core/src/filesystem/attestation.rs",
