@@ -155,6 +155,129 @@ fn controller_exposes_only_exact_active_engine_state() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[test]
+fn prepared_transitions_preserve_atomicity() -> Result<(), Box<dyn std::error::Error>> {
+    let volume_id = VolumeId::from_bytes([3; 16]);
+    let generation_id = generation(4);
+    let operation_id = OperationId::from_bytes([5; 16]);
+    for promotion_overflow in [false, true] {
+        let mut controller = SpeculationController::new(options(), volume_id, generation_id)?;
+        // Seed a cumulative counter boundary before any work is active.
+        if promotion_overflow {
+            controller.promotion.commit_preemption(
+                PromotionMetrics {
+                    wasted: u64::MAX,
+                    ..controller.metrics().promotion
+                },
+                None,
+            );
+        } else {
+            controller.residency.commit_preemption(
+                ResidencyMetrics {
+                    wasted: u64::MAX,
+                    ..controller.metrics().residency
+                },
+                None,
+            );
+        }
+        let ResidencyAdmission::Admitted(permit) =
+            controller.observe_hint(operation_id, volume_id, generation_id, 16, hint(6))?
+        else {
+            return Err("rollback fixture rejected residency".into());
+        };
+        let (source, destination) = promotion_inputs(permit.candidate().request.object_id);
+        assert!(matches!(
+            controller.plan_promotion(
+                permit,
+                vec![StorageTier::NodeLocal],
+                &[source],
+                &[destination]
+            )?,
+            PromotionAdmission::Planned(_)
+        ));
+        let before = controller.metrics();
+        let expected = if promotion_overflow {
+            SpeculationControllerError::Promotion(PromotionSpeculatorError::Overflow)
+        } else {
+            SpeculationControllerError::Residency(ResidencySpeculatorError::Overflow)
+        };
+        assert_eq!(controller.preempt_for_foreground(32), Err(expected));
+        assert_eq!(controller.metrics(), before);
+        assert_eq!(
+            controller.active_residency_permit(operation_id),
+            Some(permit)
+        );
+        assert_eq!(controller.replace_generation(generation(7)), Err(expected));
+        assert_eq!(controller.metrics(), before);
+        // Neither failure consumed an active identity or moved either fence.
+        controller.finish_residency(operation_id, true)?;
+        controller.finish_promotion(operation_id, true)?;
+        let ResidencyAdmission::Admitted(next) = controller.observe_hint(
+            OperationId::from_bytes([8; 16]),
+            volume_id,
+            generation_id,
+            16,
+            hint(9),
+        )?
+        else {
+            return Err("rollback changed the residency generation".into());
+        };
+        let (source, destination) = promotion_inputs(next.candidate().request.object_id);
+        assert!(matches!(
+            controller.plan_promotion(
+                next,
+                vec![StorageTier::NodeLocal],
+                &[source],
+                &[destination]
+            )?,
+            PromotionAdmission::Planned(_)
+        ));
+    }
+    // A rejected appended sample must leave foreground history and counters intact.
+    let mut controller = SpeculationController::new(options(), volume_id, generation_id)?;
+    controller.residency.record_foreground(u64::MAX)?;
+    let before = controller.metrics();
+    assert_eq!(
+        controller.observe_hint(operation_id, volume_id, generation_id, 1, hint(6)),
+        Err(SpeculationControllerError::Residency(
+            ResidencySpeculatorError::Overflow
+        ))
+    );
+    assert_eq!(controller.metrics(), before);
+    assert!(controller.active_residency_permit(operation_id).is_none());
+    assert_eq!(
+        controller.preempt_for_foreground(1),
+        Err(SpeculationControllerError::Residency(
+            ResidencySpeculatorError::Overflow
+        ))
+    );
+    assert_eq!(controller.metrics(), before);
+    assert_eq!(
+        controller.residency.record_foreground(1),
+        Err(ResidencySpeculatorError::Overflow)
+    );
+    // With one retained sample, foreground evicts the old speculative sample
+    // before admission, and the accepted speculative sample then evicts it.
+    let mut policy = options();
+    policy.residency.traffic_window = 1;
+    let mut controller = SpeculationController::new(policy, volume_id, generation_id)?;
+    controller.residency.record_foreground(u64::MAX)?;
+    for byte in 16..20 {
+        assert!(matches!(
+            controller.observe_hint(
+                OperationId::from_bytes([byte; 16]),
+                volume_id,
+                generation_id,
+                16,
+                hint(byte)
+            )?,
+            ResidencyAdmission::Admitted(_)
+        ));
+    }
+    assert_eq!(controller.metrics().residency.admitted, 4);
+    Ok(())
+}
+
 #[derive(Clone, Copy, Default)]
 struct Model {
     active_residency: u64,

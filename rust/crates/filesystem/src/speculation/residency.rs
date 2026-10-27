@@ -261,13 +261,20 @@ impl ResidencySpeculator {
     ///
     /// Fails closed if cumulative accounting cannot be represented.
     pub fn record_foreground(&mut self, bytes: u64) -> Result<(), ResidencySpeculatorError> {
-        let mut next = self.clone();
-        next.push_traffic(TrafficSample {
+        self.check_foreground(bytes)?;
+        self.record_foreground_in_place(bytes);
+        Ok(())
+    }
+
+    pub(super) fn check_foreground(&self, bytes: u64) -> Result<(), ResidencySpeculatorError> {
+        self.traffic_bytes(Some(bytes), None).map(|_| ())
+    }
+
+    pub(super) fn record_foreground_in_place(&mut self, bytes: u64) {
+        self.push_traffic(TrafficSample {
             speculative: false,
             bytes,
-        })?;
-        *self = next;
-        Ok(())
+        });
     }
 
     /// Evaluates one candidate without performing object-store work.
@@ -279,34 +286,44 @@ impl ResidencySpeculator {
         &mut self,
         candidate: ResidencyCandidate,
     ) -> Result<ResidencyAdmission, ResidencySpeculatorError> {
-        let mut next = self.clone();
-        let admission = next.admit_in_place(candidate)?;
-        *self = next;
-        Ok(admission)
+        self.admit_with_foreground(candidate, None)
     }
 
-    fn admit_in_place(
+    pub(super) fn admit_with_foreground(
         &mut self,
         candidate: ResidencyCandidate,
+        foreground: Option<u64>,
     ) -> Result<ResidencyAdmission, ResidencySpeculatorError> {
-        self.metrics.candidates = checked_increment(self.metrics.candidates)?;
-        if let Some(rejection) = self.rejection(candidate)? {
-            self.record_rejection(rejection)?;
-            return Ok(ResidencyAdmission::Rejected(rejection));
+        if let Some(bytes) = foreground {
+            self.check_foreground(bytes)?;
         }
-        self.metrics.admitted = checked_increment(self.metrics.admitted)?;
-        self.metrics.active = checked_increment(self.metrics.active)?;
-        self.metrics.active_bytes = self
-            .metrics
-            .active_bytes
-            .checked_add(candidate.request.maximum_bytes)
-            .ok_or(ResidencySpeculatorError::Overflow)?;
-        self.push_traffic(TrafficSample {
-            speculative: true,
-            bytes: candidate.request.maximum_bytes,
-        })?;
-        self.active.insert(candidate.operation_id, candidate);
-        Ok(ResidencyAdmission::Admitted(ResidencyPermit { candidate }))
+        let mut metrics = self.metrics;
+        metrics.candidates = checked_increment(metrics.candidates)?;
+        let admission = if let Some(rejection) = self.rejection(candidate, foreground)? {
+            Self::record_rejection(&mut metrics, rejection)?;
+            ResidencyAdmission::Rejected(rejection)
+        } else {
+            metrics.admitted = checked_increment(metrics.admitted)?;
+            metrics.active = checked_increment(metrics.active)?;
+            metrics.active_bytes = metrics
+                .active_bytes
+                .checked_add(candidate.request.maximum_bytes)
+                .ok_or(ResidencySpeculatorError::Overflow)?;
+            self.traffic_bytes(foreground, Some(candidate.request.maximum_bytes))?;
+            ResidencyAdmission::Admitted(ResidencyPermit { candidate })
+        };
+        self.metrics = metrics;
+        if let Some(bytes) = foreground {
+            self.record_foreground_in_place(bytes);
+        }
+        if matches!(admission, ResidencyAdmission::Admitted(_)) {
+            self.push_traffic(TrafficSample {
+                speculative: true,
+                bytes: candidate.request.maximum_bytes,
+            });
+            self.active.insert(candidate.operation_id, candidate);
+        }
+        Ok(admission)
     }
 
     /// Completes one admitted prediction exactly once.
@@ -319,41 +336,42 @@ impl ResidencySpeculator {
         operation_id: OperationId,
         useful: bool,
     ) -> Result<(), ResidencySpeculatorError> {
-        let mut next = self.clone();
-        next.finish_in_place(operation_id, useful)?;
-        *self = next;
+        let candidate = self
+            .active
+            .get(&operation_id)
+            .ok_or(ResidencySpeculatorError::UnknownPermit)?;
+        self.metrics = Self::finish_metrics(self.metrics, *candidate, useful)?;
+        self.active.remove(&operation_id);
+        self.record_outcome(useful);
         Ok(())
     }
 
-    fn finish_in_place(
-        &mut self,
-        operation_id: OperationId,
+    fn finish_metrics(
+        mut metrics: ResidencyMetrics,
+        candidate: ResidencyCandidate,
         useful: bool,
-    ) -> Result<(), ResidencySpeculatorError> {
-        let candidate = self
-            .active
-            .remove(&operation_id)
-            .ok_or(ResidencySpeculatorError::UnknownPermit)?;
-        self.metrics.active = self
-            .metrics
+    ) -> Result<ResidencyMetrics, ResidencySpeculatorError> {
+        metrics.active = metrics
             .active
             .checked_sub(1)
             .ok_or(ResidencySpeculatorError::Overflow)?;
-        self.metrics.active_bytes = self
-            .metrics
+        metrics.active_bytes = metrics
             .active_bytes
             .checked_sub(candidate.request.maximum_bytes)
             .ok_or(ResidencySpeculatorError::Overflow)?;
         if useful {
-            self.metrics.useful = checked_increment(self.metrics.useful)?;
+            metrics.useful = checked_increment(metrics.useful)?;
         } else {
-            self.metrics.wasted = checked_increment(self.metrics.wasted)?;
+            metrics.wasted = checked_increment(metrics.wasted)?;
         }
+        Ok(metrics)
+    }
+
+    fn record_outcome(&mut self, useful: bool) {
         self.outcomes.push_back(useful);
         while self.outcomes.len() > self.options.outcome_window as usize {
             self.outcomes.pop_front();
         }
-        Ok(())
     }
 
     /// Preempts every active prediction before foreground dispatch.
@@ -364,18 +382,33 @@ impl ResidencySpeculator {
     ///
     /// Fails closed if terminal accounting cannot be represented.
     pub fn preempt_for_foreground(&mut self) -> Result<Vec<OperationId>, ResidencySpeculatorError> {
-        let mut next = self.clone();
-        let operations = next.preempt_in_place()?;
-        *self = next;
-        Ok(operations)
+        let metrics = self.prepare_preemption()?;
+        Ok(self.commit_preemption(metrics, None))
     }
 
-    fn preempt_in_place(&mut self) -> Result<Vec<OperationId>, ResidencySpeculatorError> {
+    pub(super) fn prepare_preemption(&self) -> Result<ResidencyMetrics, ResidencySpeculatorError> {
+        self.active
+            .values()
+            .try_fold(self.metrics, |metrics, candidate| {
+                Self::finish_metrics(metrics, *candidate, false)
+            })
+    }
+
+    pub(super) fn commit_preemption(
+        &mut self,
+        metrics: ResidencyMetrics,
+        generation: Option<GenerationId>,
+    ) -> Vec<OperationId> {
         let operations: Vec<_> = self.active.keys().copied().collect();
-        for operation_id in &operations {
-            self.finish_in_place(*operation_id, false)?;
+        self.metrics = metrics;
+        self.active.clear();
+        for _ in &operations {
+            self.record_outcome(false);
         }
-        Ok(operations)
+        if let Some(generation_id) = generation {
+            self.generation_id = generation_id;
+        }
+        operations
     }
 
     /// Fences stale work and selects a new immutable generation.
@@ -387,11 +420,8 @@ impl ResidencySpeculator {
         &mut self,
         generation_id: GenerationId,
     ) -> Result<Vec<OperationId>, ResidencySpeculatorError> {
-        let mut next = self.clone();
-        let preempted = next.preempt_in_place()?;
-        next.generation_id = generation_id;
-        *self = next;
-        Ok(preempted)
+        let metrics = self.prepare_preemption()?;
+        Ok(self.commit_preemption(metrics, Some(generation_id)))
     }
 
     /// Returns exact current and cumulative metrics.
@@ -415,6 +445,7 @@ impl ResidencySpeculator {
     fn rejection(
         &self,
         candidate: ResidencyCandidate,
+        foreground: Option<u64>,
     ) -> Result<Option<ResidencyRejection>, ResidencySpeculatorError> {
         if candidate.volume_id != self.volume_id {
             return Ok(Some(ResidencyRejection::WrongVolume));
@@ -449,7 +480,7 @@ impl ResidencySpeculator {
         if !self.useful_enough() {
             return Ok(Some(ResidencyRejection::LowUsefulness));
         }
-        let (foreground, speculative) = self.traffic_bytes()?;
+        let (foreground, speculative) = self.traffic_bytes(foreground, None)?;
         let allowed = (u128::from(foreground) + 1)
             .checked_mul(u128::from(self.options.speculative_cost_basis_points))
             .ok_or(ResidencySpeculatorError::Overflow)?
@@ -471,10 +502,33 @@ impl ResidencySpeculator {
                 * u128::from(self.options.minimum_usefulness_basis_points)
     }
 
-    fn traffic_bytes(&self) -> Result<(u64, u64), ResidencySpeculatorError> {
+    fn traffic_bytes(
+        &self,
+        foreground: Option<u64>,
+        speculative: Option<u64>,
+    ) -> Result<(u64, u64), ResidencySpeculatorError> {
+        let pending = [
+            foreground.map(|bytes| TrafficSample {
+                speculative: false,
+                bytes,
+            }),
+            speculative.map(|bytes| TrafficSample {
+                speculative: true,
+                bytes,
+            }),
+        ];
+        let count = self.traffic.len()
+            + usize::from(foreground.is_some())
+            + usize::from(speculative.is_some());
         let mut foreground = 0_u64;
         let mut speculative = 0_u64;
-        for sample in &self.traffic {
+        for sample in self
+            .traffic
+            .iter()
+            .copied()
+            .chain(pending.into_iter().flatten())
+            .skip(count.saturating_sub(self.options.traffic_window as usize))
+        {
             let total = if sample.speculative {
                 &mut speculative
             } else {
@@ -487,30 +541,29 @@ impl ResidencySpeculator {
         Ok((foreground, speculative))
     }
 
-    fn push_traffic(&mut self, sample: TrafficSample) -> Result<(), ResidencySpeculatorError> {
+    fn push_traffic(&mut self, sample: TrafficSample) {
         self.traffic.push_back(sample);
         while self.traffic.len() > self.options.traffic_window as usize {
             self.traffic.pop_front();
         }
-        self.traffic_bytes().map(|_| ())
     }
 
     fn record_rejection(
-        &mut self,
+        metrics: &mut ResidencyMetrics,
         rejection: ResidencyRejection,
     ) -> Result<(), ResidencySpeculatorError> {
         let counter = match rejection {
             ResidencyRejection::WrongVolume | ResidencyRejection::StaleGeneration => {
-                &mut self.metrics.rejected_fence
+                &mut metrics.rejected_fence
             }
             ResidencyRejection::InvalidRequest
             | ResidencyRejection::OperationCapacity
-            | ResidencyRejection::ByteCapacity => &mut self.metrics.rejected_capacity,
+            | ResidencyRejection::ByteCapacity => &mut metrics.rejected_capacity,
             ResidencyRejection::DuplicateObject | ResidencyRejection::DuplicateOperation => {
-                &mut self.metrics.rejected_duplicate
+                &mut metrics.rejected_duplicate
             }
-            ResidencyRejection::CostBudget => &mut self.metrics.rejected_cost,
-            ResidencyRejection::LowUsefulness => &mut self.metrics.rejected_usefulness,
+            ResidencyRejection::CostBudget => &mut metrics.rejected_cost,
+            ResidencyRejection::LowUsefulness => &mut metrics.rejected_usefulness,
         };
         *counter = checked_increment(*counter)?;
         Ok(())

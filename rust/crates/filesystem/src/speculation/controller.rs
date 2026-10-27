@@ -94,16 +94,10 @@ impl SpeculationController {
         foreground_bytes: u64,
         hint: ResidencyHint,
     ) -> Result<ResidencyAdmission, SpeculationControllerError> {
-        let mut residency = self.residency.clone();
-        residency.record_foreground(foreground_bytes)?;
-        let admission = residency.admit(ResidencyCandidate::from_hint(
-            operation_id,
-            volume_id,
-            generation_id,
-            hint,
-        ))?;
-        self.residency = residency;
-        Ok(admission)
+        Ok(self.residency.admit_with_foreground(
+            ResidencyCandidate::from_hint(operation_id, volume_id, generation_id, hint),
+            Some(foreground_bytes),
+        )?)
     }
 
     /// Converts an admitted local prediction into a bounded promotion plan.
@@ -161,13 +155,12 @@ impl SpeculationController {
         &mut self,
         foreground_bytes: u64,
     ) -> Result<SpeculationPreemption, SpeculationControllerError> {
-        let mut residency = self.residency.clone();
-        let mut promotion = self.promotion.clone();
-        let residency_operations = residency.preempt_for_foreground()?;
-        let promotion_operations = promotion.preempt_for_foreground()?;
-        residency.record_foreground(foreground_bytes)?;
-        self.residency = residency;
-        self.promotion = promotion;
+        let residency = self.residency.prepare_preemption()?;
+        let promotion = self.promotion.prepare_preemption()?;
+        self.residency.check_foreground(foreground_bytes)?;
+        let residency_operations = self.residency.commit_preemption(residency, None);
+        let promotion_operations = self.promotion.commit_preemption(promotion, None);
+        self.residency.record_foreground_in_place(foreground_bytes);
         Ok(SpeculationPreemption {
             residency: residency_operations,
             promotion: promotion_operations,
@@ -183,12 +176,14 @@ impl SpeculationController {
         &mut self,
         generation_id: GenerationId,
     ) -> Result<SpeculationPreemption, SpeculationControllerError> {
-        let mut residency = self.residency.clone();
-        let mut promotion = self.promotion.clone();
-        let residency_operations = residency.replace_generation(generation_id)?;
-        let promotion_operations = promotion.replace_generation(generation_id)?;
-        self.residency = residency;
-        self.promotion = promotion;
+        let residency = self.residency.prepare_preemption()?;
+        let promotion = self.promotion.prepare_preemption()?;
+        let residency_operations = self
+            .residency
+            .commit_preemption(residency, Some(generation_id));
+        let promotion_operations = self
+            .promotion
+            .commit_preemption(promotion, Some(generation_id));
         Ok(SpeculationPreemption {
             residency: residency_operations,
             promotion: promotion_operations,
