@@ -108,16 +108,7 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 
 /// Normalizes and validates a commit, then returns its canonical retry digest.
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
-    commit_digest_with(request, |_| Ok::<(), StreamError>(()))
-}
-
-/// Normalizes in place and admits the exact canonical hash work before hashing.
-/// No scratch allocation is needed for commit exclusion normalization.
-pub fn commit_digest_with<E: From<StreamError>>(
-    request: &mut CommitRequest,
-    admit: impl FnOnce(u64) -> Result<(), E>,
-) -> Result<[u8; 32], E> {
-    Ok(commit_binding_with(request, admit)?.digest())
+    commit_binding_with(request, |_| Ok::<(), StreamError>(()))?.map(|binding| binding.digest())
 }
 
 /// Retains only the canonical conditions hash state, never a second record copy.
@@ -134,12 +125,15 @@ impl CommitBinding {
 
     /// Joins actual retained immutable facts to the originally submitted body.
     /// Admits their exact hash work before hashing their values and headers.
-    pub fn matches_with<E: From<StreamError>>(
+    /// The outer error preserves work refusal; the inner error is malformed facts.
+    pub fn matches_with<E>(
         &self,
         envelope: &crate::CommittedEnvelope,
         admit: impl FnOnce(u64) -> Result<(), E>,
-    ) -> Result<bool, E> {
-        crate::persistence::validate_envelope(envelope)?;
+    ) -> Result<Result<bool, StreamError>, E> {
+        if let Err(error) = crate::persistence::validate_envelope(envelope) {
+            return Ok(Err(error));
+        }
         let mut bytes = 0;
         for mutation in &envelope.mutations {
             let records = match mutation {
@@ -181,16 +175,19 @@ impl CommitBinding {
                 hash_record(&mut hash, &record.value, &record.headers);
             }
         }
-        Ok(<[u8; 32]>::from(hash.finalize()) == self.digest)
+        Ok(Ok(<[u8; 32]>::from(hash.finalize()) == self.digest))
     }
 }
 
 /// Prepares canonical retry/body binding with caller-admitted hash work.
-pub fn commit_binding_with<E: From<StreamError>>(
+/// The outer error preserves work refusal; the inner error is an invalid request.
+pub fn commit_binding_with<E>(
     request: &mut CommitRequest,
     admit: impl FnOnce(u64) -> Result<(), E>,
-) -> Result<CommitBinding, E> {
-    validate_commit(request)?;
+) -> Result<Result<CommitBinding, StreamError>, E> {
+    if let Err(error) = validate_commit(request) {
+        return Ok(Err(error));
+    }
     admit(commit_hash_bytes(request))?;
     let mut hash = request_hasher(b"commit");
     hash_conditions(&mut hash, &request.conditions);
@@ -218,7 +215,7 @@ pub fn commit_binding_with<E: From<StreamError>>(
             }
         }
     }
-    Ok(CommitBinding { conditions, digest: hash.finalize().into() })
+    Ok(Ok(CommitBinding { conditions, digest: hash.finalize().into() }))
 }
 
 /// Normalizes a commit and admits its shape and complete encoded command size.
@@ -470,7 +467,7 @@ mod tests {
                 path, records: vec![Bytes::from_static(b"original").into()],
             }],
         };
-        let binding = commit_binding_with(&mut request, |_| Ok::<(), StreamError>(()))?;
+        let binding = commit_binding_with(&mut request, |_| Ok::<(), StreamError>(()))??;
         let crate::CommitOutcome::Committed(receipt) = provider.commit(request).await? else {
             return Err(StreamError::Unavailable);
         };
@@ -479,7 +476,7 @@ mod tests {
         assert!(binding.matches_with(&facts, |bytes| {
             charged = bytes;
             Ok::<(), StreamError>(())
-        })?);
+        })??);
         assert!(charged > 0);
         assert_eq!(binding.matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded)),
             Err(StreamError::LimitExceeded));
@@ -489,7 +486,7 @@ mod tests {
         // Keep the selected range, identity, time and sequence valid. The actual
         // immutable body must still be joined to the original request digest.
         append.records[0].value = Bytes::from_static(b"corrupted");
-        assert!(!binding.matches_with(&facts, |_| Ok::<(), StreamError>(()))?);
+        assert!(!binding.matches_with(&facts, |_| Ok::<(), StreamError>(()))??);
         Ok(())
     }
 

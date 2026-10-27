@@ -47,7 +47,7 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
             io.hashed_bytes(bytes)?;
         }
         Ok::<(), Error>(())
-    })?;
+    })?.map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
     let mut vectors = 0;
     let (mut bytes, mut count) = (0, 0);
     if let Some(io) = quota.work().as_deref_mut() {

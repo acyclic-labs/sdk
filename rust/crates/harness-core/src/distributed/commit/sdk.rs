@@ -61,7 +61,7 @@ pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Siz
                 io.hashed_bytes(bytes)?;
             }
             Ok::<(), Error>(())
-        })?;
+        })?.map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
         if !matches {
             return Err(guarded_boundary(
                 quota.work(), wire::ErrorCode::Conflict, "commit recovery identity reused",
