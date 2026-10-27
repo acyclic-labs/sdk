@@ -9,14 +9,18 @@ description = "Portable black-box AgentHost conformance vectors"
 
 [features]
 local = ["acyclic-stream/local", "acyclic-harness-core/oidc-http", "dep:tempfile"]
-browser = ["acyclic-stream/wasm"]
+browser = ["acyclic-stream/wasm", "acyclic-harness/wasm"]
 
 [dependencies]
 acyclic-actors = { path = "../../actors" }
 acyclic-harness-core = { path = "../../harness-core", features = ["filesystem", "oidc"] }
+acyclic-harness = { path = "../../harness", features = ["hosting"] }
+acyclic-harness-client = { path = "../../harness-client", features = ["agents"] }
+acyclic-auth = { path = "../../auth", features = ["test-support"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory"] }
 acyclic-objects = { path = "../../objects", default-features = false }
-acyclic-stream = { path = "../../stream", default-features = false }
+acyclic-stream = { path = "../../stream", default-features = false, features = ["session", "test-support"] }
+prost.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true

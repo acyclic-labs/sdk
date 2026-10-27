@@ -70,6 +70,13 @@ pub struct WasmSessionAuthority {
     state: Arc<State>,
     pub(super) authority: Arc<Authority>,
 }
+impl WasmSessionAuthority {
+    /// The same authenticated trust feed for an embedded product server.
+    #[must_use]
+    pub fn authority(&self) -> Arc<Authority> {
+        self.authority.clone()
+    }
+}
 #[wasm_bindgen]
 impl WasmSessionAuthority {
     /// Accepts public trust JSON, a canonical recipient and presenting account.

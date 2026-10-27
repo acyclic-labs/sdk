@@ -30,7 +30,7 @@ pub use acyclic_harness_search::url_fetch;
 /// Cargo-provided build metadata, isolated from ambient user environment discovery.
 #[doc(hidden)]
 pub mod build_metadata;
-#[cfg(all(feature = "grpc", feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "filesystem", any(feature = "grpc", feature = "hosting")))]
 pub mod hosting;
 
 pub mod client;

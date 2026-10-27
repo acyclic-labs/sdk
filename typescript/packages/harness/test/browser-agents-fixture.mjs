@@ -24,7 +24,7 @@ export async function agentsFixture(id, reply, initialize = init) {
       model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
     principal: "browser-user",
     // The fixture host explicitly accepts every action its agents take.
-    approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] },
+    preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
   return { owner, registry, requests, failures,

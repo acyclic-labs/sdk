@@ -1,10 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
-import { initSync, qualifyCloudflare, qualifyCloudflareRpc, qualifyJournalDeadline, appendWakeRecord, spawnAdoptionFixture } from "./generated/acyclic_cloudflare_conformance.js";
+import { initSync, qualifyCloudflare, qualifyCloudflareRpc, qualifyJournalDeadline, appendWakeRecord, spawnAdoptionFixture,
+  hostFixtureGrants, hostFixtureTrust, hostFixtureCredential, hostFixtureModelEvents, hostFixtureTool } from "./generated/acyclic_cloudflare_conformance.js";
 import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
-import { initSync as initGuest, WasmReducer, WasmAgentRegistry, type WasmFileRefWire } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { initSync as initGuest, WasmReducer, WasmAgentRegistry, WasmSessionAuthority, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
 initSync({ module: wasm });
@@ -19,7 +20,7 @@ const options = {
     model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
   principal: "do-conformance",
   // This host explicitly accepts every action its agents take.
-  approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] },
+  preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] } },
   handler_timeout_ms: 30_000n,
 };
 
@@ -48,14 +49,19 @@ export class Agent extends DurableObject {
   private readonly owner = new WasmReducer({ kind: "task", id: "00112233-4455-6677-8899-aabbccddeeff" },
     "do-conformance", new Uint8Array(32).fill(23), []);
   private readonly registry = new WasmAgentRegistry();
-  private readonly agent: ReturnType<typeof openCloudflareAgent>;
+  private agent?: ReturnType<typeof openCloudflareAgent>;
+  private executions = 0;
   private readonly timeout = { started: false, aborted: false };
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const timeout = this.timeout;
     const hangs = ctx.id.name === "timeout" || ctx.id.name === "cancel";
+    const protocol = ctx.id.name?.startsWith("protocol-");
+    if (protocol) this.registry.registerTool(hostFixtureTool(),
+      (invocation: { arguments: unknown }) => { ++this.executions; return { value: invocation.arguments }; },
+      () => null, (_invocation: unknown, result: { value: unknown }) => result.value);
     this.registry.configureModel({ provider: "conformance", name: "scripted", revision: "1", options: {} },
-      async function* (_bytes: Uint8Array, _dispatch: unknown, signal: AbortSignal) {
+      async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
           timeout.started = true;
           await new Promise<void>(resolve => {
@@ -65,24 +71,38 @@ export class Agent extends DurableObject {
           });
           return;
         }
+        if (protocol) { yield* hostFixtureModelEvents(dispatch.step); return; }
         yield { kind: "content", delta: "workerd guest reply" };
         yield { kind: "completed", metadata: {} };
       }, () => null, () => ({ context_tokens: 131072, output_tokens: 8192 }),
       (bytes: Uint8Array, request_digest: Uint8Array) => ({ request_digest, input_tokens: BigInt(bytes.byteLength),
         fixed_tokens: bytes.byteLength, message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0) }),
       { kind: "disabled" });
-    this.agent = openCloudflareAgent(ctx, env.LEDGER.getByName("suite"), ctx.id.name!, { ...options, handler_timeout_ms: ctx.id.name === "timeout" ? 1000n : options.handler_timeout_ms }, this.owner, this.registry);
   }
-  create(intent: string, brief?: string) { return this.agent.create(intent, brief); }
-  adopt(path: string) { return this.agent.adopt(path); }
-  send(intent: string, text: string) { return this.agent.send(intent, text); }
-  read(stream: "inbox" | "conversation" | "status") { return this.agent.read(stream); }
-  pause(paused: boolean) { return this.agent.pause(paused); }
-  cancel(intent: string) { return this.agent.cancel(intent); }
+  private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {
+    const audience = { kind: "task" as const, id: "00112233-4455-6677-8899-aabbccddeeff" };
+    const name = this.ctx.id.name!;
+    return this.agent ??= openCloudflareAgent(this.ctx, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
+      { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, this.owner, this.registry,
+      { admission: { audience, scope: this.owner.issueScope("host", hostFixtureGrants(), undefined),
+        account: [...new TextEncoder().encode("browser")], namespace: "agents" },
+      authority: new WasmSessionAuthority(hostFixtureTrust(), "workers:/test", "account"),
+      credential: hostFixtureCredential(), policy: () => true });
+  }
+  configureProtocol(policy: Preset["approval_policy"]) { this.host({ ...options.preset, approval_policy: policy }); }
+  binding() { return this.host().binding(); }
+  call(invocation: Uint8Array) { return this.host().call(invocation, hostFixtureCredential()); }
+  effects() { return BigInt(this.executions); }
+  create(intent: string, brief?: string) { return this.host().create(intent, brief); }
+  adopt(path: string) { return this.host().adopt(path); }
+  send(intent: string, text: string) { return this.host().send(intent, text); }
+  read(stream: "inbox" | "conversation" | "status") { return this.host().read(stream); }
+  pause(paused: boolean) { return this.host().pause(paused); }
+  cancel(intent: string) { return this.host().cancel(intent); }
   timeoutState() { return this.timeout; }
-  readFile(file: WasmFileRefWire) { return this.agent.readFile(file); }
-  wake() { return this.agent.wake(); }
-  alarm() { return this.agent.wake(); }
+  readFile(file: WasmFileRefWire) { return this.host().readFile(file); }
+  wake() { return this.host().wake(); }
+  alarm() { return this.host().wake(); }
 }
 
 interface Env {
@@ -140,9 +160,19 @@ export class Suite extends DurableObject {
 
   async fetch(): Promise<Response> {
     const started = Date.now();
-    await qualifyCloudflare(() => new SqliteJournal(this.ctx.storage, crypto.randomUUID()));
+    const hosted = async (policy: Preset["approval_policy"]) => {
+      const name = `protocol-${crypto.randomUUID()}`;
+      const agent = this.env.AGENT.getByName(name);
+      await agent.configureProtocol(policy);
+      await agent.create("protocol-root");
+      return { binding: () => agent.binding(), call: (invocation: Uint8Array) => agent.call(invocation),
+        provider: () => streamLedgerPort(this.env.LEDGER.getByName(name), ""),
+        drain: () => agent.wake(), readFile: (_agent: string, file: WasmFileRefWire) => agent.readFile(file),
+        effects: () => agent.effects() };
+    };
+    await qualifyCloudflare(() => new SqliteJournal(this.ctx.storage, crypto.randomUUID()), hosted);
     const sqlite = Date.now() - started;
-    await qualifyCloudflareRpc(() => streamLedgerPort(this.env.LEDGER.getByName(crypto.randomUUID()), ""));
+    await qualifyCloudflareRpc(() => streamLedgerPort(this.env.LEDGER.getByName(crypto.randomUUID()), ""), hosted);
     return Response.json({ sqlite, rpc: Date.now() - started - sqlite, stream: "passed", agentHost: "passed" });
   }
 }

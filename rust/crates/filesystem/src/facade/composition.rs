@@ -24,7 +24,7 @@ pub struct CreateSpec<'a> {
     pub creation: CreationOperation<'a>,
 }
 
-impl<P, O> Fs<StreamAuthorityStore<P>, O> {
+impl<P: ?Sized, O> Fs<StreamAuthorityStore<P>, O> {
     /// The Stream provider holding this filesystem's authority, so callers can
     /// compose their own records into the same consistency domain.
     pub fn stream_provider(&self) -> std::sync::Arc<P> {

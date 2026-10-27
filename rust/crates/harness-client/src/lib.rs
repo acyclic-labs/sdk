@@ -7,32 +7,32 @@ pub use connection::{
 };
 
 /// The same preset and defaults applied by local and hosted harnesses.
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::preset::Preset;
 
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod control;
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use control::{
     AgentBinding, AgentCall, AgentControls, AgentExchangeError, PreparedAgentInvocation,
 };
 
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod command;
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
     PreparedCommand,
 };
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod reply;
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use reply::{
     AgentControlFailure, AgentReply, ChildAgent, MAX_AGENT_REPLY_BYTES, PendingApproval,
     decode_agent_reply, encode_agent_reply,
@@ -51,7 +51,7 @@ pub use acyclic_harness_core::agent::{
     AgentId, AgentPath, AgentRecord, ConversationEntry, Delivered, Error as AgentError, IntentId,
     Phase, Reply, StatusRecord,
 };
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,

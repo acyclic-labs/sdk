@@ -9,6 +9,7 @@ mod approvals;
 pub mod fixtures;
 mod identity;
 mod observe;
+pub mod protocol;
 mod publication;
 mod reply;
 mod roots;
@@ -42,6 +43,12 @@ pub trait Backend: ProviderPlatform {
     /// Install the host's guest boundary. Native hosts can return `handler`;
     /// guest hosts must pass it through their real codec/transport.
     fn handler(&self, handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>>;
+    /// A real hosted endpoint using the suite's shared model/tool fixture and
+    /// `policy`. It must enter through the backend's production composition.
+    fn serving(
+        &self,
+        policy: acyclic_harness_core::approvals::ApprovalPolicy,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn protocol::Endpoint>>>;
 }
 
 /// Use the canonical guest wire boundary around a handler. The closure retains
@@ -62,6 +69,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     identified("approvals", approvals::verify(backend).await)?;
     identified("guest wire", wire::verify(backend).await)?;
     identified("restart", vectors::restart(backend).await)?;
+    identified("serving protocol", protocol::verify(backend).await)?;
     Ok(())
 }
 

@@ -1,5 +1,6 @@
-import { AgentGuest, WasmAgentProviders, WasmAgents, WasmStream,
+import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
   type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmReducer, type WasmFileRefWire,
+  type WasmHostingAdmission, type WasmSessionAuthority, type AgentCommand,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
 import { decodeMetadata, type EventStorage } from "./event-storage.js";
@@ -10,20 +11,27 @@ export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
 
 interface Identity {
   intent: string; brief?: string; path: string; create: boolean;
-  stage: "claiming" | "creating" | "ready";
+  stage: "claiming" | "opening" | "ready";
+}
+
+/** Verified by the owning platform before it opens the host, never by a guest. */
+export interface EventHostAccess {
+  admission: WasmHostingAdmission;
+  authority: WasmSessionAuthority;
+  credential: Uint8Array;
+  policy(principal: Uint8Array, command: AgentCommand): boolean | Promise<boolean>;
 }
 
 /** Shared one-actor host with event-owned delivery and durable recovery. */
 export class EventAgentHost {
-  private readonly host: WasmAgents;
-  private readonly guest: AgentGuest;
+  private readonly host: WasmAgentServer;
   private serial: Promise<unknown> = Promise.resolve();
   private commands: Promise<unknown> = Promise.resolve();
-  private generation = 0;
+  private readonly events = { generation: 0 };
 
   constructor(private readonly storage: EventStorage, private readonly ledger: StreamLedger,
     private readonly name: string, options: WasmBrowserAgentOptions,
-    owner: WasmReducer, registry: WasmAgentRegistry) {
+    owner: WasmReducer, registry: WasmAgentRegistry, private readonly access: EventHostAccess) {
 
     const stream = WasmStream.connectProvider(streamLedgerPort(ledger, name));
     const objects = {
@@ -33,10 +41,15 @@ export class EventAgentHost {
     };
     const providers = WasmAgentProviders.injected(stream, objects, true, options);
     try {
-      // This host holds `owner`'s custody: it is its tree's root.
-      this.guest = AgentGuest.open(providers, options, owner, registry, { kind: "root" });
-      this.host = WasmAgents.openHostingEvent(providers, options, owner, this.guest.manifest(),
-        (delivery: Uint8Array, signal: AbortSignal) => this.guest.onRecord(delivery, signal));
+      const { audience, scope } = access.admission;
+      const guest = AgentGuest.open(providers, options, owner, registry, { kind: "admitted", audience, scope });
+      const events = this.events;
+      this.host = WasmAgentServer.open(providers, options, owner, registry, access.admission, access.authority, {
+        manifest: guest.manifest(),
+        onRecord: (delivery: Uint8Array, signal: AbortSignal) => guest.onRecord(delivery, signal),
+        policy: (principal: Uint8Array, command: AgentCommand) => access.policy(principal, command),
+        admitted: () => recoverable(storage, events),
+      });
     } finally { providers.free(); stream.free(); }
   }
 
@@ -48,8 +61,7 @@ export class EventAgentHost {
     if (typeof row !== "object" || row === null || !("intent" in row) || typeof row.intent !== "string"
       || ("brief" in row && typeof row.brief !== "string") || !("path" in row) || typeof row.path !== "string"
       || !("create" in row) || typeof row.create !== "boolean" || !("stage" in row)
-      || (row.stage !== "claiming" && row.stage !== "creating" && row.stage !== "ready")
-      || (row.stage === "creating" && !row.create)) {
+      || (row.stage !== "claiming" && row.stage !== "opening" && row.stage !== "ready")) {
       throw new Error("STEP actor-identity failed; recovery: restore host metadata from a verified backup");
     }
     return row as unknown as Identity;
@@ -67,11 +79,18 @@ export class EventAgentHost {
         await this.retain(null);
         throw new Error(`STEP actor-placement refused: ${placement.refused}; recovery: choose an unclaimed actor path and an available consistency domain`);
       }
-      identity = { ...identity, stage: identity.create ? "creating" : "ready" };
+      identity = { ...identity, stage: "opening" };
       await this.retain(identity);
     }
-    if (identity.stage === "creating") {
-      await this.host.create(identity.intent, identity.brief);
+    // A reopened event host binds the same committed tree before any command.
+    // Opening a child observes its adoption; it does not deliver a turn.
+    if (identity.stage === "ready") await this.host.adopt(identity.path);
+    else if (identity.create) {
+      await this.host.create(identity.intent);
+      if (identity.brief !== undefined) await this.host.command({ kind: "prompt", agent: identity.path,
+        id: identity.intent, body: identity.brief }, this.access.credential);
+    } else await this.host.adopt(identity.path);
+    if (identity.stage === "opening") {
       identity = { ...identity, stage: "ready" };
       await this.retain(identity);
     }
@@ -99,11 +118,8 @@ export class EventAgentHost {
     // Commit controls while a turn is running so its canonical inbox follow
     // can abort the guest. Only delivery holds the actor's execution slot.
     return this.command(async () => {
-      await this.storage.alarm(Date.now() + 1000);
-      const generation = ++this.generation;
-      if (!Number.isSafeInteger(generation)) {
-        throw new Error("STEP actor-event failed: event counter exhausted; recovery: reopen this named event host from its retained storage");
-      }
+      await recoverable(this.storage, this.events);
+      const generation = this.events.generation;
       return { value: await action(), generation };
     }).then(({ value, generation }) => {
       const next = this.serial.then(() => this.drain(generation));
@@ -124,15 +140,15 @@ export class EventAgentHost {
     await this.command(async () => {
       // A later admitted control already owns a durable recovery alarm. An
       // earlier delivery must not erase it after observing an older input cut.
-      if (this.generation !== generation) return;
+      if (this.events.generation !== generation) return;
       if (alarm === undefined) await this.storage.alarm(undefined);
       else await this.storage.alarm(Number(alarm));
     });
   }
 
   create(intent: string, brief?: string): Promise<string> {
+    const path = this.host.validateCreate(intent, brief);
     return this.event(async () => {
-      const path = this.host.validateCreate(intent, brief);
       await this.place({ intent, brief, path, create: true, stage: "claiming" });
       return path;
     });
@@ -142,14 +158,16 @@ export class EventAgentHost {
     return this.event(async () => {
       const identity = this.identity();
       if (identity?.stage !== "ready") throw new Error("STEP actor-send failed; recovery: complete create with the actor's original intent and prompt");
-      return this.host.send(identity.path, intent, text);
+      await this.resume(identity);
+      return this.host.command({ kind: "prompt", agent: identity.path, id: intent,
+        body: text }, this.access.credential);
     });
   }
 
   /** Explicitly activate an already spawned child; spawning alone never calls this. */
-  adopt(path: string): Promise<void> {
+  async adopt(path: string): Promise<void> {
+    await this.host.validateAdopt(path);
     return this.event(async () => {
-      await this.host.validateAdopt(path);
       await this.place({ intent: path, path, create: false, stage: "claiming" });
     });
   }
@@ -166,11 +184,33 @@ export class EventAgentHost {
     return identity.path;
   }
 
-  cancel(intent: string) { return this.event(() => this.host.cancel(this.path(), intent)); }
+  cancel(intent: string) { return this.event(() => this.host.command({ kind: "cancel", agent: this.path(), id: intent }, this.access.credential)); }
   archive(intent: string) { return this.event(() => this.host.archive(this.path(), intent)); }
   pause(paused: boolean) { return this.event(() => this.host.pause(this.path(), paused)); }
   readFile(file: WasmFileRefWire) { return this.host.readFile(this.path(), file); }
 
+  /** Host-published routing metadata for the public harness client. */
+  binding(): Uint8Array { return this.host.binding(); }
+
+  /** Canonical calls may await a spawn while a separate wake delivers it. */
+  async call(invocation: Uint8Array, credential: Uint8Array): Promise<Uint8Array> {
+    await this.command(async () => {
+      const identity = this.identity();
+      if (identity?.stage !== "ready") throw new Error("STEP actor-call failed; recovery: complete the original root placement");
+      await this.resume(identity);
+    });
+    const generation = this.events.generation;
+    try { return await this.host.call(invocation, credential); }
+    finally { if (this.events.generation !== generation) await this.wake(); }
+  }
+
   /** Forward both the actor alarm and ledger wake RPC here. */
   wake(): Promise<void> { return this.event(async () => undefined); }
+}
+
+async function recoverable(storage: EventStorage, events: { generation: number }): Promise<void> {
+  await storage.alarm(Date.now() + 1000);
+  if (!Number.isSafeInteger(++events.generation)) {
+    throw new Error("STEP actor-event failed: event counter exhausted; recovery: reopen this named event host from its retained storage");
+  }
 }

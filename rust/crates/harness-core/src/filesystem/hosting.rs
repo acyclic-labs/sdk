@@ -17,8 +17,8 @@ use super::{
 use crate::{
     OperationId,
     agent::{
-        AgentHost, AgentId, AgentPath, Delivered, Error, ExecutorDriver, ForkAdopted, IntentId,
-        Sender, Spawn, VolumeBinding,
+        AgentHandler, AgentHost, AgentId, AgentPath, Delivered, Error, ExecutorDriver, ForkAdopted,
+        IntentId, Sender, Spawn, VolumeBinding,
     },
     approvals::ApprovalResponder,
     conversation::{ContentAccess, ContentGrant, ContentPublisher, FileRef, VolumeOperation},
@@ -119,7 +119,7 @@ pub enum RootSubmission {
 /// The one admitted stream instance and its placement. Agents, their actor
 /// state and their volumes' authority all live on `stream`, so a root's
 /// volumes and adoption, and every spawn, commit together.
-pub struct Placement<P: 'static, O: 'static> {
+pub struct Placement<P: ?Sized + 'static, O: 'static> {
     /// The canonical filesystem; its authority provider also hosts the agents.
     pub filesystem: Fs<StreamAuthorityStore<P>, O>,
     /// The filesystem provider every volume of this placement names.
@@ -147,7 +147,7 @@ pub struct Turns {
 
 /// A host's custody, a caller's admission and the one placement they act on,
 /// bound once. Every root, turn and spawn of this binding uses this placement.
-pub struct Bound<P: AuthorityProvider + 'static, O: 'static> {
+pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     issuer: AuthorityRoot,
     admission: TurnAdmission,
     within: ActorReference,
@@ -155,11 +155,38 @@ pub struct Bound<P: AuthorityProvider + 'static, O: 'static> {
     agents: Arc<AgentHost<P>>,
     turns: Arc<Turner<P, O>>,
     volumes: Arc<Host<P, O>>,
+    clock: Arc<dyn Clock>,
+    handler: Arc<dyn acyclic_actors::guest::Handler>,
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
+    fn clone(&self) -> Self {
+        Self {
+            issuer: self.issuer.clone(),
+            admission: self.admission.clone(),
+            within: self.within.clone(),
+            maximum_bytes: self.maximum_bytes,
+            agents: self.agents.clone(),
+            turns: self.turns.clone(),
+            volumes: self.volumes.clone(),
+            clock: self.clock.clone(),
+            handler: self.handler.clone(),
+        }
+    }
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O> Bound<P, O> {
+    /// The host's canonical filesystem facade, for content observation under
+    /// the same admission as its turns.
+    #[must_use]
+    pub const fn volumes(&self) -> &Arc<Host<P, O>> {
+        &self.volumes
+    }
 }
 
 impl<P, O> Bound<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Binds `caller`, as the host's platform verified it, to the host's
@@ -229,13 +256,17 @@ where
             admission.clone(),
             maximum_bytes,
         ));
-        let agents = Arc::new(AgentHost::with_spawn_volumes(
+        let handler = Arc::new(
+            AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
+                .map_err(|_| Error::Record("agent handler manifest"))?
+                .with_spawn_volumes(spawns.clone()),
+        );
+        let agents = Arc::new(AgentHost::hosting(
             stream,
-            driver,
             within.clone(),
-            turns.actors,
-            turns.clock,
-            spawns,
+            handler.clone(),
+            turns.clock.clone(),
+            Some(spawns),
         )?);
         Ok(Self {
             issuer,
@@ -245,7 +276,40 @@ where
             agents,
             turns: turner,
             volumes,
+            clock: turns.clock,
+            handler,
         })
+    }
+
+    /// Runs deliveries through the host-injected guest boundary. Admission,
+    /// turn composition, root publication and spawn participants remain those
+    /// of this binding; the guest owns only delivery execution.
+    pub fn hosting(
+        mut self,
+        handler: Arc<dyn acyclic_actors::guest::Handler>,
+    ) -> Result<Self, Error> {
+        let spawns = Arc::new(FilesystemSpawnVolumes::new(
+            self.volumes.clone(),
+            self.issuer.clone(),
+            self.admission.clone(),
+            self.maximum_bytes,
+        ));
+        self.agents = Arc::new(AgentHost::hosting(
+            self.agents.provider().clone(),
+            self.within.clone(),
+            handler.clone(),
+            self.clock.clone(),
+            Some(spawns),
+        )?);
+        self.handler = handler;
+        Ok(self)
+    }
+
+    /// The handler composed from this binding's preset and exact admission.
+    /// A guest boundary may wrap it before passing it to [`Self::hosting`].
+    #[must_use]
+    pub fn handler(&self) -> Arc<dyn acyclic_actors::guest::Handler> {
+        self.handler.clone()
     }
 
     /// The admission every agent of this binding derives its scope from, for
@@ -266,6 +330,29 @@ where
     #[must_use]
     pub const fn turns(&self) -> &Arc<Turner<P, O>> {
         &self.turns
+    }
+
+    /// Reads immutable content under the binding's original admission, as a
+    /// turn does. Host custody cannot widen an admitted caller's file access.
+    pub async fn read_file(&self, agent: &AgentPath, file: &FileRef) -> Result<Vec<u8>, Error> {
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
+            .map_err(turn)?;
+        let reader = super::FilesystemContentVerifier::new(
+            self.volumes.clone(),
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        use crate::conversation::ContentResidencyVerifier as _;
+        let bytes = reader
+            .read(file, self.maximum_bytes, None, None)
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        Ok(bytes.as_slice().to_vec())
     }
 
     /// The approval `agent` waits on, with the exact action it shows. An
@@ -398,40 +485,27 @@ where
         Ok(staged.0)
     }
 
-    /// Prepares root `request` under intent `intent`.
-    ///
-    /// Before any IO it verifies the caller's admission for the root (the
-    /// [`agent_authority`] check turns make: authentic, live, this audience
-    /// and agent, and writing the private volume) and that the admission
-    /// writes every fresh volume; a read-only or mismatched admission is
-    /// refused here, having read and written nothing. Retained volumes keep
-    /// exactly the access the admission grants them. Then it prepares the one
-    /// sealed commit creating the fresh volumes and the root. Preparation
-    /// performs no stream IO; it writes the fresh volumes' initial objects to
-    /// the object store, held unpublished by the returned commit.
-    ///
-    /// # Errors
-    /// [`crate::Error::Unauthorized`] (as [`Error::Turn`]) when the
-    /// admission does not cover the root; otherwise a store failure.
-    pub async fn prepare_root(
-        &self,
-        intent: &IntentId,
-        request: RootRequest,
-    ) -> Result<Prepared, Error> {
-        let RootRequest {
-            agent,
-            fresh,
-            retained,
-            brief,
-            policy,
-        } = request;
-        let path = AgentPath::root(&agent);
-        let owner = crate::AgentId::from_bytes(agent.to_bytes());
-        let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
+    /// Revalidates an existing agent's admission against its committed volume
+    /// bindings, before restoring a platform-owned route. Performs no IO.
+    pub fn admit_agent(&self, agent: &AgentPath, volumes: &[VolumeBinding]) -> Result<(), Error> {
+        agent_authority(&self.issuer, &self.admission, agent, volumes, &[]).map_err(turn)?;
+        Ok(())
+    }
+
+    /// Validates a proposed root before placement or storage IO.
+    pub fn admit_root(&self, request: &RootRequest) -> Result<(), Error> {
+        let path = AgentPath::root(&request.agent);
+        let owner = crate::AgentId::from_bytes(request.agent.to_bytes());
+        let volumes: Vec<VolumeBinding> = request
+            .fresh
+            .iter()
+            .chain(&request.retained)
+            .cloned()
+            .collect();
         {
             let authority = agent_authority(&self.issuer, &self.admission, &path, &volumes, &[])
                 .map_err(turn)?;
-            for binding in &fresh {
+            for binding in &request.fresh {
                 ContentGrant::verify(
                     &authority.verifier,
                     &authority.scope,
@@ -452,6 +526,38 @@ where
                 .map_err(turn)?;
             }
         }
+        Ok(())
+    }
+
+    /// Prepares root `request` under intent `intent`.
+    ///
+    /// Before any IO it verifies the caller's admission for the root (the
+    /// [`agent_authority`] check turns make: authentic, live, this audience
+    /// and agent, and writing the private volume) and that the admission
+    /// writes every fresh volume; a read-only or mismatched admission is
+    /// refused here, having read and written nothing. Retained volumes keep
+    /// exactly the access the admission grants them. Then it prepares the one
+    /// sealed commit creating the fresh volumes and the root. Preparation
+    /// performs no stream IO; it writes the fresh volumes' initial objects to
+    /// the object store, held unpublished by the returned commit.
+    ///
+    /// # Errors
+    /// [`crate::Error::Unauthorized`] (as [`Error::Turn`]) when the
+    /// admission does not cover the root; otherwise a store failure.
+    pub async fn prepare_root(
+        &self,
+        intent: &IntentId,
+        request: RootRequest,
+    ) -> Result<Prepared, Error> {
+        self.admit_root(&request)?;
+        let RootRequest {
+            agent,
+            fresh,
+            retained,
+            brief,
+            policy,
+        } = request;
+        let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
         let Spawn { child, request } = self.agents.prepare_root(
             intent,
             ForkAdopted {

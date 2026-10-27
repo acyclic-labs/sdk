@@ -37,7 +37,7 @@ use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_harness_client::{AgentCall, AgentCommand, AgentReply, ChildAgent, PendingApproval};
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, ProviderPlatform, ReadRequest, StreamError,
-    StreamPath, StreamProvider as _,
+    StreamPath,
     session::{CallAuthorization, CallProvider},
 };
 use bytes::Bytes;
@@ -54,10 +54,17 @@ pub trait Platform: ProviderPlatform + 'static {
         principal: &'a Principal,
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>>;
+
+    /// Durable wake admission, after both credential and current policy allow
+    /// dispatch, and before any command effect. Native continuous runtimes need
+    /// no additional wake; event platforms retain their recovery alarm here.
+    fn admitted(&self) -> BoxProviderFuture<'_, Result<(), StreamError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// One admitted agent tree served over the unified session protocol.
-pub struct Server<P: AuthorityProvider + 'static, O: 'static> {
+pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     this: std::sync::Weak<Self>,
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
@@ -66,7 +73,7 @@ pub struct Server<P: AuthorityProvider + 'static, O: 'static> {
 }
 
 /// What serving a root came to.
-pub enum Serving<P: AuthorityProvider + 'static, O: 'static> {
+pub enum Serving<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     /// The root is created and served.
     Served(Arc<Server<P, O>>),
     /// The root's creation is uncertain: [`Unsettled::resubmit`] submits the
@@ -76,7 +83,7 @@ pub enum Serving<P: AuthorityProvider + 'static, O: 'static> {
 }
 
 /// A root whose creation is uncertain, owning its prepared commit.
-pub struct Unsettled<P: AuthorityProvider + 'static, O: 'static> {
+pub struct Unsettled<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     prepared: Prepared,
@@ -84,7 +91,7 @@ pub struct Unsettled<P: AuthorityProvider + 'static, O: 'static> {
 
 impl<P, O> Unsettled<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// The prepared commit awaiting a definite outcome.
@@ -115,7 +122,7 @@ pub async fn serve<P, O>(
     root: RootRequest,
 ) -> Result<Serving<P, O>, Error>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     let prepared = bound.prepare_root(intent, root).await?;
@@ -129,7 +136,7 @@ async fn settle<P, O>(
     prepared: Prepared,
 ) -> Result<Serving<P, O>, Error>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     let root = match bound.submit_root(prepared).await? {
@@ -142,22 +149,52 @@ where
             }));
         }
     };
+    Ok(Serving::Served(server(bound, platform, root)))
+}
+
+/// Restores a platform's durable placement of an already adopted tree, using
+/// its committed volume bindings. Revalidates admission without storage IO.
+/// The platform validates adoption before retaining placement; restoring it
+/// neither runs the agent nor activates children.
+pub async fn reopen<P, O>(
+    bound: Bound<P, O>,
+    platform: Arc<dyn Platform>,
+    root: AgentPath,
+    volumes: &[crate::agent::VolumeBinding],
+) -> Result<Arc<Server<P, O>>, Error>
+where
+    P: AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    bound.admit_agent(&root, volumes)?;
+    Ok(server(bound, platform, root))
+}
+
+fn server<P, O>(
+    bound: Bound<P, O>,
+    platform: Arc<dyn Platform>,
+    root: AgentPath,
+) -> Arc<Server<P, O>>
+where
+    P: AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
     let resource = format!(
         "actors:/{}",
         acyclic_auth::encode_component(bound.within().namespace().as_str().as_bytes())
     );
-    Ok(Serving::Served(Arc::new_cyclic(|this| Server {
+    Arc::new_cyclic(|this| Server {
         this: this.clone(),
         bound,
         platform,
         root,
         resource,
-    })))
+    })
 }
 
 impl<P, O> Server<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// The served root.
@@ -171,6 +208,14 @@ where
     #[must_use]
     pub fn resource(&self) -> &str {
         &self.resource
+    }
+
+    /// Delivers one explicitly placed agent to quiescence. Returns its
+    /// committed undelivered alarm for an event host's native alarm primitive.
+    /// An unsettled publication retains its runtime slot and cannot be released.
+    pub async fn drain(&self, agent: &AgentPath) -> Result<Option<u64>, Error> {
+        let agent = self.within_tree(agent)?;
+        self.bound.agents().drain_event(agent).await
     }
 
     /// Runs the tree's agents until the runtime stops; `failed` sees each
@@ -416,7 +461,7 @@ fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> 
 
 impl<P, O> CallProvider for Server<P, O>
 where
-    P: AuthorityProvider + 'static,
+    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn resource(&self, invocation: &[u8]) -> Result<String, StreamError> {
@@ -439,6 +484,7 @@ where
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
                 .map_err(|_| StreamError::InvalidArgument)?;
             authorization.authorize(&server.resource, &[], &attributes, policy)?;
+            server.platform.admitted().await?;
             let by = Sender::User {
                 principal: principal.id.clone(),
             };
@@ -448,6 +494,6 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "hosting_tests.rs"]
 mod tests;
