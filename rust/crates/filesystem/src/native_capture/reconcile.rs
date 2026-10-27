@@ -321,7 +321,9 @@ impl CaptureBatch<'_> {
                 &metadata,
                 host_kind,
                 canonical_metadata,
-                exists_with_kind,
+                current
+                    .filter(|_| exists_with_kind)
+                    .map(|record| record.file_id),
             )?;
             true
         };
@@ -559,8 +561,9 @@ impl CaptureBatch<'_> {
         metadata: &HostStat,
         host_kind: FileKind,
         canonical_metadata: FileMetadata,
-        exists_with_kind: bool,
+        existing_file_id: Option<crate::FileId>,
     ) -> Result<(), CaptureError> {
+        let exists_with_kind = existing_file_id.is_some();
         capture_reserve(
             &mut self.mutations,
             if exists_with_kind { 2 } else { 1 },
@@ -581,10 +584,10 @@ impl CaptureBatch<'_> {
             }),
             FileKind::SymbolicLink => {
                 let target = read_link_bytes(self.source_root, &host_path, self.meter)?;
-                if exists_with_kind {
+                if let Some(file_id) = existing_file_id {
                     self.mutations.push(AuthoredMutation::Remove {
                         path: clone_capture_path(&path, self.meter)?,
-                        expected_file_id: None,
+                        expected_file_id: Some(file_id),
                     });
                 }
                 let target = capture_link_target(target, self.meter)?;
@@ -608,10 +611,10 @@ impl CaptureBatch<'_> {
             }),
             FileKind::CharacterDevice | FileKind::BlockDevice => {
                 let (major, minor) = host_device_identity(metadata)?;
-                if exists_with_kind {
+                if let Some(file_id) = existing_file_id {
                     self.mutations.push(AuthoredMutation::Remove {
                         path: clone_capture_path(&path, self.meter)?,
-                        expected_file_id: None,
+                        expected_file_id: Some(file_id),
                     });
                 }
                 self.mutations.push(AuthoredMutation::CreateDevice {
