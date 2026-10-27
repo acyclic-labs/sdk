@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { collectProviderTests, verifyProviderTests, recursiveProviderTest } from "./harness-provider-evidence.mjs";
+import { compatibilityArtifacts } from "./generated-bindings.mjs";
 
 const name = recursiveProviderTest.slice(recursiveProviderTest.indexOf("::") + 2);
 const transcript = `     Running tests/recursive_fork.rs (target/debug/deps/recursive_fork)\n\ntest ${name} ... ok\n`;
@@ -41,10 +42,8 @@ const suite = { cases: [{ name: "a", family: "harness" }, { name: "b", family: "
 const registrations = [["harness", "a", [["rust", "test_a"]]], ["harness", "b", [["e2e", "test_b"]]]];
 
 test("locked Harness inventory owns exactly the executed requirements for every case", () => {
-  const locked = JSON.parse(readFileSync(new URL("../conformance/vectors/core.json", import.meta.url), "utf8"));
+  const locked = JSON.parse(readFileSync(new URL(`../${compatibilityArtifacts.harness.conformanceDigest}`, import.meta.url), "utf8"));
   const cases = locked.cases.filter(item => item.family === "harness");
-  const mirror = JSON.parse(readFileSync(new URL("../rust/crates/conformance/vectors/harness.json", import.meta.url), "utf8"));
-  assert.deepEqual(mirror.cases, locked.cases);
   assert.deepEqual(harnessCaseMarkers.map(([, name]) => name), cases.map(item => item.name));
   const registered = registerCases(locked, "harness", harnessCaseMarkers);
   assert.deepEqual(registered.cases, cases);
@@ -274,8 +273,8 @@ test("runner rejects stale source and substituted package inputs before qualific
     for (const name of ["run-harness-conformance.mjs", "harness-conformance-cases.mjs", "harness-conformance-evidence.mjs", "generated-bindings.mjs", "harness-package-closure.mjs", "harness-provider-evidence.mjs"]) {
       copyFileSync(new URL(`./${name}`, import.meta.url), join(root, "scripts", name));
     }
-    mkdirSync(join(root, "conformance/vectors"), { recursive: true });
-    copyFileSync(new URL("../conformance/vectors/core.json", import.meta.url), join(root, "conformance/vectors/core.json"));
+    mkdirSync(join(root, "rust/crates/harness/conformance"), { recursive: true });
+    copyFileSync(new URL(`../${compatibilityArtifacts.harness.conformanceDigest}`, import.meta.url), join(root, compatibilityArtifacts.harness.conformanceDigest));
     writeFileSync(join(root, ".gitignore"), "/artifacts/\n/launcher/\n");
     git(["init", "--quiet"]);
     git(["add", "."]);

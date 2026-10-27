@@ -15,6 +15,10 @@ use std::sync::Arc;
 
 mod counted;
 
+/// Canonical language-neutral dependency/content-range vector used by existing
+/// compatibility and proof producers. Exact bytes ship with this crate.
+pub const DEPENDENCY_SUITE: &str = include_str!("../conformance/dependency-content-range-v1.json");
+
 /// Production filesystem composition and accounting at its actual storage seam.
 /// Retain any temporary directories, services or mounts in this backend value.
 pub trait Backend: ProviderPlatform {

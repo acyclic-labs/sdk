@@ -15,9 +15,4 @@ step() {
 
 step native-host cargo test -p acyclic-agent-host-conformance --features local
 step browser-host-compile cargo check -p acyclic-agent-host-conformance --features browser --target wasm32-unknown-unknown --tests
-bindgen=$(step browser-tools bash scripts/ensure-wasm-bindgen.sh)
-bindgen=$(step browser-tool-path command -v "$bindgen")
-export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="$(dirname "$bindgen")/wasm-bindgen-test-runner"
-CHROMEDRIVER=$(step browser-driver command -v "${CHROMEDRIVER:-chromedriver}")
-export CHROMEDRIVER
-step browser-host cargo test -p acyclic-agent-host-conformance --features browser --target wasm32-unknown-unknown
+step browser-host bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-agent-host-conformance --features browser --target wasm32-unknown-unknown

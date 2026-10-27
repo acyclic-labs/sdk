@@ -52,10 +52,13 @@ provider-reopen check through `bash scripts/backends/storage-conformance.sh`.
 The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` providers:
 
 ```sh
-CHROMEDRIVER=chromedriver CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-  cargo test --locked -p acyclic-fs --no-default-features --features browser,memory,conformance \
+bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
+  --no-default-features --features browser,memory,conformance \
   --target wasm32-unknown-unknown --test browser_commit public_conformance
 ```
+
+The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and
+`CHROMEDRIVER` when selecting another installed distribution.
 
 `Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection
 visits preserve the original owner; async storage calls retain the original
