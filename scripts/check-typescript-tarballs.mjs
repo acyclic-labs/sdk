@@ -111,7 +111,7 @@ const checks = {
     return true;
   },
   "@acyclic-labs/fs": (m) => typeof m.openBrowserFs === "function",
-  "@acyclic-labs/harness": (m) => typeof m.Harness.builder === "function",
+  "@acyclic-labs/harness": (m) => typeof m.Harness.create === "function",
   "@acyclic-labs/inference": (m) => typeof m.InferenceClient === "function",
   "@acyclic-labs/machines": async (m) => {
     const provider = new m.SimulatedMachines();

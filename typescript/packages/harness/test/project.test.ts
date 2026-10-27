@@ -1,7 +1,5 @@
 import { expect, test } from "bun:test";
-import { DEFAULT_LIMITS, ExecutionScope, Harness, NativeContracts, ParentProjectController, providerOperationId,
-  type Authority, type ConversationMessageId, type OperationId, type ParentProjectBinding,
-  type ProjectMergeReceipt, type ProjectWorkspaceProvider, type ResourceRef } from "../src/index.js";
+import { DEFAULT_LIMITS, NativeContracts, ParentProjectController, providerOperationId, type Authority, type ConversationMessageId, type OperationId, type ParentProjectBinding, type ProjectMergeReceipt, type ResourceRef } from "../src/index.js";
 
 const provider = { namespace: "test", family: "filesystem", version: "2" } as const;
 const owner = { kind: "project", id: "project" } as const;
@@ -9,21 +7,6 @@ const parent = { provider, id: "root", class: "project", owner } as const;
 const child = { provider, id: "child", class: "project", owner } as const;
 const generation = (byte: number): ResourceRef<"generation"> => ({ kind: "generation", provider, key: [byte], version: null });
 const contracts = await NativeContracts.create();
-
-test("project workspace bindings need authority and scoped views cannot regain them", async () => {
-  const workspaces: ProjectWorkspaceProvider = {
-    provider, project: parent,
-    async forkProject() { throw new Error("unused"); },
-    async prepareProjectMerge() { throw new Error("unused"); },
-  };
-  await expect(Harness.builder(contracts).workspaces(workspaces).build()).rejects.toThrow();
-  const runtime = await Harness.builder(contracts).workspaces(workspaces).grant("project:merge").build();
-  expect(runtime.projectWorkspaces()).toBe(workspaces);
-  const ungranted = await runtime.scoped(new ExecutionScope().onlyGrants());
-  expect(() => ungranted.projectWorkspaces()).toThrow();
-  const unbound = await runtime.scoped(new ExecutionScope().onlyGrants("project:merge"));
-  expect(() => unbound.projectWorkspaces()).toThrow();
-});
 
 test("Rust and TypeScript share the canonical v2 project merge receipt", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/project-merge-receipt.json", import.meta.url)).text()).trim();

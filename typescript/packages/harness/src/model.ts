@@ -1,7 +1,5 @@
-import type { ToolContext } from "./task-context.js";
 import type { FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
-import type { WasmMachineIdentityWire } from "./native-contracts.js";
 import type {
   ModelContentPart as ModelContentPartWire,
   ModelDataPart as ModelDataPartWire,
@@ -15,7 +13,6 @@ import type {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export type { ModelRole, WasmToolJsonSchema as ToolJsonSchema, WasmToolJsonValue as ToolJsonValue } from "../generated/wasm/acyclic_harness_wasm.js";
 import { NativeContracts } from "./native-contracts.js";
-import { validateComponentLabel } from "./rust-policy.js";
 export { validateComponentLabel } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary. */
@@ -69,7 +66,6 @@ export interface ToolDefinition<Input = unknown, Output = unknown> {
   readonly parseInput: (value: unknown) => Input;
   /** Verifies the executor's schema-admitted output before typed publication. */
   readonly parseOutput: (value: unknown) => Output;
-  readonly handler?: (context: ToolContext, input: Input) => Output | Promise<Output>;
 }
 /** Only the declarative schema crosses the model boundary; executors stay private. */
 export type ModelToolDefinition =
@@ -121,25 +117,6 @@ export interface ToolExecutor<Input = unknown, Output = unknown> { execute(invoc
 export interface ToolProjection<Input = unknown, Output = unknown, Projected = unknown> {
   readonly schema: ToolJsonSchema;
   project(invocation: ToolInvocation<Input>, result: ToolResult<Output>): ToolResultContent<Projected>;
-}
-declare const toolRefBrand: unique symbol;
-/** Opaque registered handle: implementation and executor never enter task code. */
-export interface ToolRef<Input, Output> {
-  readonly definition: ModelToolDefinition;
-  /** Pinned owner-host machine for a durable-only resumable tool. */
-  readonly machine?: WasmMachineIdentityWire;
-  readonly [toolRefBrand]: (input: Input) => Output;
-}
-export async function defineTool<Input, Output>(definition: Omit<ToolDefinition<Input, Output>, "handler">, handler: (context: ToolContext, input: Input) => Output | Promise<Output>): Promise<ToolDefinition<Input, Output>> {
-  await validateComponentLabel(definition.name, "tool name");
-  await validateComponentLabel(definition.revision, "tool revision");
-  if (typeof definition.parseInput !== "function" || typeof definition.parseOutput !== "function") {
-    throw new TypeError("typed tools require input and output parsers");
-  }
-  if (typeof definition.projection?.project !== "function") {
-    throw new TypeError("typed tools require an explicit result projection");
-  }
-  return Object.freeze({ ...definition, handler });
 }
 export interface ContextBuilder { build(input: RuntimeAgentInput, messages: readonly ModelMessage[]): Promise<readonly ModelMessage[]> }
 export interface AgentInput { readonly prompt: string; readonly content?: readonly UserContentPart[] }

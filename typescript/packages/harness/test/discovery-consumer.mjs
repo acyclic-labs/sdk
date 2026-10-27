@@ -1,5 +1,4 @@
-import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
-import { DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, projectModelFile, verifiedContentResolver } from "../dist/index.js";
+import { DEFAULT_LIMITS, NativeContracts, descriptorFor } from "../dist/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 
 function assert(value, message) { if (!value) throw new Error(message); }
@@ -92,37 +91,6 @@ export async function exerciseDiscovery(engine, label, reopen) {
     assert(snapshot.skills[0].fields.rank === 7n, "frontmatter integer wire changed");
     const projected = contracts.projectDiscoveredContext(snapshot, { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS);
     assert(typeof projected.messages[0].content.file.descriptor.byte_length === "number", "file byte length is not admitted wire");
-    let dispatches = 0;
-    const content = {
-      validate(file) { contracts.validate("file_ref", file); },
-      verify(file, bytes) { contracts.verifyFileBytes(file, bytes); },
-      async read(file) {
-        core.verifyContentRead(core.issueScope("model-reader", [core.volumeCapability(volume, "read")], readerAgent), file);
-        return (await retained({ key: Array.from(file.version.match(/../g), byte => parseInt(byte, 16)) })).read(`/${file.path}`, 512n);
-      },
-      fileReadCapability: file => core.fileReadCapability(file),
-      volumeReadCapability: value => core.volumeCapability(value, "read"),
-      directoryReadCapability: (value, path) => core.directoryReadCapability(value, path),
-    };
-    const runtime = await Harness.builder(contracts).declaredContext(snapshot).content(content)
-      .grant(core.volumeCapability(volume, "read")).model({ provider: "mock", name: "discovery", revision: "1", options: {} }, {
-      ...syntheticAccounting(contracts),
-      prepare: scriptedPreparation(contracts, async function* (request) {
-        dispatches++;
-        const admitted = new TextDecoder().decode(request.serializedInput);
-        for (const [index, expected] of ["root instruction", "nested instruction"].entries()) {
-          const part = request.messages[index].content;
-          assert(contracts.canonicalEqual(part.file, snapshot.instructions[index]), "prepared request changed pinned instruction ref");
-          const projected = await projectModelFile(part, {
-            resolveFile: verifiedContentResolver(content, DEFAULT_LIMITS), maxResolvedBytes: 512,
-          });
-          const framed = `# AGENTS.md instructions for ${index === 0 ? "." : "src"}\n\n<INSTRUCTIONS>\n${expected}\n</INSTRUCTIONS>`;
-          assert(projected === framed, `model file projection changed pinned instruction bytes: ${JSON.stringify(projected)}`);
-        }
-        assert(admitted.includes("Inspect old files") && !admitted.includes("SECRET BODY"), "model metadata/body selection changed");
-        yield { kind: "completed", metadata: {} };
-      }), async reconcile() { return undefined; },
-    }).build();
     await workspace.write("/inspect/SKILL.md", encoder.encode("---\nname: inspect\ndescription: Inspect new files\n---\nNEW BODY"));
     await workspace.write("/AGENTS.md", encoder.encode("changed instruction"));
     const explicit = await contracts.contextForRequest(declaration, reader, snapshot, "explicit");
@@ -133,8 +101,6 @@ export async function exerciseDiscovery(engine, label, reopen) {
     await rejects(() => contracts.contextForRequest(declaration, reader, fresh, "next_request"), "invalid replacement accepted");
     const durableSnapshot = contracts.encodeCanonicalJson(snapshot);
     if (reopen) engine = await reopen(engine);
-    await runtime.run("inspect");
-    assert(dispatches === 1, "source reload altered model dispatch");
     const restored = contracts.decodeCanonicalJson(durableSnapshot);
     const reopenedWorkspace = await engine.openWorkspace(workspace.name);
     await rejects(() => reopenedWorkspace.generation(new Uint8Array(31)), "malformed generation accepted");

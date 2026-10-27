@@ -13,7 +13,6 @@ import {
 import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
-import { HarnessBuilder } from "./harness-builder.js";
 import type { ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileRef, Limits, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
@@ -40,13 +39,7 @@ export { RequestScheduler, RequestCapacityError, type RequestLimits } from "./cl
 export type { ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
 export * from "./model.js";
-export { type BatchId, type GroupId, type InputKey, type Outcome, AdmissionUncertainError, type CancelReceipt, type Admission, type Rejection, type TaskEvent, type DurableTaskDriver, type TaskDefinitionOptions, type RuntimeSchema, defineRuntimeSchema, type ResumableTransition, type ResumableTask, TaskDefinition, type TaskRef, type EffectStatus, type TaskMessage, type HostTaskAttachment, type HostBatchReplay, type HarnessRuntimeSpawner, type TaskChildrenPage, type HarnessRuntimeState, type HarnessExecutionProvider, Task } from "./task.js";
-export { type BatchAdmissionRequest, type Batch, type GroupEntry, type BatchCancellationStatus, type BatchCancellationReport, type GroupOutcome, TaskGroup, GroupError } from "./task-group.js";
-export { TaskContext, type ToolContext } from "./task-context.js";
-export { type InteractionHandler, type PolicyDigest, type ComponentIdentity, type PolicyIdentity, policyIdentity, type Policy, type Interaction, type TypedInteractionInput, type Answer, ToolApprovalError, type Invocation, type EffectiveScope, type PolicyDecision, ExecutionScope } from "./execution-scope.js";
 export { type ContentBindings, type PrivateDirectoryPage, type PrivateDirectoryBindings, type ContentReader, type ContentMountResolver, composeContentBindings, type InheritedModelPrefix } from "./content.js";
-export { HarnessBuilder } from "./harness-builder.js";
-export { IndeterminateModelTurnError, TerminalModelTurnError, type RunReceipt, type RunOutput, type SelectedAgentInput, AgentHarness, TaskRunError } from "./agent-harness.js";
 export * from "./providers.js";
 export * from "./projection.js";
 export * from "./memory-conversation.js";
@@ -67,8 +60,6 @@ export interface IdentityKindMap {
   readonly session: SessionId;
   readonly turn: TurnId;
   readonly task: TaskId;
-  readonly group: import("./task.js").GroupId;
-  readonly batch: import("./task.js").BatchId;
   readonly operation: OperationId;
   readonly effect: EffectId;
   readonly interaction: InteractionId;
@@ -179,9 +170,6 @@ export class Harness {
     this.#core = core;
     this.#contracts = contracts;
   }
-
-  /** Starts a typed runtime with already initialized Rust contract admission. */
-  static builder(contracts: NativeContracts): HarnessBuilder { return new HarnessBuilder(contracts); }
 
   /** Initializes the shared Rust core and creates an empty aggregate. */
   static async create(options: HarnessOptions): Promise<Harness> {

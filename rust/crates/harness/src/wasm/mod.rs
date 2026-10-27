@@ -4,7 +4,6 @@
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
 )]
 
-use crate::runtime::dependencies::{dependency_target, validate_task_dependencies};
 use crate::wire_codec::{
     decode_command, decode_event_payload as decode_payload_wire, encode_apply_result,
     protocol_identity,
@@ -30,24 +29,16 @@ use crate::{
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{SelectedModelContext, select_model_context, validate_model_context_selection},
     resources::{ProviderRef, ResourceRef},
-    runtime::{
-        BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
-        TaskRunLimits, batch_member_operation_id, task_admission_identities,
-        task_definition_digest, validate_children_page, validate_children_request,
-    },
     tool::ToolDefinition,
     turn::prepare_turn,
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
-mod admission;
 mod bytes;
-use admission::*;
 mod content;
 use content::*;
 mod reader;
@@ -80,21 +71,6 @@ mod agents;
 mod context_discovery;
 mod history;
 mod mcp;
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WasmTaskChild {
-    slot: String,
-    task_id: TaskId,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WasmTaskChildrenPage {
-    revision: u64,
-    entries: Vec<WasmTaskChild>,
-    next_after: Option<String>,
-}
 
 /// Opaque synchronous reducer hosted in WebAssembly.
 #[wasm_bindgen]

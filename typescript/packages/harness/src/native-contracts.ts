@@ -7,13 +7,8 @@ import type {
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput, WasmModelContentInventoryWire,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata, InstructionIdentity,
-  WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
-  WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
-  WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
-  WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
-  WasmTaskIdentityInput, WasmTurnPreparation, ModelContent as ModelContentWire,
+  WasmReducer, WasmTurnPreparation, ModelContent as ModelContentWire,
   WasmModelEventAdmission, WasmModelEventAdmissionState, ModelRole as ModelRoleWire,
-  WasmTaskDependencyInput,
   McpCatalog, McpStdioRequest, McpCallbackRequest,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
@@ -25,15 +20,13 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { BatchAdmissionRequest } from "./task-group.js";
 import type { PrivateDirectoryPage } from "./content.js";
-import type { TaskChildrenPage } from "./task.js";
 import type { ModelContent, ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult, ToolResultContent } from "./model.js";
-import type { IdentityKind, IdentityKindMap, OperationId, TaskId } from "./index.js";
+import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
-export type { WasmTaskAdmissionInput, WasmBatchAdmissionInput, WasmToolJsonValue, WasmTaskAdmissionWire, WasmDurableBatchWire, WasmTaskAdmissionIdentities, WasmExecutionPlacementWire, WasmTaskRunLimitsWire, WasmNativeLimitsWire, WasmMachineIdentityWire } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { WasmToolJsonValue, WasmNativeLimitsWire } from "../generated/wasm/acyclic_harness_wasm.js";
 /** MCP contracts are emitted from the production Rust protocol owner. */
 export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefinition,
   McpStdioRequest, McpCallbackPolicy, McpCallbackRequest,
@@ -76,9 +69,6 @@ export interface NativeSelectedModelContext {
   }>[];
 }
 
-/** Exact Rust projection for a pinned resumable-tool machine admission. */
-export type WorkflowAdmissionWire = Readonly<WasmWorkflowAdmissionWire>;
-
 interface ContractValues {
   readonly limits: Limits;
   readonly provider_ref: ProviderRef;
@@ -95,11 +85,6 @@ interface ContractValues {
   readonly attachments: ReferencedAttachments;
   readonly conversation_message: ConversationMessage;
   readonly task_outcome: TaskOutcomeRecord;
-  readonly execution_placement: WasmExecutionPlacementWire;
-  readonly task_admission: WasmTaskAdmissionWire;
-  readonly workflow_admission: WorkflowAdmissionWire;
-  readonly machine_identity: WasmMachineIdentityWire;
-  readonly durable_batch_request: WasmDurableBatchWire;
   readonly resource_revision: ResourceRevision;
   readonly fork_request: ForkRequest;
   readonly fork_report: ForkReport;
@@ -143,11 +128,6 @@ export class NativeContracts {
     return wasm.validateModelTokenCount(request, count, limits);
   }
 
-  /** Admit task dependencies with the same graph and capability rules as Rust. */
-  validateTaskRequirements(value: WasmTaskDependencyInput): void {
-    wasm.validateTaskRequirements(value);
-  }
-
   validate<Family extends string>(kind: "provider_ref", value: ProviderRef<Family>): ProviderRef<Family>;
   validate<Class extends VolumeClass, Family extends string>(kind: "volume_ref", value: VolumeRef<Class, Family>): VolumeRef<Class, Family>;
   validate<Class extends VolumeClass, Family extends string>(kind: "file_ref", value: FileRef<Class, Family>): FileRef<Class, Family>;
@@ -160,11 +140,7 @@ export class NativeContracts {
   validate(kind: keyof ContractValues, value: ContractValues[keyof ContractValues],
     context?: Limits | InteractionTicket): ContractValues[keyof ContractValues] {
     // Retain native u64/usize counters as BigInt.
-    const admitted = normalizeNativeValue(
-      kind === "workflow_admission"
-        ? wasm.validateWorkflowAdmission(value as WorkflowAdmissionWire)
-        : wasm.validateContract(kind, value, context ?? null),
-    );
+    const admitted = normalizeNativeValue(wasm.validateContract(kind, value, context ?? null));
     if (kind === "project_merge_receipt") {
       const receipt = admitted as ProjectMergeReceipt;
       const statement = normalizeNativeValue(receipt.provider_proof.statement, true) as ProjectMergeReceipt["provider_proof"]["statement"];
@@ -412,60 +388,6 @@ export class NativeContracts {
     return wasm.deriveOperationUuid(operation, label) as OperationId;
   }
 
-  batchMemberOperationId(group: string, batch: string, index: number): OperationId {
-    // The native WASM entry point accepts u32; reject values it would truncate.
-    if (!Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) throw new RangeError("batch index is out of range");
-    return wasm.batchMemberOperationId(group, batch, index) as OperationId;
-  }
-
-  taskIdentityDigest(name: string, version: string, input: ToolJsonSchema, output: ToolJsonSchema,
-    requirements: readonly string[], machineDigest: Uint8Array): readonly number[] {
-    const digest = wasm.taskIdentityDigest(name, version, input, output,
-      [...requirements], Uint8Array.from(machineDigest));
-    if (digest.length !== 32) throw new TypeError("native task identity digest has an invalid length");
-    return Object.freeze(Array.from(digest));
-  }
-
-  taskAdmissionIdentities(value: WasmTaskIdentityInput): WasmTaskAdmissionIdentities {
-    return freezeNative(normalizeNativeValue(wasm.taskAdmissionIdentities({
-      ...value,
-      requirements: [...value.requirements],
-      machine_digest: [...value.machine_digest],
-    }))) as WasmTaskAdmissionIdentities;
-  }
-
-  /** Rust-owned durable task admission and canonical envelope projection. */
-  admitTask(value: WasmTaskAdmissionInput): WasmTaskAdmissionWire {
-    return freezeNative(normalizeNativeValue(wasm.admitTask({
-      ...value,
-      requirements: [...value.requirements],
-      machine_digest: [...value.machine_digest],
-      grants: [...value.grants],
-    }))) as WasmTaskAdmissionWire;
-  }
-
-  /** Rust-owned immutable batch request construction and validation. */
-  admitBatch(value: WasmBatchAdmissionInput): WasmDurableBatchWire {
-    return freezeNative(normalizeNativeValue(wasm.admitBatch({
-      ...value,
-      requirements: [...value.requirements],
-      machine_digest: [...value.machine_digest],
-      inputs: [...value.inputs],
-      grants: [...value.grants],
-    }))) as WasmDurableBatchWire;
-  }
-
-  /** Rust-owned complete batch envelope, members, and canonical digest. */
-  admitBatchRequest(value: WasmBatchAdmissionInput): BatchAdmissionRequest {
-    return freezeNative(normalizeNativeValue(wasm.admitBatchRequest({
-      ...value,
-      requirements: [...value.requirements],
-      machine_digest: [...value.machine_digest],
-      inputs: [...value.inputs],
-      grants: [...value.grants],
-    }))) as BatchAdmissionRequest;
-  }
-
   idFromDigest(digest: Uint8Array, kind: "operation"): OperationId;
   idFromDigest(digest: Uint8Array, kind: "interaction"): InteractionId;
   idFromDigest(digest: Uint8Array, kind: "operation" | "interaction"): OperationId | InteractionId {
@@ -496,31 +418,6 @@ export class NativeContracts {
 
   conversationPage(core: WasmReducer, afterSequence: bigint, limit: number): ConversationPage {
     return freezeNative(normalizeNativeValue(core.conversationPage(afterSequence, limit))) as ConversationPage;
-  }
-
-  /** Rust validates and reprojects owner-retained child pages and their request bounds. */
-  validateTaskChildrenPage(
-    parent: TaskId,
-    expectedRevision: bigint | null,
-    afterSlot: string | null,
-    maximum: number,
-    page: TaskChildrenPage,
-  ): TaskChildrenPage {
-    // Snapshot getters once before crossing WASM.
-    const revision = page.revision;
-    const entries = page.entries.map(entry => ({ slot: entry.slot, taskId: entry.taskId }));
-    const nextAfter = page.nextAfter;
-    if (typeof revision !== "bigint" || revision < 0n) {
-      throw new TypeError("native task child page revision is invalid");
-    }
-    const snapshot: TaskChildrenPage = { revision, entries, nextAfter };
-    return freezeNative(normalizeNativeValue(wasm.validateTaskChildrenPage({
-      parent,
-      expectedRevision,
-      afterSlot,
-      maximum,
-      page: snapshot,
-    }))) as TaskChildrenPage;
   }
 
   encodeCanonicalJson(value: unknown): Uint8Array {

@@ -4,7 +4,7 @@ let initialization: Promise<void> | undefined;
 
 /** Every JS function used by either Harness initialization path. */
 const REQUIRED_HARNESS_WASM_EXPORTS = [
-  "validateContract", "validateWorkflowAdmission", "verifyFileBytes", "decodeAttachmentManifest",
+  "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult", "validateToolProjection", "jsonToolProjectionSchema", "modelContentInventory",
   "validateMcpCatalog", "searchMcpCatalog", "mcpModelDefinitions", "validateMcpStdioRequest",
@@ -15,11 +15,8 @@ const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateContextSelection", "applyContextProjection", "parseSkillMetadata", "projectDiscoveredContext",
   "captureDiscoveredContext", "contextForRequest", "readPinnedContextPath", "instructionFrameBytes", "frameInstructions",
   "prepareConversationTurn",
-  "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
+  "validateConversationMessageId", "validateIdentity", "deriveOperationUuid",
   "validateAuthorityPathSegment", "validateComponentLabel",
-  "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
-  "validateTaskRequirements",
-  "validateTaskChildrenPage",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
 ] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];

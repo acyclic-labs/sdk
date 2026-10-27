@@ -1,19 +1,11 @@
 /** Ephemeral owner-controlled conversation host; the Rust reducer owns admission. */
 import { Harness, type AgentId, type Command, type OperationId, type Scope } from "./index.js";
-import type {
-  Attachment, ConversationMessage, ConversationMessageId, ConversationState,
-  FileRef, Limits, ReferencedAttachments, VolumeRef,
-} from "./conversation.js";
+import type { ConversationState, FileRef, Limits, VolumeRef } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
-import { selectModelContext } from "./projection.js";
 import { memoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
-import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type RunOutput } from "./agent-harness.js";
 import type { ContentBindings, ContentReader, PrivateDirectoryPage } from "./content.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
-
-const encoder = new TextEncoder();
-const manifestType = "application/vnd.acyclic.harness.attachments+json";
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -38,8 +30,6 @@ export class MemoryConversation {
   readonly #foreign = new Map<string, ContentReader>();
   #foreignMount: ((volume: VolumeRef) => Readonly<{ owner: MemoryConversation; scope: Scope }>) | undefined;
   readonly #uploads = new Map<string, Promise<FileRef>>();
-  readonly #outputs = new Map<string, RunOutput>();
-  #turns: Promise<void> = Promise.resolve();
 
   private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">,
     maxResidentFiles: number, content: ReturnType<typeof memoryContentStore>) {
@@ -204,7 +194,6 @@ export class MemoryConversation {
     this.#core.free();
     this.#content.free();
     this.#uploads.clear();
-    this.#outputs.clear();
     this.#foreign.clear();
     this.#foreignMount = undefined;
   }
@@ -297,259 +286,6 @@ export class MemoryConversation {
     return this.#core.conversation();
   }
 
-  runConversation(
-    runtime: AgentHarness, operationId: OperationId, content: FileRef,
-    attachments: readonly Attachment[] = [],
-  ): Promise<RunOutput> {
-    const run = this.#turns.then(() => this.#runConversation(runtime, operationId, content, attachments));
-    this.#turns = run.then(() => {}, () => {});
-    return run;
-  }
-
-  /** Explicit owner decision to close an unknown local attempt without re-dispatch. */
-  abandonIndeterminateTurn(operationId: OperationId): Promise<void> {
-    const run = this.#turns.then(() => this.#abandonIndeterminateTurn(operationId));
-    this.#turns = run.then(() => {}, () => {});
-    return run;
-  }
-
-  async #abandonIndeterminateTurn(operationId: OperationId): Promise<void> {
-    const userId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "user"));
-    const noticeId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "indeterminate-notice"));
-    const state = this.conversation();
-    const existing = state.messages.find(message => message.id === noticeId);
-    if (existing !== undefined) return;
-    if (!state.messages.some(message => message.id === userId && message.kind === "user")
-      || state.messages.some(message => message.kind === "assistant" && message.reply_to === userId)
-      || this.#outputs.has(operationId)
-      || this.#core.contextSelectionForOperation(operationId) === null) {
-      throw new TypeError("only an unresolved dispatched local turn can be abandoned");
-    }
-    const content = await this.stage(`turns/${operationId}/indeterminate.txt`, encoder.encode(
-      "The preceding model attempt has an unknown outcome and was explicitly abandoned by its owner. Do not infer an assistant answer."),
-    "text/plain", "indeterminate.txt");
-    const outcome = await this.stage(`turns/${operationId}/indeterminate.json`, this.#core.contracts.encodeCanonicalJson({
-      state: "indeterminate", operation_id: operationId,
-    }), "application/json", "indeterminate.json");
-    this.#core.validateFileUnderLimits(content, DEFAULT_LIMITS);
-    this.#core.validateFileUnderLimits(outcome, DEFAULT_LIMITS);
-    this.#append(this.#core.contracts.deriveOperationId(operationId, "indeterminate-event"), "indeterminate", {
-      id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content,
-      attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
-      extensions: { "acyclic.turn.outcome": outcome },
-    }, DEFAULT_LIMITS);
-  }
-
-  async #recordTerminalTurn(operationId: OperationId, userId: ConversationMessageId,
-    outcome: "failed" | "cancelled", limits: Limits): Promise<void> {
-    const noticeId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "terminal-notice"));
-    const state = this.conversation();
-    if (state.messages.some(message => message.id === noticeId)) return;
-    const user = state.messages.find(message => message.id === userId && message.kind === "user");
-    if (user === undefined) throw new TypeError("terminal turn has no admitted user message");
-    // Detached one-byte terminal markers use a bounded path without changing its head.
-    const marker = encoder.encode(outcome === "failed" ? "f" : "c");
-    const preferredPath = `turns/${operationId}/terminal`;
-    const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
-      && !this.#content.pathConflicts(preferredPath)
-      ? preferredPath : user.content.path;
-    // Terminal refs must not replace user path heads.
-    const terminal = await this.#content.stage(path, marker, "text/plain", `${outcome}.txt`, false);
-    this.#core.validateFileUnderLimits(terminal, limits);
-    this.#append(this.#core.contracts.deriveOperationId(operationId, "terminal-event"), "terminal", {
-      id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content: terminal,
-      attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
-      extensions: { "acyclic.turn.outcome": terminal },
-    }, limits);
-  }
-
-  async #runConversation(
-    runtime: AgentHarness, operationId: OperationId, content: FileRef,
-    attachments: readonly Attachment[],
-  ): Promise<RunOutput> {
-    const limits = runtime.components.limits;
-    const userContent = this.#core.contracts.validate("file_ref", content);
-    this.#core.validateFileUnderLimits(userContent, limits);
-    await this.read(userContent);
-    const list = await this.#attachments(operationId, "user", attachments, limits);
-    let state = this.conversation();
-    const completed = this.#outputs.get(operationId);
-    const assistantId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "assistant"));
-    const completedReady = completed !== undefined && state.messages.some(message => message.id === assistantId);
-    const committedSelection = this.#core.contextSelectionForOperation(operationId);
-    const preparation = this.#core.contracts.prepareConversationTurn(
-      state, operationId, userContent, list, limits, committedSelection,
-      completed !== undefined, runtime.components.state?.executeSelectedTurn !== undefined,
-    );
-    const userId = this.#core.contracts.validateConversationMessageId(preparation.user_id);
-    if (preparation.append_user) {
-      this.#append(this.#core.contracts.deriveOperationId(operationId, "user-event"), "user", {
-        id: userId, sequence: BigInt(state.messages.length + 1), kind: "user", content: userContent,
-        attachments: list, reply_to: null, tool_call_id: null, extensions: {},
-      }, limits);
-    }
-    if (preparation.disposition === "completed" && completed !== undefined && completedReady) {
-      return structuredClone(completed);
-    }
-    if (preparation.disposition === "indeterminate") {
-      throw new IndeterminateModelTurnError(operationId);
-    }
-    state = this.conversation();
-    const selection = {
-      conversation_revision: preparation.selection.conversation_revision,
-      message_ids: preparation.selection.message_ids.map(id => this.#core.contracts.validateConversationMessageId(id)),
-    };
-    const newSelection = preparation.selection_is_new;
-    let stableOutput = completed;
-    if (stableOutput === undefined) {
-      const selectedLength = Number(selection.conversation_revision);
-      if (!Number.isSafeInteger(selectedLength) || selectedLength < 0
-        || selectedLength > state.messages.length) {
-        throw new TypeError("local conversation selection has an unavailable historical prefix");
-      }
-      const historical = { agent: state.agent, revision: selection.conversation_revision,
-        messages: state.messages.slice(0, selectedLength) };
-      const selected = await selectModelContext(historical, {
-        conversationRevision: selection.conversation_revision, messageIds: selection.message_ids,
-      }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
-        maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
-        maxRenderBytes: limits.render_bytes,
-        limits });
-      if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
-      let output: RunOutput;
-      try { output = await runtime.runSelectedContext(selected, operationId); }
-      catch (error) {
-        if (error instanceof TerminalModelTurnError) {
-          await this.#recordTerminalTurn(operationId, userId, error.outcome, limits);
-          throw error;
-        }
-        throw error instanceof IndeterminateModelTurnError
-          ? error : new IndeterminateModelTurnError(operationId, error);
-      }
-      if (typeof output.text !== "string") throw new TypeError("assistant output text is invalid");
-      stableOutput = structuredClone(output);
-      this.#outputs.set(operationId, stableOutput);
-    }
-    const assistant = await this.stage(`turns/${operationId}/assistant.txt`, encoder.encode(stableOutput.text), "text/plain", "assistant.txt");
-    this.#core.validateFileUnderLimits(assistant, limits);
-    const assistantAttachments = await this.#attachments(operationId, "assistant", stableOutput.attachments ?? [], limits);
-    const finalMetadata = [...stableOutput.receipts].reverse().find(receipt => receipt.kind === "model-completed");
-    const metadata = await this.stage(`turns/${operationId}/metadata.json`,
-      this.#core.contracts.encodeCanonicalJson(finalMetadata?.metadata ?? {}), "application/json", "metadata.json");
-    this.#core.validateFileUnderLimits(metadata, limits);
-    await this.#publishToolHistory(operationId, userId, stableOutput, limits);
-    state = this.conversation();
-    const priorAssistant = state.messages.find(message => message.id === assistantId);
-    const message: ConversationMessage = { id: assistantId, sequence: BigInt(state.messages.length + 1),
-      kind: "assistant", content: assistant, attachments: assistantAttachments,
-      reply_to: userId, tool_call_id: null, extensions: { "acyclic.model.metadata": metadata } };
-    if (priorAssistant === undefined) this.#append(this.#core.contracts.deriveOperationId(operationId, "assistant-event"), "assistant", message, limits);
-    else if (priorAssistant.kind !== "assistant" || priorAssistant.reply_to !== userId
-      || this.#core.fileReadCapability(priorAssistant.content) !== this.#core.fileReadCapability(message.content)
-      || !this.#core.contracts.canonicalEqual(priorAssistant.attachments, message.attachments)) {
-      throw new TypeError("turn identity is bound to another assistant message");
-    }
-    return structuredClone(stableOutput);
-  }
-
-  async runPrompt(runtime: AgentHarness, prompt: string): Promise<RunOutput> {
-    const operation = this.#core.contracts.validateIdentity("operation", crypto.randomUUID());
-    const content = await this.stage(`turns/${operation}/user.txt`, encoder.encode(prompt), "text/plain", "prompt.txt");
-    return this.runConversation(runtime, operation, content);
-  }
-
-  async #attachments(operation: OperationId, role: string, items: readonly Attachment[], limits: Limits): Promise<ReferencedAttachments> {
-    if (items.length > limits.attachments) throw new TypeError("attachments exceed harness limits");
-    const checked = items.map(item => ({ file: this.#core.contracts.validate("file_ref", item.file), label: item.label }));
-    for (const item of checked) { this.#core.validateFileUnderLimits(item.file, limits); await this.read(item.file); }
-    if (checked.length <= 128) return { kind: "inline", items: checked };
-    const manifest = await this.stage(`turns/${operation}/${role}-attachments.json`,
-      this.#core.contracts.encodeAttachmentManifest(checked),
-      manifestType, "attachments.json");
-    this.#core.validateFileUnderLimits(manifest, limits);
-    this.#core.contracts.decodeAttachmentManifest(manifest, await this.read(manifest), checked.length);
-    return { kind: "manifest", manifest, item_count: checked.length };
-  }
-
-  async #publishToolHistory(operation: OperationId, userId: ConversationMessageId, output: RunOutput, limits: Limits): Promise<void> {
-    const seen = new Set<string>();
-    const results: { index: number; message: Omit<ConversationMessage<"tool_result">, "sequence"> }[] = [];
-    let step: number | undefined;
-    const flushResults = () => {
-      for (const { index, message } of results) {
-        this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result",
-          { ...message, sequence: BigInt(this.conversation().messages.length + 1) }, limits);
-      }
-      results.length = 0;
-    };
-    for (const [index, receipt] of output.receipts.entries()) {
-      if (receipt.kind === "reasoning_block") {
-        if (step !== undefined && step !== receipt.step) flushResults();
-        step = receipt.step;
-        const publication = this.#core.contracts.deriveOperationId(operation, `reasoning:${index}`);
-        const id = this.#core.contracts.validateConversationMessageId(publication);
-        const content = await this.stage(`turns/${operation}/reasoning/${index}.json`,
-          this.#core.contracts.encodeCanonicalJson({ kind: receipt.kind, block: receipt.block }),
-          "application/json", "reasoning.json");
-        this.#core.validateFileUnderLimits(content, limits);
-        this.#appendIfAbsent(publication, "reasoning", {
-          id, sequence: BigInt(this.conversation().messages.length + 1), kind: "assistant", content,
-          attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
-          extensions: { "acyclic.model.reasoning": content },
-        }, limits);
-        continue;
-      }
-      if (receipt.kind !== "tool") continue;
-      if (step !== undefined && step !== receipt.step) flushResults();
-      step = receipt.step;
-      const identity = `${receipt.step}:${receipt.callId}`;
-      if (seen.has(identity)) throw new TypeError("tool call identity is duplicated within a model step");
-      seen.add(identity);
-      const callId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operation, `tool-call:${index}`));
-      const resultId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operation, `tool-result:${index}`));
-      const call = await this.stage(`turns/${operation}/tools/${index}-call.json`,
-        this.#core.contracts.encodeCanonicalJson({ invocation: { operation_id: receipt.operationId,
-          call_id: receipt.callId, name: receipt.name, arguments: receipt.arguments }, metadata: receipt.metadata }),
-        "application/json", "call.json");
-      const result = await this.stage(`turns/${operation}/tools/${index}-result.json`,
-        this.#core.contracts.encodeCanonicalJson({ value: receipt.value }), "application/json", "result.json");
-      const projection = await this.stage(`turns/${operation}/tools/${index}-projection.json`,
-        this.#core.contracts.encodeCanonicalJson(receipt.projection), "application/json", "projection.json");
-      for (const file of [call, result, projection]) this.#core.validateFileUnderLimits(file, limits);
-      const state = this.conversation();
-      this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
-        id: callId, sequence: BigInt(state.messages.length + 1), kind: "tool_call", content: call,
-        attachments: { kind: "inline", items: [] }, reply_to: userId,
-        tool_call_id: receipt.callId, extensions: {},
-      }, limits);
-      results.push({ index, message: {
-        id: resultId, kind: "tool_result", content: result,
-        attachments: { kind: "inline", items: [{ file: projection, label: "model_projection" }] },
-        reply_to: callId, tool_call_id: receipt.callId, extensions: {},
-      } });
-    }
-    flushResults();
-  }
-
-  #append(operation: OperationId, label: string, message: ConversationMessage, limits: Limits): void {
-    const admitted = this.#core.contracts.validate("conversation_message", message, limits);
-    this.#apply(operation, label, { kind: "append_conversation_message", message: admitted });
-  }
-
-  /** Publish a ref-only record exactly once, including after a partial retry. */
-  #appendIfAbsent(operation: OperationId, label: string, message: ConversationMessage, limits: Limits): void {
-    const existing = this.conversation().messages.find(candidate => candidate.id === message.id);
-    if (existing !== undefined) {
-      const { sequence: _existingSequence, ...existingWithoutSequence } = existing;
-      const { sequence: _messageSequence, ...messageWithoutSequence } = message;
-      if (!this.#core.contracts.canonicalEqual(existingWithoutSequence, messageWithoutSequence)) {
-        throw new TypeError("conversation message identity is bound to another record");
-      }
-      return;
-    }
-    this.#append(operation, label, message, limits);
-  }
-
   #apply<Action extends { readonly kind: string }>(operation: OperationId, label: string, action: Action): void {
     const [authority, revision] = this.#core.head();
     const command: Command<Action> = { authority,
@@ -557,5 +293,4 @@ export class MemoryConversation {
       expected_revision: revision, scope: this.#scope, causal_parent: null, action };
     this.#core.apply(command);
   }
-
 }

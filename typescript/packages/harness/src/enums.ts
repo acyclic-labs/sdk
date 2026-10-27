@@ -3,7 +3,7 @@ import type {
   WasmResourceRefWire,
   WasmVolumeRefWire,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-export type { WasmGroupPolicy as GroupPolicy, AuthorityLevel } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { AuthorityLevel } from "../generated/wasm/acyclic_harness_wasm.js";
 import {
   AggregateKind as WireAggregateKind,
   ConversationKind as WireConversationKind,
