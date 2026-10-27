@@ -27,6 +27,14 @@ Call `initializeBrowserRuntime()` before host composition. `configurePiModel` in
 the admitted request bytes and verified file slices. Frontends should not rebuild
 file authorization, request projection or execution in JavaScript.
 
+For declarative model contracts, call `initializeModelContent()`. The exported
+`validateModelContent`, `validateModelMessages`, `validateUserInput`,
+`prepareModelRequest`, `modelContentInventory` and `admitModelEvent` run the
+existing Rust validators on that same WASM instance. Supply finite
+`ModelContentLimits`; start event admission with `null`, then pass the returned
+state to the next call. Inventory describes immutable references and original
+option claims. It grants no file access or authority to admit those claims.
+
 `./react`, `./svelte` and `./worker` expose view adapters. Framework subscriptions
 and demand hydration use the same bounded client state. File hydration requires
 an authorized, verified host reader; a filesystem follow record is metadata, not
