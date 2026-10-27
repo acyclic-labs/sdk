@@ -239,7 +239,12 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
 fn latest(status: &Path) -> Result<Option<(u64, PathBuf)>> {
     let mut newest: Option<(u64, PathBuf)> = None;
     for entry in std::fs::read_dir(status).map_err(storage)? {
-        let path = entry.map_err(storage)?.path();
+        let entry = entry.map_err(storage)?;
+        // Sandboxed hosts can write here; only regular files are statuses.
+        if !entry.file_type().map_err(storage)?.is_file() {
+            continue;
+        }
+        let path = entry.path();
         let sequence = path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -471,7 +476,18 @@ async fn serve_requests(
         }
         for key in changed_keys {
             if let Some((sequence, status)) = published.statuses.get_mut(&key) {
-                *sequence = publish_status(directory, &key, *sequence + 1, status)?;
+                // Sandboxed hosts can write the status tree. A publish they
+                // obstruct leaves this status for the next change under a
+                // newer sequence; it never stops the owner serving others.
+                match publish_status(directory, &key, sequence.saturating_add(1), status) {
+                    Ok(taken) => *sequence = taken,
+                    Err(error) => {
+                        *sequence = sequence.saturating_add(1);
+                        eprintln!(
+                            "step=publish native status {key}: {error}; recovery: remove unexpected entries under .acyclic-sdk/host-files/status"
+                        );
+                    }
+                }
             }
             if published
                 .statuses
@@ -494,7 +510,7 @@ fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -
         .map_err(native_file_error)?;
     // A previous owner's statuses may remain: continue past them.
     let floor = latest(root.path())?.map_or(0, |(latest, _)| latest);
-    let sequence = sequence.max(floor + 1);
+    let sequence = sequence.max(floor.saturating_add(1));
     let bytes = serde_json::to_vec(status).map_err(storage)?;
     if bytes.len() as u64 > STATUS_BYTES {
         return Err(Error::Invalid("native status exceeds its bound".into()));
@@ -504,9 +520,10 @@ fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -
         .map_err(native_file_error)?;
     for entry in std::fs::read_dir(root.path()).map_err(storage)? {
         let earlier = entry.map_err(storage)?.file_name();
+        // Best effort: an entry a sandboxed host left, or one a reader
+        // raced, never fails the publish that already landed.
         if earlier != leaf.as_str() {
-            root.remove_file(Path::new(&earlier))
-                .map_err(native_file_error)?;
+            let _ = root.remove_file(Path::new(&earlier));
         }
     }
     Ok(sequence)

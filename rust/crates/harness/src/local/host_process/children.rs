@@ -21,6 +21,8 @@ pub use tools::serve;
 
 /// Byte bound of one native event line and of a retained answer's source.
 const EVENT_LIMIT: usize = 65_536;
+/// The saved log's line where the bounded framer dropped one native event.
+const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
 /// Byte bound of a retained answer.
 const ANSWER_LIMIT: usize = 4096;
 
@@ -276,6 +278,8 @@ impl NativeChildren {
                     // draining through the same bounded framer and process
                     // owner; later complete answers remain usable.
                     running.answer = "[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into();
+                    // The saved log marks where the event was dropped.
+                    running.process.record_event(EVENT_OMITTED)?;
                     continue;
                 };
                 let Ok(event) = serde_json::from_str::<Value>(&line) else {
