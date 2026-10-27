@@ -7,6 +7,10 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+mod host;
+pub use host::FixtureCustody;
+pub(crate) use host::lock_directory;
+
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Fault {
@@ -50,14 +54,21 @@ fn secrets() -> &'static Mutex<Secrets> {
 #[derive(Debug)]
 struct Credential {
     name: String,
+    remote: Option<host::Remote>,
 }
 
 pub(super) fn entry(name: &str) -> keyring::Entry {
-    keyring::Entry::new_with_credential(Box::new(Credential { name: name.into() }))
+    keyring::Entry::new_with_credential(Box::new(Credential {
+        name: name.into(),
+        remote: host::remote(),
+    }))
 }
 
 impl CredentialApi for Credential {
     fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+        if let Some(remote) = &self.remote {
+            return remote.request(1, &self.name, secret).map(|_| ());
+        }
         secrets()
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -68,6 +79,9 @@ impl CredentialApi for Credential {
     }
 
     fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+        if let Some(remote) = &self.remote {
+            return remote.request(2, &self.name, &[]);
+        }
         let secrets = secrets().lock().unwrap_or_else(|error| error.into_inner());
         let secret = secrets.get(&self.name).ok_or(Error::NoEntry)?;
         #[cfg(test)]
@@ -76,6 +90,9 @@ impl CredentialApi for Credential {
     }
 
     fn delete_credential(&self) -> keyring::Result<()> {
+        if let Some(remote) = &self.remote {
+            return remote.request(3, &self.name, &[]).map(|_| ());
+        }
         secrets()
             .lock()
             .unwrap_or_else(|error| error.into_inner())

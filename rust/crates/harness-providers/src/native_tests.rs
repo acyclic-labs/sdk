@@ -231,6 +231,73 @@ async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<
 }
 
 #[tokio::test]
+async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Result<()> {
+    for (adapter, response) in fixtures() {
+        // Mutate the existing shared protocol fixture at the returned name;
+        // preserve its original framing, arguments, finish and usage records.
+        let malformed = response.replace("\"echo\"", "\"bad/tool\"");
+        assert_ne!(
+            malformed, response,
+            "fixture must exercise the returned name"
+        );
+        let (mut provider, _) = provider(adapter, 200);
+        let fixture = Arc::new(Fixture {
+            response: Bytes::from(malformed),
+            ..Fixture::new(response)
+        });
+        provider.transport =
+            crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
+        let (request, dispatch) = request(&provider)?;
+        let ordinary = provider
+            .generate(&request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await;
+        assert!(
+            matches!(
+                ordinary,
+                Err(Error::ModelDiagnostic {
+                    code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                    custody: None,
+                    ..
+                })
+            ),
+            "{adapter:?}: {ordinary:?}"
+        );
+
+        let work = work(&CancellationToken::new())?;
+        let baseline = work.live_allocation_bytes();
+        {
+            let mut stream = provider
+                .generate_with_native_work(&request, dispatch, &work)?
+                .await?;
+            let error = loop {
+                match stream.next().await {
+                    Some(Err(error)) => break error,
+                    Some(Ok((event, custody))) => {
+                        assert!(!matches!(
+                            event,
+                            ModelEvent::ToolCall(_) | ModelEvent::Completed { .. }
+                        ));
+                        drop(custody);
+                    }
+                    None => return Err(invalid("malformed tool alias completed without refusal")),
+                }
+            };
+            assert!(
+                matches!(&error, Error::ModelDiagnostic {
+                code: acyclic_harness_core::wire::ErrorCode::Invalid, custody: Some(custody), ..
+            } if custody.work().shares_allocation_context(&work)),
+                "{adapter:?}: {error:?}"
+            );
+            drop(error);
+        }
+        assert_eq!(work.live_allocation_bytes(), baseline, "{adapter:?}");
+        assert_eq!(fixture.sent.load(Ordering::SeqCst), 2, "{adapter:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_when_unfunded()
 -> Result<()> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
@@ -251,7 +318,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
             .expect("error event")
             .expect_err("invalid protocol");
         assert!(
-            matches!(&error, Error::ModelDiagnostic { code: acyclic_harness_core::wire::ErrorCode::Invalid, custody, .. }
+            matches!(&error, Error::ModelDiagnostic { code: acyclic_harness_core::wire::ErrorCode::Invalid, custody: Some(custody), .. }
             if custody.work().shares_allocation_context(&work))
         );
         drop(error);

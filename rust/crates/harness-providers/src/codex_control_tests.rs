@@ -41,6 +41,7 @@ proptest! {
             let server = Arc::new(Server {
                 replies: Mutex::new(VecDeque::new()),
                 requests: Mutex::new(Vec::new()),
+                remove_auth_on_unauthorized: Mutex::new(None),
             });
             let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server)
                 .with_codex_login(CodexLogin::from_path("never-read-auth.json".into()))

@@ -186,7 +186,14 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
     // Negative control: a 400 is final on the first attempt.
     let (port, accepted) = serve(vec![Reply::Full(400, "bad"), Reply::Full(200, CHAT)]).await?;
     let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
-    assert!(matches!(generate(&provider).await, Err(Error::Invalid(_))));
+    assert!(matches!(
+        generate(&provider).await,
+        Err(Error::ModelDiagnostic {
+            code: acyclic_harness_core::wire::ErrorCode::Invalid,
+            custody: None,
+            ..
+        })
+    ));
     assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     Ok(())

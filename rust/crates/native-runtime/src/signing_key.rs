@@ -14,7 +14,9 @@ use zeroize::Zeroizing;
 const SERVICE: &str = "acyclic.authority.signing-seed.v1";
 
 #[cfg(any(test, feature = "test-support"))]
-mod fixture;
+pub(crate) mod fixture;
+#[cfg(any(test, feature = "test-support"))]
+pub use fixture::FixtureCustody;
 
 /// Non-secret, content-bound reference to OS-owned signing custody.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

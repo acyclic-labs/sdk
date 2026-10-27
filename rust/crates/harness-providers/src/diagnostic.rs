@@ -1,4 +1,20 @@
+use acyclic_harness_core::{Error, wire::ErrorCode};
 use std::fmt::{self, Write as _};
+
+/// Mark semantic failures only after an HTTP refusal or response protocol error.
+/// Storage, cancellation and native accounting failures keep their original class.
+pub(crate) fn rejection(error: Error) -> Error {
+    let (code, message) = match error {
+        Error::Invalid(message) => (ErrorCode::Invalid, message),
+        Error::Unauthorized(message) => (ErrorCode::Unauthorized, message),
+        error => return error,
+    };
+    Error::ModelDiagnostic {
+        code,
+        message,
+        custody: None,
+    }
+}
 
 /// Render directly into a fixed UTF-8 prefix. Native errors never invoke this renderer;
 /// portable errors allocate only the final bounded diagnostic, not an unbounded temporary.

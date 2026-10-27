@@ -79,30 +79,45 @@ impl Model {
 }
 
 struct Fixture {
+    custody: acyclic_native_runtime::signing_key::FixtureCustody,
     _directory: tempfile::TempDir,
     workspace: PathBuf,
     settings: PathBuf,
+    home: PathBuf,
 }
 
 fn fixture() -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
+    let home = directory.path().join("read-only-home");
+    std::fs::create_dir(&home).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
+    }
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(settings.join(".codex")).unwrap();
     Fixture {
+        custody: acyclic_native_runtime::signing_key::FixtureCustody::new(
+            &directory.path().join("custody"),
+        )
+        .unwrap(),
         _directory: directory,
         workspace,
         settings,
+        home,
     }
 }
 
 /// Runs the binary to its exit, or kills it after a minute.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     let mut command = Command::new(build_metadata::EXECUTABLE);
+    fixture.custody.configure(&mut command);
     command
         .env("CODEX_HOME", fixture.settings.join(".codex"))
-        .env("HOME", &fixture.settings)
+        .env("HOME", &fixture.home)
         .env("USERPROFILE", &fixture.settings)
         .env("LOCALAPPDATA", &fixture.settings)
         .env("XDG_DATA_HOME", &fixture.settings)
@@ -156,6 +171,10 @@ fn succeeded(output: &Output) -> String {
 #[tokio::test]
 async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let fixture = fixture();
+    // The actual CLI processes share only the parent's in-memory fixture store;
+    // they cannot use HOME for a credential or transaction-lock fallback.
+    #[cfg(unix)]
+    assert!(std::fs::write(fixture.home.join("must-not-write"), b"refused").is_err());
     let model = model(fixture._directory.path()).await;
     let run = |operation: &'static str| {
         graphcoder(

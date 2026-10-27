@@ -18,7 +18,7 @@ test = false
 bench = false
 
 [features]
-test-support = ["tokio/macros", "tokio/time", "tokio/test-util"]
+test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "tokio/io-util"]
 
 [dependencies]
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
@@ -67,6 +67,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "macros"] }
 serde_json.workspace = true
 acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
 tempfile = "3.27.0"
