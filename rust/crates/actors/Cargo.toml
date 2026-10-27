@@ -52,6 +52,9 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
 url = "=2.5.8"
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+
 [dev-dependencies]
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 
