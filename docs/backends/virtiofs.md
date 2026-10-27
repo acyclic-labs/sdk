@@ -90,14 +90,16 @@ and socket implementation (job `1793061176450-13144-f5af43b2`). This proves
 compilation, not a public source admission, protocol interoperability or mount.
 
 The latest completed Linux filesystem library run, including every existing
-ignored mount test, finished in 30.39 seconds: 2,476 passed and 24 failed,
-with zero ignored or filtered tests (source `a06465ef8ac8e7358c6c2323b7fba4863620e783`,
-job `1793063720297-25957-d2c0164f`). Worker retirement, event-counter custody,
-shared-view isolation and both kernel packet replays passed. Original mount
-cancellation still failed during cleanup, and the node-facts write vector
-failed. This is not a passing suite. The following corrections admit worker
-buffers before startup and avoid allocating a worker-handle vector after the
-mount can return; they await qualification.
+ignored mount test, finished in 30.37 seconds: 2,477 passed and 23 failed,
+with zero ignored or filtered tests (source `8a24213bc2f9cc07753ef29a7f2def82c0a39059`,
+job `1793064983779-30633-ebe95600`). Its compile-only gate passed in 95 seconds;
+test compilation took 564 seconds. Worker retirement, event-counter custody,
+shared-view isolation, node-facts writes and both kernel packet replays passed.
+Original mount cancellation returned ENODEV instead of ECANCELED, and the
+cross-descriptor fsync vector failed its second pending-write assertion. There
+were also 21 failures routed to the filesystem owner. This is not a passing
+suite. The subsequent source preserves the original host source refusal until
+physical unmount and shares host/vring readiness; those edits await qualification.
 
 A new real QEMU/cloud-hypervisor vector requires prepared guest artifacts:
 
@@ -109,16 +111,23 @@ The real-kernel capture and replay test passed in that run, as did standard
 vhost-user CONFIG negotiation and quiet cancellation/EOF. Its actual INIT,
 LOOKUP, READ, WRITE and RELEASE traffic and kernel/binary/source provenance
 are retained in [the packet fixture](../../rust/crates/filesystem/fixtures/fuse/README.md).
-The mount-free replay of that saved fixture also passed. No QEMU/cloud-hypervisor
-mount pass is claimed. Actual preparation succeeded using the installed
+The mount-free replay of that saved fixture also passed. Both QEMU and
+cloud-hypervisor booted real guests, mounted the standard socket, wrote/read
+the test bytes, deleted the file and verified absence, unmounted and powered
+off with exit status zero. Both servers positively joined with `transport=Ok(())`
+and no callback failure. Each server recorded 755 backend reads, 11 backend
+writes and 3,255 callback items examined. These are private fixture-source
+interoperability results, not public hosted admission or page-fault revocation
+proof. The canonical receipt confirms home, targets, outer targets and outer
+temporary directory cleanup.
+
+Actual preparation succeeded using the installed
 distribution kernel, its actual virtio-fs module and static BusyBox. The helper
 verifies the official cloud-hypervisor release asset's SHA-256 and records exact
 artifact provenance and copies no host initrd or configuration. The vector
 retains the socket and VMM process tree through positive exit/cleanup.
-QEMU exited during protocol negotiation before boot; cloud-hypervisor did not
-run because that vector stopped at the QEMU failure. The subsequent source
-accepts protocol negotiation before SET_OWNER and CALL/ERR setup before
-SET_FEATURES, plus CALL replacement on a settled enabled queue. These changes
-follow the standard QEMU initialization order and await execution. The live
-qualification still requires both guest boots above, verified read/write/delete,
-and positive guest/server exit.
+The standard protocol-before-SET_OWNER negotiation, CALL/ERR-before-SET_FEATURES
+setup and CALL replacement on a settled enabled queue were exercised by these
+actual VMMs. The subsequent guest vector additionally asserts nonzero source
+callback work and refuses unexpected transport retirement; its stronger
+assertions await execution against that source.
