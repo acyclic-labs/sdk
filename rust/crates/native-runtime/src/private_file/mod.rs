@@ -106,15 +106,17 @@ pub fn open_or_create(path: &Path) -> io::Result<File> {
     }
 }
 
-/// One stable lock inode for a user-owned OS credential identity. Unlike a
-/// fixture or owner's directory, this namespace cannot vary with TMPDIR, HOME,
-/// or the path of a copied owner record. Never unlink these lock inodes.
+/// One stable lock inode in the selected custody store's own namespace.
+/// Production uses OS account data; fixture children borrow their parent's
+/// isolated store directory. Never unlink a live store's lock inodes.
 pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
     #[cfg(any(test, feature = "test-support"))]
-    let root = {
+    let shared = crate::signing_key::fixture::lock_directory()?;
+    #[cfg(any(test, feature = "test-support"))]
+    let root = shared.clone().unwrap_or_else(|| {
         static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
         ROOT.get_or_init(std::env::temp_dir).clone()
-    };
+    });
     #[cfg(all(unix, not(any(test, feature = "test-support"))))]
     let root = unix_user_data_directory().map_err(|error| io::Error::new(error.kind(),
         format!("credential lock namespace lookup failed: {error}; recovery: configure a persistent absolute home outside /tmp and /var/tmp for the effective OS account")))?;
@@ -124,10 +126,25 @@ pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
     let root = windows::user_data_directory().map_err(windows::io_error)?;
     #[cfg(windows)]
     let user = "user";
+    #[cfg(not(any(test, feature = "test-support")))]
+    let root = {
+        let root = root.join("acyclic.authority.signing-seed.v1");
+        let mut create = fs::DirBuilder::new();
+        create.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            create.mode(0o700);
+        }
+        create.create(&root)?;
+        root
+    };
     // A fixture credential exists in this process only. Its lock namespace
     // follows that same custody boundary, without changing the locking API.
     #[cfg(any(test, feature = "test-support"))]
-    let identity = format!("fixture-{}-{identity}", std::process::id());
+    let identity = if shared.is_some() { identity.to_owned() } else {
+        format!("fixture-{}-{identity}", std::process::id())
+    };
     open_or_create(&root.join(format!("acyclic-custody-{user}-{identity}.lock")))
 }
 
@@ -185,7 +202,11 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
         }
         let home = unsafe { CStr::from_ptr(account.pw_dir) };
         let directory = fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(home.to_bytes())))?;
-        return persistent_user_directory(&directory).map(Path::to_path_buf);
+        let home = persistent_user_directory(&directory)?;
+        #[cfg(target_vendor = "apple")]
+        return Ok(home.join("Library/Application Support"));
+        #[cfg(not(target_vendor = "apple"))]
+        return Ok(home.join(".local/share"));
     }
 }
 
