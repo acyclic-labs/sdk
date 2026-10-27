@@ -45,3 +45,15 @@ workspace = true
 name = "oidc-qualify"
 path = "src/bin/oidc_qualify.rs"
 required-features = ["local"]
+
+# Each suite runs only with its feature: naming one without it is a cargo
+# error, never a silent run of zero tests.
+[[test]]
+name = "local"
+path = "tests/local.rs"
+required-features = ["local"]
+
+[[test]]
+name = "browser"
+path = "tests/browser.rs"
+required-features = ["browser"]

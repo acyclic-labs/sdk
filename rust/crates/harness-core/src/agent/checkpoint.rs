@@ -30,7 +30,7 @@ pub(crate) const TAIL_SLACK: usize = 2 * 20;
 pub(crate) fn codec() -> CodecIdentity {
     CodecIdentity {
         name: "acyclic.harness.agent".into(),
-        version: "2".into(),
+        version: "1".into(),
     }
 }
 
@@ -220,5 +220,43 @@ mod tests {
             "{record} > {}",
             acyclic_stream::MAX_RECORD_BYTES
         );
+    }
+
+    #[test]
+    fn every_record_a_step_builds_from_bounded_parts_fits_its_limit() {
+        use crate::agent::{
+            AgentRecord, ChildDone, Closed, Control, InboxRecord, IntentId, MAX_INTENT_BYTES,
+            Sender, StatusRecord,
+        };
+        assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
+        let deepest = core(MAX_DEPTH).path;
+        let empty = AgentOutcome::Failed {
+            message: String::new(),
+        };
+        // A report and a status carry at most one bounded outcome.
+        let report = InboxRecord::ChildDone(ChildDone {
+            child: deepest.clone(),
+            outcome: empty.clone(),
+        });
+        let status = StatusRecord {
+            phase: Phase::Done { outcome: empty },
+            cursor: u64::MAX,
+        };
+        for bytes in [report.encode(), status.encode()] {
+            let bound = bytes.expect("encodes").len() + MAX_OUTCOME_BYTES;
+            assert!(bound <= MAX_RECORD_BYTES, "{bound} > {MAX_RECORD_BYTES}");
+        }
+        // An archive cascade's records: the deepest sender, the longest id.
+        let id = IntentId::try_from("i".repeat(MAX_INTENT_BYTES)).expect("intent");
+        let by = Sender::Agent {
+            path: deepest.parent().expect("deep"),
+        };
+        InboxRecord::Archive(Control {
+            by: by.clone(),
+            id: id.clone(),
+        })
+        .encode()
+        .expect("an archive fits");
+        Closed { by, id }.encode().expect("a closed marker fits");
     }
 }
