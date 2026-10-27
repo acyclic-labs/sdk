@@ -237,9 +237,9 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             id: IntentId::try_from("another-prompt")?,
             inbox: entry.inbox,
         };
-        if !matches!(call(endpoint, &wrong_reply).await?, Err(error) if error.code() == "conflict")
+        if !matches!(call(endpoint, &wrong_reply).await?, Err(error) if error.code() == "agent_conflict")
         {
-            return Err("reply lookup accepted another prompt's sequence".into());
+            return Err("wrong-prompt reply did not report agent_conflict".into());
         }
         let output: serde_json::Value =
             serde_json::from_slice(&endpoint.read_file(&root, &entry.output).await?)?;
