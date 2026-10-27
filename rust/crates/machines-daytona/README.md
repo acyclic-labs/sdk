@@ -68,9 +68,14 @@ Safety rules the provider enforces:
   checkpoint, or destroy acts on.
 - **Recovery.** The shared Streams core retains the exact successful result and settlement
   identity. Native labels cannot turn an absent or partial operation into success.
-- **Toolbox.** `DaytonaApi::execute`, `download_file`, and `upload_file` read the sandbox by id
-  and send the API key only to a toolbox proxy on the API host or its subdomains (or
-  `toolbox_proxy_hosts`).
+- **Toolbox.** Guest `exec` prepares the toolbox v2 process-ledger stream lazily.
+  Core owns binary stdout/stderr, exit status, cancellation, output limits and
+  expiry; process-group cleanup and transport framing are shared there too.
+  `read_output` reads core's bounded ephemeral command history after canonical
+  machine/driver admission. This history is not restart recovery. The existing
+  `DaytonaApi::execute`, `download_file`, and `upload_file` methods remain direct
+  wire calls. Toolbox calls send credentials only to admitted proxy hosts.
+  Live guest transport qualification still requires a registered process-ledger image.
 
 Lifecycle operation ownership, idempotency, state events and watch use
 [`acyclic_machines::core`](../../../docs/backends/machines-core.md). Construction
