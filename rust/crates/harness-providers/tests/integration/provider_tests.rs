@@ -127,14 +127,12 @@ fn provider_case_rejects_ignored_fields_zero_chunks_and_unused_response_shapes()
         serde_json::json!([{"state":"pending","attention":0},{"state":"completed","attention":true}]),
     ] {
         let mut broken = value.clone();
-        *broken
-            .pointer_mut("/expect/statuses")
-            .ok_or("expected statuses")? = statuses;
-        assert!(
-            serde_json::from_value::<ProviderCase>(broken)?
-                .validate()
-                .is_err()
-        );
+        broken
+            .pointer_mut("/expect")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("expected object")?
+            .insert("statuses".into(), statuses);
+        assert!(serde_json::from_value::<ProviderCase>(broken).is_err());
     }
     Ok(())
 }

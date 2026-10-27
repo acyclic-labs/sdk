@@ -142,15 +142,6 @@ impl Registry {
         } else {
             config
         };
-        #[cfg(target_arch = "wasm32")]
-        let local_count = false;
-        #[cfg(not(target_arch = "wasm32"))]
-        let local_count = codex_login.is_some();
-        if config.token_counter.is_none() && !local_count {
-            return Err(acyclic_harness_core::Error::Unsupported(
-                "configure a verified input token counter for this endpoint".into(),
-            ));
-        }
         let authenticated = key.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();

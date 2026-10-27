@@ -51,6 +51,8 @@ name = "native-wasm-fixture"
 required-features = ["filesystem"]
 
 [features]
+oidc = ["filesystem", "acyclic-harness-core/oidc"]
+oidc-http = ["oidc", "acyclic-harness-core/oidc-http"]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
 test-support = ["acyclic-harness-tui?/test-support", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]

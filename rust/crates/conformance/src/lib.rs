@@ -8,6 +8,8 @@ pub use acyclic_agent_host_conformance as agent_host;
 pub mod client;
 /// Complete filesystem workload taxonomy, selectors, and portable vectors.
 pub mod filesystem;
+/// Provider-neutral inference assertions over the public streaming model seam.
+pub mod inference;
 /// Machine-readable cross-language conformance reports and qualification receipts.
 pub mod runner;
 

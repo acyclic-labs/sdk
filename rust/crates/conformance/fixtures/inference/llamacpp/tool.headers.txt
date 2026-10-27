@@ -1,0 +1,7 @@
+Server: llama.cpp
+Access-Control-Allow-Origin: 
+X-Accel-Buffering: no
+Content-Type: text/event-stream
+Connection: close
+Transfer-Encoding: chunked
+

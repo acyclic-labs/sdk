@@ -41,6 +41,9 @@ pub mod fuzzing;
 mod http;
 mod input;
 pub use input::validate_input;
+/// Configuration for OpenAI-compatible hosted and local endpoints.
+#[cfg(feature = "endpoint-presets")]
+pub mod endpoints;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(any(all(target_arch = "wasm32", feature = "browser"), all(test, not(loom))))]
@@ -133,14 +136,26 @@ fn transport_failure(
     }
 }
 
-/// Classifies a non-success response, reading at most [`EXCERPT_BYTES`] of a refusal's body.
-async fn http_failure(response: HttpResponse) -> Error {
+/// Context refusals use the same admitted JSON budget as token-count responses.
+/// Retryable diagnostics retain only their bounded excerpt.
+async fn http_failure(
+    response: HttpResponse,
+    maximum: usize,
+    work: acyclic_harness_core::NativeWork<'_>,
+) -> Error {
     use futures::StreamExt as _;
     let HttpResponse {
         status, mut body, ..
     } = response;
-    if unavailable(status, &[]).is_none() {
+    if matches!(status, 401 | 403) {
         return http_error(status);
+    }
+    if matches!(status, 400 | 413) {
+        return match http::bounded::read(body, maximum, work).await {
+            Ok(body) if stream::context_overflow_bytes(&body.bytes) => Error::ModelContextOverflow,
+            Ok(_) => http_error(status),
+            Err(error) => error,
+        };
     }
     let mut prefix = Vec::new();
     while prefix.len() < EXCERPT_BYTES {

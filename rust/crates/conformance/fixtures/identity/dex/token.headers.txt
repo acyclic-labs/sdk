@@ -1,0 +1,7 @@
+Cache-Control: no-store
+Content-Length: 1600
+Content-Type: application/json
+Pragma: no-cache
+Date: Mon, 26 Oct 2026 21:24:55 GMT
+Connection: close
+

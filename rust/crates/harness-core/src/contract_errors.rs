@@ -58,6 +58,9 @@ impl std::fmt::Display for ModelTransportFailure {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The inference endpoint refused input exceeding its model context window.
+    #[error("model context capacity exceeded")]
+    ModelContextOverflow,
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -460,7 +463,7 @@ impl Error {
             | Self::Unsupported(_)
             | Self::GoalBlocked(_)
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
-            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } => *code,
             Self::Unauthorized(_) | Self::ReadOnlyGitMetadata { .. } => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
@@ -578,7 +581,8 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
-            Self::NotFound(_)
+            Self::ModelContextOverflow
+            | Self::NotFound(_)
             | Self::Conflict(_)
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)

@@ -91,8 +91,10 @@ fn changed_key_sequence(broken: bool, operations: &[(Option<Source>, u8)]) {
             "resolution must retain its admitted snapshot"
         );
         let resolved = resolved.unwrap();
-        assert!(resolved.key.is_none());
-        assert!(resolved.codex_login.is_some());
+        assert!(
+            resolved.key.is_none() && resolved.codex_login.is_some(),
+            "resolution must retain its admitted snapshot"
+        );
         if action == 0 {
             assert_eq!(
                 reads(&sources),
@@ -343,12 +345,9 @@ fn supplied_login_sequence(
         _ => {}
     }
     let before = registry.resolve("openai/gpt-5");
-    // With no declared default, register may accept an uncounted API-key
-    // endpoint. Login replacement must preserve its resolution error too.
-    assert_eq!(
-        before.is_ok(),
-        !decode_failure && !(first == 1 && !counted && initial.is_some())
-    );
+    // Resolution permits generation without a count endpoint. Automatic context
+    // admission still checks the selected default's counter in load/register.
+    assert_eq!(before.is_ok(), !decode_failure);
     let observed = reads(&sources);
     for &key in operations {
         {

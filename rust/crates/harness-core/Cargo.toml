@@ -41,6 +41,8 @@ path = "tests/memory_accounting_model.rs"
 required-features = ["filesystem"]
 
 [features]
+oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
+oidc-http = ["oidc", "dep:reqwest"]
 tui = []
 test-support = ["acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
@@ -66,6 +68,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["acyclic-stream/grpc"]
 
 [dependencies]
+jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["rust_crypto"], optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
@@ -152,6 +155,9 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# jsonwebtoken's RustCrypto provider uses getrandom 0.2, whose browser backend
+# is selected independently from the workspace's getrandom 0.3 backend.
+oidc-getrandom = { package = "getrandom", version = "0.2", features = ["js"], optional = true }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true

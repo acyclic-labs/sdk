@@ -25,3 +25,11 @@ rust/crates/harness-fuzz/corpus/** binary
 
 # Captured external-tool output retains the generator's Windows newlines.
 scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol
+
+# Provider captures are original wire bytes, including their original newlines.
+rust/crates/conformance/fixtures/inference/**/*.body binary
+rust/crates/conformance/fixtures/inference/**/*.headers.txt binary
+rust/crates/conformance/fixtures/inference/**/*.request.json -text
+rust/crates/conformance/fixtures/identity/**/*.body binary
+rust/crates/conformance/fixtures/identity/**/*.headers.txt binary
+rust/crates/conformance/fixtures/identity/**/*.request.txt -text

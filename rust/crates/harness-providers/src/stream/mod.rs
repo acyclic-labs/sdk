@@ -2,6 +2,7 @@ mod anthropic;
 mod budget;
 mod chat;
 mod error;
+pub(crate) use error::context_overflow_bytes;
 mod gemini;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
