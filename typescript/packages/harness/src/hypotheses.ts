@@ -1,5 +1,5 @@
 import { WasmHypothesisClient } from "../generated/wasm/acyclic_harness_wasm.js";
-import { ensureHarnessWasm } from "./wasm-runtime.js";
+import { ensureHypothesisWasm } from "./wasm-runtime.js";
 import { SnapshotStore, type ClientSnapshot } from "./client-snapshot.js";
 
 export type BranchId = `${string}:${string}`;
@@ -79,7 +79,7 @@ export class HypothesisClient<Value, Assumption, Evidence> {
   readonly #maximumSelections: number;
   #disposed = false;
 
-  static async initialize(): Promise<void> { await ensureHarnessWasm(); }
+  static async initialize(): Promise<void> { await ensureHypothesisWasm(); }
 
   constructor(domain: ClientDomain<Value, Assumption, Evidence>, namespace: string, sequence: bigint,
     limits: HypothesisLimits) {

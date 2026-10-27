@@ -6,12 +6,12 @@ import { dirname, join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
-import { compatibilityArtifacts, packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
 
 const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
 const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (process.argv"))
   .replace("export function", "function");
-const names = [...new Set(packagedTypeScriptBindings.flatMap(([, names]) => names)), "workers"];
+const names = [...new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]), "workers"];
 const sources = new Map(packagedTypeScriptBindings.map(([stem]) => [stem,
   stem === "validation/v1/options_pb" ? "rust/crates/contract-derive/proto/validation/v1/options.proto"
     : stem === "protocol/v1/protocol_pb" ? "rust/crates/harness-core/proto/protocol/v1/protocol.proto"
@@ -27,7 +27,7 @@ function exercise(selected, seed, code = implementation) {
   let calls = 0;
   let writes = 0;
   const context = {
-    root, compatibilityArtifacts, packagedTypeScriptBindings, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+    root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
     process: { platform: process.platform },
     writeFileSync: (path, bytes) => { writes++; writeFileSync(path, bytes); },
     spawnSync: (_command, args) => {
@@ -52,7 +52,7 @@ function exercise(selected, seed, code = implementation) {
     let expectedWrites = 0;
     for (const name of names) {
       const expected = chosen.filter(([, names]) => names.includes(name) && selected.includes(name));
-      assert.equal(existsSync(join(output(name), "obsolete.js")), expected.length === 0, `obsolete output: ${name}`);
+      assert.equal(existsSync(join(output(name), "obsolete.js")), !selected.includes(name), `obsolete output: ${name}`);
       for (const [stem] of expected) for (const extension of [".js", ".d.ts"]) {
         assert.deepEqual(readFileSync(join(output(name), stem + extension)), payload(stem));
         expectedWrites++;
@@ -72,6 +72,10 @@ function exercise(selected, seed, code = implementation) {
 test("generation emits exactly the selected package closure and removes only its stale projections", () => {
   fc.assert(fc.property(fc.subarray(names), fc.integer(), (selected, seed) => exercise(selected, seed)), { numRuns: 64 });
   assert.throws(() => exercise(["objects"], 0, implementation.replace("rmSync(path);", "void path;")), /obsolete output/);
+  // The former early return stranded a family's final retired binding.
+  exercise(["harness"], 0);
+  assert.throws(() => exercise(["harness"], 0, implementation.replace(
+    "if (bindings.length === 0) { prune(); return; }", "if (bindings.length === 0) return;")), /obsolete output: harness/);
 });
 
 test("real TypeScript generation needs no network or populated Buf cache", { skip: process.platform !== "linux" }, () => {

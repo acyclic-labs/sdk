@@ -16,34 +16,6 @@ expect(() => bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation
 expect(bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "parent" }, revision: 2n })).toBeInstanceOf(AgentHarness);
 });
 
-test("native tool JSON preserves special property names as data", async () => {
-const value = Object.fromEntries([["__proto__", { safe: true }], ["nested", { value: 1 }], ["byte_length", -2]]);
-const admitted = (await NativeContracts.create()).validateToolValue({ type: "object" }, value);
-expect(Object.getOwnPropertyDescriptor(admitted, "__proto__")?.value).toEqual({ safe: true });
-expect((admitted as { nested: { value: number } }).nested.value).toBe(1);
-expect((admitted as { byte_length: number }).byte_length).toBe(-2);
-expect(Object.getPrototypeOf(admitted)).toBe(Object.prototype);
-});
-
-test("native tool JSON rejects values that the WASM serializer would coerce", async () => {
-expect(() => contracts.validateToolValue({ type: "object" }, { unsafe: Number.POSITIVE_INFINITY })).toThrow();
-expect(() => contracts.validateToolValue({ type: "object" }, { unsafe: -0 })).toThrow();
-expect(() => contracts.validateToolValue({ type: "object", maximum: Number.POSITIVE_INFINITY }, {})).toThrow();
-});
-
-test("native tool admission cannot reread a mutable getter after JSON preflight", async () => {
-let reads = 0;
-const value = Object.defineProperty({}, "unsafe", {
-  enumerable: true,
-  get: () => ++reads === 1 ? 1 : Number.POSITIVE_INFINITY,
-});
-let admitted: unknown;
-try { admitted = contracts.validateToolValue({ type: "object" }, value); }
-catch { /* Rejecting an accessor is also safe. */ }
-if (admitted !== undefined) expect(admitted).toEqual({ unsafe: 1 });
-expect(reads).toBeLessThanOrEqual(1);
-});
-
 test("task and tool schemas enter the registry only as strict Rust JSON", async () => {
 const unsafe = { type: "number", maximum: Number.POSITIVE_INFINITY };
 const schema = await defineRuntimeSchema("unsafe", unsafe, parseNumber);

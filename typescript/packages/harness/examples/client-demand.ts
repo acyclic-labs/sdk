@@ -1,37 +1,39 @@
-import { DemandLoader, PageWindow, RequestScheduler, type FileRef, type PageLoader,
-  type ConversationMessage } from "../src/index.js";
+import { DemandLoader, RequestScheduler, type AgentFileRef, type PageWindow } from "../src/index.js";
 
-/** Reference-first reader composition. Page and body providers authenticate
- * pins/grants before IO using their existing contracts. Neither construction
- * nor paging fetches any message body. The owner supplies all resource bounds.
+/** Attach bounded text hydration to the existing Rust-owned page window.
+ * The host reader authenticates the immutable reference, verifies its digest,
+ * and enforces maximumBytes before buffering. Paging alone never reads bodies.
  */
 export function conversationDemand(options: {
   scheduler: RequestScheduler;
-  loadPage: PageLoader<ConversationMessage, bigint>;
-  /** Provider-enforced maximum deep resident metadata for one page request. */
-  pageBytes: number;
-  windowMessages: number;
-  readBody: (file: FileRef) => Promise<Uint8Array>;
+  window: PageWindow;
+  readBody: (file: AgentFileRef, signal: AbortSignal, maximumBytes: number) => Promise<Uint8Array>;
   demand: number;
   bodyEntries: number;
   bodyBytes: number;
 }) {
-  const window = new PageWindow<ConversationMessage, bigint>(message => message.id, (direction, cursor) =>
-    options.scheduler.schedule(options.pageBytes, () => options.loadPage(direction, cursor)), options.windowMessages);
+  if (!Number.isSafeInteger(options.bodyBytes) || options.bodyBytes < 1) throw new RangeError("bodyBytes");
+  const maximumBytes = options.bodyBytes;
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  const bodies = new DemandLoader<FileRef, string>({
-    // UTF-16 text costs at most twice its UTF-8 input. Reserve the input and
-    // output simultaneously plus fixed value bookkeeping for this consumer.
-    // Pinned normalized metadata is owned/accounted by the reference window.
-    reserve: file => file.descriptor.byte_length * 3 + 96,
-    load: async file => {
-      // Existing verified FileRef reader enforces byte_length before buffering.
-      // This adapter may ignore abort; unsettled IO still owns scheduler capacity.
-      const bytes = await options.readBody(file);
-      if (bytes.buffer.byteLength > file.descriptor.byte_length) throw new RangeError("body backing buffer exceeds descriptor");
+  const bodies = new DemandLoader<AgentFileRef, string>({
+    reserve: file => {
+      const length = file.descriptor.byte_length;
+      // Check the exact Rust u64 against the finite policy before Number conversion.
+      // Input, decoded UTF-16 text and fixed retained bookkeeping coexist.
+      if (typeof length !== "bigint" || length < 0n || length * 3n + 96n > BigInt(maximumBytes)) {
+        throw new RangeError("body exceeds hydration budget");
+      }
+      return Number(length * 3n + 96n);
+    },
+    load: async (file, signal, reservedBytes) => {
+      const limit = Math.floor((reservedBytes - 96) / 3);
+      const bytes = await options.readBody(file, signal, limit);
+      if (BigInt(bytes.byteLength) !== file.descriptor.byte_length || bytes.buffer.byteLength > limit) {
+        throw new RangeError("body backing allocation differs from admitted reference");
+      }
       const value = decoder.decode(bytes);
       return { value, bytes: value.length * 2 + 96 };
     },
-  }, options.scheduler, options.demand, options.bodyEntries, options.bodyBytes);
-  return { window, bodies };
+  }, options.scheduler, options.demand, options.bodyEntries, maximumBytes);
+  return { window: options.window, bodies };
 }

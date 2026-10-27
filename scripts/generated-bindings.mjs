@@ -10,8 +10,7 @@ export const writeChanged = (path, content) => {
 /** @type {[string, string[]][]} */
 export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
-  ["harness/v2/harness_pb", ["harness"]],
-  ["protocol/v1/protocol_pb", ["filesystem", "harness"]],
+  ["protocol/v1/protocol_pb", ["filesystem"]],
   // inference_pb imports the proto2 custom options descriptor transitively.
   ["validation/v1/options_pb", ["inference", "actors", "filesystem", "machines", "objects", "stream"]],
   ["auth/v1/auth_pb", ["auth"]],
@@ -22,6 +21,9 @@ export const packagedTypeScriptBindings = [
   ["stream/v1/session_pb", ["stream"]],
   ["actors/v1/actors_pb", ["actors"]],
 ];
+
+// These packages intentionally own no protobuf outputs after protocol retirement.
+export const retiredTypeScriptBindingPackages = ["harness"];
 
 export const compatibilityArtifacts = {
   auth: {

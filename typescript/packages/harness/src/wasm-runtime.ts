@@ -2,38 +2,6 @@ import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 
 let initialization: Promise<Record<string, unknown>> | undefined;
 
-/** Every JS function used by either Harness initialization path. */
-const REQUIRED_HARNESS_WASM_EXPORTS = [
-  "validateContract", "validateWorkflowAdmission", "verifyFileBytes", "decodeAttachmentManifest",
-  "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
-  "validateToolDefinition", "validateToolInvocation", "validateToolResult", "validateToolProjection", "jsonToolProjectionSchema", "modelContentInventory",
-  "validateMcpCatalog", "searchMcpCatalog", "mcpModelDefinitions", "validateMcpStdioRequest",
-  "validateMcpCallbackRequest", "mcpCallbackOperation",
-  "validateModelContent", "prepareModelRequest", "encodeModelPrefix", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
-  "defaultCompactionPolicy", "validateThresholdCompaction", "validateModelTokenCount", "decodeExecutionEventJson",
-  "validateModelContextSelection", "validateSelectedModelContext",
-  "validateContextSelection", "applyContextProjection", "parseSkillMetadata", "projectDiscoveredContext",
-  "captureDiscoveredContext", "contextForRequest", "readPinnedContextPath", "instructionFrameBytes", "frameInstructions",
-  "prepareConversationTurn",
-  "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
-  "validateAuthorityPathSegment", "validateComponentLabel",
-  "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
-  "validateTaskRequirements",
-  "validateTaskChildrenPage",
-  "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
-  "encodeCanonicalJson", "digestCanonicalJson",
-] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];
-
-// Check raw WASM symbols used by generated wrapper methods.
-const REQUIRED_WASM_CONTENT_EXPORTS = [
-  "__wbg_wasmcontentstore_free", "wasmcontentstore_generation",
-  "wasmcontentstore_has", "wasmcontentstore_list", "wasmcontentstore_new",
-  "wasmcontentstore_pathConflicts", "wasmcontentstore_read",
-  "wasmcontentstore_read_path", "wasmcontentstore_stage",
-] as const;
-
-const HYPOTHESIS_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
-
 function hasClass(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[], constructed = false): boolean {
   return typeof exports[name] === "function"
     ? methods.every(method => typeof (exports[name] as { prototype: Record<string, unknown> }).prototype[method] === "function")
@@ -47,22 +15,21 @@ function hasStaticMethods(exports: Record<string, unknown>, name: string, prefix
     : methods.every(method => typeof exports[`${prefix}_${method}`] === "function");
 }
 
-/** Reject a stale binding before runtime code can call a missing validator. */
-export function assertHarnessWasmExports(value: unknown): void {
-  assertClientWasmExports(value);
+/** Host composition requires only retained Rust agent-host exports. */
+export function assertBrowserWasmExports(value: unknown): void {
   if (value === null || typeof value !== "object") {
-    throw new Error("harness WASM does not provide the required validators");
+    throw new Error("harness WASM does not provide the required browser host exports");
   }
   const exports = value as Record<string, unknown>;
-  const contentStore = typeof exports.WasmContentStore === "function"
-    ? true
-    : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
-  const hypotheses = hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", HYPOTHESIS_METHODS, true);
-  const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
-  const providers = typeof exports.WasmProviderRegistry === "function"
-    || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !hypotheses || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
-    throw new Error("harness WASM does not provide the required validators");
+  const authority = hasClass(exports, "WasmReducer", "wasmreducer", ["issueScope", "free"], true);
+  const registry = hasClass(exports, "WasmAgentRegistry", "wasmagentregistry", ["registerTool", "configureModel", "free"], true);
+  const agents = hasClass(exports, "WasmAgents", "wasmagents", [
+    "create", "send", "cancel", "archive", "pause", "list", "read", "readFile", "free",
+  ]) && hasStaticMethods(exports, "WasmAgents", "wasmagents", ["open", "openHosting"]);
+  const guest = hasClass(exports, "AgentGuest", "agentguest", ["manifest", "onRecord", "free"])
+    && hasStaticMethods(exports, "AgentGuest", "agentguest", ["open", "abiVersion"]);
+  if (!authority || !registry || !agents || !guest) {
+    throw new Error("harness WASM does not provide the required browser host exports");
   }
 }
 
@@ -93,7 +60,7 @@ export function assertClientWasmExports(value: unknown): void {
     "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
   ], true);
   const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
-  if (typeof exports.decodeClientJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest) {
+  if (typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest) {
     throw new Error("harness WASM does not provide the required client exports");
   }
 }
@@ -124,7 +91,25 @@ export async function ensureClientWasm(): Promise<void> {
   assertClientWasmExports(await loadHarnessWasm());
 }
 
-/** Initialize the reducer/host surface on the same physical WASM instance. */
-export async function ensureHarnessWasm(): Promise<void> {
-  assertHarnessWasmExports(await loadHarnessWasm());
+/** Browser authority and agent hosts share the one physical WASM instance. */
+export async function ensureBrowserWasm(): Promise<void> {
+  assertBrowserWasmExports(await loadHarnessWasm());
+}
+
+/** Provider catalogs initialize without an obsolete workflow admission contract. */
+export async function ensureModelWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (typeof exports.WasmProviderRegistry !== "function" && typeof exports.wasmproviderregistry_new !== "function") {
+    throw new Error("harness WASM does not provide the required model provider exports");
+  }
+}
+
+/** The hypothesis kernel has its own export contract on the same module. */
+export async function ensureHypothesisWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (!hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", [
+    "advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free",
+  ], true)) {
+    throw new Error("harness WASM does not provide the required hypothesis exports");
+  }
 }

@@ -10,4 +10,4 @@ export {
   type WasmAgentPage as BrowserAgentPage,
   type WasmAgentRecord as BrowserAgentRecord,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-export { ensureHarnessWasm as initializeBrowserRuntime } from "./wasm-runtime.js";
+export { ensureBrowserWasm as initializeBrowserRuntime } from "./wasm-runtime.js";

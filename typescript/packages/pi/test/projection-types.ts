@@ -1,23 +1,25 @@
-import { piProvider, type PiProjectedMessage } from "../src/index.js";
+import { configurePiModel, type PiBridge, type PiModelEvent } from "../src/index.js";
+import type { BrowserAgentRegistry } from "@acyclic-labs/harness/browser";
 
-type Assert<Condition extends true> = Condition;
-type UserPart = Extract<PiProjectedMessage, { role: "system" | "user" }>["content"][number];
-type AssistantPart = Extract<PiProjectedMessage, { role: "assistant" }>["content"][number];
-type ToolPart = Extract<PiProjectedMessage, { role: "tool" }>["content"][number];
+type RegistryParameters = Parameters<BrowserAgentRegistry["configureModel"]>;
 
-type UserRejectsToolCalls = Assert<Extract<UserPart, { type: "tool_call" }> extends never ? true : false>;
-type AssistantRejectsToolResults = Assert<Extract<AssistantPart, { type: "tool_result" }> extends never ? true : false>;
-type ToolRejectsToolCalls = Assert<Extract<ToolPart, { type: "tool_call" }> extends never ? true : false>;
-type AssistantAcceptsToolCalls = Assert<Extract<AssistantPart, { type: "tool_call" }> extends never ? false : true>;
-type ToolAcceptsToolResults = Assert<Extract<ToolPart, { type: "tool_result" }> extends never ? false : true>;
+declare const registry: BrowserAgentRegistry;
+declare const model: RegistryParameters[0];
+declare const compaction: RegistryParameters[5];
+declare const capacity: NonNullable<RegistryParameters[3]>;
+declare const count: NonNullable<RegistryParameters[4]>;
 
-const customEvents = piProvider<{ model: string }, { kind: "done" }>({
-  project: () => ({ model: "custom" }),
-  run: async function* (request) {
-    if (request.model !== "custom") throw new Error("unexpected model");
-    yield { kind: "done" as const };
+const bridge: PiBridge<{bytes: Uint8Array}, {event: PiModelEvent}> = {
+  contextCapacity: capacity,
+  countTokens: count,
+  project: (bytes, files) => { void files; return {bytes}; },
+  async *run(request, {dispatch, signal}) {
+    void request.bytes;
+    void dispatch.operation_id;
+    void dispatch.request_digest;
+    signal.throwIfAborted();
   },
-  event: (event) => ({ type: "complete", metadata: event.kind }),
-  reconcile: async () => [{ kind: "done" }],
-});
-void customEvents;
+  event: event => event.event,
+  reconcile: async attempt => { void attempt.observed; return null; },
+};
+configurePiModel(registry, model, compaction, bridge);

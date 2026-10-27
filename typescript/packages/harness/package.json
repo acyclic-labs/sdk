@@ -25,10 +25,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./objects": {
-      "types": "./dist/objects.d.ts",
-      "default": "./dist/objects.js"
-    },
     "./client": {
       "types": "./dist/client.d.ts",
       "default": "./dist/client.js"
@@ -40,14 +36,6 @@
     "./svelte": {
       "types": "./dist/svelte.d.ts",
       "default": "./dist/svelte.js"
-    },
-    "./proto": {
-      "types": "./generated/proto/harness/v2/harness_pb.d.ts",
-      "default": "./generated/proto/harness/v2/harness_pb.js"
-    },
-    "./protocol": {
-      "types": "./generated/proto/protocol/v1/protocol_pb.d.ts",
-      "default": "./generated/proto/protocol/v1/protocol_pb.js"
     },
     "./worker": {
       "types": "./dist/client-worker.d.ts",
@@ -65,18 +53,10 @@
     "generate": "bun ../../../scripts/generate.mjs harness",
     "prepack": "bun run generate"
   },
-  "dependencies": {
-    "@acyclic-labs/actors": "0.2.0",
-    "@bufbuild/protobuf": "2.16.0"
-  },
   "peerDependencies": {
-    "@acyclic-labs/objects": "0.2.0",
     "react": "^19.0.0"
   },
   "peerDependenciesMeta": {
-    "@acyclic-labs/objects": {
-      "optional": true
-    },
     "react": {
       "optional": true
     }
@@ -91,6 +71,7 @@
     "react-dom": "19.3.0",
     "svelte": "5.57.2",
     "typescript": "7.0.2",
-    "react": "19.3.0"
+    "react": "19.3.0",
+    "@bufbuild/protobuf": "2.16.0"
   }
 }

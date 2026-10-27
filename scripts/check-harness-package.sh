@@ -47,40 +47,64 @@ for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
   acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
   [[ -s "$wasm_output/$generated" ]] || { echo "missing generated Harness artifact: $generated" >&2; exit 1; }
 done
+# The isolated observer cases also need their private auth/stream fixture inputs.
+# Admit this closure before packing/installing; no generator or build is hidden
+# in the package consumer.
+for family in auth stream; do
+  fixture_proto="$root/typescript/packages/$family/generated/proto"
+  [[ -s "$fixture_proto/$family/v1/${family}_pb.js" ]] || {
+    echo "CLIENT_PACKAGE_INPUT step=fixture-$family missing=$fixture_proto/$family/v1/${family}_pb.js; recovery: bun scripts/generate.mjs $family" >&2
+    exit 1
+  }
+done
+[[ -s "$root/typescript/packages/stream/generated/proto/validation/v1/options_pb.js" ]] || {
+  echo "CLIENT_PACKAGE_INPUT step=fixture-stream-options; recovery: bun scripts/generate.mjs stream" >&2
+  exit 1
+}
+for fixture in client-query.test.ts session-authority.ts actor-records.fixture.ts; do
+  [[ -s "$root/typescript/packages/harness/test/$fixture" ]] || {
+    echo "CLIENT_PACKAGE_INPUT step=fixture-source missing=$fixture; recovery: git ls-files -- typescript/packages/harness/test/$fixture" >&2
+    exit 1
+  }
+done
+
 npm_stage="$work/npm-package"
 mkdir -p "$npm_stage/generated"
 install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md typescript/packages/harness/CHANGELOG.md "$npm_stage/"
 cp -R typescript/packages/harness/dist "$npm_stage/dist"
-cp -R typescript/packages/harness/generated/proto "$npm_stage/generated/proto"
 cp -R "$wasm_output" "$npm_stage/generated/wasm"
-observer_stage="$work/observer-package"
-bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/actors" "$observer_stage"
-(cd "$observer_stage" && bun pm pack --ignore-scripts --filename acyclic-observe.tgz --quiet)
-mv "$observer_stage/acyclic-observe.tgz" "$work/acyclic-observe.tgz"
 cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 
 mkdir "$work/consumer"
-protobuf_version="$(bun -e 'console.log(require(process.argv[1]).dependencies["@bufbuild/protobuf"])' "$root/typescript/packages/harness/package.json")"
+protobuf_version="$(bun -e 'console.log(require(process.argv[1]).devDependencies["@bufbuild/protobuf"])' "$root/typescript/packages/harness/package.json")"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","overrides":{"@acyclic-labs/actors":"file:../acyclic-observe.tgz"},"dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version","fake-indexeddb":"6.2.4"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version","fake-indexeddb":"6.2.4"}}
 EOF
 cd "$work/consumer"
 bun install --ignore-scripts
 mkdir -p test
 install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
-# The workspace runs the full source suite separately. Reuse the client and
-# query conformance cases here against the installed public exports.
-for source_test in client client-query; do
+# Auth/stream protobufs stay private test inputs; frontend dispatch uses Rust.
+for family in auth stream; do
+  mkdir -p "test/fixtures/$family"
+  cp -R "$root/typescript/packages/$family/generated/proto/." "test/fixtures/$family/"
+done
+for fixture in client-query.test.ts session-authority.ts actor-records.fixture.ts; do
+  fixture_source="$root/typescript/packages/harness/test/$fixture"
+  [[ -s "$fixture_source" ]] || {
+    echo "CLIENT_PACKAGE_INPUT step=fixture-source missing=$fixture_source; recovery: git ls-files -- typescript/packages/harness/test/$fixture" >&2
+    exit 1
+  }
   sed \
     -e 's#../src/index.js#@acyclic-labs/harness#g' \
     -e 's#../src/client.js#@acyclic-labs/harness/client#g' \
     -e 's#../src/client-query.js#@acyclic-labs/harness/client#g' \
-    -e 's#../generated/proto/harness/v2/harness_pb.js#@acyclic-labs/harness/proto#g' \
-    -e 's#../generated/proto/protocol/v1/protocol_pb.js#@acyclic-labs/harness/protocol#g' \
-    "$root/typescript/packages/harness/test/$source_test.test.ts" >"test/$source_test.test.ts"
-  ! grep -Eq '\.\./(src|generated)/' "test/$source_test.test.ts" || {
-    echo "installed consumer test still imports Harness internals: $source_test" >&2
+    -e 's#../../auth/generated/proto/#./fixtures/auth/#g' \
+    -e 's#../../stream/generated/proto/#./fixtures/stream/#g' \
+    "$fixture_source" >"test/$fixture"
+  ! grep -Eq '\.\./(src|generated)/|\.\./\.\./(auth|stream)/' "test/$fixture" || {
+    echo "CLIENT_PACKAGE_INPUT step=fixture-imports retained checkout import in $fixture; recovery: git diff -- scripts/check-harness-package.sh" >&2
     exit 1
   }
 done

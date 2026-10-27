@@ -4,7 +4,7 @@
 <script type="importmap">
   {"imports":{"@bufbuild/protobuf":"../../../../node_modules/@bufbuild/protobuf/dist/esm/index.js","@bufbuild/protobuf/codegenv2":"../../../../node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js"}}
 </script>
-<title>Harness automatic WASM initialization retry</title>
+<title>Shared Rust WASM initialization failure custody</title>
 <body data-result="pending">
 <script type="module">
 try {
@@ -19,14 +19,10 @@ try {
     return originalFetch(input, init);
   };
   const harness = await import("../dist/index.js");
-  const options = {
-    authority: { kind: "agent", id: "browser-retry" },
-    issuerId: "browser-retry",
-    issuerKey: crypto.getRandomValues(new Uint8Array(32)),
-  };
+  const browser = await import("../dist/browser.js");
   let rejected = false;
   try {
-    await harness.validateComponentLabel("browser-retry", "component");
+    await browser.initializeBrowserRuntime();
   } catch (error) {
     rejected = String(error?.message ?? error).includes("simulated first WASM fetch failure");
   }
@@ -39,10 +35,10 @@ try {
   }
   if (!clientRejected) throw new Error("failed client authority operation did not reject");
   globalThis.fetch = originalFetch;
-  await harness.validateComponentLabel("browser-retry", "component");
+  await browser.initializeBrowserRuntime();
   await harness.initializeClientQueries();
-  const runtime = await harness.Harness.create(options);
-  runtime.free();
+  const registry = new browser.BrowserAgentRegistry();
+  registry.free();
   document.body.dataset.result = failuresRemaining === 0 ? "passed" : "failed: fetch was not intercepted twice";
 } catch (error) {
   document.body.dataset.result = `failed: ${error.message}`;

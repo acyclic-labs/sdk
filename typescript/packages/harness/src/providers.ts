@@ -7,4 +7,4 @@ export {
   type ModelFeatures,
   type ProviderSpec,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-export { ensureHarnessWasm as initializeModelProviders } from "./wasm-runtime.js";
+export { ensureModelWasm as initializeModelProviders } from "./wasm-runtime.js";

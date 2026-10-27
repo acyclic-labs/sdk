@@ -2,18 +2,35 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export function generateProto(packages = new Set(packagedTypeScriptBindings.flatMap(([, names]) => names))) {
+export function generateProto(packages = new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages])) {
+  // A selected family owns its full proto output directory even when its last
+  // binding was deleted. Never adopt stale projections as current output.
+  /** @type {Map<string, Set<string>>} */
+  const outputs = new Map();
+  for (const name of packages) {
+    if (!/^[a-z][a-z-]*$/.test(name)) throw new Error("invalid protobuf package target");
+    outputs.set(join(root, "typescript/packages", name, "generated/proto"), new Set());
+  }
+  const prune = () => {
+    for (const [directory, expected] of outputs) {
+      if (!existsSync(directory)) continue;
+      for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+        const path = join(entry.parentPath, entry.name);
+        if (!entry.isDirectory() && !expected.has(path)) rmSync(path);
+      }
+    }
+  };
   /** @type {[string, string[]][]} */
   const bindings = [];
   for (const [stem, names] of packagedTypeScriptBindings) {
     const selected = names.filter(name => packages.has(name));
     if (selected.length > 0) bindings.push([stem, selected]);
   }
-  if (bindings.length === 0) return;
+  if (bindings.length === 0) { prune(); return; }
   const paths = bindings.map(([stem]) => {
     const family = stem.split("/")[0];
     // A family's crate is wherever its published schema lives, so moving a
@@ -24,8 +41,6 @@ export function generateProto(packages = new Set(packagedTypeScriptBindings.flat
       : compatibilityArtifacts[family].schemaDigest.slice(0, compatibilityArtifacts[family].schemaDigest.indexOf("/proto/"));
     return `${crate}/proto/${stem.replace(/_pb$/, ".proto")}`;
   });
-  /** @type {Map<string, Set<string>>} */
-  const outputs = new Map();
   const temporary = mkdtempSync(join(root, "target-proto-"));
   try {
     const buf = join(root, "node_modules/.bin", process.platform === "win32" ? "buf.exe" : "buf");
@@ -47,13 +62,7 @@ export function generateProto(packages = new Set(packagedTypeScriptBindings.flat
         }
       }
     }
-    for (const [directory, expected] of outputs) {
-      if (!existsSync(directory)) continue;
-      for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
-        const path = join(entry.parentPath, entry.name);
-        if (!entry.isDirectory() && !expected.has(path)) rmSync(path);
-      }
-    }
+    prune();
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

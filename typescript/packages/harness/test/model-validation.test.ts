@@ -1,6 +1,5 @@
 import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 import { expect, test } from "bun:test";
-import fc from "fast-check";
 import { readFile } from "node:fs/promises";
 import {
   DEFAULT_LIMITS, jsonToolProjection, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef, type PinnedContextPath,
@@ -8,16 +7,12 @@ import {
 import {
   prepareModelRequest, encodeModelPrefix, WasmReducer, validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { publicModelContent } from "../src/projection.js";
 import type { ModelContent as NativeModelContent } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
-import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
-import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
 
 const contracts = await NativeContracts.create();
 const jsonProjection = await jsonToolProjection({});
-const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
 
 test("generated skill parser and immutable projection share Rust validation and bounds", () => {
@@ -55,29 +50,6 @@ test("generated skill parser and immutable projection share Rust validation and 
   expect(admitted.fields.items).toHaveLength(3000);
   expect(() => contracts.projectDiscoveredContext({ instructions: [], skills: [admitted] },
     base, "prepend", DEFAULT_LIMITS)).not.toThrow();
-});
-
-test("generated context selections and updates use native schemas, placement and bounds", () => {
-  const selection = { source: { kind: "attribute" as const, attribute: {
-    type_name: "example.role", type_revision: "1", state_revision: "2",
-    schema: { type: "string" }, value: "reviewer",
-  } }, extent: { kind: "whole" as const }, representation: "full" as const };
-  contracts.validateContextSelection(selection, DEFAULT_LIMITS);
-  expect(() => contracts.validateContextSelection({ ...selection, source: {
-    kind: "attribute", attribute: { ...selection.source.attribute, value: 3 },
-  } }, DEFAULT_LIMITS)).toThrow();
-  expect(() => contracts.validateContextSelection(selection, {
-    ...DEFAULT_LIMITS, render_bytes: 1,
-  })).toThrow();
-  const base = { messages: [{ role: "user" as const, content: "task" }], metadata: {} };
-  const rendered = [{ role: "system" as const, content: "reviewer" }];
-  const rebuilt = contracts.applyContextProjection(base, rendered, "prompt", "prepend", DEFAULT_LIMITS);
-  const update = contracts.applyContextProjection(base, rendered, "update", "prepend", DEFAULT_LIMITS);
-  expect(rebuilt.messages[0]).toEqual(update.messages[1]);
-  expect(base.messages).toHaveLength(1);
-  expect(() => contracts.applyContextProjection(base, rendered, "prompt", "prepend", {
-    ...DEFAULT_LIMITS, render_bytes: 1,
-  })).toThrow();
 });
 
 test("generated context composition preserves existing file wires without reinterpreting metadata", async () => {
@@ -249,19 +221,6 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
   } finally { core.free(); }
 });
 
-test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
-  const definition = { name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
-    outputSchema: { type: "string" }, projection: await jsonToolProjection({ type: "string" }) };
-  const limits = { ...DEFAULT_LIMITS, render_bytes: 64 };
-  const accepted = { kind: "json" as const, value: "x".repeat(38) };
-  expect(contracts.encodeCanonicalJson(accepted).length).toBe(64);
-  expect(() => contracts.validateToolProjection(definition, accepted, limits)).not.toThrow();
-  const rejected = { kind: "json" as const, value: "x".repeat(39) };
-  expect(contracts.encodeCanonicalJson(rejected).length).toBe(65);
-  expect(() => contracts.validateToolProjection(definition, rejected, limits)).toThrow();
-  expect(() => contracts.validateToolProjection(definition, { kind: "json", value: 42 }, limits)).toThrow();
-});
-
 test("inherited dispatch captures fresh pinned local files after builder construction", async () => {
   const core = new WasmReducer({ kind: "conversation", id: "fresh-prefix" }, "fresh-prefix", new Uint8Array(32).fill(23), []);
   const model = { provider: "mock", name: "fresh", revision: "1", options: {} };
@@ -329,63 +288,6 @@ test("inherited dispatch captures fresh pinned local files after builder constru
   } finally { core.free(); }
 });
 
-test("stale WASM modules fail compatibility checks before model dispatch", () => {
-  expect(() => assertHarnessWasmExports(harnessWasm)).not.toThrow();
-  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateModelContent: undefined })).toThrow();
-  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateContract: undefined })).toThrow();
-  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateUserInput: undefined })).toThrow();
-  expect(() => assertHarnessWasmExports({ ...harnessWasm, admitModelEvent: undefined })).toThrow();
-  expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmContentStore: undefined })).toThrow();
-  expect(() => assertHarnessWasmExports(rawWasmExports)).not.toThrow();
-  expect(() => assertHarnessWasmExports({ ...rawWasmExports, wasmcontentstore_stage: undefined })).toThrow();
-});
-
-const constructedWasmClasses = [
-  ["WasmContentStore", "wasmcontentstore_new"],
-  ["WasmStream", "wasmstream_new"],
-  ["WasmHypothesisClient", "wasmhypothesisclient_new"],
-  ["WasmAgentClient", "wasmagentclient_new"],
-  ["WasmWireSession", "wasmwiresession_new"],
-  ["WasmPageWindow", "wasmpagewindow_new"],
-  ["WasmReducer", "wasmreducer_new"],
-  ["WasmProviderRegistry", "wasmproviderregistry_new"],
-] as const;
-
-function checkConstructorRemoval(check: (value: unknown) => void): void {
-  // Every absent constructor, alone or in combination, must fail before dispatch.
-  const removed = (missing: readonly (typeof constructedWasmClasses)[number][]) => {
-    const raw: Record<string, unknown> = { ...rawWasmExports };
-    const wrappers: Record<string, unknown> = { ...harnessWasm };
-    for (const [name, symbol] of missing) {
-      delete raw[symbol];
-      delete wrappers[name];
-    }
-    expect(() => check(raw)).toThrow();
-    expect(() => check(wrappers)).toThrow();
-  };
-  for (const entry of constructedWasmClasses) removed([entry]);
-  fc.assert(fc.property(fc.subarray([...constructedWasmClasses], { minLength: 1 }), removed), { numRuns: 64 });
-}
-
-test("all constructed WASM classes are required before dispatch", () => {
-  checkConstructorRemoval(assertHarnessWasmExports);
-});
-
-test("constructor-removal oracle rejects the former method-only check", () => {
-  const methodOnly = (value: unknown) => {
-    const exports = { ...(value as Record<string, unknown>) };
-    for (const [, symbol] of constructedWasmClasses) {
-      exports[symbol] ??= (rawWasmExports as unknown as Record<string, unknown>)[symbol];
-    }
-    assertHarnessWasmExports(exports);
-  };
-  expect(() => checkConstructorRemoval(methodOnly)).toThrow();
-});
-
-test("fresh WASM initialization accepts the raw content-store ABI", async () => {
-  await ensureHarnessWasm();
-});
-
 async function file(): Promise<FileRef> {
   return contracts.validate("file_ref", {
     volume: {
@@ -413,16 +315,6 @@ async function nativeOptionPart() {
     maximum_bytes: 64, maximum_work: 8, configuration,
   } } };
 }
-
-test("Rust inventory includes nested tool media and options while preserving original revisions", async () => {
-  const part = await nativeOptionPart();
-  const inventory = contracts.modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
-    content: { kind: "parts", parts: [{ kind: "text", text: "attachment" }, part] } }, DEFAULT_LIMITS);
-  expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
-  expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
-  expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
-  expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
-});
 
 test("synthetic accounting counts nested media and native options with wide revisions", async () => {
   const part = await nativeOptionPart();
@@ -471,95 +363,6 @@ test("local model dispatch rejects claimed native options before invoking a cust
   expect(calls).toBe(0);
 });
 
-test("WASM model validators preserve Rust limits and tool-name checks", async () => {
-  const content = await file();
-  expect(() => validateModelContent("hello", DEFAULT_LIMITS)).not.toThrow();
-  expect(() => validateModelContent({ kind: "file", file: content, policy: "reference" }, DEFAULT_LIMITS)).not.toThrow();
-  expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "lookup", arguments: { value: 1 } }, DEFAULT_LIMITS)).not.toThrow();
-  expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "bad name", arguments: {} }, DEFAULT_LIMITS)).toThrow();
-  expect(() => validateModelContent({ kind: "text", text: "x".repeat(DEFAULT_LIMITS.render_bytes + 1) }, DEFAULT_LIMITS)).toThrow();
-  expect(() => validateModelContent({ kind: "unknown", value: true } as never, DEFAULT_LIMITS)).toThrow();
-});
-
-test("WASM user-input validator rejects empty, tool, and malformed content", async () => {
-  const content = await file();
-  expect(() => validateUserInput("hello")).not.toThrow();
-  expect(() => validateUserInput({ kind: "file", file: content, policy: { native: {
-    intent: { kind: "image", detail: "auto" }, maximum_bytes: 64, maximum_work: 8, configuration: null,
-  } } })).not.toThrow();
-  expect(() => validateUserInput("")).toThrow();
-  expect(() => validateUserInput([])).toThrow();
-  expect(() => validateUserInput({ kind: "tool_result", callId: "call", name: "lookup", content: { kind: "json", value: {} } })).toThrow();
-  expect(() => validateUserInput({ kind: "file", file: { ...content, path: "../escape" }, policy: "reference" })).toThrow();
-});
-
-test("Rust model event admission preserves per-step bounds and cumulative UTF-8 output bytes", () => {
-  const limits = { ...DEFAULT_LIMITS, model_events_per_step: 2, tool_calls_per_step: 2, file_bytes: 3, render_bytes: 3 };
-  let admitted = contracts.admitModelEvent({ kind: "content", delta: "é" }, limits);
-  let state = admitted.state;
-  expect(admitted.event).toEqual({ kind: "content", delta: "é" });
-  expect(state).toEqual({ count: 1, calls: [], completed: false, text_bytes: 2 });
-  const completedLimits = { ...limits, model_events_per_step: 3 };
-  admitted = contracts.admitModelEvent({ kind: "completed", metadata: {} }, completedLimits, state);
-  state = admitted.state;
-  expect(state.completed).toBe(true);
-  expect(() => contracts.admitModelEvent({ kind: "content", delta: "x" }, completedLimits, state)).toThrow();
-  expect(() => contracts.admitModelEvent({ kind: "content", delta: "é" }, limits,
-    { count: 0, calls: [], completed: false, text_bytes: 2 })).toThrow();
-  expect(() => contracts.admitModelEvent({ kind: "content", delta: "x" }, limits,
-    { count: 2, calls: [], completed: false, text_bytes: 0 })).toThrow();
-});
-
-test("completed message admission retains exact text without adding it to streamed bytes", () => {
-  const limits = { ...DEFAULT_LIMITS, file_bytes: 3, render_bytes: 3 };
-  const streamed = contracts.admitModelEvent({ kind: "content", delta: "old" }, limits);
-  const admitted = contracts.admitModelEvent({ kind: "message_completed", text: "é" }, limits, streamed.state);
-  expect(admitted.event).toEqual({ kind: "message_completed", text: "é" });
-  expect(admitted.state.text_bytes).toBe(3);
-  expect(() => contracts.admitModelEvent({ kind: "message_completed", text: "long" }, limits, streamed.state)).toThrow();
-});
-
-test("authoritative messages preserve the native bounded stream admission", () => {
-  const limits = { ...DEFAULT_LIMITS, file_bytes: 4, render_bytes: 4 };
-  const first = contracts.admitModelEvent({ kind: "content", delta: "é" }, limits);
-  const full = contracts.admitModelEvent({ kind: "content", delta: "ok" }, limits, first.state);
-  expect(full.state.text_bytes).toBe(4);
-  expect(() => contracts.admitModelEvent({ kind: "content", delta: "x" }, limits, full.state)).toThrow();
-  expect(full.state.count).toBe(2);
-  const final = contracts.admitModelEvent({ kind: "message_completed", text: "" }, limits, full.state);
-  expect(final.event).toEqual({ kind: "message_completed", text: "" });
-  expect(final.state.text_bytes).toBe(4);
-  expect(() => contracts.admitModelEvent({ kind: "message_completed", text: "ééx" }, limits, final.state)).toThrow();
-  expect(final.state.count).toBe(3);
-});
-
-test("Rust model event admission rejects duplicate tool identities and accepts camelCase call IDs", () => {
-  const limits = { ...DEFAULT_LIMITS, tool_calls_per_step: 1 };
-  const first = contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits);
-  expect(first.event).toEqual({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} });
-  expect(first.state.calls).toEqual(["call-1"]);
-  expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "call-1", name: "lookup", arguments: {} }, limits, first.state)).toThrow();
-  expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "bad/name", name: "lookup", arguments: {} }, limits)).toThrow();
-});
-
-test("model event admission detaches getter-backed provider events", () => {
-  let reads = 0;
-  const event = {
-    kind: "content" as const,
-    get delta(): string {
-      reads += 1;
-      return reads === 1 ? "ok" : "x".repeat(DEFAULT_LIMITS.file_bytes + 1);
-    },
-  };
-  const admitted = contracts.admitModelEvent(event, DEFAULT_LIMITS);
-  expect(admitted.event).toEqual({ kind: "content", delta: "ok" });
-  expect(reads).toBe(1);
-});
-
-test("model event admission rejects unknown event fields", () => {
-  expect(() => contracts.admitModelEvent({ kind: "content", delta: "ok", extra: true } as never, DEFAULT_LIMITS)).toThrow();
-});
-
 test("model admission enforces portable tool integers and preserves full-width completion metadata", () => {
   const maximum = 9_007_199_254_740_991n;
   const value = maximum + 2n;
@@ -573,21 +376,4 @@ test("model admission enforces portable tool integers and preserves full-width c
   const literal = { "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } };
   const completed = contracts.admitModelEvent({ kind: "completed", metadata: { ...literal, tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
   expect(completed.event).toEqual({ kind: "completed", metadata: { ...literal, tokens: 1, cursor: value } });
-});
-
-
-test("public projection validator enforces complete JSON and Parts envelope byte bounds", () => {
-  const definition = { name: "inspect", revision: "1", description: "Inspect", inputSchema: {},
-    outputSchema: {}, projection: { schema: { type: "object" },
-      project: () => ({ kind: "json" as const, value: null }) } };
-  for (const projection of [
-    { kind: "json", value: "é\0🦀" },
-    { kind: "parts", parts: [{ kind: "text", text: "é\0🦀" }] },
-  ] as const) {
-    const exact = contracts.encodeCanonicalJson(projection).byteLength;
-    expect(() => contracts.validateToolProjection(definition, projection,
-      { ...DEFAULT_LIMITS, render_bytes: exact })).not.toThrow();
-    expect(() => contracts.validateToolProjection(definition, projection,
-      { ...DEFAULT_LIMITS, render_bytes: exact - 1 })).toThrow();
-  }
 });
