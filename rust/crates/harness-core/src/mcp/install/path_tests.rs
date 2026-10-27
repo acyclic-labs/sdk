@@ -22,11 +22,16 @@ fn both_mcp_dialects_pin_batch_launchers_from_the_configured_search_environment(
                 }}),
                 dialect,
             )?;
-            let mut command = native::command_for(&config, root.path(), |key| {
-                (key == "SYSTEMROOT")
-                    .then(|| std::env::var_os(key))
-                    .flatten()
-            })?;
+            let mut command = native::command_for(
+                &config,
+                root.path(),
+                |key| {
+                    (key == "SYSTEMROOT")
+                        .then(|| std::env::var_os(key))
+                        .flatten()
+                },
+                &Default::default(),
+            )?;
             assert_eq!(Path::new(command.get_program()), path);
             command
                 .stdin(std::process::Stdio::null())
@@ -79,7 +84,7 @@ proptest! {
         let config = server(json!({"command":"mcp-fixture", "args":[argument], "env":{"KEY":"explicit"}}), Dialect::Codex).unwrap();
         let command = |directory: &Path, term: &str| native::command_for(&config, root.path(), |key| match key {
             "PATH" => Some(directory.as_os_str().to_owned()), "TERM" => Some(term.into()), _ => None,
-        }).unwrap();
+        }, &Default::default()).unwrap();
         let original = command(&a, &first_term);
         let ambient = command(&a, &second_term);
         let replaced = command(&b, &first_term);
@@ -118,7 +123,12 @@ fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
             Dialect::Claude,
         )
     };
-    let mut command = native::command_for(&selected(".venv/bin/python")?, root.path(), |_| None)?;
+    let mut command = native::command_for(
+        &selected(".venv/bin/python")?,
+        root.path(),
+        |_| None,
+        &Default::default(),
+    )?;
     assert_eq!(Path::new(command.get_program()), launcher);
     let output = command.output().map_err(Error::process_io)?;
     assert!(output.status.success());
@@ -128,26 +138,36 @@ fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
     );
 
     let searched = selected("python")?;
-    let absolute =
-        native::command_for(&selected(launcher.to_str().unwrap())?, root.path(), |_| {
-            None
-        })?;
+    let absolute = native::command_for(
+        &selected(launcher.to_str().unwrap())?,
+        root.path(),
+        |_| None,
+        &Default::default(),
+    )?;
     assert_eq!(Path::new(absolute.get_program()), launcher);
     assert_eq!(
         native::command_binding(&command, &searched),
         native::command_binding(&absolute, &searched)
     );
     for path in [bin.as_os_str(), std::ffi::OsStr::new(".venv/bin")] {
-        let found = native::command_for(&searched, root.path(), |key| {
-            (key == "PATH").then(|| path.to_owned())
-        })?;
+        let found = native::command_for(
+            &searched,
+            root.path(),
+            |key| (key == "PATH").then(|| path.to_owned()),
+            &Default::default(),
+        )?;
         assert_eq!(Path::new(found.get_program()), launcher);
         assert_eq!(
             native::command_binding(&command, &searched),
             native::command_binding(&found, &searched)
         );
     }
-    let real = native::command_for(&selected(target.to_str().unwrap())?, root.path(), |_| None)?;
+    let real = native::command_for(
+        &selected(target.to_str().unwrap())?,
+        root.path(),
+        |_| None,
+        &Default::default(),
+    )?;
     assert_ne!(
         native::command_binding(&command, &searched),
         native::command_binding(&real, &searched)
