@@ -52,6 +52,10 @@ The same clean source passed the complete conformance24/Machines77/Daytona49
 libraries (job `1793099028112-169459-e5c83759`, rc0). All four cleanup fields
 are true. These checks do not qualify this provider's real wire or snapshots.
 
+E2B-only correction `310e58e941e8dd82036cf415b52b66eab216b063` preserves empty
+native data events as no-ops before shared output validation. Its compile gate
+and full Machines78 library suite passed (job `1793099647674-1664-490828d3`).
+The typed-event regression is internal mapping coverage, not a response fixture.
 MachineShell shares the unchanged native input schema. Supply an explicit
 timeout within 1..60 s: the native default 300 s exceeds canonical Machines admission
 and is refused before execution. Oversized guest arguments are refused there too.
