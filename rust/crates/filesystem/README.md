@@ -138,3 +138,21 @@ Cloud input is the coordinator-located draft
 `980BA694CF42AABE595527F6EEB05EC10521BDF228E28A73ADA8AB3BC53CD4FF`.
 A final/superseding disposition remains pending. Subtree splitting and hot
 directory partitioning remain Streams capabilities.
+
+The `conformance` feature publishes `conformance::{Backend, Fixture, verify, bench,
+suite}` over the existing public `Fs`, `Workspace` and immutable `Generation`
+operations. `from_providers` composes actual Stream and Objects providers with one
+shared `Counted<P>` dispatch ledger, including errors. Downstream storage adapters
+retain their concrete authority and object types so publication guards, original
+work and custody cross the same production seams. Temporary resources must stay
+owned by the backend throughout each invocation.
+
+Portable vectors check binary size boundaries, immutable history, typed read
+refusals, cancellation, fork isolation and removal. The checked benchmark reads
+one exact immutable 4-KiB value after warmup and rejects head, metadata, list,
+lease or token probes. Mount qualification additionally exercises the real mounted
+interface through the existing mount qualifier. Run the memory adapter on demand:
+
+```sh
+cargo test --locked -p acyclic-fs --features conformance,memory --test main public_conformance
+```

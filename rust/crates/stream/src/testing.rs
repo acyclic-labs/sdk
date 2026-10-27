@@ -100,10 +100,13 @@ pub struct Counted<P> {
 impl<P> Counted<P> {
     /// Starts an independent ledger around a provider.
     pub fn new(inner: P) -> Self {
-        Self {
-            inner,
-            requests: RequestLedger::new(),
-        }
+        Self::with_ledger(inner, RequestLedger::new())
+    }
+
+    /// Composes several primitive providers into one measured dispatch boundary.
+    /// Keep unrelated or concurrent workloads on independent ledgers.
+    pub fn with_ledger(inner: P, requests: RequestLedger) -> Self {
+        Self { inner, requests }
     }
 
     /// The wrapped provider, for implementing a forwarding adapter.

@@ -417,3 +417,7 @@ pub mod browser;
 mod injected;
 #[cfg(all(feature = "wasm-object-store", target_arch = "wasm32"))]
 pub use injected::InjectedObjectStore;
+
+/// Shared backend qualification and checked on-demand filesystem workloads.
+#[cfg(feature = "conformance")]
+pub mod conformance;

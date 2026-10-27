@@ -104,7 +104,7 @@ macro_rules! stream_conformance_suite {
 /// history, and append/read/follow zero-control request budgets.
 pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
     verify_contract(backend.provider()).await?;
-    histories::verify(backend.provider(), &StreamPath::new("wave1")?).await?;
+    histories::wave1::verify(backend.provider(), &StreamPath::new("wave1")?).await?;
     workload(backend, 3, "budget").await?;
     Ok(())
 }

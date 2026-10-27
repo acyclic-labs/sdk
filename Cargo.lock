@@ -767,6 +767,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-proto-build",
+ "acyclic-stream",
  "async-trait",
  "futures",
  "hex",

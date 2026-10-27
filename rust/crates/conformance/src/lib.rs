@@ -14,15 +14,10 @@ pub mod inference;
 pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
-use acyclic_machines::{
-    Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
-    MachineState, MachinesProvider, MutationOutcome, OperationPhase, ProviderError,
-};
 #[cfg(test)]
 use acyclic_objects::v1::ObjectsProvider;
+#[cfg(test)]
 use acyclic_stream::StreamProvider;
-use futures::StreamExt;
-use std::num::NonZeroU32;
 
 /// Canonical language-neutral Objects conformance inventory.
 pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v1::conformance::SUITE;
@@ -31,7 +26,7 @@ pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v1::conformance::SUITE;
 pub const HARNESS_SUITE: &[u8] = include_bytes!("../vectors/harness.json");
 
 /// Canonical language-neutral Machines conformance inventory.
-pub const MACHINES_SUITE: &[u8] = include_bytes!("../vectors/machines.json");
+pub const MACHINES_SUITE: &[u8] = acyclic_machines::conformance::SUITE;
 const _: () = assert!(!MACHINES_SUITE.is_empty(), "conformance inventory is empty");
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -89,299 +84,9 @@ pub async fn objects(
         .map_err(|error| error.to_string())
 }
 
-/// Exercises the public shape-free lifecycle, replay, fork, and observation semantics.
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear conformance walkthrough; each step is a distinct sequential assertion \
-              (qualification, capability negotiation, create/replay, operation lifecycle, \
-              checkpoint, fork, suspend/wake, events, usage, teardown) threaded through shared \
-              local state, and splitting it would only move the same checks behind indirection"
-)]
-pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
-    let key = |suffix: u8| {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
-            .map_err(|error| error.to_string())
-    };
-    let assurance = provider.assurance();
-    let image = Image::custom([7; 32]).map_err(|error| error.to_string())?;
-    let qualification = provider
-        .qualify_image(image.clone())
-        .await
-        .map_err(|error| error.to_string())?;
-    if qualification.image != image {
-        return Err("image qualification substituted its immutable image".into());
-    }
-    let capability_cases = [
-        (Capability::ElasticCpu, 0x10, 0x20),
-        (Capability::ElasticMemory, 0x11, 0x21),
-        (Capability::LiveCheckpoint, 0x12, 0x22),
-        (Capability::LiveFork, 0x13, 0x23),
-        (Capability::SuspendResume, 0x14, 0x24),
-        (Capability::LiveMovement, 0x15, 0x25),
-        (Capability::DiskFork, 0x16, 0x26),
-    ];
-    for (capability, create_suffix, destroy_suffix) in capability_cases {
-        let required = std::collections::BTreeSet::from([capability]);
-        let mut capability_request =
-            CreateMachine::new(key(create_suffix)?, image.clone(), [8; 32]);
-        capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
-        let admission = provider.create(capability_request).await;
-        if qualification.capabilities.contains(&capability) {
-            let MutationOutcome::Created(observation) =
-                admission.map_err(|error| error.to_string())?
-            else {
-                return Err("supported capability returned the wrong create outcome".into());
-            };
-            if observation.contract.compatibility != CompatibilityPolicy::Require(required)
-                || !observation.contract.capabilities.contains(&capability)
-            {
-                return Err("required capability was not retained in the machine contract".into());
-            }
-            let destroyed = provider
-                .destroy_machine(observation.id, key(destroy_suffix)?)
-                .await
-                .map_err(|error| error.to_string())?;
-            if destroyed != MutationOutcome::MachineDestroyed(observation.id) {
-                return Err("capability conformance cleanup substituted its outcome".into());
-            }
-        } else if !matches!(admission, Err(ProviderError::Unsupported(_))) {
-            return Err("unsupported capability intent did not fail explicitly".into());
-        }
-    }
-    let create_key = key(1)?;
-    let request = CreateMachine::new(create_key, image, [8; 32]);
-    let created = provider
-        .create(request.clone())
-        .await
-        .map_err(|error| error.to_string())?;
-    let MutationOutcome::Created(machine) = created else {
-        return Err("create returned the wrong outcome".into());
-    };
-    if provider
-        .create(request)
-        .await
-        .map_err(|error| error.to_string())?
-        != MutationOutcome::Created(machine.clone())
-    {
-        return Err("create replay changed its outcome".into());
-    }
-    if machine.state != MachineState::Running || machine.endpoints.len() != 1 {
-        return Err("created machine is not ready with one stable endpoint".into());
-    }
-    let operation = provider
-        .recover_operation(create_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    let expected_operation = provider
-        .inspect_operation(operation)
-        .await
-        .map_err(|error| error.to_string())?;
-    if expected_operation.id != operation || expected_operation.phase != OperationPhase::Succeeded {
-        return Err("create operation inspection is not correlated and terminal".into());
-    }
-    if provider
-        .cancel(operation)
-        .await
-        .map_err(|error| error.to_string())?
-        != expected_operation
-    {
-        return Err("terminal operation cancellation changed its observation".into());
-    }
-    let mut operation_stream = provider
-        .watch_operation(operation)
-        .await
-        .map_err(|error| error.to_string())?;
-    let watched = tokio::time::timeout(std::time::Duration::from_secs(1), operation_stream.next())
-        .await
-        .map_err(|_| "operation watch did not make bounded progress".to_owned())?
-        .ok_or_else(|| "operation watch ended before its current state".to_owned())?
-        .map_err(|error| error.to_string())?;
-    if watched != expected_operation {
-        return Err("operation watch substituted its requested identity or state".into());
-    }
-    let checkpointed = provider
-        .checkpoint(machine.id, key(2)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    let MutationOutcome::Checkpointed(checkpoint) = checkpointed else {
-        return Err("checkpoint returned the wrong outcome".into());
-    };
-    let forked = provider
-        .fork(
-            checkpoint.id,
-            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-            key(3)?,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    let MutationOutcome::Forked(children) = forked else {
-        return Err("fork returned the wrong outcome".into());
-    };
-    let [first_child, second_child] = children.as_slice() else {
-        return Err("fork identities are not an exact fresh set".into());
-    };
-    if first_child.id == second_child.id || children.contains(&machine) {
-        return Err("fork identities are not an exact fresh set".into());
-    }
-    provider
-        .suspend(machine.id, key(4)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_machine(machine.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .state
-        != MachineState::Suspended
-    {
-        return Err("suspend did not change observable state".into());
-    }
-    provider
-        .wake(machine.id, key(5)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    let events = provider
-        .events(machine.id, None, 16)
-        .await
-        .map_err(|error| error.to_string())?;
-    let states = events
-        .events
-        .iter()
-        .filter_map(|event| match event.fact {
-            acyclic_machines::EventFact::State(state) => Some(state),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if !states.windows(3).any(|states| {
-        states
-            == [
-                MachineState::Running,
-                MachineState::Suspended,
-                MachineState::Running,
-            ]
-    }) {
-        return Err("lifecycle state event history is incomplete".into());
-    }
-    let usage = provider
-        .usage(machine.id, 1, 2)
-        .await
-        .map_err(|error| error.to_string())?;
-    if usage.machine != machine.id
-        || (assurance == acyclic_machines::ProviderAssurance::ProcessLocalSimulation)
-            != usage.receipt.is_empty()
-    {
-        return Err("simulation usage receipt is malformed".into());
-    }
-    live_fork(provider, &machine).await?;
-    provider
-        .destroy_checkpoint(checkpoint.id, key(6)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_checkpoint(checkpoint.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .forkable
-    {
-        return Err("destroyed checkpoint still accepts forks".into());
-    }
-    provider
-        .destroy_machine(machine.id, key(7)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_machine(machine.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .state
-        != MachineState::Destroyed
-    {
-        return Err("destroy did not retain its terminal state".into());
-    }
-    Ok(())
-}
-
-/// Live fork of a running machine: declared fidelity, exact fresh child set, exact replay,
-/// rebinding rejection, and children joined before their source.
-async fn live_fork(
-    provider: &dyn MachinesProvider,
-    machine: &MachineObservation,
-) -> Result<(), String> {
-    let key = |suffix: u8| {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
-            .map_err(|error| error.to_string())
-    };
-    let count = NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN);
-    let admission = provider.fork_machine(machine.id, count, key(0x30)?).await;
-    let Some(expected) = machine.contract.fork_fidelity() else {
-        return if matches!(admission, Err(ProviderError::Unsupported(_))) {
-            Ok(())
-        } else {
-            Err("live fork without a declared capability did not fail as unsupported".into())
-        };
-    };
-    let outcome = admission.map_err(|error| error.to_string())?;
-    let MutationOutcome::MachineForked {
-        source,
-        fidelity,
-        children,
-    } = &outcome
-    else {
-        return Err("live fork returned the wrong outcome".into());
-    };
-    if *source != machine.id || *fidelity != expected {
-        return Err("live fork substituted its source or declared fidelity".into());
-    }
-    let [first, second] = children.as_slice() else {
-        return Err("live fork identities are not an exact fresh set".into());
-    };
-    if first.id == second.id || first.id == machine.id || second.id == machine.id {
-        return Err("live fork identities are not an exact fresh set".into());
-    }
-    for child in children {
-        if child.state != MachineState::Running
-            || child.contract != machine.contract
-            || child.last_checkpoint.is_some()
-        {
-            return Err("live fork child did not inherit the running source contract".into());
-        }
-    }
-    if provider
-        .fork_machine(machine.id, count, key(0x30)?)
-        .await
-        .map_err(|error| error.to_string())?
-        != outcome
-    {
-        return Err("live fork replay changed its outcome".into());
-    }
-    if !matches!(
-        provider
-            .fork_machine(machine.id, NonZeroU32::MIN, key(0x30)?)
-            .await,
-        Err(ProviderError::Conflict(_))
-    ) {
-        return Err("live fork idempotency key was rebound".into());
-    }
-    if provider
-        .inspect_machine(machine.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .state
-        != MachineState::Running
-    {
-        return Err("live fork source did not keep running".into());
-    }
-    for (suffix, child) in [(0x31, first), (0x32, second)] {
-        if provider
-            .destroy_machine(child.id, key(suffix)?)
-            .await
-            .map_err(|error| error.to_string())?
-            != MutationOutcome::MachineDestroyed(child.id)
-        {
-            return Err("live fork child join substituted its outcome".into());
-        }
-    }
-    Ok(())
+/// Runs the shared public Machines suite against a fresh provider.
+pub async fn machines(backend: &dyn acyclic_machines::conformance::Backend) -> Result<(), String> {
+    acyclic_machines::conformance::verify(backend).await
 }
 
 #[cfg(test)]
@@ -444,20 +149,10 @@ mod tests {
             "conformance",
         ))
         .await?;
-        machines(&SimulatedMachines::default()).await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn machines_suite_covers_every_live_fork_fidelity() -> Result<(), String> {
-        use acyclic_machines::SimulatedMachines;
-        use std::collections::BTreeSet;
-        for capabilities in [
-            BTreeSet::from([Capability::DiskFork, Capability::SuspendResume]),
-            BTreeSet::from([Capability::SuspendResume]),
-        ] {
-            machines(&SimulatedMachines::with_capabilities(capabilities)).await?;
-        }
+        machines(&acyclic_machines::conformance::Fixture::new(
+            SimulatedMachines::default(),
+        ))
+        .await?;
         Ok(())
     }
 }
