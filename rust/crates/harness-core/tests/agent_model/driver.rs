@@ -326,7 +326,11 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
                 body: body.clone(),
             });
         let state = AgentState::adopted(path, &adopted(id(1)));
-        let step = driver.step(&state, 1, Some(request("input")?.1)).await?;
+        let input = Queued {
+            inbox: 0,
+            input: request("input")?.1,
+        };
+        let step = driver.step(&state, 1, Some(input)).await?;
         assert!(
             matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message) })
             if recipient == &to && message.id == intent("sent") && message.body == body)
@@ -433,7 +437,7 @@ fn distinct_inputs_start_distinct_turns() -> Result {
 }
 
 /// A file on a private volume of agent 1.
-fn file(path: &str) -> acyclic_harness_core::Result<FileRef> {
+pub(super) fn file(path: &str) -> acyclic_harness_core::Result<FileRef> {
     FileRef::new(
         VolumeRef::new(
             acyclic_harness_core::resources::ProviderRef::new(

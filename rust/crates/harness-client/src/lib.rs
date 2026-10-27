@@ -49,7 +49,7 @@ mod agents;
 ))]
 pub use acyclic_harness_core::agent::{
     AgentId, AgentPath, AgentRecord, ConversationEntry, Delivered, Error as AgentError, IntentId,
-    Phase, StatusRecord,
+    Phase, Reply, StatusRecord,
 };
 #[cfg(any(feature = "grpc", feature = "wasm"))]
 pub use acyclic_harness_core::{

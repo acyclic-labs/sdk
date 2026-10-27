@@ -6,8 +6,8 @@ use super::*;
 use crate::{
     agent::{
         AgentHost, AgentId, AgentOutcome, AgentPath, AgentState, ForkAdopted, Hook, InboxRecord,
-        IntentId, Message, Out, Sender, TurnDriver, TurnFuture, TurnInput, TurnStep, VolumeBinding,
-        Wait,
+        IntentId, Message, Out, Queued, Sender, TurnDriver, TurnFuture, TurnInput, TurnStep,
+        VolumeBinding, Wait,
     },
     conversation::{ContentAccess, ContentResidencyVerifier as _, FileRef, VolumeOwner},
     core::AuthorityRoot,
@@ -301,13 +301,15 @@ impl HostDriver {
             .collect())
     }
 
-    async fn turn(&self, agent: &AgentState, input: Option<TurnInput>) -> Result<TurnStep> {
+    async fn turn(&self, agent: &AgentState, input: Option<Queued>) -> Result<TurnStep> {
         let mut session = self.session(agent).await?;
         let mut outs = Vec::new();
+        // Turns never continue, so no step resumes without input.
+        let Some(Queued { inbox, input }) = input else {
+            return Ok(idle(Vec::new()));
+        };
         let record = match input {
-            // Turns never continue, so no step resumes without input.
-            None => return Ok(idle(Vec::new())),
-            Some(TurnInput::Brief { brief }) => {
+            TurnInput::Brief { brief } => {
                 let bytes = self.read(agent, &brief).await?;
                 match serde_json::from_slice::<Brief>(&bytes) {
                     Ok(parsed) => {
@@ -319,16 +321,16 @@ impl HostDriver {
                     },
                 }
             }
-            Some(TurnInput::Message { body, inbox, .. }) => queue(&mut session, inbox, *body),
-            Some(TurnInput::ChildDone { done }) => Record::ChildDone {
+            TurnInput::Message { body, .. } => queue(&mut session, inbox, *body),
+            TurnInput::ChildDone { done } => Record::ChildDone {
                 child: done.child,
                 outcome: done.outcome,
             },
             // Native hosts decide their own tool approvals.
-            Some(TurnInput::Approval { .. } | TurnInput::ApprovalRequested { .. }) => {
+            TurnInput::Approval { .. } | TurnInput::ApprovalRequested { .. } => {
                 return Ok(idle(Vec::new()));
             }
-            Some(TurnInput::Hook { host, event, .. }) if host == HOST => {
+            TurnInput::Hook { host, event, .. } if host == HOST => {
                 let bytes = self.read(agent, &event).await?;
                 match serde_json::from_slice::<Event>(&bytes) {
                     Ok(event) => apply(agent, &mut session, event, &mut outs)?,
@@ -337,7 +339,7 @@ impl HostDriver {
                     },
                 }
             }
-            Some(TurnInput::Hook { host, .. }) => Record::Rejected {
+            TurnInput::Hook { host, .. } => Record::Rejected {
                 reason: format!("hook from {host} is not a native session event"),
             },
         };
@@ -503,7 +505,7 @@ impl TurnDriver for Shared {
         &'a self,
         agent: &'a AgentState,
         _cursor: u64,
-        input: Option<TurnInput>,
+        input: Option<Queued>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             self.0

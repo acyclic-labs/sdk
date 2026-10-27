@@ -22,6 +22,7 @@ mod layout;
 mod lower;
 mod machine;
 mod records;
+mod reply;
 mod volumes;
 pub use volumes::SpawnVolumes;
 
@@ -41,7 +42,7 @@ pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, S
 pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, SpawnOutcome, SpawnRefusal, Step,
+    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Queued, SpawnOutcome, SpawnRefusal, Step,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{
@@ -50,6 +51,7 @@ pub use records::{
     MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest, StatusRecord,
     VolumeBinding,
 };
+pub use reply::{Reply, reply};
 
 /// Agent model failures.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +68,9 @@ pub enum Error {
     /// The parent's step applied the spawn and created no child.
     #[error("spawn refused: {0:?}")]
     SpawnRefused(SpawnRefusal),
+    /// A committed record contradicts the request's identity.
+    #[error("agent request conflicts: {0}")]
+    Conflict(&'static str),
     /// Completion is uncertain; retry this exact request until it resolves.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<acyclic_stream::CommitRequest>),
@@ -90,6 +95,7 @@ impl Error {
             Self::Record(_) => "invalid_agent_record",
             Self::NoSuchAgent => "no_such_agent",
             Self::SpawnRefused(_) => "spawn_refused",
+            Self::Conflict(_) => "agent_conflict",
             Self::Unknown(_) => "agent_unknown",
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",

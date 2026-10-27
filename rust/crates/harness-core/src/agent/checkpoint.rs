@@ -38,11 +38,11 @@ pub(crate) fn codec() -> CodecIdentity {
 }
 
 /// The agent state a committed checkpoint carries.
-pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
+pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<(AgentState, u64), Error> {
     if checkpoint.codec != codec() {
         return Err(Error::Record("agent checkpoint codec differs"));
     }
-    decode(&checkpoint.bytes).map(|(state, _)| state)
+    decode(&checkpoint.bytes)
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -319,7 +319,7 @@ mod tests {
             brief: Box::new(file()),
         }];
         for (sequence, record) in inbox_records().into_iter().enumerate() {
-            inputs.extend(super::super::machine::input(sequence as u64, record));
+            inputs.extend(super::super::machine::input(sequence as u64, record).map(|queued| queued.input));
         }
         inputs
     }
