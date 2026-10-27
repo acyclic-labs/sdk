@@ -21,7 +21,7 @@
 
 pub use acyclic_harness_core::filesystem::{
     attestation::{Attempt, Attestation, Attested, AttestedProvider, Attestor},
-    hosting::{Bound, Placement, Prepared, RootRequest, Turns, VerifiedCaller},
+    hosting::{Bound, Placement, Prepared, RootRequest, RootSubmission, Turns, VerifiedCaller},
 };
 
 use crate::{

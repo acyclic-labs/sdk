@@ -4,11 +4,20 @@
 //! evidence bound to that exact request supplies an [`Attestor`]. Every write
 //! of a [`super::hosting::Bound`] tree (its root, each command and every agent
 //! step) passes through [`Attested`], which digests the sealed request, asks
-//! the attestor once, and issues the write on the provider bound to that
-//! attestation. The attestation is held with the request until a definite
-//! outcome, so an uncertain retry resubmits identical bytes with the
-//! identical attestation. Providers that need no evidence ignore it.
+//! the attestor for its evidence, and issues the write on the provider bound
+//! to that attestation. The attestation is a function of the sealed request
+//! itself, so it lives with that value and nowhere else: an uncertain retry
+//! resubmits identical bytes and so presents the identical attestation, a
+//! prepared native commit carries it from the bound provider that prepared
+//! it, and it is gone when the request is. `Attested` keeps no per-request
+//! state. Providers that need no evidence ignore it.
+//!
+//! `Attested` overrides every [`StreamProvider`] method, so no write path
+//! falls back to a default that bypasses the attestor; a test checks this
+//! against the trait's source.
 use super::TurnAdmission;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
     CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowFilter, FollowStream,
@@ -16,11 +25,10 @@ use acyclic_stream::{
     ProviderPlatform, ReadRequest, RecordStream, StreamBounds, StreamError, StreamPath,
     StreamProvider, StreamWatermarks,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
 use bytes::Bytes;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
 /// Opaque platform evidence for one sealed request.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -37,8 +45,14 @@ pub struct Attempt<'a> {
 }
 
 /// Supplies evidence for each sealed request of one hosted tree.
+///
+/// Evidence is a pure function of the attempt: the same admission and digest
+/// always yield the identical attestation (for example a deterministic
+/// signature over the digest), so an exact retry is attested identically
+/// without anything being retained between attempts.
 pub trait Attestor: ProviderPlatform + 'static {
-    /// Evidence for `attempt`, requested once per distinct sealed request.
+    /// Evidence for `attempt`, identical for every attempt of the same
+    /// sealed request.
     fn attest<'a>(
         &'a self,
         attempt: Attempt<'a>,
@@ -46,16 +60,13 @@ pub trait Attestor: ProviderPlatform + 'static {
 }
 
 /// A provider that may require per-request evidence.
-pub trait AttestedProvider: StreamProvider {
+pub trait AttestedProvider: StreamProvider + Sized {
     /// This provider bound to one write's `attestation`, or `None` to write
     /// on `self` because it requires no evidence.
     ///
     /// # Errors
     /// When the attestation cannot authorize a write.
-    fn bind(
-        &self,
-        attestation: &Attestation,
-    ) -> Result<Option<Arc<dyn StreamProvider>>, StreamError> {
+    fn bind(&self, attestation: &Attestation) -> Result<Option<Arc<Self>>, StreamError> {
         let _ = attestation;
         Ok(None)
     }
@@ -70,8 +81,6 @@ pub struct Attested<P> {
     inner: Arc<P>,
     attestor: Option<Arc<dyn Attestor>>,
     admission: TurnAdmission,
-    /// Attestations of requests without a definite outcome yet.
-    held: Mutex<HashMap<[u8; 32], Attestation>>,
 }
 
 impl<P: AttestedProvider + 'static> Attested<P> {
@@ -87,7 +96,6 @@ impl<P: AttestedProvider + 'static> Attested<P> {
             inner,
             attestor,
             admission,
-            held: Mutex::new(HashMap::new()),
         }
     }
 
@@ -97,51 +105,30 @@ impl<P: AttestedProvider + 'static> Attested<P> {
         &self.inner
     }
 
-    /// The attested target of the write digested by `digest`.
+    /// The one sealing point: the provider every write is issued on, bound to
+    /// the attestation of its exact request's `digest`.
     async fn target(
         &self,
         digest: impl FnOnce() -> Result<[u8; 32], StreamError>,
-    ) -> Result<Option<(Option<Arc<dyn StreamProvider>>, [u8; 32])>, StreamError> {
+    ) -> Result<Arc<P>, StreamError> {
         let Some(attestor) = &self.attestor else {
-            return Ok(None);
+            return Ok(Arc::clone(&self.inner));
         };
-        let digest = digest()?;
-        let held = self.lock()?.get(&digest).cloned();
-        let attestation = match held {
-            Some(attestation) => attestation,
-            None => {
-                let attestation = attestor
-                    .attest(Attempt {
-                        admission: &self.admission,
-                        digest,
-                    })
-                    .await?;
-                self.lock()?.entry(digest).or_insert(attestation).clone()
-            }
-        };
-        Ok(Some((self.inner.bind(&attestation)?, digest)))
+        let attestation = attestor
+            .attest(Attempt {
+                admission: &self.admission,
+                digest: digest()?,
+            })
+            .await?;
+        Ok(self
+            .inner
+            .bind(&attestation)?
+            .unwrap_or_else(|| Arc::clone(&self.inner)))
     }
+}
 
-    fn lock(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, HashMap<[u8; 32], Attestation>>, StreamError> {
-        self.held.lock().map_err(|_| StreamError::Unavailable)
-    }
-
-    /// Releases the attestation of `digest` once its outcome is definite.
-    fn settle<T>(&self, digest: Option<[u8; 32]>, outcome: &Result<T, StreamError>) {
-        let uncertain = matches!(
-            outcome,
-            Err(StreamError::Unavailable
-                | StreamError::DeadlineElapsed
-                | StreamError::InvalidResponse)
-        );
-        if let (Some(digest), false) = (digest, uncertain)
-            && let Ok(mut held) = self.held.lock()
-        {
-            held.remove(&digest);
-        }
-    }
+fn commit_digest(request: &CommitRequest) -> Result<[u8; 32], StreamError> {
+    acyclic_stream::request::commit_digest(&mut request.clone())
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -149,6 +136,29 @@ impl<P: AttestedProvider + 'static> Attested<P> {
 impl<P: AttestedProvider + 'static> StreamProvider for Attested<P> {
     fn operation_claims(&self) -> &OperationClaims {
         self.inner.operation_claims()
+    }
+    fn has_exclusive_process_owner(&self) -> bool {
+        self.inner.has_exclusive_process_owner()
+    }
+    fn supports_deferred_durability(&self) -> bool {
+        self.inner.supports_deferred_durability()
+    }
+    async fn durability_barrier(&self) -> Result<(), StreamError> {
+        self.inner.durability_barrier().await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_durability_barrier(
+        &self,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, ()> {
+        self.inner.native_durability_barrier(meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
+        self.inner.prepare_native_durability_barrier(meter)
     }
     async fn inspect_idempotency(
         &self,
@@ -173,32 +183,16 @@ impl<P: AttestedProvider + 'static> StreamProvider for Attested<P> {
         self.inner.durable_receipt(path, through).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let Some((bound, digest)) = self
-            .target(|| acyclic_stream::request::append_digest(&request))
+        self.target(|| acyclic_stream::request::append_digest(&request))
             .await?
-        else {
-            return self.inner.append(request).await;
-        };
-        let outcome = match bound {
-            Some(bound) => bound.append(request).await,
-            None => self.inner.append(request).await,
-        };
-        self.settle(Some(digest), &outcome);
-        outcome
+            .append(request)
+            .await
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let Some((bound, digest)) = self
-            .target(|| acyclic_stream::request::fork_digest(&request))
+        self.target(|| acyclic_stream::request::fork_digest(&request))
             .await?
-        else {
-            return self.inner.fork(request).await;
-        };
-        let outcome = match bound {
-            Some(bound) => bound.fork(request).await,
-            None => self.inner.fork(request).await,
-        };
-        self.settle(Some(digest), &outcome);
-        outcome
+            .fork(request)
+            .await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
@@ -240,45 +234,339 @@ impl<P: AttestedProvider + 'static> StreamProvider for Attested<P> {
         self.inner.children_page(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let Some((bound, digest)) = self
-            .target(|| acyclic_stream::request::commit_digest(&mut request.clone()))
+        self.target(|| commit_digest(&request))
             .await?
-        else {
-            return self.inner.commit(request).await;
-        };
-        let outcome = match bound {
-            Some(bound) => bound.commit(request).await,
-            None => self.inner.commit(request).await,
-        };
-        self.settle(Some(digest), &outcome);
-        outcome
+            .commit(request)
+            .await
     }
     async fn commit_before(
         &self,
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        let Some((bound, digest)) = self
-            .target(|| acyclic_stream::request::commit_digest(&mut request.clone()))
+        self.target(|| commit_digest(&request))
             .await?
-        else {
-            return self
-                .inner
-                .commit_before(request, deadline_unix_millis)
-                .await;
-        };
-        let outcome = match bound {
-            Some(bound) => bound.commit_before(request, deadline_unix_millis).await,
-            None => {
-                self.inner
-                    .commit_before(request, deadline_unix_millis)
-                    .await
-            }
-        };
-        self.settle(Some(digest), &outcome);
-        outcome
+            .commit_before(request, deadline_unix_millis)
+            .await
     }
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(commit_id).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_inspect_idempotency(
+        &self,
+        key: IdempotencyKey,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
+        self.inner.native_inspect_idempotency(key, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, AppendOutcome> {
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&meter, async move {
+            match self
+                .target(|| acyclic_stream::request::append_digest(&request))
+                .await
+            {
+                Ok(target) => target.native_append(request, original).await,
+                Err(error) => Ok(Err(error)),
+            }
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_tail(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, u64> {
+        self.inner.native_tail(path, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_bounds(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, StreamBounds> {
+        self.inner.native_bounds(path, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_read(
+        &self,
+        request: ReadRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        self.inner.native_read(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit(
+        &self,
+        request: CommitRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&meter, async move {
+            match self.target(|| commit_digest(&request)).await {
+                Ok(target) => target.native_commit(request, deadline, original).await,
+                Err(error) => Ok(Err(error)),
+            }
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit_guarded<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn NativeReadMeter>,
+        before: F,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        Self: Sized,
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&meter, async move {
+            match self.target(|| commit_digest(&request)).await {
+                Ok(target) => {
+                    target
+                        .native_commit_guarded(request, deadline_unix_millis, original, before)
+                        .await
+                }
+                Err(error) => Ok(Err(E::from(error))),
+            }
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_prepare_commit(
+        &self,
+        request: CommitRequest,
+        maximum_record_bytes: usize,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
+        // The prepared ingress publishes later, outside this call; the bound
+        // provider that prepares it hands it the attestation to publish with.
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&meter, async move {
+            match self.target(|| commit_digest(&request)).await {
+                Ok(target) => {
+                    target
+                        .native_prepare_commit(request, maximum_record_bytes, original)
+                        .await
+                }
+                Err(error) => Ok(Err(error)),
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The `fn` names declared directly in the first block opened by `header`.
+    fn methods(source: &str, header: &str) -> std::collections::BTreeSet<String> {
+        let start = source.find(header).expect("block header is present");
+        let mut depth = 0usize;
+        let mut names = std::collections::BTreeSet::new();
+        for line in source[start..].lines() {
+            if depth == 1
+                && let Some(rest) = line.trim_start().split("fn ").nth(1)
+                && (line.trim_start().starts_with("fn ")
+                    || line.trim_start().starts_with("async fn "))
+            {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                names.insert(name);
+            }
+            depth += line.matches('{').count();
+            depth = depth.saturating_sub(line.matches('}').count());
+            if depth == 0 && line.contains('}') {
+                break;
+            }
+        }
+        names
+    }
+
+    /// Counts each request for evidence.
+    #[derive(Default)]
+    struct Counting(std::sync::atomic::AtomicUsize);
+
+    impl super::Attestor for Counting {
+        fn attest<'a>(
+            &'a self,
+            attempt: super::Attempt<'a>,
+        ) -> super::BoxProviderFuture<'a, Result<super::Attestation, super::StreamError>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(std::future::ready(Ok(super::Attestation(
+                attempt.digest.to_vec().into(),
+            ))))
+        }
+    }
+
+    /// A provider recording which binding each native commit reached.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[derive(Default)]
+    struct Probe {
+        inner: acyclic_stream::MemoryStream,
+        bound: Option<super::Attestation>,
+        reached: std::sync::Arc<std::sync::Mutex<Vec<Option<super::Attestation>>>>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl super::AttestedProvider for Probe {
+        fn bind(
+            &self,
+            attestation: &super::Attestation,
+        ) -> Result<Option<std::sync::Arc<Self>>, super::StreamError> {
+            Ok(Some(std::sync::Arc::new(Self {
+                inner: acyclic_stream::MemoryStream::default(),
+                bound: Some(attestation.clone()),
+                reached: self.reached.clone(),
+            })))
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_trait::async_trait]
+    impl super::StreamProvider for Probe {
+        fn operation_claims(&self) -> &super::OperationClaims {
+            self.inner.operation_claims()
+        }
+        async fn inspect_idempotency(
+            &self,
+            key: super::IdempotencyKey,
+        ) -> Result<Option<super::IdempotencyObservation>, super::StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+        async fn tail(&self, path: super::StreamPath) -> Result<u64, super::StreamError> {
+            self.inner.tail(path).await
+        }
+        async fn bounds(
+            &self,
+            path: super::StreamPath,
+        ) -> Result<super::StreamBounds, super::StreamError> {
+            self.inner.bounds(path).await
+        }
+        async fn append(
+            &self,
+            request: super::AppendRequest,
+        ) -> Result<super::AppendOutcome, super::StreamError> {
+            self.inner.append(request).await
+        }
+        async fn fork(
+            &self,
+            request: super::ForkRequest,
+        ) -> Result<super::ForkReceipt, super::StreamError> {
+            self.inner.fork(request).await
+        }
+        async fn read(
+            &self,
+            request: super::ReadRequest,
+        ) -> Result<super::RecordStream, super::StreamError> {
+            self.inner.read(request).await
+        }
+        async fn follow(
+            &self,
+            path: super::StreamPath,
+            from: u64,
+            filter: super::FollowFilter,
+        ) -> Result<super::RecordStream, super::StreamError> {
+            self.inner.follow(path, from, filter).await
+        }
+        async fn commit(
+            &self,
+            request: super::CommitRequest,
+        ) -> Result<super::CommitOutcome, super::StreamError> {
+            self.inner.commit(request).await
+        }
+        async fn read_commit(
+            &self,
+            id: super::CommitId,
+        ) -> Result<super::CommittedEnvelope, super::StreamError> {
+            self.inner.read_commit(id).await
+        }
+        fn native_commit(
+            &self,
+            _request: super::CommitRequest,
+            _deadline: Option<u64>,
+            _meter: std::sync::Arc<dyn super::NativeReadMeter>,
+        ) -> super::NativeProviderFuture<'_, super::CommitOutcome> {
+            if let Ok(mut reached) = self.reached.lock() {
+                reached.push(self.bound.clone());
+            }
+            // A definite answer distinct from the trait default's Unsupported.
+            super::NativeProviderFuture::ready(Ok(Err(super::StreamError::AccessDenied)))
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_native_write_is_attested_and_reaches_the_bound_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_stream::{
+            CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
+        };
+        let attestor = std::sync::Arc::new(Counting::default());
+        let probe = std::sync::Arc::new(Probe::default());
+        let reached = probe.reached.clone();
+        let attested = super::Attested::new(
+            probe,
+            Some(attestor.clone()),
+            super::TurnAdmission::LocalRoot,
+        );
+        let path = StreamPath::new("attested/native")?;
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 0,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![b"native".as_slice().into()],
+            }],
+            idempotency_key: IdempotencyKey::new(b"native".to_vec())?,
+        };
+        let digest = super::commit_digest(&request)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error.to_string())?;
+        let outcome =
+            super::StreamProvider::native_commit(&attested, request, None, work.runtime_meter())
+                .await?;
+        assert!(matches!(outcome, Err(super::StreamError::AccessDenied)));
+        assert_eq!(attestor.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            *reached.lock().map_err(|_| "poisoned")?,
+            vec![Some(super::Attestation(digest.to_vec().into()))],
+            "the native commit reached the provider bound to its attestation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn attested_overrides_every_stream_provider_method() {
+        let trait_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../stream/src/lib/provider.rs"
+        ))
+        .expect("the stream provider contract is in the workspace");
+        let declared = methods(&trait_source, "pub trait StreamProvider");
+        let overridden = methods(
+            include_str!("attestation.rs"),
+            "impl<P: AttestedProvider + 'static> StreamProvider for Attested<P>",
+        );
+        assert!(declared.len() > 20, "{declared:?}");
+        assert_eq!(
+            declared, overridden,
+            "a default would bypass the attestor or the inner provider"
+        );
     }
 }

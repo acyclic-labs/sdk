@@ -6,8 +6,9 @@
 //!
 //! A root's fresh volumes and its adoption are one commit:
 //! [`Bound::prepare_root`] verifies every authority the root needs before any
-//! IO, then prepares that commit, and [`Bound::create_root`] is exactly that
-//! commit submitted once.
+//! IO, then prepares that commit, and [`Bound::submit_root`] submits it. The
+//! [`Prepared`] commit owns its fresh volumes' publication holds until it
+//! settles, so no unpublished object it names is collected before then.
 
 use super::{
     FilesystemContentPublisher, FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost,
@@ -18,7 +19,7 @@ use crate::{
     OperationId,
     agent::{
         AgentHost, AgentId, AgentPath, Error, ExecutorDriver, ForkAdopted, IntentId, Spawn,
-        Submitted, VolumeBinding, submit,
+        VolumeBinding,
     },
     conversation::{ContentAccess, ContentGrant, ContentPublisher, FileRef, VolumeOperation},
     core::{Authority, AuthorityRoot, Scope},
@@ -27,7 +28,7 @@ use crate::{
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, EmbeddedCapabilities,
-    FilesystemCommit, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
+    FilesystemCommit, FilesystemCommitOutcome, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
 };
 use std::sync::Arc;
 
@@ -67,16 +68,47 @@ pub struct RootRequest {
     pub policy: Option<FileRef>,
 }
 
-/// A prepared root: the one commit creating its fresh volumes, its inbox with
-/// `ForkAdopted`, its actor state and its activation. Submitting
-/// [`Self::request`] once is the creation; after
-/// [`Error::Unknown`] its exact bytes are resubmitted.
-#[derive(Clone, Debug)]
+/// A prepared root: the one sealed commit creating its fresh volumes, its
+/// inbox with `ForkAdopted`, its actor state and its activation, together
+/// with the holds keeping the fresh volumes' objects until it settles. Only
+/// [`Bound::submit_root`] submits it, consuming it; an uncertain submission
+/// hands it back to resubmit exactly.
 pub struct Prepared {
+    child: AgentPath,
+    commit: FilesystemCommit,
+}
+
+impl Prepared {
     /// The root agent's path.
-    pub child: AgentPath,
-    /// The whole creation, sealed.
-    pub request: acyclic_stream::CommitRequest,
+    #[must_use]
+    pub const fn child(&self) -> &AgentPath {
+        &self.child
+    }
+
+    /// The sealed creation's exact bytes.
+    #[must_use]
+    pub fn request(&self) -> &acyclic_stream::CommitRequest {
+        self.commit.request()
+    }
+}
+
+impl std::fmt::Debug for Prepared {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Prepared")
+            .field("child", &self.child)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How one root submission ended.
+#[derive(Debug)]
+pub enum RootSubmission {
+    /// The root exists and is hosted.
+    Created(AgentPath),
+    /// The result is unknown: resubmit exactly this commit, which still holds
+    /// its fresh volumes' objects.
+    Unknown(Prepared),
 }
 
 /// The one admitted stream instance and its placement. Agents, their actor
@@ -304,8 +336,10 @@ where
     /// and agent, and writing the private volume) and that the admission
     /// writes every fresh volume; a read-only or mismatched admission is
     /// refused here, having read and written nothing. Retained volumes keep
-    /// exactly the access the admission grants them. Then it prepares, with
-    /// no IO, the one sealed commit creating the fresh volumes and the root.
+    /// exactly the access the admission grants them. Then it prepares the one
+    /// sealed commit creating the fresh volumes and the root. Preparation
+    /// performs no stream IO; it writes the fresh volumes' initial objects to
+    /// the object store, held unpublished by the returned commit.
     ///
     /// # Errors
     /// [`crate::Error::Unauthorized`] (as [`Error::Turn`]) when the
@@ -378,32 +412,58 @@ where
         .map_err(|failure| turn(super::map_error(failure.error)))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| turn(failure.error.into()))?;
-        Ok(Prepared {
-            child,
-            request: commit.request().clone(),
-        })
+        Ok(Prepared { child, commit })
     }
 
-    /// Creates root `request`: exactly [`Self::prepare_root`] submitted once,
-    /// then hosted. Retrying the same `intent` replays exactly; on
-    /// [`Error::Unknown`], resubmit its exact request with [`submit`].
+    /// Submits `prepared` once and settles it: committed, the root is hosted;
+    /// uncertain, the unchanged commit comes back to resubmit.
     ///
     /// # Errors
-    /// As [`Self::prepare_root`], or when another creation holds the agent.
+    /// When another creation holds the agent, or on a store failure.
+    pub async fn submit_root(&self, prepared: Prepared) -> Result<RootSubmission, Error> {
+        let Prepared { child, commit } = prepared;
+        let outcome = self
+            .volumes
+            .filesystem
+            .submit_commit(commit, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| turn(failure.error.into()))?
+            .value;
+        match outcome {
+            FilesystemCommitOutcome::Committed(_) => {
+                self.agents.host(&child)?;
+                Ok(RootSubmission::Created(child))
+            }
+            FilesystemCommitOutcome::Rejected(_) => {
+                Err(Error::Record("agent exists with another creation"))
+            }
+            FilesystemCommitOutcome::Unknown { commit, .. } => {
+                Ok(RootSubmission::Unknown(Prepared { child, commit }))
+            }
+        }
+    }
+
+    /// Creates root `request`: exactly [`Self::prepare_root`] then
+    /// [`Self::submit_root`]. Retrying the same `intent` replays exactly.
+    ///
+    /// # Errors
+    /// As [`Self::prepare_root`] and [`Self::submit_root`]; an uncertain
+    /// result is [`Error::Unknown`], resolved by creating again under the same
+    /// `intent`, which re-prepares, and re-holds, the identical commit.
     pub async fn create_root(
         &self,
         intent: &IntentId,
         request: RootRequest,
     ) -> Result<AgentPath, Error> {
-        let Prepared { child, request } = self.prepare_root(intent, request).await?;
-        match submit(&**self.agents.provider(), request).await? {
-            Submitted::Committed(_) => {}
-            Submitted::Conflict(_) | Submitted::InboxMoved(_) | Submitted::RecipientClosed(_) => {
-                return Err(Error::Record("agent exists with another creation"));
+        match self
+            .submit_root(self.prepare_root(intent, request).await?)
+            .await?
+        {
+            RootSubmission::Created(child) => Ok(child),
+            RootSubmission::Unknown(prepared) => {
+                Err(Error::Unknown(Box::new(prepared.request().clone())))
             }
         }
-        self.agents.host(&child)?;
-        Ok(child)
     }
 }
 

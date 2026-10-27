@@ -1,6 +1,7 @@
 //! The admitted root producer: one placement builds both the agents and their
 //! volumes, and a root's fresh volumes and adoption are one commit prepared
-//! without IO. Refusal vectors run for every host in the agent-host suite.
+//! without stream IO and held until it settles. Refusal vectors run for
+//! every host in the agent-host suite.
 
 use super::{Result, id, intent};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
@@ -14,7 +15,7 @@ use acyclic_harness_core::{
     filesystem::{
         PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
         attestation::{Attempt, Attestation, AttestedProvider, Attestor},
-        hosting::{Bound, Placement, Prepared, RootRequest, Turns},
+        hosting::{Bound, Placement, RootRequest, RootSubmission, Turns},
     },
     model::ModelContent,
     resources::ProviderRef,
@@ -123,21 +124,28 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
     let again = bound
         .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
         .await?;
+    assert_eq!(first.request(), again.request(), "preparation is exact");
+    let child = first.child().clone();
+    let RootSubmission::Created(created) = bound.submit_root(first).await? else {
+        return Err("the root's submission was uncertain".into());
+    };
+    assert_eq!(created, child);
     assert_eq!(
-        first.request, again.request,
-        "preparation is pure and exact"
+        bound.agents().state(&created).await?.volumes,
+        vec![private.clone()]
     );
-    let created = bound
-        .create_root(&intent("root"), root(id(1), vec![private.clone()]))
-        .await?;
-    assert_eq!(created, first.child);
-    assert_eq!(bound.agents().state(&created).await?.volumes, vec![private]);
-    // The Unknown path: the exact prepared bytes resubmit as the same creation.
-    let Prepared { request, .. } = first;
+    // The Unknown path: the identical prepared commit resubmits as the same
+    // creation, and creating again under the intent replays it.
     assert!(matches!(
-        submit(&*stream, request).await?,
-        Submitted::Committed(_)
+        bound.submit_root(again).await?,
+        RootSubmission::Created(replayed) if replayed == child
     ));
+    assert_eq!(
+        bound
+            .create_root(&intent("root"), root(id(1), vec![private.clone()]))
+            .await?,
+        child
+    );
     // The root's private volume is live: an input stages on it.
     bound
         .stage_text(&created, "message", &intent("m1"), "hello")
@@ -161,7 +169,7 @@ impl AttestedProvider for Evidence {
     fn bind(
         &self,
         attestation: &Attestation,
-    ) -> std::result::Result<Option<Arc<dyn StreamProvider>>, StreamError> {
+    ) -> std::result::Result<Option<Arc<Self>>, StreamError> {
         self.presented
             .lock()
             .map_err(|_| StreamError::Unavailable)?
@@ -279,7 +287,8 @@ fn attested(stream: &Arc<Evidence>, attestor: &Arc<Digests>) -> Result<Bound<Evi
 }
 
 #[tokio::test]
-async fn each_sealed_request_is_attested_once_and_an_unknown_retry_reuses_it() -> Result {
+async fn every_sealed_write_is_attested_and_an_unknown_retry_presents_the_same_evidence() -> Result
+{
     let stream = Arc::new(Evidence {
         valid: true,
         unknown_first: true.into(),
@@ -288,28 +297,36 @@ async fn each_sealed_request_is_attested_once_and_an_unknown_retry_reuses_it() -
     let attestor = Arc::new(Digests::default());
     let bound = attested(&stream, &attestor)?;
     let private = volume(PRIVATE_VOLUME, id(2))?;
-    let lost = bound
-        .create_root(&intent("root"), root(id(2), vec![private.clone()]))
-        .await;
-    assert!(matches!(lost, Err(Error::Unknown(_))), "{lost:?}");
-    let created = bound
-        .create_root(&intent("root"), root(id(2), vec![private]))
+    let prepared = bound
+        .prepare_root(&intent("root"), root(id(2), vec![private]))
         .await?;
-    assert_eq!(created, AgentPath::root(&id(2)));
+    // The acknowledgement is lost: the commit, still holding its objects,
+    // comes back and resubmits exactly.
+    let RootSubmission::Unknown(held) = bound.submit_root(prepared).await? else {
+        return Err("the lost acknowledgement was not uncertain".into());
+    };
+    assert!(matches!(
+        bound.submit_root(held).await?,
+        RootSubmission::Created(created) if created == AgentPath::root(&id(2))
+    ));
     let digests = attestor.0.lock().map_err(|_| "poisoned")?.clone();
     let presented = stream.presented.lock().map_err(|_| "poisoned")?.clone();
-    let distinct: std::collections::BTreeSet<_> = digests.iter().collect();
-    assert_eq!(
-        distinct.len(),
-        digests.len(),
-        "attested once per distinct request"
-    );
+    // Every write presented exactly the evidence attested for its request.
+    assert_eq!(presented.len(), digests.len(), "one attestation per write");
+    for attestation in &presented {
+        assert!(
+            digests
+                .iter()
+                .any(|digest| digest.as_slice() == attestation.0.as_ref())
+        );
+    }
+    // The root's lost attempt and its exact retry are the same sealed
+    // request, so they present the identical attestation.
     assert!(presented.len() >= 2);
     assert_eq!(
         presented[0], presented[1],
         "the uncertain retry presents the identical attestation"
     );
-    assert_eq!(presented[0].0.as_ref(), digests[0].as_slice());
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 //! Admitted root preparation: one placement builds the agents and their
 //! volumes, and a root's fresh volumes and adoption are one commit prepared
-//! without provider IO. An admission that does not cover the root is refused
+//! without stream IO. An admission that does not cover the root is refused
 //! before any provider read or write.
 use crate::{Backend, Result, observe::Observed, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
@@ -14,7 +14,7 @@ use acyclic_harness_core::{
     executor::Executor,
     filesystem::{
         PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
-        hosting::{Bound, Placement, RootRequest, Turns, VerifiedCaller},
+        hosting::{Bound, Placement, RootRequest, RootSubmission, Turns, VerifiedCaller},
     },
     model::ModelContent,
     resources::ProviderRef,
@@ -185,21 +185,25 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     }
     match (case, prepared) {
         (Case::Covering, Ok(first)) => {
-            if bound.prepare_root(&intent, request()).await?.request != first.request {
+            let again = bound.prepare_root(&intent, request()).await?;
+            if again.request() != first.request() {
                 return Err("root preparation is not exact".into());
             }
-            let created = bound.create_root(&intent, request()).await?;
-            if created != first.child
-                || bound.agents().state(&created).await?.volumes != request().fresh
+            let child = first.child().clone();
+            let RootSubmission::Created(created) = bound.submit_root(first).await? else {
+                return Err("the root's submission was uncertain".into());
+            };
+            if created != child || bound.agents().state(&created).await?.volumes != request().fresh
             {
                 return Err("created root differs from its preparation".into());
             }
-            // The Unknown path: the exact prepared request resubmits as the
-            // same creation.
+            // The Unknown path: the identical prepared commit resubmits as the
+            // same creation, and creating again under the intent replays it.
             if !matches!(
-                submit(&*stream, first.request).await?,
-                Submitted::Committed(_)
-            ) {
+                bound.submit_root(again).await?,
+                RootSubmission::Created(replayed) if replayed == child
+            ) || bound.create_root(&intent, request()).await? != child
+            {
                 return Err("an exact root resubmission did not replay".into());
             }
             Ok(())
