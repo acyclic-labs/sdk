@@ -48,19 +48,24 @@ impl LocalHarness {
         )
         .with_products(Some(Arc::new(changes)), server.clone());
         let mut builder = tonic::transport::Server::builder();
-        let scheme = if let Some(tls) = tls {
+        // Plain HTTP serves only loopback, where the bound address is the one
+        // clients reach.
+        let endpoint = if let Some(tls) = tls {
+            if !tls.url.starts_with("https://") {
+                return Err(Error::Invalid("a TLS server's URL is an https URL".into()));
+            }
             builder = builder
                 .tls_config(tonic::transport::ServerTlsConfig::new().identity(
                     tonic::transport::Identity::from_pem(tls.certificate, tls.key),
                 ))
                 .map_err(failed)?;
-            "https"
+            tls.url
         } else {
-            "http"
+            format!("http://{address}")
         };
         ready(&Endpoint {
             server: IDENTITY,
-            endpoint: format!("{scheme}://{address}"),
+            endpoint,
             credential: base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(&observation.credential),
             principal: observation.principal,

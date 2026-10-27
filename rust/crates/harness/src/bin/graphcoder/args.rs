@@ -69,11 +69,15 @@ pub struct Serve {
     /// address is served.
     pub address: std::net::SocketAddr,
     /// PEM certificate chain of the server's TLS identity.
-    #[arg(long, requires = "tls_key")]
+    #[arg(long, requires_all = ["tls_key", "url"])]
     pub tls_certificate: Option<PathBuf>,
     /// PEM private key of the server's TLS identity.
     #[arg(long, requires = "tls_certificate")]
     pub tls_key: Option<PathBuf>,
+    /// The `https` URL clients reach the server at, which its certificate
+    /// names; the listening address need not be reachable.
+    #[arg(long, requires = "tls_certificate")]
+    pub url: Option<String>,
 }
 
 #[cfg(test)]

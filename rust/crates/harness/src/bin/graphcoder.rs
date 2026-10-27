@@ -154,11 +154,14 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         if args.prompt.is_some() || args.endpoint.is_some() || args.host_workspace {
             return Err("serve takes no prompt, endpoint or host workspace".into());
         }
-        let tls = match (&serve.tls_certificate, &serve.tls_key) {
-            (Some(certificate), Some(key)) => Some(acyclic_harness::server::TlsIdentity {
-                certificate: std::fs::read(certificate)?,
-                key: std::fs::read(key)?,
-            }),
+        let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {
+            (Some(certificate), Some(key), Some(url)) => {
+                Some(acyclic_harness::server::TlsIdentity {
+                    url: url.clone(),
+                    certificate: std::fs::read(certificate)?,
+                    key: std::fs::read(key)?,
+                })
+            }
             _ => None,
         };
         let listener = tokio::net::TcpListener::bind(serve.address).await?;

@@ -12,8 +12,12 @@ use std::sync::Arc;
 /// test checks that an endpoint is served by this entry point.
 pub const IDENTITY: &str = concat!("acyclic-harness/", env!("CARGO_PKG_VERSION"));
 
-/// The server's TLS identity: its PEM certificate chain and private key.
+/// The server's TLS identity: its PEM certificate chain and private key,
+/// and the URL clients reach it at, which the certificate names.
 pub struct TlsIdentity {
+    /// The `https` URL a remote client connects to: the server's public
+    /// name, not the address it listens on (`0.0.0.0` reaches no one).
+    pub url: String,
     /// PEM certificate chain.
     pub certificate: Vec<u8>,
     /// PEM private key.
