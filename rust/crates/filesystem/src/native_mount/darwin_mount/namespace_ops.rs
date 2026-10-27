@@ -151,20 +151,9 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     gid: u32,
 ) -> c_int {
     ffi(address, true, |context, work| {
-        let kind = match libc::mode_t::try_from(mode & u32::from(libc::S_IFMT))
-            .map_err(|_| driver_errno(libc::EINVAL))?
-        {
-            libc::S_IFIFO => MountNodeKind::Fifo,
-            libc::S_IFSOCK => MountNodeKind::Socket,
-            libc::S_IFCHR => MountNodeKind::CharacterDevice,
-            libc::S_IFBLK => MountNodeKind::BlockDevice,
-            _ => return Err(driver_errno(libc::EOPNOTSUPP)),
-        };
-        let device = matches!(
-            kind,
-            MountNodeKind::CharacterDevice | MountNodeKind::BlockDevice
-        )
-        .then(|| crate::native_mount::device::split_device(device));
+        let mode_kind = libc::mode_t::try_from(mode & u32::from(libc::S_IFMT))
+            .map_err(|_| driver_errno(libc::EINVAL))?;
+        let (kind, device) = MountNodeKind::special(mode_kind, device).map_err(driver_errno)?;
         let path = mount_path(path, work)?;
         context.mutate(
             || {

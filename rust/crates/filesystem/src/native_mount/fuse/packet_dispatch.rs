@@ -369,19 +369,7 @@ impl FuseProjection {
                         if request.opcode == 9 {
                             return Ok(self.core.source.create_directory(path, metadata, work)?);
                         }
-                        let (kind, device) = match kind {
-                            S_IFIFO => (MountNodeKind::Fifo, None),
-                            S_IFSOCK => (MountNodeKind::Socket, None),
-                            S_IFCHR => (
-                                MountNodeKind::CharacterDevice,
-                                Some(super::super::device::split_device(u64::from(rdev))),
-                            ),
-                            S_IFBLK => (
-                                MountNodeKind::BlockDevice,
-                                Some(super::super::device::split_device(u64::from(rdev))),
-                            ),
-                            _ => return Err(libc::EOPNOTSUPP.into()),
-                        };
+                        let (kind, device) = MountNodeKind::special(kind, u64::from(rdev))?;
                         Ok(self
                             .core
                             .source
