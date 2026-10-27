@@ -171,15 +171,27 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
         bound.submit_root(again).await?,
         RootSubmission::Created(replayed) if replayed == child
     ));
-    assert_eq!(
+    assert!(matches!(
         bound
             .create_root(&intent("root"), root(id(1), vec![private]))
             .await?,
-        child
+        RootSubmission::Created(replayed) if replayed == child
+    ));
+    let (alice, bob) = (
+        Sender::User {
+            principal: "alice".into(),
+        },
+        Sender::User {
+            principal: "bob".into(),
+        },
     );
     // The root's private volume is live: an input stages on it.
     bound
-        .stage_text(&created, "message", &intent("m1"), "hello")
+        .stage_text(&created, "message", &alice, &intent("m1"), "hello")
+        .await?;
+    // Another sender's same intent with different text stages its own input.
+    bound
+        .stage_text(&created, "message", &bob, &intent("m1"), "hi")
         .await?;
     Ok(())
 }
@@ -205,13 +217,16 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
     let stranger = acyclic_harness_core::AgentId::from_bytes(id(8).to_bytes());
     // Each case: the audience the admission is issued for, the one the host
     // verified, its bound agent, the private volume's operations, whether a
-    // second fresh volume is granted Write, and how the scope is spoiled.
+    // second fresh volume is granted Write, how the scope is spoiled, and
+    // whether the admission is instead one structured grant over the private
+    // volume alone.
     let run = |issued: Authority,
                given: Authority,
                agent: Option<acyclic_harness_core::AgentId>,
                operations: &'static [VolumeOperation],
                shared_write: bool,
-               spoil: Spoil| async move {
+               spoil: Spoil,
+               structured: bool| async move {
         let stream = Arc::new(Refusing::default());
         let issuer = AuthorityRoot::new("agents", [7; 32], issued.clone());
         let private = volume(PRIVATE_VOLUME, id(7))?;
@@ -219,6 +234,16 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
         let mut grants = vec![INTERACTION_ROUTE.to_owned()];
         for operation in operations {
             grants.push(private.volume.capability(*operation, &mut None)?);
+        }
+        if structured {
+            grants = vec![
+                INTERACTION_ROUTE.to_owned(),
+                acyclic_fs::access::Capability::whole_volume(
+                    Some(private.volume.id().to_owned()),
+                    &acyclic_fs::access::Action::ALL,
+                )
+                .to_scope_label()?,
+            ];
         }
         if shared_write {
             grants.push(
@@ -277,7 +302,8 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
             None,
             both,
             true,
-            Spoil::Nothing
+            Spoil::Nothing,
+            false
         )
         .await?,
         (true, 0, true),
@@ -340,10 +366,26 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
         ),
     ] {
         assert_eq!(
-            run(issued, given, agent, operations, shared_write, spoil).await?,
+            run(issued, given, agent, operations, shared_write, spoil, false).await?,
             (false, 0, false),
             "{case}: refused before any stream or object IO"
         );
     }
+    // A structured grant over the private volume alone admits the agent but
+    // not a second fresh volume it does not cover.
+    assert_eq!(
+        run(
+            audience.clone(),
+            audience,
+            None,
+            &[],
+            false,
+            Spoil::Nothing,
+            true
+        )
+        .await?,
+        (false, 0, false),
+        "a structured grant not covering a fresh volume is refused before any IO"
+    );
     Ok(())
 }

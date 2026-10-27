@@ -170,6 +170,9 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         },
     )
     .await?;
+    let Serving::Served(server) = server else {
+        return Err("serving the root was uncertain".into());
+    };
     let client = Client::in_process_with_products(
         stream.clone(),
         acyclic_stream::session::testing::authority(),
@@ -242,5 +245,16 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     );
     owner.0.store(true, Ordering::SeqCst);
     assert!(call(&client, "agents", &AgentCommand::Root).await.is_err());
+    Ok(())
+}
+
+#[test]
+fn a_children_cursor_carries_its_hierarchy_version_and_last_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let version = CommitId::from_bytes([0xa5; 32]);
+    let after = StreamPath::new("agents/root/children/a")?;
+    let cursor = children_cursor(&version, &after);
+    assert_eq!(parse_children_cursor(&cursor)?, (version, after));
+    assert!(parse_children_cursor("agents/root/children/a").is_err());
     Ok(())
 }

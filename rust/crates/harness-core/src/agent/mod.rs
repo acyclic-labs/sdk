@@ -7,6 +7,7 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod commit;
+pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
 pub use effects::{TurnEffect, TurnEffects, outs as effect_outs};

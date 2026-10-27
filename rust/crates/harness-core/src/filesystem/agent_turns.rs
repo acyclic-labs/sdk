@@ -203,7 +203,7 @@ impl<'v> AdmittedAgent<'v> {
 /// The filesystem's decision over `scope`'s structured grant, if it has one:
 /// it creates and writes every path of `volume`. It performs no IO; the
 /// writer still applies the volume's persisted policy.
-fn require_structured_write(
+pub(super) fn require_structured_write(
     scope: &Scope,
     owner: crate::AgentId,
     volume: &crate::conversation::VolumeRef,
@@ -215,8 +215,7 @@ fn require_structured_write(
     let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
         return Ok(());
     };
-    let denied =
-        || Error::Unauthorized("admission does not grant writing its private volume".into());
+    let denied = || Error::Unauthorized("admission does not grant writing the volume".into());
     let capability = Capability::from_scope_label(label)
         .ok()
         .flatten()
