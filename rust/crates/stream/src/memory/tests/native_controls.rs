@@ -282,7 +282,10 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit result")
     };
-    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+    {
+    let facts = provider.read_commit(envelope.commit_id).await?;
+    assert!(envelope.matches_envelope(&facts));
+    let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
         panic!("single append")
     };
     assert_eq!(
@@ -294,6 +297,7 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
             .as_ref(),
         b"root-body"
     );
+    }
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
@@ -367,7 +371,8 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
             let CommitOutcome::Committed(envelope) = &outcome else {
                 panic!("the larger foreign Commit must actually publish")
             };
-            assert_eq!(envelope.mutations.len(), 2);
+            assert_eq!(envelope.appends.len(), 2);
+            assert!(envelope.forks.is_empty());
             assert_eq!(provider.tail(path("completion/owner")?).await?, 2);
             IdempotencyOutcome::Commit(outcome)
         } else {
@@ -448,7 +453,10 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
     let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = &accepted.outcome else {
         panic!("canonical Commit family");
     };
-    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+    {
+    let facts = provider.read_commit(envelope.commit_id).await?;
+    assert!(envelope.matches_envelope(&facts));
+    let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
         panic!("one append");
     };
     assert_eq!(
@@ -461,7 +469,7 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         b"actual-scalars"
     );
     assert_eq!((append.start, append.end), (1, 2));
-    assert_eq!(provider.read_commit(envelope.commit_id).await?, *envelope);
+    }
     let repeated = replay
         .into_parts()
         .0

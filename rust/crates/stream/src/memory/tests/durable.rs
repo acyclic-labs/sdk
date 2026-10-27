@@ -190,7 +190,10 @@ async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal(
     else {
         return Err(StreamError::InvalidResponse);
     };
-    let CommittedMutation::Append(append) = &envelope.mutations[0] else {
+    let retained = core.read_commit(envelope.commit_id).await?;
+    assert!(envelope.matches_envelope(&retained));
+    assert_eq!(envelope.committed_at_micros, 5_000);
+    let CommittedMutation::Append(append) = &retained.mutations[0] else {
         return Err(StreamError::InvalidResponse);
     };
     assert_eq!(append.records[0].committed_at_micros, 5_000);

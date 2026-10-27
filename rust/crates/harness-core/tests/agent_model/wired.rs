@@ -474,6 +474,13 @@ impl Refusing {
 
 #[async_trait::async_trait]
 impl StreamProvider for Refusing {
+    async fn head(
+        &self,
+        _: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        self.refuse()
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.claims
     }
