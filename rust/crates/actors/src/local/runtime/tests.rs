@@ -24,6 +24,43 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
     Ok(ActorReference::new(b"account", b"agents", id.as_bytes())?)
 }
 
+#[test]
+fn concurrent_sharded_tracking_keeps_one_registration_per_actor() -> TestResult {
+    let runtime = Runtime::new(
+        Store::new(Arc::new(MemoryStream::default()), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let actors = (0..128)
+        .map(|index| actor(&format!("shard-{index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    std::thread::scope(|scope| {
+        let workers = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    for actor in &actors {
+                        runtime.track(actor.clone())?;
+                        runtime.wake(actor);
+                    }
+                    Ok::<_, Error>(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| Error::Invalid("tracking worker panicked"))??;
+        }
+        Ok::<_, Error>(())
+    })?;
+    assert_eq!(runtime.counts().0, actors.len());
+    for actor in &actors {
+        assert!(runtime.release(actor));
+    }
+    assert_eq!(runtime.counts(), (0, 0));
+    Ok(())
+}
+
 /// A running host and the task driving it.
 type Running<P> = Option<(Arc<Runtime<P>>, tokio::task::JoinHandle<()>)>;
 

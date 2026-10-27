@@ -88,6 +88,7 @@ enum Inputs {
 
 enum Event {
     Created(Record),
+    Dispatched(Result<Snapshot, Error>),
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
@@ -290,7 +291,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             })
             .await?;
         let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
-        let mut dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
+        let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
         // A cursor alone would forget all previously discovered subscriptions
         // and alarms. Rebuild residents from current state names, without
         // replaying their creation history. New creations race safely with the
@@ -301,22 +302,37 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .and_then(|state| state.cursor("activation"))
             .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
         let mut created = provider.follow(root, from, FollowFilter::default()).await?;
+        let mut dispatcher = Some(dispatcher);
+        let mut dispatching: Option<BoxProviderFuture<'_, Result<Snapshot, Error>>> = None;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxProviderFuture<'static, ()>)> = None;
         loop {
             let event = poll_fn(|context: &mut Context<'_>| {
-                match created.poll_next_unpin(context) {
-                    Poll::Ready(Some(Ok(record))) => return Poll::Ready(Event::Created(record)),
-                    Poll::Ready(Some(Err(error))) => return Poll::Ready(Event::Failed(error)),
-                    Poll::Ready(None) => {
-                        return Poll::Ready(Event::Failed(StreamError::Unavailable));
+                if let Some(checkpoint) = dispatching.as_mut() {
+                    if let Poll::Ready(result) = checkpoint.poll_unpin(context) {
+                        return Poll::Ready(Event::Dispatched(result));
                     }
-                    Poll::Pending => {}
+                } else {
+                    match created.poll_next_unpin(context) {
+                        Poll::Ready(Some(Ok(record))) => {
+                            return Poll::Ready(Event::Created(record));
+                        }
+                        Poll::Ready(Some(Err(error))) => return Poll::Ready(Event::Failed(error)),
+                        Poll::Ready(None) => {
+                            return Poll::Ready(Event::Failed(StreamError::Unavailable));
+                        }
+                        Poll::Pending => {}
+                    }
                 }
+                // A delivery's pending follow can own provider I/O. Keep
+                // polling it while the dispatcher checkpoints through that
+                // same provider; awaiting the checkpoint alone can deadlock.
                 if let Poll::Ready(Some(result)) = running.poll_next_unpin(context) {
                     return Poll::Ready(Event::Done(result));
                 }
-                if let Poll::Ready(work) = self.ready.poll_ready(context) {
+                if dispatching.is_none()
+                    && let Poll::Ready(work) = self.ready.poll_ready(context)
+                {
                     return Poll::Ready(Event::Work(work));
                 }
                 // Read the deadline after installing the waiter: an earlier
@@ -342,9 +358,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     {
                         self.track(actor)?;
                     }
-                    dispatcher = self
-                        .advance_dispatcher(&dispatch_store, dispatcher, &record)
-                        .await?;
+                    let previous = dispatcher
+                        .take()
+                        .ok_or(Error::Invalid("dispatcher checkpoint is in flight"))?;
+                    let store = &dispatch_store;
+                    dispatching = Some(Box::pin(async move {
+                        self.advance_dispatcher(store, previous, &record).await
+                    }));
+                }
+                Event::Dispatched(result) => {
+                    dispatching = None;
+                    dispatcher = Some(result?);
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> =
