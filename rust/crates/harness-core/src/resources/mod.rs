@@ -23,7 +23,10 @@ fn validate_text<'a>(
                     items: 1,
                 })?;
             }
-            if part.is_empty() || ch.is_some_and(char::is_control) {
+            if part.is_empty()
+                || part.len() > crate::conversation::MAX_LABEL_BYTES
+                || ch.is_some_and(char::is_control)
+            {
                 return Err(invalid(reason));
             }
         }
