@@ -72,12 +72,18 @@ impl Framing {
         }
     }
 
-    fn next(&self, pending: &[u8]) -> Result<Option<(usize, usize, u8)>, ProviderError> {
+    fn next(
+        &self,
+        pending: &[u8],
+        scanned: &mut usize,
+    ) -> Result<Option<(usize, usize, u8)>, ProviderError> {
         match self {
-            Self::Lines => Ok(pending
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|end| (0, end + 1, 0))),
+            Self::Lines => {
+                let end = pending[*scanned..].iter().position(|byte| *byte == b'\n');
+                let frame = end.map(|end| (0, *scanned + end + 1, 0));
+                *scanned = pending.len();
+                Ok(frame)
+            }
             Self::Connect => {
                 let Some(header) = pending.get(..5) else {
                     return Ok(None);
@@ -93,6 +99,15 @@ impl Framing {
     }
 }
 
+struct Decoder<B> {
+    source: BoxStream<'static, Result<B, ProviderError>>,
+    framing: Framing,
+    pending: Vec<u8>,
+    consumed: usize,
+    scanned: usize,
+    incoming: Option<(B, usize)>,
+}
+
 /// Buffer ownership, fragmentation, bounds and truncated EOF handling live once;
 /// adapters only interpret complete protocol frames.
 pub fn frames<S, B, E>(
@@ -104,28 +119,58 @@ where
     B: AsRef<[u8]> + Send + 'static,
     E: Send + 'static,
 {
-    stream::try_unfold(
-        (source.boxed(), Vec::<u8>::new(), framing),
-        |(mut source, mut pending, framing)| async move {
-            loop {
-                if let Some((start, end, flags)) = framing.next(&pending)? {
-                    let data = pending.drain(..end).skip(start).collect();
-                    return Ok(Some((Frame { flags, data }, (source, pending, framing))));
+    let decoder = Decoder {
+        source: source
+            .map(|chunk| chunk.map_err(|_| ProviderError::Unavailable))
+            .boxed(),
+        framing,
+        pending: Vec::new(),
+        consumed: 0,
+        scanned: 0,
+        incoming: None,
+    };
+    stream::try_unfold(decoder, |mut decoder| async move {
+        loop {
+            let pending = &decoder.pending[decoder.consumed..];
+            if let Some((start, end, flags)) =
+                decoder.framing.next(pending, &mut decoder.scanned)?
+            {
+                let data = pending[start..end].to_vec();
+                decoder.consumed += end;
+                decoder.scanned = 0;
+                return Ok(Some((Frame { flags, data }, decoder)));
+            }
+            if decoder.consumed != 0 {
+                // Compact only an incomplete suffix when more input is
+                // needed. Yielding a frame never shifts the remaining batch.
+                let incomplete = pending.len();
+                decoder.pending.copy_within(decoder.consumed.., 0);
+                decoder.pending.truncate(incomplete);
+                decoder.consumed = 0;
+            }
+            if let Some((data, offset)) = &mut decoder.incoming {
+                let remaining = &data.as_ref()[*offset..];
+                let count = remaining
+                    .len()
+                    .min(decoder.framing.capacity() - decoder.pending.len());
+                if count == 0 && !remaining.is_empty() {
+                    return Err(ProviderError::Unavailable);
                 }
-                match source.next().await {
-                    Some(Ok(data))
-                        if pending.len().saturating_add(data.as_ref().len())
-                            <= framing.capacity() =>
-                    {
-                        pending.extend_from_slice(data.as_ref())
-                    }
-                    Some(_) => return Err(ProviderError::Unavailable),
-                    None if pending.is_empty() => return Ok(None),
+                decoder.pending.extend_from_slice(&remaining[..count]);
+                *offset += count;
+                if *offset == data.as_ref().len() {
+                    decoder.incoming = None;
+                }
+            } else {
+                match decoder.source.next().await {
+                    Some(Ok(data)) => decoder.incoming = Some((data, 0)),
+                    Some(Err(error)) => return Err(error),
+                    None if decoder.pending.is_empty() => return Ok(None),
                     None => return Err(ProviderError::Unavailable),
                 }
             }
-        },
-    )
+        }
+    })
     .boxed()
 }
 
@@ -187,6 +232,59 @@ mod tests {
         );
         let mut truncated = frames(stream::iter([Ok::<_, ()>(b"a".to_vec())]), Framing::Lines);
         assert!(truncated.next().await.is_some_and(|item| item.is_err()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn valid_batches_larger_than_incomplete_capacity_are_consumed_incrementally()
+    -> Result<(), ProviderError> {
+        let count = 512 * 1024 / 2 + 1;
+        let source = stream::iter([Ok::<_, ()>(b"a\n".repeat(count))]);
+        let actual = frames(source, Framing::Lines)
+            .try_fold(0, |count, frame| async move {
+                assert_eq!(frame.data, b"a\n");
+                Ok(count + 1)
+            })
+            .await?;
+        assert_eq!(actual, count);
+
+        let payload = serde_json::json!({"value": "a".repeat(64 * 1024)});
+        let one = connect_message(&payload)?;
+        let source = stream::iter([Ok::<_, ()>(one.repeat(40))]);
+        let actual = frames(source, Framing::Connect)
+            .try_fold(0, |count, frame| {
+                assert_eq!(frame.data, one[5..]);
+                async move { Ok(count + 1) }
+            })
+            .await?;
+        assert_eq!(actual, 40);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fragmented_lines_keep_the_individual_frame_limit() -> Result<(), ProviderError> {
+        let mut line = vec![b'a'; 16 * 1024];
+        line.push(b'\n');
+        let source = stream::iter(
+            line.iter()
+                .copied()
+                .map(|byte| Ok::<_, ()>(vec![byte]))
+                .collect::<Vec<_>>(),
+        );
+        let actual: Vec<_> = frames(source, Framing::Lines).try_collect().await?;
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].data, line);
+
+        let mut limit = vec![b'a'; 512 * 1024 - 1];
+        limit.push(b'\n');
+        let actual: Vec<_> = frames(stream::iter([Ok::<_, ()>(limit.clone())]), Framing::Lines)
+            .try_collect()
+            .await?;
+        assert_eq!(actual[0].data, limit);
+        limit.insert(0, b'a');
+        let mut oversized = frames(stream::iter([Ok::<_, ()>(limit)]), Framing::Lines);
+        assert!(oversized.next().await.is_some_and(|item| item.is_err()));
+        assert!(oversized.next().await.is_none());
         Ok(())
     }
 

@@ -57,14 +57,19 @@ try {
       if (state.running) await request(name, "", "DELETE");
     } catch (error) { cleanupFailures.push(String(error)); }
   }
-  await writeFile(output, JSON.stringify({
+  const record = JSON.stringify({
     schema: "acyclic.machines.cloudflare-native-snapshot-capture.v1",
     source_commit: sourceCommit, namespace,
     provenance: "Actual HTTP responses from pinned Wrangler/workerd native local Containers on bb2; no account or credentials; request bodies are probe inputs.",
     provider_versions: { wrangler: "4.148.0", sandbox: "1.0.3" },
     snapshot_retention: snapshot === undefined ? null : "Native provider TTL; Worker API exposes no snapshot deletion. This capture does not claim physical snapshot retirement.",
     snapshot, failure, cleanup_failures: cleanupFailures, exchanges,
-  }, null, 2) + "\n", { flag: "wx" });
+  }, null, 2) + "\n";
+  // bb2 retires private job storage. Preserve the original bytes in its durable
+  // log even when the build wrapper cannot copy an output file back.
+  console.log(`CLOUDFLARE_SNAPSHOT_CAPTURE_BEGIN\n${record}CLOUDFLARE_SNAPSHOT_CAPTURE_END`);
+  try { await writeFile(output, record, { flag: "wx" }); }
+  catch (error) { throw new Error(`step=snapshot-capture-publication: ${error}; recovery: inspect the CLOUDFLARE_SNAPSHOT_CAPTURE_BEGIN record in the bb2 job log`); }
 }
 if (failure || cleanupFailures.length) {
   throw new Error(`step=native-snapshot-probe: ${failure ?? cleanupFailures.join("; ")}; recovery: inspect ${output} before rerunning`);
