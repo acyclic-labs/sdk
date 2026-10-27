@@ -69,14 +69,16 @@ struct Slot {
     refresh: AtomicBool,
 }
 
-/// Pause publication may race or be cancelled while a delivery owns the slot.
-/// Invalidate after the attempt, including cancellation, without taking its lock.
-struct RefreshOnDrop(Option<Arc<Slot>>);
+/// Invalidate cancelled delivery or control publication without taking its lock.
+/// Control changes also wake the dispatcher after publication finishes.
+struct RefreshOnDrop(Option<Arc<Slot>>, bool);
 impl Drop for RefreshOnDrop {
     fn drop(&mut self) {
         if let Some(slot) = &self.0 {
             slot.refresh.store(true, Ordering::Release);
-            slot.waker.wake_by_ref();
+            if self.1 {
+                slot.waker.wake_by_ref();
+            }
         }
     }
 }
@@ -233,7 +235,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Durably pause or resume. Pause fences in-flight publication; resume wakes.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
-        let _refresh = RefreshOnDrop(self.slot(actor));
+        let _refresh = RefreshOnDrop(self.slot(actor), true);
         loop {
             let snapshot = self.store.load(actor).await?;
             let state = snapshot
@@ -465,6 +467,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Deliver until nothing is ready: one committed transition per input.
     async fn deliver(
+        &self,
+        actor: &ActorReference,
+        slot: &Arc<Slot>,
+        inputs: Inputs,
+    ) -> Result<(), Error> {
+        let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
+        let result = self.deliver_retained(actor, slot, inputs).await;
+        // Cancellation can interrupt a committed publication before its receipt
+        // is retained. A completed attempt handles its outcome in the loop.
+        refresh.0 = None;
+        result
+    }
+
+    async fn deliver_retained(
         &self,
         actor: &ActorReference,
         slot: &Slot,

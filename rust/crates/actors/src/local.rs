@@ -212,7 +212,9 @@ impl PreparedPublish {
             || record.sequence != append.start
             || record.commit_id != envelope.commit_id
             || !authored.is_some_and(|records| {
-                records.len() == 1 && records[0].as_ref() == record.value.as_ref()
+                records.len() == 1
+                    && records[0].value == record.value
+                    && records[0].headers == record.headers
             })
         {
             return Err(Error::Invalid("receipt differs from the actor publication"));

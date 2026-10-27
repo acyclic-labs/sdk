@@ -684,6 +684,41 @@ async fn retained_cursor_never_blocks_control_admission() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "cancelled", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Limited::new(10_000, 1 << 16, true)?),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.track(address.clone())?;
+    let slot = runtime.slot(&address).ok_or("missing actor slot")?;
+    // Poll through claim and state observation, then cancel the stalled handler.
+    assert!(
+        runtime
+            .deliver(&address, &slot, Inputs::Event)
+            .now_or_never()
+            .is_none()
+    );
+    let cut = store.load(&address).await?;
+    assert_eq!(cut.state().ok_or("missing actor state")?.epoch(), 1);
+    store
+        .claim(&cut, 2, key("replacement-after-cancel")?)
+        .await?;
+    runtime.wake(&address);
+    let failures = runtime.drain().await;
+    assert!(
+        matches!(failures.as_slice(), [(_, Error::Conflict)]),
+        "{failures:?}"
+    );
+    assert_eq!(runtime.counts(), (0, 0));
+    assert!(records(&*provider, "out/cancelled").await?.is_empty());
+    Ok(())
+}
+
 /// Generated keys stay bounded for any valid root: a 338-byte root hosts.
 #[tokio::test]
 async fn a_long_state_root_still_claims_and_delivers() -> TestResult {
