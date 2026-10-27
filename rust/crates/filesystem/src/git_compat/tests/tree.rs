@@ -10,10 +10,7 @@ use crate as acyclic_fs;
 async fn tree_walk_and_grep_are_generation_bound_and_portable() {
     let workspace = memory_workspace("git-inspection").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x32; 16])).await;
-    transaction
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/src")).expect("directory");
     for (path, text) in [
         ("/src/a.txt", "one\nneedle\n"),
         ("/src/b.txt", "needle two\n"),
@@ -24,15 +21,14 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             .await
             .expect("fixture text");
     }
-    transaction
-        .write(
+    unbounded!(
+        transaction,
+        write(
             "/src/binary.bin",
-            bytes::Bytes::from_static(b"needle\xffbinary"),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            bytes::Bytes::from_static(b"needle\xffbinary")
         )
-        .await
-        .expect("binary file");
+    )
+    .expect("binary file");
     let generation = publish_fixture(transaction).await;
     let entries = walk_git_tree(&generation, &GitIgnorePolicy::default(), Some("src"), 10)
         .await

@@ -46,14 +46,7 @@ async fn persisted_foreign_commit_tree_needs_capture_provenance() {
 async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
     let workspace = memory_workspace("git-capture-policy").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
-    transaction
-        .create_dir_all(
-            "/target/nested",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("directories");
+    unbounded!(transaction, create_dir_all("/target/nested")).expect("directories");
     transaction
         .write_text("/target/drop.bin", "drop")
         .await
@@ -149,31 +142,19 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
         .write_text("/source.txt", "linked")
         .await
         .expect("source");
-    transaction
-        .set_metadata(
+    unbounded!(
+        transaction,
+        set_metadata(
             "/source.txt",
             FileMetadata {
                 posix_mode: MetadataField::Value(0o100_640),
                 ..FileMetadata::default()
-            },
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            }
         )
-        .await
-        .expect("metadata");
-    transaction
-        .hard_link(
-            "/source.txt",
-            "/linked.txt",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("hard link");
-    transaction
-        .create_dir_all("/ignored", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("ignored directory");
+    )
+    .expect("metadata");
+    unbounded!(transaction, hard_link("/source.txt", "/linked.txt")).expect("hard link");
+    unbounded!(transaction, create_dir_all("/ignored")).expect("ignored directory");
     transaction
         .write_text("/ignored/drop.txt", "drop")
         .await
@@ -202,10 +183,7 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
 async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
     let workspace = memory_workspace("git-capture-nested-policy").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x49; 16])).await;
-    transaction
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/src")).expect("directory");
     transaction
         .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
         .await
@@ -248,10 +226,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let workspace = memory_workspace("git-diff-policy").await;
     let before = unbounded!(workspace, head()).expect("baseline");
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x4b; 16])).await;
-    transaction
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/src")).expect("directory");
     transaction
         .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
         .await
@@ -330,14 +305,7 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
         .write_text("/.gitignore", "*.tmp\n")
         .await
         .expect("new ignore policy");
-    changed
-        .remove(
-            "/drop.tmp",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("delete old file");
+    unbounded!(changed, remove("/drop.tmp")).expect("delete old file");
     publish_fixture(changed).await;
     let after = unbounded!(workspace, head()).expect("after");
 
@@ -364,10 +332,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
         .write_text("/.gitignore", "build/\n")
         .await
         .expect("root ignore");
-    transaction
-        .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/build")).expect("directory");
     transaction
         .write_text("/build/.gitignore", "!keep.txt\n")
         .await
@@ -481,14 +446,7 @@ async fn reserved_alias_fixture() -> (
     let workspace = memory_workspace("git-reserved-alias").await;
     let before = unbounded!(workspace, head()).expect("baseline");
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x5a; 16])).await;
-    transaction
-        .create_dir_all(
-            "/.volumes",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("volume directory");
+    unbounded!(transaction, create_dir_all("/.volumes")).expect("volume directory");
     transaction
         .write_text("/.gitignore", "!.volumes/scratch\n")
         .await
@@ -607,18 +565,8 @@ async fn tracked_paths_after_a_join_admit_new_eligible_files_only() {
         .write_text("/scratch.tmp", "ignored")
         .await
         .expect("ignored file");
-    joined
-        .create_dir_all("/empty", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
-    joined
-        .remove(
-            "/gone.txt",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("removal");
+    unbounded!(joined, create_dir_all("/empty")).expect("directory");
+    unbounded!(joined, remove("/gone.txt")).expect("removal");
     let after = publish_fixture(joined).await;
     let tracked = git_tracked_paths_after(
         &before,

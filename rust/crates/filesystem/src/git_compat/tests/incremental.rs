@@ -10,10 +10,7 @@ use crate as acyclic_fs;
 async fn incremental_capture_honors_unchanged_nested_ignore() {
     let workspace = memory_workspace("git-incremental-nested").await;
     let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x65; 16])).await;
-    initial
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(initial, create_dir_all("/src")).expect("directory");
     initial
         .write_text("/src/.gitignore", "*.tmp\n")
         .await
@@ -73,10 +70,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .await
         .expect("initial transaction")
         .value;
-    initial
-        .create_dir_all("/sub", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("subdirectory");
+    unbounded!(initial, create_dir_all("/sub")).expect("subdirectory");
     initial
         .write_text("/sub/.gitignore", "*.tmp\n")
         .await
@@ -100,10 +94,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .await
         .expect("build transaction")
         .value;
-    build
-        .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("build directory");
+    unbounded!(build, create_dir_all("/build")).expect("build directory");
     build
         .write_text("/build/output.bin", "generated")
         .await
@@ -245,10 +236,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
 async fn nested_gitignore_change_forces_exact_capture() {
     let workspace = memory_workspace("git-capture-nested-ignore").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x61; 16])).await;
-    transaction
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/src")).expect("directory");
     transaction
         .write_text("/src/ignored.txt", "present before ignore")
         .await
