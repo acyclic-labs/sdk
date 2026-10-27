@@ -18,12 +18,30 @@ from unittest.mock import patch
 
 # Imported helpers must not create artifacts before the checker loads.
 sys.dont_write_bytecode = True
-from proof_fixture_paths import repository_path
+from proof_fixture_paths import CAPTURE_ALIASES, repository_path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class EvidencePolicy(unittest.TestCase):
+    def test_shared_capture_bytes_retain_original_receipt_hashes(self):
+        references = (MANIFEST['partial_proofs']['append-eof'], MANIFEST['owner_observations']['updates-v1'])
+        captures = [capture for reference in references
+                    for capture in json.loads(repository_path(ROOT, reference['repo_receipt']).read_bytes())['captures']]
+        checked = set()
+        for capture in captures:
+            logical = capture['repo_path'].replace('docs/proofs/evidence/', 'scripts/tests/fixtures/proof-policy/', 1)
+            if logical not in CAPTURE_ALIASES:
+                continue
+            with self.subTest(capture=logical):
+                shared = repository_path(ROOT, logical)
+                self.assertEqual(shared, repository_path(ROOT, capture['repo_path']))
+                self.assertEqual(hashlib.sha256(shared.read_bytes()).hexdigest(), capture['sha256'])
+                self.assertEqual(shared.stat().st_size, capture['bytes'])
+                self.assertFalse((ROOT / logical).exists())
+                checked.add(logical)
+        self.assertEqual(checked, set(CAPTURE_ALIASES))
+
     def test_historical_checker_controls_reconstruct_exact_executed_bytes(self):
         captures = ROOT / "scripts/tests/fixtures/proof-policy"
         controls = 0
