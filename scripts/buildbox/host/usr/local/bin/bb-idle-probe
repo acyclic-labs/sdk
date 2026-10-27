@@ -1,0 +1,11 @@
+#!/bin/bash
+# bb-idle-probe (bb1): the single busy probe for both idle checks (WSL buildbox-ctl idle, Windows buildbox-idle task;
+# the Windows key is forced to this command). Prints "<fresh_jobs> <uptime_s> <vm_last_use_age_s|-1>".
+#   fresh_jobs: buildbox.mjs jobs whose client heartbeat is <= 10 min old (orphans do not count)
+#   vm_last_use: /home/var/log/buildbox/last-use, touched by the SDK/GraphCoder fleet's rx.sh while its jobs run
+# Read-only: never touches /mnt/bb/sdk or /var/lib/rx.
+now=$(date +%s); n=0
+for s in /mnt/bb/jobs/*.sh; do [ -e "$s" ] || continue; h=${s%.sh}.hb
+  [ -e "$h" ] && [ $(( now - $(stat -c %Y "$h") )) -le 600 ] && n=$((n+1)); done
+u=/home/var/log/buildbox/last-use; ua=-1; [ -e $u ] && ua=$(( now - $(stat -c %Y $u) ))
+echo "$n $(cut -d. -f1 /proc/uptime) $ua"

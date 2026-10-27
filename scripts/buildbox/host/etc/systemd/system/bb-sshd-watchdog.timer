@@ -1,0 +1,8 @@
+[Unit]
+Description=sshd banner probe every 2 min
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+[Install]
+WantedBy=timers.target

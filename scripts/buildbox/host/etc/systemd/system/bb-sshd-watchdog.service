@@ -1,0 +1,5 @@
+[Unit]
+Description=Restart sshd when it stops answering with a banner
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bb-sshd-watchdog

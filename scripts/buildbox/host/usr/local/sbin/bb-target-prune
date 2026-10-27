@@ -1,0 +1,111 @@
+#!/bin/bash
+# bb-target-prune (bb1, every 5 min via bb-target-prune.timer; v2 2026-10-15 after the /mnt/bb ENOSPC outage).
+# Keeps /mnt/bb scratch bounded. Owns only Cloud target dirs under /mnt/bb/targets (incl. targets/nested, targets/cold)
+# and stale *.seed.* copies. Never touches /mnt/bb/sdk, /mnt/bb/targets/sdk + targets/shared-sdk-* (SDK session prune-bb2.sh), /mnt/bb/sccache, /var/lib/rx,
+# ~/.rx-env, wt/, src/ or anything outside /mnt/bb/targets.
+#  1. Disk LRU: while /mnt/bb is over HI% (80) used, remove the least recently used idle targets down to LO% (65).
+#  2. Hourly: a target over 15 GB loses its incremental/ caches (cargo rebuilds them on demand; never targets/sdk: SDK-owned since 10-18),
+#     then a total-size LRU cap: while all Cloud targets together exceed TCAP GB (4500), remove the LRU idle target.
+# A target is in use (never removed) when: a live job's wrap names it (wrap without .rc whose pid is alive or whose client
+# heartbeat is under 15 min old), its slot <n>.lock or any .cargo-lock inside is held, or it changed in the last IDLE minutes (30).
+# Shared slots (buildbox.mjs 2026-10-16) are targets/shared-<repo>-<flavor>/<n>: one unit per slot.
+# A target is a dir with debug/, .rustc_info.json or CACHEDIR.TAG at targets/<key>, else each dir at targets/<key>/<slot>.
+# Why v1 failed: hourly cadence (scratch fills by TBs/hour under seeded per-slot target copies), the LRU pass ran only
+# after a multi-minute du of every target, a candidate glob (*/*/debug) that missed targets without debug/, and a busy
+# check limited to the cargo lock.
+# Unit locks (2026-10-21 unitlock): bb-disk-sweep's size cap evicted targets/sdk/pr-gate-d269b8dd 44 s after a gate job
+# started in it (stale live-job snapshot, old mtime after downtime, no .cargo-lock yet: all time-of-check/time-of-use).
+# Every removal here (rmd: LRU targets, stale seeds; the incremental pass) first takes the unit's lock file
+# ROOT/locks/unit/<a>[%<b>].lock (unit targets/<a>[/<b>]) EXCLUSIVE with flock -n and skips the unit if it is held; job
+# wrappers hold it SHARED for the job's life, from before they touch the target. Under the lock a target or incremental/
+# dir is renamed into targets/.bb-prune-trash, then deleted after release, so a job sees it whole or absent.
+# Test: --root DIR runs on a scratch tree (no mountpoint check, no bb-disk-sweep call); BB_PRUNE_TOTAL=<bytes> makes
+# usage du(ROOT)/BB_PRUNE_TOTAL; BB_PRUNE_INCR_GB overrides the 15 GB incremental threshold.
+set -u
+HI=${BB_PRUNE_HI:-80}; LO=${BB_PRUNE_LO:-65}; TCAP=${BB_PRUNE_TCAP:-4500}; IDLE=${BB_PRUNE_IDLE:-30}; INCR=${BB_PRUNE_INCR_GB:-15}
+ROOT=/mnt/bb rootset=; [ "${1:-}" = --root ] && { ROOT=${2%/}; rootset=1; }; R=$ROOT/targets
+L=$ROOT/log/target-prune.log; mkdir -p $ROOT/log
+exec 7>$ROOT/log/.target-prune.lock; flock -n 7 || exit 0
+[ -n "$rootset" ] || mountpoint -q /mnt/bb || exit 0
+log() { echo "$(date -u +%FT%TZ) $*" >> $L; }
+use() { if [ -n "${BB_PRUNE_TOTAL:-}" ]; then echo $(( $(du -sb "$ROOT" | cut -f1) * 100 / BB_PRUNE_TOTAL ));
+  else df --output=pcent $ROOT | tail -1 | tr -dc 0-9; fi; }
+live=$(mktemp); sizes=$(mktemp); trap 'rm -f "$live" "$sizes"' EXIT
+TR=$R/.bb-prune-trash; [ -d "$TR" ] && { rm -rf "$TR" 2>/dev/null || sudo -n rm -rf "$TR"; }  # left by an interrupted run
+# ulock DIR: the EXCLUSIVE unit lock of DIR's unit (first two levels under targets/) on fd 6; 1 if a job holds it.
+LD=$ROOT/locks/unit
+ulf() { local r=${1#$R/} a; a=${r%%/*}; [ "$a" = "$r" ] || { r=${r#*/}; a=$a/${r%%/*}; }; a=${a%%.seed.*}; echo "$LD/${a//\//%}.lock"; }
+ulock() { local f; f=$(ulf "$1"); mkdir -p "$LD" 2>/dev/null; [ -e "$f" ] || : >> "$f" 2>/dev/null
+  [ -r "$f" ] && exec 6<"$f" || return 1
+  flock -xn 6 || { exec 6<&-; return 1; }; }
+# aside DIR: rename DIR into $TR (caller holds the unit lock).
+aside() { local d=$TR/$(echo "${1#$R/}" | tr / _).$$.$RANDOM; mkdir -p "$TR"; mv "$1" "$d" 2>/dev/null || sudo -n mv "$1" "$d"; }
+now=$(date +%s)
+for w in $ROOT/jobs/*.wrap; do
+  [ -e "$w" ] || continue; b=${w%.wrap}; [ -e "$b.rc" ] && continue
+  alive=; p=$(cat "$b.pid" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive=1
+  hb=$(stat -c %Y "$b.hb" 2>/dev/null || echo 0)
+  [ -n "$alive" ] || [ $(( now - hb )) -lt 900 ] || continue
+  grep -o "/mnt/bb/targets/[^ ']*" "$w" >> "$live"
+  cat "$b.tdir" >> "$live" 2>/dev/null  # the shared slot (targets/shared-<flavor>/<n>) the job's wrapper took (2026-10-16)
+done
+[ -z "$rootset" ] || sed -i "s#^/mnt/bb/targets/#$R/#" "$live"
+sort -u -o "$live" "$live"
+busy() { local t=$1
+  grep -qxF "$t" "$live" && return 0
+  grep -qF "$t/" "$live" && return 0
+  [ -e "$t.lock" ] && ! flock -n "$t.lock" true 2>/dev/null && return 0  # shared slot <n>.lock, held for the whole job (10-18)
+  for k in $(find "$t" -maxdepth 3 -name .cargo-lock 2>/dev/null); do flock -n "$k" true 2>/dev/null || return 0; done  # incl. <triple>/debug
+  [ -n "$(find "$t" "$t/debug" "$t/debug/.fingerprint" -maxdepth 0 -mmin -"$IDLE" 2>/dev/null | head -1)" ] && return 0
+  return 1; }
+isT() { [ -d "$1/debug" ] || [ -e "$1/.rustc_info.json" ] || [ -e "$1/CACHEDIR.TAG" ]; }
+units() { for k in "$1"/*/; do k=${k%/}; case ${k##*/} in sdk|shared-sdk-*) continue;; esac  # SDK-owned (prune-bb2.sh)
+  if isT "$k"; then echo "$k"; else for d in "$k"/*/; do echo "${d%/}"; done; fi; done; }
+tdirs() { units $R; }                       # Cloud targets (LRU-evictable)
+alldirs() { units $R; }                     # targets/sdk is owned by the SDK session (Q:/lanes/prune-bb2.sh), 10-18
+mt() { stat -c %Y "$1" "$1/debug" "$1/debug/.fingerprint" 2>/dev/null | sort -n | tail -1; }
+# rmd DIR [UNIT]: under UNIT's (default DIR's) exclusive unit lock, rename DIR aside; delete it after release.
+rmd() { [ -z "${BB_PRUNE_DRY:-}" ] || { echo "DRY rm $1"; return 1; }
+  ulock "${2:-$1}" || { log "skipped $1: unit lock held (live job)"; return 1; }
+  aside "$1" || { exec 6<&-; log "FAILED to move $1 aside; left in place"; return 1; }
+  exec 6<&-; rm -rf "${TR:?}"/* 2>/dev/null || sudo -n rm -rf "${TR:?}"/*; }
+lru() { for d in $(tdirs); do [ -d "$d" ] && echo "$(mt "$d") $d"; done | sort -n | cut -d' ' -f2; }
+find $R -mindepth 2 -maxdepth 3 -name '*.seed.*' -type d -mmin +120 -not -path "$R/sdk/*" -not -path "$R/shared-sdk-*" 2>/dev/null | while read -r s; do rmd "$s" "${s%.seed.*}" && log "removed stale seed $s"; done
+if [ "$(use)" -gt "$HI" ]; then
+  log "disk $(use)% > $HI%: LRU eviction to $LO%"; n=0
+  for t in $(lru); do
+    [ "$(use)" -le "$LO" ] && break
+    busy "$t" && continue
+    rmd "$t" && n=$((n+1)) && log "removed LRU target $t (disk $(use)%)"
+  done
+  find $R -mindepth 1 -maxdepth 1 -type d -empty -not -name sdk -not -name 'shared-sdk-*' -not -name nested -not -name cold -delete 2>/dev/null
+  log "disk LRU removed $n targets; disk $(use)%"
+fi
+st=$ROOT/log/.target-prune.incr
+if [ -z "$(find "$st" -mmin -60 2>/dev/null)" ]; then touch "$st"
+  for t in $(alldirs); do
+    [ -d "$t" ] || continue
+    g=$(du -s --block-size=1G "$t" 2>/dev/null | cut -f1)
+    if [ "${g:-0}" -gt "$INCR" ] && ! busy "$t"; then
+      [ -z "${BB_PRUNE_DRY:-}" ] || { echo "DRY rm incremental in $t"; continue; }
+      ulock "$t" || { log "skipped incremental dirs in $t: unit lock held (live job)"; continue; }
+      find "$t" -maxdepth 3 -type d -name incremental -prune -print 2>/dev/null | while read -r i; do aside "$i"; done
+      exec 6<&-; rm -rf "${TR:?}"/* 2>/dev/null || sudo -n rm -rf "${TR:?}"/*
+      log "pruned incremental dirs in $t (${g} GB -> $(du -s --block-size=1G "$t" | cut -f1) GB)"
+    fi
+  done
+  for t in $(tdirs); do [ -d "$t" ] && echo "$(du -s --block-size=1G "$t" 2>/dev/null | cut -f1) $t"; done > "$sizes"
+  tot=$(awk '{s+=$1} END {print s+0}' "$sizes")
+  if [ "$tot" -gt "$TCAP" ]; then
+    log "Cloud targets total ${tot} GB > cap ${TCAP} GB: LRU eviction"
+    for t in $(lru); do
+      [ "$tot" -le "$TCAP" ] && break
+      busy "$t" && continue
+      g=$(awk -v t="$t" '$2==t {print $1}' "$sizes"); rmd "$t" && tot=$(( tot - ${g:-0} )) && log "removed LRU target $t (${g:-?} GB; total ${tot} GB)"
+    done
+  fi
+fi
+# 3. Whole-unit sweep (bb-disk-sweep v2, 2026-10-18 infra-bbunit): over 85% used, idle units (shared slots whose n.lock
+#    is free; lane targets idle as busy() above) evicted whole LRU to 75%; every 15 min a target group over BB_SWEEP_CAP GB
+#    (300) loses its LRU idle units. Never per-file (v1 poisoned cargo targets), never targets/sdk. Log: /mnt/bb/log/disk-sweep.log.
+[ -n "$rootset" ] || /usr/local/sbin/bb-disk-sweep --reason timer --cap "${BB_SWEEP_CAP:-300}" >/dev/null 2>&1 || true

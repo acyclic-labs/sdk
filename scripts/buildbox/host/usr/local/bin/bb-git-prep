@@ -1,0 +1,104 @@
+#!/bin/bash
+# bb-git-prep WT SHA [REPO] (build box VM, 2026-10-15): bring the job worktree WT to the client's commit SHA plus its uncommitted
+# changes, from the git mirror /home/var/mirror/<REPO>.git (OS disk, survives deallocate; REPO defaults to cloud). stdin: a gzipped tar of
+#   b.bundle  commits the VM may lack (client: `git bundle create HEAD --not <shas the VM has>`; absent when it has SHA)
+#   d.patch   `git diff --binary HEAD` (tracked changes)      u.tar  untracked, non-ignored files
+# The VM has no GitHub credentials: private commits only ever arrive as bundles from the host. Public repos (sdk, multi-repo
+# 2026-10-15): the mirror is cloned from GitHub if missing, and a missing bundle base or SHA first fetches GitHub main.
+# Exit 97 (+ "BB-HAVE" and the mirror's newest commit SHAs on stdout): a bundle prerequisite or SHA is missing; the client
+# rebundles against that list. 96: scratch not mounted. Other non-zero: the client falls back to rsync (cloud only).
+# WT keeps ignored files (node_modules, caches) across jobs; a new WT is seeded with node_modules from the newest tree of the same repo.
+set -u
+# Prep runs in bbsync.slice (CPUWeight 1000 vs build jobs in user.slice 100; 2026-10-15 sync throughput).
+if [ -z "${BB_HI:-}" ] && [ -e /etc/systemd/system/bbsync.slice ]; then exec sudo -n systemd-run --scope -q --slice=bbsync.slice --uid="$(id -u)" --gid="$(id -g)" -- env BB_HI=1 HOME="$HOME" PATH="$PATH" USER="${USER:-$(id -un)}" "$0" "$@"; fi
+wt=$1; sha=$2; repo=${3:-cloud}
+T0=$EPOCHREALTIME; TF=; TA=; TS=; TC=
+tlog() { mkdir -p /mnt/bb/log; local n=$EPOCHREALTIME; printf '{"at":"%s","wt":"%s","repo":"%s","new":%s,"fetch":%s,"add":%s,"seed":%s,"checkout":%s,"total":%s}\n' "$(date -u +%FT%TZ)" "${wt##*/}" "$repo" "${TNEW:-false}" "${TF:-0}" "${TA:-0}" "${TS:-0}" "${TC:-0}" "$(awk -v a=$n -v b=$T0 'BEGIN{printf "%.2f", a-b}')" >> /mnt/bb/log/prep-times.jsonl 2>/dev/null; }
+since() { awk -v a=$EPOCHREALTIME -v b=$1 'BEGIN{printf "%.2f", a-b}'; }
+case $repo in
+  cloud) M=/home/var/mirror/cloud.git; L=/home/var/mirror/.lock; U=;;
+  sdk) M=/home/var/mirror/sdk.git; L=/home/var/mirror/.lock-sdk; U=https://github.com/acyclic-labs/sdk.git;;
+  *) echo "bb-git-prep: unknown repo $repo" >&2; exit 92;;
+esac
+# The mirror lock covers only the clone, GitHub fetches and a prune-and-retry of a failed worktree add (2026-10-15).
+mountpoint -q /mnt/bb || { echo "bb-git-prep: /mnt/bb not mounted" >&2; exit 96; }
+exec 8>$L
+if [ ! -d "$M" ] && [ -n "$U" ]; then flock 8
+  [ -d "$M" ] || { rm -rf "$M.tmp"; git clone -q --bare "$U" "$M.tmp" && git -C "$M.tmp" config core.fsync objects,derived-metadata,reference && git -C "$M.tmp" config core.fsyncMethod batch && mv "$M.tmp" "$M"; } || { echo "bb-git-prep: clone of $U failed" >&2; exit 92; }
+  flock -u 8; fi
+[ -d "$M" ] || { echo "bb-git-prep: no mirror at $M" >&2; exit 92; }
+# Durable mirror writes on every mirror, however it was created (2026-10-21: bb-rebuild/mirror-sync seeds had no core.fsync,
+# and a bb3 spot stop left refs/bb/h naming objects that never reached disk). A lost config lock race just retries next job.
+[ "$(git -C $M config core.fsync)" = objects,derived-metadata,reference ] ||
+  { git -C $M config core.fsync objects,derived-metadata,reference; git -C $M config core.fsyncMethod batch; } 2>/dev/null
+mkdir -p /mnt/bb/tmp "${wt%/*}"; d=$(mktemp -d /mnt/bb/tmp/prep.XXXXXX); trap 'rm -rf "$d"' EXIT
+# rc 95 names its cause (2026-10-15 ENOSPC outage: "payload unreadable" hid a full /mnt/bb).
+tar -xz -C "$d" 2>"$d.tarerr" || { e=$(head -c 400 "$d.tarerr" 2>/dev/null | tr '\n' ' '); rm -f "$d.tarerr"; echo "bb-git-prep: payload unreadable (tar: ${e:-no output}; /mnt/bb free $(df --output=avail -BG /mnt/bb | tail -1 | tr -d ' '))" >&2; exit 95; }; rm -f "$d.tarerr"
+# A mirror whose own history is unreadable (2026-10-20: spot stops left empty loose objects and a worktree HEAD naming one)
+# fails every bundle verify as "prerequisites not connected"; rebundling cannot help, so name the corruption instead (exit 90).
+# Mirror writes are durable since then (core.fsync), so a stop no longer leaves empty objects.
+# Self-heal (2026-10-21): a corrupt mirror drops the refs and worktree HEADs naming missing objects, then answers 97 so the
+# client rebundles (refetching its commit); only if connectivity still fails is the mirror rebuilt (sdk: re-clone; cloud: empty, and
+# the 97 with no haves makes the client send its full history). exit 90 only when even that fails.
+heal() { # under the mirror lock; 0 = mirror readable now
+  flock 8; git -C $M rev-list --all --quiet >/dev/null 2>&1 && { flock -u 8; return 0; }
+  echo "bb-git-prep: mirror $M corrupt ($(head -c 200 "$d/revlist.err" | tr '\n' ' ')); dropping refs to missing objects" >&2
+  git -C $M for-each-ref --format='%(objectname) %(refname)' > "$d/refs"
+  cut -d' ' -f1 "$d/refs" | git -C $M cat-file --batch-check='%(objectname)' 2>/dev/null | awk '$2 == "missing" {print $1}' | sort -u > "$d/miss"
+  awk 'NR == FNR {m[$1]; next} ($1 in m) {print "delete " $2}' "$d/miss" "$d/refs" | git -C $M update-ref --stdin
+  local w h n=$(wc -l < "$d/miss")
+  for w in $M/worktrees/*/; do h=$(cat "$w/HEAD" 2>/dev/null); case $h in ref:*) continue;; esac
+    git -C $M cat-file -e "$h" 2>/dev/null && continue
+    rm -f "$(cat "$w/gitdir" 2>/dev/null)"; rm -rf "$w"; n=$((n + 1)); done  # the next prep of that tree re-adds it
+  echo "bb-git-prep: dropped $n dangling refs/worktree HEADs" >&2
+  # Connectivity of every ref and worktree HEAD (fsck --connectivity-only without its reflog/worktree-index noise, which
+  # bb2's sdk mirror shows and which never breaks a prep).
+  if ! git -C $M -c core.commitGraph=false rev-list --all --objects --quiet >/dev/null 2>"$d/fsck.err"; then  # the commit-graph hides a missing commit
+    echo "bb-git-prep: connectivity check still fails ($(head -c 200 "$d/fsck.err" | tr '\n' ' ')); rebuilding $M" >&2
+    rm -rf $M.corrupt; mv $M $M.corrupt
+    if [ -n "$U" ]; then git clone -q --bare "$U" "$M.tmp" && mv "$M.tmp" "$M"; else git init -q --bare "$M"; fi || { flock -u 8; return 1; }
+    git -C $M config core.fsync objects,derived-metadata,reference; git -C $M config core.fsyncMethod batch; rm -rf $M.corrupt
+  fi
+  git -C $M rev-list --all --quiet >/dev/null 2>"$d/revlist.err"; local r=$?; flock -u 8; return $r; }
+have() { git -C $M rev-list --all --quiet >/dev/null 2>"$d/revlist.err" || heal || { echo "bb-git-prep: mirror $M is corrupt: $(head -c 300 "$d/revlist.err" | tr '\n' ' ')" >&2; exit 90; }
+  echo BB-HAVE; git -C $M for-each-ref --sort=-committerdate --count=150 --format='%(objectname)' refs/; exit 97; }
+fetched=
+github() { [ -n "$U" ] && [ -z "$fetched" ] && fetched=1 && git -C $M fetch -q "$U" +refs/heads/main:refs/heads/main; }
+if [ -s "$d/b.bundle" ]; then t=$EPOCHREALTIME
+  git -C $M bundle verify -q "$d/b.bundle" >/dev/null 2>&1 || { flock 8; github; flock -u 8; git -C $M bundle verify -q "$d/b.bundle" >/dev/null 2>&1; } || have
+  # Objects first, ref after (crash-safe): the fetch writes (and fsyncs) only the pack; update-ref below names SHA once it is readable.
+  git -C $M -c gc.auto=0 fetch -q --no-write-fetch-head "$d/b.bundle" HEAD 2>"$d/fetch.err" || git -C $M cat-file -e "$sha^{commit}" 2>/dev/null || { cat "$d/fetch.err" >&2; echo "bb-git-prep: bundle fetch failed" >&2; exit 94; }
+  TF=$(since $t)
+fi
+git -C $M cat-file -e "$sha^{commit}" 2>/dev/null || { [ -n "$U" ] && { flock 8; github; flock -u 8; git -C $M cat-file -e "$sha^{commit}" 2>/dev/null; }; } || have
+git -C $M update-ref "refs/bb/h/$sha" "$sha"
+# Unchanged payload (non-cloud repos): the worktree already holds SHA + this diff + these untracked files (committed by the
+# last job on top of SHA, nothing changed since), so leave it untouched: a re-checkout + re-apply would give the dirty files
+# fresh mtimes and cargo would rebuild their crates on every identical run.
+stamp="$sha $(cat "$d/d.patch" "$d/u.tar" 2>/dev/null | sha256sum | cut -c1-64)"
+if [ $repo != cloud ] && [ -e "$wt/.git" ] && [ "$(cat "$wt.prep" 2>/dev/null)" = "$stamp" ] &&
+   { [ "$(git -C "$wt" rev-parse -q --verify HEAD)" = "$sha" ] || [ "$(git -C "$wt" rev-parse -q --verify HEAD^)" = "$sha" ]; } &&
+   [ -z "$(git -C "$wt" status --porcelain 2>/dev/null | head -1)" ]; then echo prepared; exit 0; fi
+rm -f "$wt.prep"
+# A tree whose mirror-side worktree entry is gone (dropped or rebuilt by heal) is re-added from scratch.
+[ -e "$wt/.git" ] && ! git -C "$wt" rev-parse -q --git-dir >/dev/null 2>&1 && rm -f "$wt/.git"
+if [ ! -e "$wt/.git" ]; then TNEW=true; t=$EPOCHREALTIME
+  rm -rf "$wt"
+  git -C $M worktree add -q -f --detach "$wt" "$sha" 2>/dev/null || { flock 8; rm -rf "$wt"; git -C $M worktree prune
+    git -C $M worktree add -q -f --detach "$wt" "$sha" || { echo "bb-git-prep: worktree add failed" >&2; exit 93; }; flock -u 8; }
+  TA=$(since $t); t=$EPOCHREALTIME
+  # Seed dependency trees from the newest other tree of this repo (npm ci then sees the same lockfile hash and skips).
+  if [ $repo = cloud ]; then trees=(/mnt/bb/wt/*/ /mnt/bb/src/*/); else trees=("${wt%/*}"/*/); fi
+  ref=$(ls -dt "${trees[@]}" 2>/dev/null | grep -vxF "$wt/" | head -1)
+  if [ -n "$ref" ]; then ( cd "$ref" && find . -maxdepth 4 -name node_modules -type d -prune -print ) | while read -r p; do
+      mkdir -p "$wt/${p%/node_modules}"; cp -a --reflink=auto "$ref/$p" "$wt/$p" 2>/dev/null; done; fi
+  TS=$(since $t)
+fi
+t=$EPOCHREALTIME
+cd "$wt" || exit 93
+git checkout -q -f --detach "$sha" && git clean -q -fd || { echo "bb-git-prep: checkout failed" >&2; exit 93; }
+[ ! -s "$d/d.patch" ] || git apply --binary --whitespace=nowarn "$d/d.patch" || { echo "bb-git-prep: patch did not apply" >&2; exit 91; }
+[ ! -s "$d/u.tar" ] || tar -x -m -f "$d/u.tar" || { echo "bb-git-prep: untracked files did not extract" >&2; exit 91; }
+[ $repo = cloud ] || echo "$stamp" > "$wt.prep"
+TC=$(since $t); tlog
+echo prepared

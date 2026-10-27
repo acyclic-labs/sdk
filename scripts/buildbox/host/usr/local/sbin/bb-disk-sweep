@@ -1,0 +1,157 @@
+#!/bin/bash
+# bb-disk-sweep (build box /usr/local/sbin). v2 2026-10-18 infra-bbunit: WHOLE-UNIT eviction only.
+# v1 (11:00Z, infra-bbdisk) deleted individual files inside cargo targets by mtime. That poisons a target: cargo's
+# fingerprints still say fresh while outputs/incremental work products are gone, and rustc fails (e.g. "failed to open
+# LTO bitcode file .../incremental/*/s-*-working/*.pre-lto.bc", ICE in run_thin_lto). NEVER per-file-evict a cargo target.
+#
+#   bb-disk-sweep [--hi PCT] [--lo PCT] [--cap GB] [--check] [--wait SEC] [--dry] [--root DIR] [--reason TEXT]
+#
+# A unit is evicted whole (renamed out of the way under its lock, then deleted), never partially:
+#   shared slot  ROOT/targets/shared-*/<n> (with <n>.lock beside it): idle iff not named by a live job wrap and we can
+#                flock <n>.lock. The lock is held across the rename and an empty <n>/ is recreated before release, so
+#                a job never sees a half-gone or missing slot.
+#   lane target  ROOT/targets/<key> (if it is itself a target: debug/, .rustc_info.json or CACHEDIR.TAG), else each
+#                ROOT/targets/<key>/<copy>: idle as bb-target-prune's busy(): not named by a live job wrap (no .rc, pid
+#                alive or heartbeat < 15 min), no held .cargo-lock inside, unit/debug/.fingerprint unchanged for IDLE
+#                min (30). Its debug/.cargo-lock is held across the rename.
+# SDK targets (2026-10-21): ROOT/targets/sdk/<lane> and shared-sdk-*/<n> are units like any other; nothing else pruned
+#   them, and one build box filled to 100% on idle SDK lane targets. Never touched: sccache, wt/, src/, jobs/, anything outside
+#   ROOT/targets, dot-dirs in targets/, and any busy unit.
+# Unit locks (2026-10-21 unitlock): at 18:40:58Z the size-cap pass evicted targets/sdk/pr-gate-d269b8dd (31 GB) 44 s
+#   after a gate job started in it (18:40:14Z): the live-job snapshot (18:40:09Z) predated the job's wrap, the dir was
+#   30+ min old (box was down) and cargo, still blocked on the package-cache lock, held no .cargo-lock yet. Every check
+#   above is time-of-check/time-of-use. The authority is now ROOT/locks/unit/<a>.lock (unit targets/<a>) or <a>%<b>.lock
+#   (unit targets/<a>/<b>): each job wrapper (buildbox.mjs) holds it SHARED for its whole life, taken before it touches
+#   its target; evict() takes it EXCLUSIVE with flock -n (held: skip the unit) and holds it across the rename, so a job
+#   sees its unit whole or absent (and mkdir -p's it). bb-target-prune and bb-free-space use the same lock files.
+# Age sweep: above HI% (85) used, evict idle units LRU (oldest newest-mtime first) until at or below LO% (75).
+# Size cap (--cap GB; the bb-target-prune timer passes 300, at most every 15 min): a group ROOT/targets/<key> over GB
+#   loses its LRU idle units until under 90% of GB.
+# --check (buildbox.mjs before admitting a job; buildbox-ctl heal): print usage; above HI start the sweep in the
+#   background; above 95% wait up to --wait SEC (default 0) for it. Without --check the sweep runs in the foreground.
+# --dry: log what would be evicted, delete nothing. Logs to ROOT/log/disk-sweep.log and the journal (tag bb-disk-sweep).
+# Test: --root DIR works on any tree; BB_SWEEP_TOTAL=<bytes> makes usage = du(ROOT)/BB_SWEEP_TOTAL instead of df;
+#   BB_SWEEP_IDLE=<min> overrides the 30 min idle window.
+set -u
+HI=85 LO=75 CAP=0 CHECK= WAIT=0 DRY= ROOT=/mnt/bb REASON=manual CRIT=95 IDLE=${BB_SWEEP_IDLE:-30}
+BUDGET=${BB_SWEEP_BUDGET:-900} CAP_EVERY=${BB_SWEEP_CAP_EVERY:-900} rootset= args=("$@")
+while [ $# -gt 0 ]; do case $1 in
+  --hi) HI=$2; shift;; --lo) LO=$2; shift;; --cap) CAP=$2; shift;; --check) CHECK=1;; --wait) WAIT=$2; shift;;
+  --dry) DRY=1;; --root) ROOT=${2%/}; rootset=1; shift;; --reason) REASON=$2; shift;;
+  *) sed -n '2,35p' "$0"; exit 2;; esac; shift; done
+# Target files belong to var but a job's sudo'd setup can leave root-owned ones: run as root on the real box.
+[ -z "$rootset" ] && [ "$(id -u)" != 0 ] && sudo -n true 2>/dev/null && exec sudo -n "$0" "${args[@]}"
+T=$ROOT/targets; mkdir -p "$ROOT/log" 2>/dev/null; L=$ROOT/log/disk-sweep.log
+[ -d "$T" ] || { echo "bb-disk-sweep: no $T"; exit 0; }
+ts() { date -u +%FT%TZ; }
+log() { local m; m="$(ts) [$REASON${DRY:+ DRY}] $*"; echo "$m"; echo "$m" >> "$L" 2>/dev/null; [ -n "$rootset" ] || logger -t bb-disk-sweep -- "$*" 2>/dev/null; true; }
+use() { if [ -n "${BB_SWEEP_TOTAL:-}" ]; then echo $(( $(du -sb "$ROOT" | cut -f1) * 100 / BB_SWEEP_TOTAL ));
+  else df --output=pcent "$ROOT" | tail -1 | tr -dc 0-9; fi; }
+total() { [ -n "${BB_SWEEP_TOTAL:-}" ] && echo "$BB_SWEEP_TOTAL" || df -B1 --output=size "$ROOT" | tail -1 | tr -d ' '; }
+avail() { [ -n "${BB_SWEEP_TOTAL:-}" ] && echo "-" || df -h --output=avail "$ROOT" | tail -1 | tr -d ' '; }
+hb() { awk -v b="$1" 'BEGIN { split("B K M G T", u); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ } printf "%.1f%s", b, u[i] }'; }
+
+if [ -n "$CHECK" ]; then
+  p=$(use); echo "/mnt/bb ${p}% used ($(avail) free; sweep above ${HI}%)"
+  [ "$p" -gt "$HI" ] || exit 0
+  a=(); for x in "${args[@]}"; do [ "$x" = --check ] || a+=("$x"); done
+  setsid nohup "$0" "${a[@]}" >/dev/null 2>&1 < /dev/null &
+  if [ "$p" -ge "$CRIT" ] && [ "$WAIT" -gt 0 ]; then
+    end=$(( SECONDS + WAIT )); sleep 2
+    while [ $SECONDS -lt $end ] && [ "$(use)" -gt "$LO" ] && ! flock -n "$ROOT/log/.disk-sweep.lock" true 2>/dev/null; do sleep 3; done
+    echo "/mnt/bb ${p}% -> $(use)% after waiting $(( SECONDS - end + WAIT ))s for the sweep"
+  else echo "sweep started in the background"; fi
+  exit 0
+fi
+
+exec 7>"$ROOT/log/.disk-sweep.lock"; flock -w "$WAIT" 7 || { echo "bb-disk-sweep: another sweep holds the lock"; exit 0; }
+deadline=$(( SECONDS + BUDGET ))
+TR=$T/.bb-sweep-trash
+V=evicted; [ -n "$DRY" ] && V="would evict"
+tmp=$(mktemp); trap 'rm -f "$tmp" "$tmp".*' EXIT
+
+# Paths named by live job wraps (as bb-target-prune), mapped into ROOT.
+now=$(date +%s)
+for w in "$ROOT"/jobs/*.wrap; do
+  [ -e "$w" ] || continue; b=${w%.wrap}; [ -e "$b.rc" ] && continue
+  alive=; p=$(cat "$b.pid" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive=1
+  h=$(stat -c %Y "$b.hb" 2>/dev/null || echo 0)
+  [ -n "$alive" ] || [ $(( now - h )) -lt 900 ] || continue
+  { grep -o "/mnt/bb/targets/[^ ']*" "$w"; cat "$b.tdir" 2>/dev/null; echo; } | sed "s#^/mnt/bb/targets/#$T/#"
+done | sort -u > "$tmp.live"
+named() { grep -qxF "$1" "$tmp.live" || grep -qF "$1/" "$tmp.live"; }
+isT() { [ -d "$1/debug" ] || [ -e "$1/.rustc_info.json" ] || [ -e "$1/CACHEDIR.TAG" ]; }
+isslot() { [[ ${1##*/} =~ ^[0-9]+$ ]] && [[ $(basename "$(dirname "$1")") == shared-* ]] && [ -e "$1.lock" ]; }
+mt() { stat -c %Y "$1" "$1/debug" "$1/debug/.fingerprint" "$1/debug/deps" "$1/debug/incremental" 2>/dev/null | sort -n | tail -1; }
+# Groups: ROOT/targets/<key>, never dot-dirs. Units of a group: itself if a target, else its subdirs.
+groups() { local g; for g in "$T"/*/; do g=${g%/}; case ${g##*/} in .*) continue;; esac; echo "$g"; done; }
+gunits() { local d; if isT "$1"; then echo "$1"; return; fi; for d in "$1"/*/; do [ -d "$d" ] && echo "${d%/}"; done; }
+lru() { while read -r u; do echo "$(mt "$u") $u"; done | sort -n | cut -d' ' -f2-; }
+# Lane-target busy check (bb-target-prune busy()): wrap-named, any held cargo lock, or changed in the last IDLE min.
+lanebusy() { local t=$1 k
+  named "$t" && return 0
+  for k in $(find "$t" -maxdepth 3 -name .cargo-lock 2>/dev/null); do flock -n "$k" true 2>/dev/null || return 0; done
+  [ -n "$(find "$t" "$t/debug" "$t/debug/.fingerprint" -maxdepth 0 -mmin -"$IDLE" 2>/dev/null | head -1)" ] && return 0
+  return 1; }
+# Unit lock (2026-10-21 unitlock, see the header): ulock UNIT takes ROOT/locks/unit/<a>[%<b>].lock EXCLUSIVE, non-blocking,
+# on fd 6; returns 1 if a job holds it (or it cannot be opened: fail closed). Lock files stay owned by targets/' owner so
+# the job wrappers (user var) can create and open them.
+LD=$ROOT/locks/unit
+ulf() { local r=${1#$T/} a; a=${r%%/*}; [ "$a" = "$r" ] || { r=${r#*/}; a=$a/${r%%/*}; }; a=${a%%.seed.*}; echo "$LD/${a//\//%}.lock"; }
+ulock() { local f; f=$(ulf "$1")
+  [ -d "$LD" ] || { mkdir -p "$LD" && chown --reference="$T" "$ROOT/locks" "$LD" 2>/dev/null; }
+  [ -e "$f" ] || { : >> "$f" && chown --reference="$T" "$f" 2>/dev/null; }
+  [ -r "$f" ] && exec 6<"$f" || return 1
+  flock -xn 6 || { exec 6<&-; return 1; }; }
+# evict UNIT: remove the whole unit while holding its locks; returns 1 (untouched) if busy. Sets EV_B to its size.
+evict() { local u=$1 dest own; EV_B=0
+  case $u in "$T"/sdk|"$T"/.*) return 1;; esac
+  ulock "$u" || { log "skip ${u#$ROOT/}: unit lock held (live job)"; return 1; }
+  if isslot "$u"; then
+    named "$u" && { exec 6<&-; return 1; }
+    exec 9>>"$u.lock"; flock -n 9 || { exec 9>&- 6<&-; return 1; }
+  else
+    lanebusy "$u" && { exec 6<&-; return 1; }
+    if [ -e "$u/debug/.cargo-lock" ]; then exec 9>>"$u/debug/.cargo-lock"; flock -n 9 || { exec 9>&- 6<&-; return 1; }
+    else exec 9>/dev/null; fi
+  fi
+  EV_B=$(du -sb "$u" 2>/dev/null | cut -f1); EV_B=${EV_B:-0}
+  if [ -n "$DRY" ]; then exec 9>&- 6<&-; return 0; fi
+  mkdir -p "$TR"; dest=$TR/$(echo "${u#$T/}" | tr / _).$$.$RANDOM; own=$(stat -c %u:%g "$u")
+  if ! mv "$u" "$dest" 2>/dev/null; then exec 9>&- 6<&-; log "FAILED to move ${u#$ROOT/} aside; left in place"; return 1; fi
+  # A job may have run `mkdir -p <slot>` just before trying its lock: leave it an empty slot, never a missing one.
+  if isslot "$u"; then mkdir "$u" 2>/dev/null && chown "$own" "$u" 2>/dev/null; fi
+  exec 9>&- 6<&-
+  rm -rf "$dest" 2>/dev/null || sudo -n rm -rf "$dest" 2>/dev/null
+  return 0; }
+[ -z "$DRY" ] && [ -d "$TR" ] && rm -rf "$TR"  # renamed units left by an interrupted run
+
+p0=$(use)
+if [ "$p0" -gt "$HI" ]; then
+  log "start: ${p0}% > ${HI}% ($(avail) free); whole-unit LRU eviction to ${LO}%"
+  for g in $(groups); do gunits "$g"; done | lru > "$tmp.lru"
+  n=0 tb=0 need=$(( (p0 - LO) * $(total) / 100 ))
+  while read -r u; do
+    if [ -n "$DRY" ]; then [ "$tb" -ge "$need" ] && break; else [ "$(use)" -le "$LO" ] && break; fi
+    [ $SECONDS -lt $deadline ] || { log "budget ${BUDGET}s spent"; break; }
+    if evict "$u"; then n=$((n+1)); tb=$((tb+EV_B)); log "age: $V ${u#$ROOT/} ($(hb $EV_B)); now $(use)%"; fi
+  done < "$tmp.lru"
+  p1=$(use); log "done: ${p0}% -> ${p1}%; ${n} units, $(hb $tb)$([ -z "$DRY" ] && [ "$p1" -gt "$LO" ] && echo "; STILL ABOVE ${LO}% (remaining units busy)")"
+fi
+
+st=$ROOT/log/.disk-sweep.cap
+if [ "$CAP" -gt 0 ] && [ $SECONDS -lt $deadline ] && { [ "$CAP_EVERY" -eq 0 ] || [ -z "$(find "$st" -mmin -$(( CAP_EVERY / 60 )) 2>/dev/null)" ]; }; then
+  [ -n "$DRY" ] || touch "$st"; capb=$(( CAP * ${BB_SWEEP_CAP_UNIT:-1073741824} )); goal=$(( capb * 9 / 10 ))
+  for g in $(groups); do
+    s=$(du -sb "$g" 2>/dev/null | cut -f1); [ "${s:-0}" -gt "$capb" ] || continue
+    [ $SECONDS -lt $deadline ] || { log "cap: budget ${BUDGET}s spent"; break; }
+    s0=$s n=0
+    for u in $(gunits "$g" | lru); do
+      [ "$s" -le "$goal" ] && break
+      if evict "$u"; then n=$((n+1)); s=$(( s - EV_B )); log "cap ${CAP}G: $V ${u#$ROOT/} ($(hb $EV_B))"; fi
+    done
+    log "cap ${CAP}G: ${g#$ROOT/} was $(hb "$s0"); ${n} units ${DRY:+would be }evicted; now $(hb "$s")$([ "$s" -gt "$capb" ] && echo " (STILL OVER: remaining units busy)")"
+  done
+fi
+[ -d "$TR" ] && rmdir "$TR" 2>/dev/null
+exit 0

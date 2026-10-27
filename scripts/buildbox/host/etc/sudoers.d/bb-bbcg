@@ -1,0 +1,2 @@
+# bb1 (2026-10-16): build-slot jobs keep sudo systemd-run --scope inside the job cgroup (bbcg shim; plain systemd-run elsewhere)
+Defaults secure_path="/home/var/bin/bbcg:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
