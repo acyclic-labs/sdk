@@ -4,6 +4,8 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod journal;
+mod raw;
+pub use raw::RawMachines;
 mod settle;
 pub use settle::settle;
 #[cfg(test)]
@@ -354,6 +356,67 @@ impl OperationRegistry {
             record.created.retain(|id| id != resource);
         })
         .await
+    }
+
+    /// Delete newest descendants first. An unacknowledged native deletion remains
+    /// owned, including when the process exits between the delete and its receipt.
+    pub async fn cleanup(
+        &self,
+        driver: &impl RawMachines,
+        operation: OperationId,
+    ) -> Result<(), ProviderError> {
+        for resource in self.created(operation).await?.into_iter().rev() {
+            match driver.destroy(&resource).await {
+                Ok(()) | Err(ProviderError::NotFound(_)) => {
+                    self.deleted(operation, &resource).await?
+                }
+                Err(error) => tracing::warn!(%operation, resource, %error,
+                    "Machines native deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
+            }
+        }
+        Ok(())
+    }
+
+    /// The durable registry owns cancel and its cleanup; an adapter only deletes.
+    pub async fn cancel_with(
+        &self,
+        driver: &impl RawMachines,
+        operation: OperationId,
+    ) -> Result<OperationObservation, ProviderError> {
+        let (observation, _) = self
+            .cancel(operation)
+            .await?
+            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+        self.cleanup(driver, operation).await?;
+        Ok(observation)
+    }
+
+    /// Record a native result before the adapter proceeds. A cancelled operation
+    /// cleans up its late create; failed deletion keeps ownership for later cancel.
+    /// Adopted resources are targets and can never be reclaimed by this attempt.
+    pub async fn claim(
+        &self,
+        driver: &impl RawMachines,
+        operation: OperationId,
+        resource: &str,
+        adopted: bool,
+    ) -> Result<(), ProviderError> {
+        if adopted {
+            return if self.bind_adopted(operation, resource).await? {
+                Ok(())
+            } else {
+                Err(ProviderError::Cancelled)
+            };
+        }
+        if self.bind_created(operation, resource).await? {
+            return Ok(());
+        }
+        match driver.destroy(resource).await {
+            Ok(()) | Err(ProviderError::NotFound(_)) => self.deleted(operation, resource).await?,
+            Err(error) => tracing::warn!(%operation, resource, %error,
+                "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
+        }
+        Err(ProviderError::Cancelled)
     }
 
     pub async fn settled(&self, key: IdempotencyKey) -> Result<SettledMutation, ProviderError> {

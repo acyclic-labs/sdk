@@ -1,18 +1,5 @@
 use super::*;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-enum MemoryIntent {
-    Create(CreateMachine),
-    Checkpoint(MachineId),
-    Fork(CheckpointId, u32),
-    ForkMachine(MachineId, u32),
-    Suspend(MachineId),
-    Wake(MachineId),
-    Policy(MachineId, SuspensionPolicy),
-    DestroyMachine(MachineId),
-    DestroyCheckpoint(CheckpointId),
-}
-
 #[derive(Clone)]
 struct Replay {
     digest: [u8; 32],
@@ -97,7 +84,7 @@ impl SimulatedMachines {
     async fn apply<F>(
         &self,
         key: IdempotencyKey,
-        intent: MemoryIntent,
+        intent: MutationIntent,
         action: F,
     ) -> Result<MutationOutcome, ProviderError>
     where

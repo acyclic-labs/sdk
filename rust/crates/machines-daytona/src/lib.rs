@@ -23,17 +23,16 @@ use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
     ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
     MAX_EVENT_PAGE_SIZE, MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId,
-    MachineObservation, MachineOutput, MachinePage, MachineState, MachinesProvider,
+    MachineObservation, MachineOutput, MachinePage, MachineState, MachinesProvider, MutationIntent,
     MutationOutcome, OperationId, OperationObservation, OperationStream, ProviderAssurance,
     ProviderError, SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
-use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 #[cfg(test)]
 use acyclic_machines::core as ops;
-use acyclic_machines::core::OperationRegistry;
+use acyclic_machines::core::{OperationRegistry, RawMachines};
 use api::{CreateSnapshotRequest, DaytonaApi, ExecuteRequest, ForkRequest, Sandbox, Snapshot};
 
 /// Default Daytona API base URL.
@@ -203,20 +202,6 @@ pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
     usage_receipts: Assurance::Provisional,
     restore_cross_host: Assurance::No,
 };
-
-/// Canonical intent of one mutation, digested for idempotency-key rebinding checks.
-#[derive(Clone, Debug, Serialize)]
-enum Intent {
-    Create(CreateMachine),
-    Checkpoint(MachineId),
-    Fork(CheckpointId, u32),
-    ForkMachine(MachineId, u32),
-    Suspend(MachineId),
-    Wake(MachineId),
-    Policy(MachineId, SuspensionPolicy),
-    DestroyMachine(MachineId),
-    DestroyCheckpoint(CheckpointId),
-}
 
 /// Machines provider over Daytona VM sandboxes.
 pub struct DaytonaProvider {
@@ -537,65 +522,6 @@ impl DaytonaProvider {
         }
     }
 
-    /// Deletes, best-effort and newest first, the sandboxes a failed operation created. Any
-    /// that cannot be deleted stay recorded, so a later `cancel` retries them.
-    async fn roll_back(&self, operation: OperationId) -> Result<(), ProviderError> {
-        for sandbox in self.ops.created(operation).await?.into_iter().rev() {
-            match self.api.delete(&sandbox).await {
-                Ok(()) | Err(ProviderError::NotFound(_)) => {
-                    self.ops.deleted(operation, &sandbox).await?
-                }
-                Err(error) => {
-                    tracing::warn!(sandbox, %error, "Machines cleanup failed; recovery: cancel the original operation again to retry deletion")
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Records a sandbox this attempt produced: [`Self::claim_created`] for one it created, and
-    /// for one it `adopted` from an earlier attempt under the same key a binding that
-    /// cancellation and rollback never delete. An adopted sandbox may already have been
-    /// reported to the caller as that key's successful outcome (for example before a provider
-    /// restart), so undoing this attempt must not destroy it.
-    async fn claim(
-        &self,
-        operation: OperationId,
-        sandbox_id: &str,
-        adopted: bool,
-    ) -> Result<(), ProviderError> {
-        if !adopted {
-            return self.claim_created(operation, sandbox_id).await;
-        }
-        if self.ops.bind_adopted(operation, sandbox_id).await? {
-            Ok(())
-        } else {
-            Err(ProviderError::Cancelled)
-        }
-    }
-
-    /// Records a sandbox the operation created. When the operation was cancelled while the
-    /// create or fork request was in flight, cancellation could not see the sandbox, so it is
-    /// deleted here and the mutation ends as cancelled.
-    async fn claim_created(
-        &self,
-        operation: OperationId,
-        sandbox_id: &str,
-    ) -> Result<(), ProviderError> {
-        if self.ops.bind_created(operation, sandbox_id).await? {
-            return Ok(());
-        }
-        match self.api.delete(sandbox_id).await {
-            Ok(()) | Err(ProviderError::NotFound(_)) => {
-                self.ops.deleted(operation, sandbox_id).await?
-            }
-            Err(error) => {
-                tracing::warn!(sandbox_id, %error, "Machines late-create cleanup failed; recovery: cancel the original operation again to retry deletion")
-            }
-        }
-        Err(ProviderError::Cancelled)
-    }
-
     /// Accepts the holder of a native fork child's deterministic name only when it really is a
     /// fork child of `parent_id` from this request: Daytona must list it among the parent's
     /// forks, and its provider labels must be either the ones this request attaches (already
@@ -642,7 +568,7 @@ impl DaytonaProvider {
     async fn apply<F>(
         &self,
         key: IdempotencyKey,
-        intent: &Intent,
+        intent: &MutationIntent,
         action: F,
     ) -> Result<MutationOutcome, ProviderError>
     where
@@ -650,7 +576,7 @@ impl DaytonaProvider {
     {
         self.ops
             .apply(key, intent, action, async |operation| {
-                self.roll_back(operation).await
+                self.ops.cleanup(self, operation).await
             })
             .await
     }
@@ -766,7 +692,7 @@ impl DaytonaProvider {
                 Err(error) => return Err(error),
             }
         };
-        self.claim(operation, &child.id, adopted).await?;
+        self.ops.claim(self, operation, &child.id, adopted).await?;
         self.api
             .replace_labels(&child.id, map::relabel(&child.labels, ours))
             .await?;
@@ -854,7 +780,7 @@ impl DaytonaProvider {
             }
             body.env = inherited_env(&source);
             let (child, adopted) = self.create_or_adopt(&body).await?;
-            self.claim(operation, &child.id, adopted).await?;
+            self.ops.claim(self, operation, &child.id, adopted).await?;
             ids.push((child.id, body.labels));
         }
         let mut children = Vec::with_capacity(ids.len());
@@ -923,6 +849,13 @@ impl DaytonaProvider {
 }
 
 #[async_trait]
+impl RawMachines for DaytonaProvider {
+    async fn destroy(&self, resource: &str) -> Result<(), ProviderError> {
+        self.api.delete(resource).await
+    }
+}
+
+#[async_trait]
 impl MachinesProvider for DaytonaProvider {
     /// Daytona is an external service operated in the customer's own Daytona organization;
     /// `CustomerHosted` is the closest of the three declared classes, with Daytona's VM as the
@@ -962,7 +895,7 @@ impl MachinesProvider for DaytonaProvider {
 
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
         let key = request.idempotency_key;
-        let intent = Intent::Create(request.clone());
+        let intent = MutationIntent::Create(request.clone());
         let outcome = self
             .apply(key, &intent, async |operation| {
                 let snapshot = self.resolve_snapshot(&request.image)?;
@@ -974,7 +907,9 @@ impl MachinesProvider for DaytonaProvider {
                 let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
                 body.env = self.staged_boot_env(key).unwrap_or_default();
                 let (created, adopted) = self.create_or_adopt(&body).await?;
-                self.claim(operation, &created.id, adopted).await?;
+                self.ops
+                    .claim(self, operation, &created.id, adopted)
+                    .await?;
                 let settled = self.wait_settled(&created.id, key).await?;
                 let observation = self.observe(&settled, Some(&contract), None).await?;
                 if observation.state != MachineState::Running {
@@ -1058,43 +993,47 @@ impl MachinesProvider for DaytonaProvider {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, &Intent::Checkpoint(machine), async |operation| {
-            let source = self.fetch_machine(machine).await?;
-            require_capability(&source, Capability::LiveCheckpoint)?;
-            if source.state != MachineState::Running {
-                return Err(ProviderError::Conflict(
-                    "Daytona memory snapshots require a started sandbox".into(),
-                ));
-            }
-            let id = machine.to_string();
-            let name = map::checkpoint_name(key);
-            self.ops.bind_target(operation, &id).await?;
-            let request = CreateSnapshotRequest {
-                name: name.clone(),
-                include_memory: true,
-            };
-            match self.api.snapshot(&id, &request).await {
-                // A replay after a lost response finds the snapshot already named.
-                Ok(_) | Err(ProviderError::Conflict(_)) => {}
-                Err(error) => return Err(error),
-            }
-            let settled = self.wait_snapshot(&name, key).await?;
-            self.wait_settled(&id, key).await?;
-            let now = now_unix_ms();
-            let checkpoint = map::snapshot_to_checkpoint(
-                &settled,
-                Some(machine),
-                source.contract.clone(),
-                true,
-                now,
-            )?;
-            self.ops.remember_checkpoint(checkpoint.clone()).await?;
-            let mut updated = source;
-            updated.last_checkpoint = Some(checkpoint.id);
-            updated.changed_at_unix_ms = now;
-            self.ops.observe_machine(updated, now).await?;
-            Ok(MutationOutcome::Checkpointed(checkpoint))
-        })
+        self.apply(
+            key,
+            &MutationIntent::Checkpoint(machine),
+            async |operation| {
+                let source = self.fetch_machine(machine).await?;
+                require_capability(&source, Capability::LiveCheckpoint)?;
+                if source.state != MachineState::Running {
+                    return Err(ProviderError::Conflict(
+                        "Daytona memory snapshots require a started sandbox".into(),
+                    ));
+                }
+                let id = machine.to_string();
+                let name = map::checkpoint_name(key);
+                self.ops.bind_target(operation, &id).await?;
+                let request = CreateSnapshotRequest {
+                    name: name.clone(),
+                    include_memory: true,
+                };
+                match self.api.snapshot(&id, &request).await {
+                    // A replay after a lost response finds the snapshot already named.
+                    Ok(_) | Err(ProviderError::Conflict(_)) => {}
+                    Err(error) => return Err(error),
+                }
+                let settled = self.wait_snapshot(&name, key).await?;
+                self.wait_settled(&id, key).await?;
+                let now = now_unix_ms();
+                let checkpoint = map::snapshot_to_checkpoint(
+                    &settled,
+                    Some(machine),
+                    source.contract.clone(),
+                    true,
+                    now,
+                )?;
+                self.ops.remember_checkpoint(checkpoint.clone()).await?;
+                let mut updated = source;
+                updated.last_checkpoint = Some(checkpoint.id);
+                updated.changed_at_unix_ms = now;
+                self.ops.observe_machine(updated, now).await?;
+                Ok(MutationOutcome::Checkpointed(checkpoint))
+            },
+        )
         .await
     }
 
@@ -1153,30 +1092,36 @@ impl MachinesProvider for DaytonaProvider {
         if count > MAX_FORK_CHILDREN {
             return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
         }
-        self.apply(key, &Intent::Fork(checkpoint, count), async |operation| {
-            let source = self.inspect_checkpoint(checkpoint).await?;
-            if !source.forkable {
-                return Err(ProviderError::Conflict(
-                    "checkpoint no longer accepts forks".into(),
-                ));
-            }
-            let mut contract = source.contract;
-            contract.image = Image::Checkpoint(checkpoint);
-            let snapshot = checkpoint.to_string();
-            let mut ids = Vec::with_capacity(count as usize);
-            for index in 0..count {
-                let slot = map::ForkSlot { index, count };
-                let body =
-                    map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
-                let (created, adopted) = self.create_or_adopt(&body).await?;
-                self.claim(operation, &created.id, adopted).await?;
-                ids.push(created.id);
-            }
-            let children = self
-                .settle_children(ids, key, &contract, Some(checkpoint))
-                .await?;
-            Ok(MutationOutcome::Forked(children))
-        })
+        self.apply(
+            key,
+            &MutationIntent::Fork(checkpoint, count),
+            async |operation| {
+                let source = self.inspect_checkpoint(checkpoint).await?;
+                if !source.forkable {
+                    return Err(ProviderError::Conflict(
+                        "checkpoint no longer accepts forks".into(),
+                    ));
+                }
+                let mut contract = source.contract;
+                contract.image = Image::Checkpoint(checkpoint);
+                let snapshot = checkpoint.to_string();
+                let mut ids = Vec::with_capacity(count as usize);
+                for index in 0..count {
+                    let slot = map::ForkSlot { index, count };
+                    let body =
+                        map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
+                    let (created, adopted) = self.create_or_adopt(&body).await?;
+                    self.ops
+                        .claim(self, operation, &created.id, adopted)
+                        .await?;
+                    ids.push(created.id);
+                }
+                let children = self
+                    .settle_children(ids, key, &contract, Some(checkpoint))
+                    .await?;
+                Ok(MutationOutcome::Forked(children))
+            },
+        )
         .await
     }
 
@@ -1195,7 +1140,7 @@ impl MachinesProvider for DaytonaProvider {
         }
         self.apply(
             key,
-            &Intent::ForkMachine(machine, count),
+            &MutationIntent::ForkMachine(machine, count),
             async |operation| {
                 let parent = self.fetch_machine(machine).await?;
                 let fidelity = parent.contract.fork_fidelity().ok_or_else(|| {
@@ -1229,7 +1174,7 @@ impl MachinesProvider for DaytonaProvider {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, &Intent::Suspend(machine), async |operation| {
+        self.apply(key, &MutationIntent::Suspend(machine), async |operation| {
             let current = self.fetch_machine(machine).await?;
             require_capability(&current, Capability::SuspendResume)?;
             match current.state {
@@ -1258,7 +1203,7 @@ impl MachinesProvider for DaytonaProvider {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, &Intent::Wake(machine), async |operation| {
+        self.apply(key, &MutationIntent::Wake(machine), async |operation| {
             let current = self.fetch_machine(machine).await?;
             require_capability(&current, Capability::SuspendResume)?;
             match current.state {
@@ -1288,25 +1233,29 @@ impl MachinesProvider for DaytonaProvider {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, &Intent::Policy(machine, policy), async |operation| {
-            let mut current = self.fetch_machine(machine).await?;
-            require_capability(&current, Capability::SuspendResume)?;
-            if current.state == MachineState::Destroyed {
-                return Err(ProviderError::Conflict(
-                    "destroyed machine cannot change policy".into(),
-                ));
-            }
-            let id = machine.to_string();
-            self.ops.bind_target(operation, &id).await?;
-            self.api
-                .set_autopause(&id, map::autopause_minutes(policy))
-                .await?;
-            let now = now_unix_ms();
-            current.contract.suspension = policy;
-            current.changed_at_unix_ms = now;
-            self.ops.observe_machine(current, now).await?;
-            Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
-        })
+        self.apply(
+            key,
+            &MutationIntent::Policy(machine, policy),
+            async |operation| {
+                let mut current = self.fetch_machine(machine).await?;
+                require_capability(&current, Capability::SuspendResume)?;
+                if current.state == MachineState::Destroyed {
+                    return Err(ProviderError::Conflict(
+                        "destroyed machine cannot change policy".into(),
+                    ));
+                }
+                let id = machine.to_string();
+                self.ops.bind_target(operation, &id).await?;
+                self.api
+                    .set_autopause(&id, map::autopause_minutes(policy))
+                    .await?;
+                let now = now_unix_ms();
+                current.contract.suspension = policy;
+                current.changed_at_unix_ms = now;
+                self.ops.observe_machine(current, now).await?;
+                Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
+            },
+        )
         .await
     }
 
@@ -1315,21 +1264,25 @@ impl MachinesProvider for DaytonaProvider {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(key, &Intent::DestroyMachine(machine), async |operation| {
-            let current = self.fetch_machine(machine).await?;
-            if current.state == MachineState::Destroyed {
-                return Ok(MutationOutcome::MachineDestroyed(machine));
-            }
-            self.require_no_live_fork_children(&current).await?;
-            let id = machine.to_string();
-            self.ops.bind_target(operation, &id).await?;
-            match self.api.delete(&id).await {
-                Ok(()) | Err(ProviderError::NotFound(_)) => {}
-                Err(error) => return Err(error),
-            }
-            self.ops.mark_destroyed(machine, now_unix_ms()).await?;
-            Ok(MutationOutcome::MachineDestroyed(machine))
-        })
+        self.apply(
+            key,
+            &MutationIntent::DestroyMachine(machine),
+            async |operation| {
+                let current = self.fetch_machine(machine).await?;
+                if current.state == MachineState::Destroyed {
+                    return Ok(MutationOutcome::MachineDestroyed(machine));
+                }
+                self.require_no_live_fork_children(&current).await?;
+                let id = machine.to_string();
+                self.ops.bind_target(operation, &id).await?;
+                match self.api.delete(&id).await {
+                    Ok(()) | Err(ProviderError::NotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
+                self.ops.mark_destroyed(machine, now_unix_ms()).await?;
+                Ok(MutationOutcome::MachineDestroyed(machine))
+            },
+        )
         .await
     }
 
@@ -1340,7 +1293,7 @@ impl MachinesProvider for DaytonaProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(
             key,
-            &Intent::DestroyCheckpoint(checkpoint),
+            &MutationIntent::DestroyCheckpoint(checkpoint),
             async |_operation| {
                 // Retain an observation so `inspect_checkpoint` keeps answering after deletion.
                 self.inspect_checkpoint(checkpoint).await?;
@@ -1430,13 +1383,7 @@ impl MachinesProvider for DaytonaProvider {
     }
 
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        let (observation, _) = self
-            .ops
-            .cancel(operation)
-            .await?
-            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-        self.roll_back(operation).await?;
-        Ok(observation)
+        self.ops.cancel_with(self, operation).await
     }
 
     /// Current and future observations follow the canonical Streams cursor.

@@ -108,6 +108,21 @@ pub trait MachinesProvider: Send + Sync {
     ) -> Result<OperationStream, ProviderError>;
 }
 
+/// The one canonical Machines mutation encoding, shared by native adapters and simulation.
+/// Its variant and field encoding binds a retry key to the same intent everywhere.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MutationIntent {
+    Create(CreateMachine),
+    Checkpoint(MachineId),
+    Fork(CheckpointId, u32),
+    ForkMachine(MachineId, u32),
+    Suspend(MachineId),
+    Wake(MachineId),
+    Policy(MachineId, SuspensionPolicy),
+    DestroyMachine(MachineId),
+    DestroyCheckpoint(CheckpointId),
+}
+
 /// Canonical digest of a mutation intent, binding an idempotency key to it.
 pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError> {
     let encoded = serde_json::to_vec(intent)
