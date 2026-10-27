@@ -26,10 +26,18 @@ fn credential_identity_requires_a_persistent_account_namespace() -> io::Result<(
     let data = home.join(".local/share");
     fs::create_dir_all(&data)?;
     let admitted = credential_directory(&data)?;
-    assert_eq!(admitted, fs::canonicalize(data.join("acyclic.authority.signing-seed.v1"))?);
+    assert_eq!(
+        admitted,
+        fs::canonicalize(data.join("acyclic.authority.signing-seed.v1"))?
+    );
     fs::remove_dir(&admitted)?;
     fs::remove_dir(&data)?;
-    let temporary = tempfile::tempdir()?;
+    // Select the namespace being refused explicitly: job TMPDIR is deliberately
+    // persistent and therefore is not a valid negative fixture for PrivateTmp.
+    let temporary = tempfile::Builder::new()
+        .prefix("custody-namespace-")
+        .tempdir_in("/tmp")?;
+    assert!(persistent_user_directory(&fs::canonicalize(temporary.path())?).is_err());
     std::os::unix::fs::symlink(temporary.path(), &data)?;
     // This is the actual former admission boundary, and its unchanged parent
     // still passes. The full namespace must fail before any credential access.
@@ -39,7 +47,10 @@ fn credential_identity_requires_a_persistent_account_namespace() -> io::Result<(
         Err(error) => error,
     };
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(fs::read_dir(temporary.path().join("acyclic.authority.signing-seed.v1"))?.count(), 0);
+    assert_eq!(
+        fs::read_dir(temporary.path().join("acyclic.authority.signing-seed.v1"))?.count(),
+        0
+    );
     Ok(())
 }
 
