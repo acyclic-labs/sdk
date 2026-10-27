@@ -76,7 +76,6 @@ pub(super) struct SharedViewEntry {
     views: Arc<SharedViews>,
     view: NamedView<Vec<u8>, FuseProjection>,
     core: Arc<ProjectionCore>,
-    name: Vec<u8>,
 }
 
 impl SharedViewEntry {
@@ -86,16 +85,16 @@ impl SharedViewEntry {
 
     /// Retires the view; returns whether this call retired it.
     pub(super) fn retire(&mut self) -> bool {
-        // Stopping first fails the view's queued and blocked requests fast;
-        // retirement then waits for every request already admitted.
+        // Close admission, then stop queued and blocked requests before
+        // waiting for every request already admitted.
         let core = &self.core;
-        if self.view.retire_after(|| core.stop()).is_none() {
+        let Some((name, _)) = self.view.retire_after(|| core.stop()) else {
             return false;
-        }
+        };
         if let Some(notifier) = self.views.notifier.get() {
             // The kernel may still cache the name. A late lookup of it now
             // misses, and a late request on its inodes answers ESTALE.
-            let _ = notifier.inval_entry(ROOT_INODE, &self.name);
+            let _ = notifier.inval_entry(ROOT_INODE, &name);
         }
         true
     }
@@ -167,7 +166,6 @@ impl SharedViews {
             views: Arc::clone(self),
             core: built.ok_or(NativeMountError::InvalidDestination)?,
             view,
-            name: name.to_vec(),
         })
     }
 

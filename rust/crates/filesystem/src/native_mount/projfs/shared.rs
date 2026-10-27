@@ -455,7 +455,7 @@ impl SharedProjFsView {
         if let (Some(id), Some(service)) = (self.service.take(), self.instance.service.as_ref()) {
             service.detach(id);
         }
-        if let Some(core) = self
+        if let Some((_, core)) = self
             .view
             .take()
             .and_then(|mut view| view.retire_after(|| {}))
