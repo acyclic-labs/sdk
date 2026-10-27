@@ -1,0 +1,19 @@
+{
+  "kind": "source-byte-join",
+  "from": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
+  "to": "f99f45744fb742eff3463cd947dfeceb82bc3d8c",
+  "compared_files": 7707,
+  "changed": [
+    {
+      "path": "rust/crates/contract-derive/src/lib.rs",
+      "before_sha256": "15d5bd74eddab39515efe031d12e057aac91d90e18ccc37a00e0cfc5fc475be1",
+      "after_sha256": "9f8210a987a801105a4234c59e88c7b2aa5027a3b00fc1783e3d35059b501b5e"
+    },
+    {
+      "path": "rust/proofs/spawn-slots/run.py",
+      "before_sha256": "e3b96476ab390a3a4675e84385a464a39caa15afe983b4b7b339365ff245bd56",
+      "after_sha256": "09ee8f605b4b1c23ccf8eaf86be8a75505387cf201647842df4bd1d4ee22f5cf"
+    }
+  ],
+  "interpretation": "Only listed files differ; exact semantic delta is retained in source-join.patch. No fresh-head runtime pass is claimed."
+}

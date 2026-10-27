@@ -1,0 +1,89 @@
+{
+  "mode": "kani",
+  "steps": [
+    {
+      "step": "toolchain",
+      "argv": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 0.032024111998907756,
+      "log_sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "step": "kani-version",
+      "argv": [
+        "cargo",
+        "kani",
+        "--version"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 1.1173710339990066,
+      "log_sha256": "361229a0c35b708d9d38a86d345e026b77e2aefa3fc25164b734345a1291cb88"
+    },
+    {
+      "step": "kani-positive",
+      "argv": [
+        "cargo",
+        "kani",
+        "--manifest-path",
+        "rust/proofs/spawn-slots/Cargo.toml"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 2.321438893000959,
+      "log_sha256": "edcad069818bf20879c61ee70cf4867b350740bbd744e8bd32ad7d55c08846ef"
+    },
+    {
+      "step": "reservation-control",
+      "argv": [
+        "cargo",
+        "kani",
+        "--manifest-path",
+        "rust/proofs/spawn-slots/Cargo.toml"
+      ],
+      "cwd": "/mnt/bb/jobs/job-s5zcj9q4/tmp/verify-1697-reservation-control",
+      "exit": 1,
+      "seconds": 0.6653891219993966,
+      "log_sha256": "e4a5fc8d39e1bb1a1d95d8a78d9404ea87aa57d84936c679a6f8d2ce4b4dc694"
+    },
+    {
+      "step": "vacated-control",
+      "argv": [
+        "cargo",
+        "kani",
+        "--manifest-path",
+        "rust/proofs/spawn-slots/Cargo.toml"
+      ],
+      "cwd": "/mnt/bb/jobs/job-s5zcj9q4/tmp/verify-1697-vacated-control",
+      "exit": 1,
+      "seconds": 0.6655425230001129,
+      "log_sha256": "50b174f937698b3bfb6827d9c811fb18be1e96930872a78e4bdbbc3977ddf8ad"
+    }
+  ],
+  "status": "PASS",
+  "source": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
+  "mutations": [
+    {
+      "id": "reservation-control",
+      "path": "rust/crates/harness-core/src/agent/slots.rs",
+      "before_sha256": "888dbdaa2b95bac5cd48f4cf653173fa5a8101b651050b08f52c65aa4f04283d",
+      "after_sha256": "4646fdc8f990a2941b87d5219bf05abae39c18aa0dcc678378c52cabb86889b6",
+      "before": "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })",
+      "after": "MAX_OPEN_CHILDREN"
+    },
+    {
+      "id": "vacated-control",
+      "path": "rust/crates/harness-core/src/agent/slots.rs",
+      "before_sha256": "888dbdaa2b95bac5cd48f4cf653173fa5a8101b651050b08f52c65aa4f04283d",
+      "after_sha256": "02e66355e97a117a9841772e51c5a807ded970b6f4090b456dabcc64ae724da4",
+      "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)",
+      "after": "reserved"
+    }
+  ],
+  "seconds": 7.333214064001368
+}

@@ -1,0 +1,127 @@
+diff --git a/rust/crates/contract-derive/src/lib.rs b/rust/crates/contract-derive/src/lib.rs
+index 8aa8608d5b..bad95f39ed 100644
+--- a/rust/crates/contract-derive/src/lib.rs
++++ b/rust/crates/contract-derive/src/lib.rs
+@@ -28,7 +28,7 @@ mod registration;
+ /// #[explicit_provider]
+ /// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+ /// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+-/// trait Provider { async fn write(&self) -> u8 { 0 } }
++/// trait Provider: Sync { async fn write(&self) -> u8 { 0 } }
+ /// struct Complete;
+ /// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+ /// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+diff --git a/rust/proofs/spawn-slots/run.py b/rust/proofs/spawn-slots/run.py
+index 2670f0c3c6..e12063a4a2 100644
+--- a/rust/proofs/spawn-slots/run.py
++++ b/rust/proofs/spawn-slots/run.py
+@@ -5,6 +5,7 @@ import hashlib
+ import json
+ import os
+ from pathlib import Path
++import re
+ import shlex
+ import subprocess
+ import sys
+@@ -14,7 +15,7 @@ import time
+ ROOT = Path(__file__).resolve().parents[3]
+ HERE = Path(__file__).resolve().parent
+ parser = argparse.ArgumentParser(__doc__)
+-parser.add_argument("mode", choices=["rust", "kani", "mutants", "type-control", "check"])
++parser.add_argument("mode", choices=["rust", "docs", "finish", "remaining", "kani", "mutants", "type-control", "check"])
+ parser.add_argument("--evidence", type=Path, required=True)
+ args = parser.parse_args()
+ start = time.monotonic()
+@@ -50,8 +51,12 @@ def run(label, command, cwd=ROOT, env=None, failure=None, passed=None):
+             refuse(label, f"exit {result.returncode}; read {log} and fix the failing input before a changed-source run")
+     elif result.returncode == 0 or failure not in log.read_text(errors="replace"):
+         refuse(label, f"control did not fail its unchanged semantic oracle ({failure})")
+-    if passed is not None and f"test result: ok. {passed} passed;" not in log.read_text(errors="replace"):
+-        refuse(label, f"expected exactly {passed} nonempty passing tests")
++    if passed is not None:
++        # rustdoc reports runnable and compile-fail examples in separate
++        # groups; both must contribute to the nonempty test count.
++        total = sum(map(int, re.findall(r"test result: ok\. (\d+) passed;", log.read_text(errors="replace"))))
++        if total != passed:
++            refuse(label, f"expected exactly {passed} nonempty passing tests, observed {total}")
+     return log
+ 
+ 
+@@ -75,20 +80,24 @@ def build(cwd, label):
+     return artifacts
+ 
+ 
+-def variant(label, path, before, after):
+-    destination = Path(os.environ["TMPDIR"]) / ("verify-1697-" + label)
+-    destination.mkdir()
+-    archive = args.evidence / (label + ".tar")
+-    with archive.open("wb") as output:
+-        subprocess.run(["git", "archive", "HEAD"], cwd=ROOT, stdout=output, check=True)
+-    with tarfile.open(archive) as source:
+-        source.extractall(destination, filter="data")
+-    archive.unlink()
++def variant(label, path, before, after, reuse=False):
++    destination = Path(os.environ["TMPDIR"]) / ("verify-1697-" + ("mutations" if reuse else label))
++    if not destination.exists():
++        destination.mkdir()
++        archive = args.evidence / (label + ".tar")
++        with archive.open("wb") as output:
++            subprocess.run(["git", "archive", "HEAD"], cwd=ROOT, stdout=output, check=True)
++        with tarfile.open(archive) as source:
++            source.extractall(destination, filter="data")
++        archive.unlink()
+     target = destination / path
+     original = target.read_text()
+     if original.count(before) != 1:
+         refuse(label, "mutation must have exactly one production match")
+     target.write_text(original.replace(before, after))
++    differences = [name for name, expected in inputs.items() if sha(destination / name) != expected]
++    if differences != [path]:
++        refuse(label, "derived source must differ at exactly the declared production file: " + repr(differences))
+     report.setdefault("mutations", []).append({"id": label, "path": path,
+         "before_sha256": sha(ROOT / path), "after_sha256": sha(target),
+         "before": before, "after": after})
+@@ -104,7 +113,8 @@ try:
+         refuse("source", "producer requires unchanged signed tracked bytes")
+     report["source"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+     paths = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).split(b"\0")
+-    (args.evidence / "inputs.json").write_text(json.dumps({os.fsdecode(p): sha(ROOT / os.fsdecode(p)) for p in paths if p}, sort_keys=True))
++    inputs = {os.fsdecode(p): sha(ROOT / os.fsdecode(p)) for p in paths if p}
++    (args.evidence / "inputs.json").write_text(json.dumps(inputs, sort_keys=True))
+     run("toolchain", ["rustc", "--version", "--verbose"])
+     env = os.environ.copy()
+     env.update(PROPTEST_RNG_SEED="1697", CARGO_INCREMENTAL="0",
+@@ -122,9 +132,21 @@ try:
+         run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=2)
+         run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
+                                       "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
++    elif args.mode in ("docs", "finish", "remaining"):
++        if args.mode != "remaining":
++            run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
++                                          "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
++        if args.mode != "docs":
++            run("affected-check", ["cargo", "check", "--locked", "--all-features", "-p", "acyclic-harness-core",
++                                   "-p", "acyclic-stream", "-p", "acyclic-contract-derive"])
++            changed = variant("missing-method", "rust/crates/harness-core/src/filesystem/attestation.rs",
++                "    async fn durability_barrier(&self) -> Result<(), StreamError> {\n        self.inner.durability_barrier().await\n    }\n", "")
++            run("missing-method", ["cargo", "check", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem"],
++                changed, failure="missing: `durability_barrier`")
+     elif args.mode == "kani":
+         env.pop("RUSTC", None)
+         env.pop("RUSTC_WRAPPER", None)
++        env["KANI_HOME"] = "/home/var/.kani"
+         env["PATH"] = "/home/var/.kani/kani-0.68.0/bin:" + env["PATH"]
+         command = ["cargo", "kani", "--manifest-path", "rust/proofs/spawn-slots/Cargo.toml"]
+         run("kani-version", ["cargo", "kani", "--version"], env=env)
+@@ -151,9 +173,10 @@ try:
+              "pub const MAX_PATH_BYTES: usize = 4096;", "pub const MAX_PATH_BYTES: usize = 32768;",
+              "acyclic_harness_core", "record_bounds_cover_every_kind_and_json_escape_expansion"),
+         ]:
+-            changed = variant(label, path, before, after)
++            changed = variant(label, path, before, after, reuse=True)
+             binaries = build(changed, label + "-build")
+             run(label, [binaries[target], oracle, "--nocapture"], changed, failure="test result: FAILED")
++            (changed / path).write_bytes((ROOT / path).read_bytes())
+     else:
+         changed = variant("missing-method", "rust/crates/harness-core/src/filesystem/attestation.rs",
+             "    async fn durability_barrier(&self) -> Result<(), StreamError> {\n        self.inner.durability_barrier().await\n    }\n", "")

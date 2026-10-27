@@ -1,0 +1,228 @@
+{
+  "mode": "mutants",
+  "steps": [
+    {
+      "step": "toolchain",
+      "argv": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "cwd": "/mnt/bb/verify-1697/8aa6b89/source",
+      "exit": 0,
+      "seconds": 0.03206119300011778,
+      "log_sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "step": "vacated-control-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 0,
+      "seconds": 161.65045432099942,
+      "log_sha256": "4b547d952d3f3df91182b33298e1c54c29290f74f8fa15e3a79add747aa4c9a8"
+    },
+    {
+      "step": "vacated-control",
+      "argv": [
+        "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/agent_model-8fcbf6d21bf03433",
+        "a_child_finishing_during_pause_cannot_strand_a_recorded_replay",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 101,
+      "seconds": 0.003873300000122981,
+      "log_sha256": "d76f248ff729149fcbed3e053a05a1058a9f4f4600ecb530d2ebb5e6733063d6"
+    },
+    {
+      "step": "digest-control-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 0,
+      "seconds": 99.2072969359997,
+      "log_sha256": "6261c56ba4ea3434b6e0b1a1eea6d9c28bb087c1c9a710b3b0186817e8c14375"
+    },
+    {
+      "step": "digest-control",
+      "argv": [
+        "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "every_write_family_preserves_digest_admission_and_retry_evidence",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 101,
+      "seconds": 0.016062566999607952,
+      "log_sha256": "48fe394b3c799a27896b6762ad2dbf82905942b97a65184ff9ccfd912b00333d"
+    },
+    {
+      "step": "admission-control-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 0,
+      "seconds": 98.69716479199997,
+      "log_sha256": "dc660b836a5bc5f6ca516b5d164a5eab648ff5ea1521b08d5e87a9e9c1ffd595"
+    },
+    {
+      "step": "admission-control",
+      "argv": [
+        "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "every_write_family_preserves_digest_admission_and_retry_evidence",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 101,
+      "seconds": 0.03209097400031169,
+      "log_sha256": "4c67afe1515c74d3ad798e9dff9d8933dbe05002f86c4d9ccf9d3b424987b299"
+    },
+    {
+      "step": "record-control-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 0,
+      "seconds": 103.3320402620011,
+      "log_sha256": "e440f7602e6cd79db3660b2b9d063ba89c647140e31537ae0bfd78589f4d8984"
+    },
+    {
+      "step": "record-control",
+      "argv": [
+        "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "record_bounds_cover_every_kind_and_json_escape_expansion",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/jobs/job-yj5gs432/tmp/verify-1697-mutations",
+      "exit": 101,
+      "seconds": 0.06417935799981933,
+      "log_sha256": "8eef6978571c27baac63e9f4b3cab8f1c49ec493b9a73269d3c5362c0189b6cf"
+    }
+  ],
+  "status": "PASS",
+  "source": "8aa6b890b6aba520968793a0ca9231a28e16c278",
+  "mutations": [
+    {
+      "id": "vacated-control",
+      "path": "rust/crates/harness-core/src/agent/slots.rs",
+      "before_sha256": "888dbdaa2b95bac5cd48f4cf653173fa5a8101b651050b08f52c65aa4f04283d",
+      "after_sha256": "02e66355e97a117a9841772e51c5a807ded970b6f4090b456dabcc64ae724da4",
+      "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)",
+      "after": "reserved"
+    },
+    {
+      "id": "digest-control",
+      "path": "rust/crates/harness-core/src/filesystem/attestation.rs",
+      "before_sha256": "07ee2bde9694e5f844b25d5a8f6d06e0e17e17ecd66ca4fcfcde6bb8f7ce939c",
+      "after_sha256": "312da55da4f1ca058c2f681a5fe0df7545a05be5a35732dfbe1f091d330f0895",
+      "before": "digest: digest()?",
+      "after": "digest: [0; 32]"
+    },
+    {
+      "id": "admission-control",
+      "path": "rust/crates/harness-core/src/filesystem/attestation.rs",
+      "before_sha256": "07ee2bde9694e5f844b25d5a8f6d06e0e17e17ecd66ca4fcfcde6bb8f7ce939c",
+      "after_sha256": "bc05b2d47a0fa3531fbdef4cd2bab2fd8a083186c6db4a0366ddf78f7f4f9943",
+      "before": "admission: &self.admission",
+      "after": "admission: &super::TurnAdmission::LocalRoot"
+    },
+    {
+      "id": "record-control",
+      "path": "rust/crates/harness-core/src/conversation/mod.rs",
+      "before_sha256": "830f6087b5d838da25da012db6cb2a9690d69f7567fabb00b22a39245cf5b78f",
+      "after_sha256": "826a5325fff0554e73d5d3bbef8e9679714cb92e3910e93602ce1686ba23f1a0",
+      "before": "pub const MAX_PATH_BYTES: usize = 4096;",
+      "after": "pub const MAX_PATH_BYTES: usize = 32768;"
+    }
+  ],
+  "executables": [
+    {
+      "step": "vacated-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "493b2b51a3aa409a11db3f1b10fcf33e86ccadca6621474ef99ea58d2f4179c0"
+    },
+    {
+      "step": "vacated-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "2ba22ab6c179a36c69045e83d14842a7ffc375fd3bc9586ff25829a5cb587642"
+    },
+    {
+      "step": "digest-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "08c9a4755140dfe56e3419f5e301a949ad4ca3390c64dd228292e1e31ad04477"
+    },
+    {
+      "step": "digest-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "8cc8ee9f7b457bb7f44b295750e8fd9e213d4d0766312836e009f4293ec8e60a"
+    },
+    {
+      "step": "admission-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "08c9a4755140dfe56e3419f5e301a949ad4ca3390c64dd228292e1e31ad04477"
+    },
+    {
+      "step": "admission-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "faf5760f8628508e8bc5c3ea21fc15c29a8f2248b760fd4f58e24d185cfe0f92"
+    },
+    {
+      "step": "record-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "de7f11055b602d1a199eda8e243eb985b33b702ea06b0d22bfb56b65512bf240"
+    },
+    {
+      "step": "record-control-build",
+      "path": "/mnt/bb/jobs/job-yj5gs432/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "e4615b084b52835c32331de5fb48a13e7ba16bfa93e4f1040beebc2d0f056904"
+    }
+  ],
+  "seconds": 465.3061626159997
+}

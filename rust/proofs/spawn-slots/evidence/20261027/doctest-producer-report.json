@@ -1,0 +1,39 @@
+{
+  "mode": "finish",
+  "steps": [
+    {
+      "step": "toolchain",
+      "argv": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "cwd": "/mnt/bb/verify-1697/8aa6b89/source",
+      "exit": 0,
+      "seconds": 0.03198879199953808,
+      "log_sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "step": "explicit-provider-docs",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-contract-derive",
+        "--doc",
+        "explicit_provider",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/8aa6b89/source",
+      "exit": 0,
+      "seconds": 3.221555657999488,
+      "log_sha256": "c31b236f170ca87d3449baaa6365a8873164a8c5f8a1c53bb00e2efe3e79d931"
+    }
+  ],
+  "status": "REFUSED",
+  "source": "8aa6b890b6aba520968793a0ca9231a28e16c278",
+  "error": "step=explicit-provider-docs detail='expected exactly 3 nonempty passing tests' recovery='/usr/bin/python3 /mnt/bb/verify-1697/8aa6b89/source/rust/proofs/spawn-slots/run.py finish --evidence /mnt/bb/verify-1697/8aa6b89/finish'",
+  "seconds": 3.5875233650003793
+}

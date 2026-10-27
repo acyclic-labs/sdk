@@ -1,7 +1,10 @@
 {
   "version": 1,
-  "status": "authored_uncompiled_unexecuted",
-  "qualification": {"local": "unqualified", "cloud": "unqualified"},
+  "status": "bounded_component_proofs_passed",
+  "qualification": {
+    "local": "unqualified",
+    "cloud": "unqualified"
+  },
   "decisions": [
     "Include the actual dependency-free production slot arithmetic in a small Kani workspace.",
     "Use deterministic schedules of the production actor step, which serializes inbox commits, rather than a separate concurrent reducer.",
@@ -13,29 +16,114 @@
     {
       "id": "spawn_slots",
       "production": "rust/crates/harness-core/src/agent/slots.rs",
-      "proofs": ["Kani: client_cannot_take_a_recorded_slot", "Kani: every_recorded_child_fits_after_client_admission", "Kani: completing_a_child_does_not_release_a_paused_turns_slot", "Kani: replay_and_untrusted_reservation_counts_do_not_overflow", "agent-model: slot_schedules"],
+      "proofs": [
+        "Kani: client_cannot_take_a_recorded_slot",
+        "Kani: every_recorded_child_fits_after_client_admission",
+        "Kani: completing_a_child_does_not_release_a_paused_turns_slot",
+        "Kani: replay_and_untrusted_reservation_counts_do_not_overflow",
+        "agent-model: slot_schedules"
+      ],
       "controls": [
-        {"file": "rust/crates/harness-core/src/agent/slots.rs", "before": "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })", "after": "MAX_OPEN_CHILDREN.saturating_sub(0)", "expected": "Kani counterexample and unchanged slot schedule assertion failure"},
-        {"file": "rust/crates/harness-core/src/agent/slots.rs", "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "after": "reserved", "expected": "Kani counterexample and unchanged ChildDone replay regression failure"}
+        {
+          "file": "rust/crates/harness-core/src/agent/slots.rs",
+          "before": "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })",
+          "after": "MAX_OPEN_CHILDREN",
+          "expected": "Kani counterexample and unchanged slot schedule assertion failure"
+        },
+        {
+          "file": "rust/crates/harness-core/src/agent/slots.rs",
+          "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)",
+          "after": "reserved",
+          "expected": "Kani counterexample and unchanged ChildDone replay regression failure"
+        }
       ]
     },
     {
       "id": "attested",
-      "proofs": ["Compiler: ExplicitStreamProvider requires every current and future method", "contract-derive explicit_provider positive and E0046 doctests", "harness-core: every_write_family_preserves_digest_admission_and_retry_evidence"],
+      "proofs": [
+        "Compiler: ExplicitStreamProvider requires every current and future method",
+        "contract-derive explicit_provider positive and E0046 doctests",
+        "harness-core: every_write_family_preserves_digest_admission_and_retry_evidence"
+      ],
       "controls": [
-        {"file": "rust/crates/harness-core/src/filesystem/attestation.rs", "before": "digest: digest()?", "after": "digest: [0; 32]", "expected": "unchanged provider assertion rejects wrong canonical digest"},
-        {"file": "rust/crates/harness-core/src/filesystem/attestation.rs", "before": "admission: &self.admission", "after": "admission: &super::TurnAdmission::LocalRoot", "expected": "unchanged hosted-admission ledger assertion fails"},
-        {"file": "rust/crates/harness-core/src/filesystem/attestation.rs", "mutation": "remove the ExplicitStreamProvider durability_barrier implementation", "expected": "E0046 missing durability_barrier"}
+        {
+          "file": "rust/crates/harness-core/src/filesystem/attestation.rs",
+          "before": "digest: digest()?",
+          "after": "digest: [0; 32]",
+          "expected": "unchanged provider assertion rejects wrong canonical digest"
+        },
+        {
+          "file": "rust/crates/harness-core/src/filesystem/attestation.rs",
+          "before": "admission: &self.admission",
+          "after": "admission: &super::TurnAdmission::LocalRoot",
+          "expected": "unchanged hosted-admission ledger assertion fails"
+        },
+        {
+          "file": "rust/crates/harness-core/src/filesystem/attestation.rs",
+          "mutation": "remove the ExplicitStreamProvider durability_barrier implementation",
+          "expected": "E0046 missing durability_barrier"
+        }
       ]
     },
     {
       "id": "record_bounds",
-      "proofs": ["harness-core: record_bounds_cover_every_kind_and_json_escape_expansion", "harness-core: every_record_a_step_writes_fits_its_limit_at_the_configured_maxima"],
+      "proofs": [
+        "harness-core: record_bounds_cover_every_kind_and_json_escape_expansion",
+        "harness-core: every_record_a_step_writes_fits_its_limit_at_the_configured_maxima"
+      ],
       "controls": [
-        {"file": "rust/crates/harness-core/src/conversation/mod.rs", "before": "pub const MAX_PATH_BYTES: usize = 4096;", "after": "pub const MAX_PATH_BYTES: usize = 32768;", "expected": "unchanged canonical-encoding bound assertion fails; refusal is not counted as a successful bound"}
+        {
+          "file": "rust/crates/harness-core/src/conversation/mod.rs",
+          "before": "pub const MAX_PATH_BYTES: usize = 4096;",
+          "after": "pub const MAX_PATH_BYTES: usize = 32768;",
+          "expected": "unchanged canonical-encoding bound assertion fails; refusal is not counted as a successful bound"
+        }
       ]
     }
   ],
-  "execution_receipts": [],
-  "remaining": ["supported direct bb2 dispatch", "format and affected compiler checks", "Kani and positive suites", "actual production mutations with unchanged oracles", "exact source and executable receipts", "queue this one PR"]
+  "execution_receipts": [
+    {
+      "report": "evidence/20261027/kani-report.json",
+      "kind": "kani",
+      "positive_harnesses": 4,
+      "actual_negative_controls": 2,
+      "seconds": 7.333214064001368,
+      "source": "cac82c7aee065ede53a5703e2f3db72c58d2861e"
+    },
+    {
+      "kind": "rust-components",
+      "report": "evidence/20261027/rust-report.json",
+      "producer_status": "REFUSED: later async doctest fixture lacked Sync; these five tests passed",
+      "source": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
+      "positive_tests": 5
+    },
+    {
+      "command_exit": 0,
+      "log": "evidence/20261027/explicit-provider-docs.log",
+      "positive_examples": 2,
+      "compile_failure_examples": 1,
+      "report": "evidence/20261027/doctest-producer-report.json",
+      "kind": "doctests",
+      "producer_status": "REFUSED: count parser expected one group of three; captured rustdoc groups are two plus one; parser corrected without repeating tests",
+      "source": "8aa6b890b6aba520968793a0ca9231a28e16c278"
+    },
+    {
+      "report": "evidence/20261027/remaining-report.json",
+      "kind": "compiler-and-production-control",
+      "all_features_check": "PASS",
+      "seconds": 136.62362270599988,
+      "source": "f99f45744fb742eff3463cd947dfeceb82bc3d8c",
+      "actual_missing_method_control": "E0046"
+    },
+    {
+      "source": "8aa6b890b6aba520968793a0ca9231a28e16c278",
+      "actual_negative_controls": 4,
+      "report": "evidence/20261027/mutants-report.json",
+      "kind": "production-runtime-controls",
+      "seconds": 465.306162616
+    }
+  ],
+  "remaining": [
+    "queue and merge this one PR"
+  ]
 }

@@ -1,0 +1,120 @@
+{
+  "mode": "rust",
+  "steps": [
+    {
+      "step": "toolchain",
+      "argv": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 0.03235041500010993,
+      "log_sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "step": "positive-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 159.51603466099914,
+      "log_sha256": "44dd3c6166067339598b9939e9ad661fa23e54e7c547437d7be7e05cd018f6c0"
+    },
+    {
+      "step": "record_bounds_cover_every_kind_and_json_escape_expansion",
+      "argv": [
+        "/mnt/bb/jobs/job-fqsj5nc1/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "record_bounds_cover_every_kind_and_json_escape_expansion",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 0.16429118599990034,
+      "log_sha256": "f532aa93f417640d3865e1553ac8096ad356d2e688696afe27ecbef9065157c7"
+    },
+    {
+      "step": "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
+      "argv": [
+        "/mnt/bb/jobs/job-fqsj5nc1/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 0.01606659699973534,
+      "log_sha256": "b32b60a9d1cc61883b85c14d4bd631b3380a3e184c1441432bac38f3d3a01346"
+    },
+    {
+      "step": "every_write_family_preserves_digest_admission_and_retry_evidence",
+      "argv": [
+        "/mnt/bb/jobs/job-fqsj5nc1/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "every_write_family_preserves_digest_admission_and_retry_evidence",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 0.015750574000776396,
+      "log_sha256": "32f30d3d3c8580c054337f02a3804f675a113bfac3b99f1967ae45c73299a846"
+    },
+    {
+      "step": "slot-schedules",
+      "argv": [
+        "/mnt/bb/jobs/job-fqsj5nc1/target/debug/deps/agent_model-8fcbf6d21bf03433",
+        "slot_schedules::",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 0,
+      "seconds": 0.06390757400004077,
+      "log_sha256": "981ae1ffb46c46dbb38df4376eedab63e08c5cec0c04d23759a4ffa01ab1f690"
+    },
+    {
+      "step": "explicit-provider-docs",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-contract-derive",
+        "--doc",
+        "explicit_provider",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/cac82c7/source",
+      "exit": 101,
+      "seconds": 2.6195779319987196,
+      "log_sha256": "b49b6b16215b5fce229f0807fae92ae90757b38e658ddc504c1b4d4291c03001"
+    }
+  ],
+  "status": "REFUSED",
+  "source": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
+  "executables": [
+    {
+      "step": "positive-build",
+      "path": "/mnt/bb/jobs/job-fqsj5nc1/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "91242a201d409d8679a5737a187e5d4267766cea6179b426635cf34035999682"
+    },
+    {
+      "step": "positive-build",
+      "path": "/mnt/bb/jobs/job-fqsj5nc1/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "38627b236b014ef4792cb3c23f42e4f4c824f043c740a71af2c603ed62c47262"
+    }
+  ],
+  "error": "step=explicit-provider-docs detail='exit 101; read /mnt/bb/verify-1697/cac82c7/rust/explicit-provider-docs.log and fix the failing input before a changed-source run' recovery='/usr/bin/python3 /mnt/bb/verify-1697/cac82c7/source/rust/proofs/spawn-slots/run.py rust --evidence /mnt/bb/verify-1697/cac82c7/rust'",
+  "seconds": 162.83463162600128
+}
