@@ -108,6 +108,15 @@ kernel completion order and handle IDs on failure; neither emitted a failure
 trace in this run. The remaining 21 failures are routed to the filesystem
 owner. This is not a passing suite.
 
+The subsequent signed source `d09451d7a2a61e66e13a9ff00233c1def5d841d3`
+passed the bb2 compile-only command `cargo test --locked -p acyclic-fs --lib --no-run`
+(job `1793069360883-56931-7a8cd1a0`): 9m11s compilation, 617.9s canonical
+total, and all four cleanup receipt fields true. It binds the fsync test's
+pause to its exact enrolled source and scopes its writer/fsync threads so
+failure releases the pause before joining them. An unrelated mount can no
+longer consume this pause. No runtime suite was rerun, and this distinct test
+interference fix does not diagnose the two intermittent mount failures above.
+
 A new real QEMU/cloud-hypervisor vector requires prepared guest artifacts:
 
 ```powershell
