@@ -227,6 +227,7 @@ async fn interrupted_read(moved: bool) -> TestResult {
             3,
             1,
             Body::Moved(wire::SessionMoved {
+                resume: None,
                 node: Some(wire::SessionNode {
                     node_id: "node".into(),
                     endpoint: String::new(),
