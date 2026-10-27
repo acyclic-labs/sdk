@@ -302,38 +302,6 @@ pub(super) fn serve_vring_packet(
     result
 }
 
-/// Attempt physical delivery from the SAME canonical invalidation pass.
-/// `false` means no guest buffer was consumed: the caller retains its original
-/// PendingInvalidation without acknowledging or moving it into another queue.
-/// An error is terminal transport uncertainty, never permission to retry a
-/// consumed descriptor or acknowledge the notification.
-/// This is a physical primitive, not notification-feature admission. The
-/// eventual frontend profile must support these canonical FUSE message types;
-/// Virtio 1.2's NOTIFICATION bit alone does not establish invalidation support.
-pub(super) fn serve_vring_notification(
-    vring: &mut PacketVring,
-    memory: &GuestRam,
-    message: &[IoSlice<'_>],
-    work: &crate::NativeMaterializationWork,
-    features: RingFeatures,
-) -> Result<bool, NativeMountError> {
-    let result = (|| {
-        let memory = memory.memory();
-        let Some(packet) = pop_packet(vring, memory, work, features.indirect)? else {
-            return Ok(false);
-        };
-        if packet.readable != 0 {
-            return Err(libc::EPROTO.into());
-        }
-        packet.complete(vring, memory.as_ref(), message, work, features.event_idx)?;
-        Ok(true)
-    })();
-    if result.is_err() {
-        vring.fail();
-    }
-    result
-}
-
 fn transport_error(error: impl std::error::Error + Send + Sync + 'static) -> NativeMountError {
     std::io::Error::other(error).into()
 }
