@@ -50,6 +50,20 @@ records eleven actual exchanges. The shared process custodian confirmed workerd'
 process tree retired; the build receipt confirmed all job-home, target and
 temporary-directory cleanup. Hosted Cloudflare qualification remains a live step.
 
+Source `d553734e82cecf83244596872a4e8285ad03e2a0` also passed the unchanged
+lifecycle and expanded shared shell suites against workerd in 16.76 seconds,
+including omitted timeout and long UTF-8 source split across argument boundaries.
+Both native and machine shell admission now uses 1..60 seconds (default 60) and
+1..16384 source bytes; this reduces the prior native shell allowance.
+All unfiltered libraries passed (Daytona 24, Machines 73, conformance 49), as did
+Worker TypeScript, Machines WASM build, TypeScript compilation and all 53 Bun tests.
+Job `1793093958321-149476-5f8c6e43`, log
+`/home/var/log/buildbox/1793093944726-149476-81513db7.log`, completed successfully;
+workerd was positively retired and the receipt confirms job cleanup.
+The separate full harness-core library attempt reported 23 failures and stalled
+in a durable-host test until bb2's existing hang reaper killed it. No complete
+harness-core suite pass or main-baseline equivalence is claimed.
+
 Native snapshot contract: [Cloudflare Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 and [snapshot retention](https://developers.cloudflare.com/containers/guides/snapshots/).
 
