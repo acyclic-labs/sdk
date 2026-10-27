@@ -42,12 +42,13 @@ impl Backend for Local {
     }
 }
 
-#[tokio::test]
-async fn local_native() -> Result {
-    acyclic_agent_host_conformance::verify(&Local { wire: false }).await
+async fn native() -> Result<Local> {
+    Ok(Local { wire: false })
 }
 
-#[tokio::test]
-async fn local_guest_wire() -> Result {
-    acyclic_agent_host_conformance::verify(&Local { wire: true }).await
+async fn guest_wire() -> Result<Local> {
+    Ok(Local { wire: true })
 }
+
+acyclic_agent_host_conformance::suite!(local_native, native);
+acyclic_agent_host_conformance::suite!(local_guest_wire, guest_wire);

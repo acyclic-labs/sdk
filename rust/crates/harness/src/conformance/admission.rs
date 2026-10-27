@@ -1,6 +1,6 @@
 //! Count turn IO independently of scheduler IO. A valid scheduler must read
 //! actor state before it knows which workload admission to verify.
-use crate::{Backend, Result, observe::Observed, vectors};
+use crate::conformance::{Backend, Result, observe::Observed, vectors};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::*,

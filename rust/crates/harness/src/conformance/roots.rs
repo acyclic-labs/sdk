@@ -2,7 +2,7 @@
 //! volumes, and a root's fresh volumes and adoption are one commit prepared
 //! without stream IO. An admission that does not cover the root is refused
 //! before any provider read or write.
-use crate::{Backend, Result, observe::Observed, vectors};
+use crate::conformance::{Backend, Result, observe::Observed, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
 use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_core::{
@@ -106,7 +106,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         _ => audience.clone(),
     };
     let issuer = AuthorityRoot::new("conformance", [7; 32], issued.clone());
-    let agent = crate::fixtures::adopted().agent;
+    let agent = crate::conformance::fixtures::adopted().agent;
     let private = volume(PRIVATE_VOLUME, agent.clone())?;
     let shared = volume("shared", agent.clone())?;
     let mut grants = vec![

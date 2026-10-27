@@ -63,6 +63,6 @@ if ! curl --silent --fail http://127.0.0.1:15482/dex/.well-known/openid-configur
 fi
 docker inspect --format '{{.Image}}' "$container" > "$root/captures/image.txt"
 python3 scripts/be-edge-oidc-capture.py "$root/captures"
-mkdir -p rust/crates/conformance/fixtures/identity/dex
-cp "$root/captures/"* rust/crates/conformance/fixtures/identity/dex/
+mkdir -p rust/crates/harness/fixtures/conformance/identity/dex
+cp "$root/captures/"* rust/crates/harness/fixtures/conformance/identity/dex/
 cargo run -p acyclic-agent-host-conformance --features local --bin oidc-qualify -- "$root/captures"

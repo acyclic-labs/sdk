@@ -5,7 +5,7 @@
 //! turn and produce the same conversation bytes. Protocol fixtures must capture
 //! their actual host binding, invocation and reply; these helpers invent none.
 
-use crate::Result;
+use crate::conformance::Result;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_harness_core::agent::*;
 use acyclic_stream::StreamProvider;

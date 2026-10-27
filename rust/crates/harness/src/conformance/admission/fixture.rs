@@ -8,7 +8,7 @@ pub(crate) struct Fixture {
     scheduler: Arc<Observed>,
     filesystem:
         Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
-    _storage: Box<dyn crate::Storage>,
+    _storage: Box<dyn crate::conformance::Storage>,
 }
 
 impl Fixture {
@@ -17,7 +17,7 @@ impl Fixture {
         let raw = storage.open().await?;
         let scheduler = Arc::new(Observed::new(raw.clone()));
         let provider = Arc::new(Observed::new(raw));
-        let mut adopted = crate::fixtures::adopted();
+        let mut adopted = crate::conformance::fixtures::adopted();
         let path = AgentPath::root(&adopted.agent);
         let reference = ProviderRef::new(
             "conformance".into(),
@@ -44,8 +44,8 @@ impl Fixture {
         host.create(&vectors::intent("create")?, adopted).await?;
         host.send(
             &path,
-            &crate::fixtures::sender(),
-            &crate::fixtures::request("history")?,
+            &crate::conformance::fixtures::sender(),
+            &crate::conformance::fixtures::request("history")?,
         )
         .await?;
         vectors::drain(&host).await?;
@@ -96,8 +96,8 @@ impl Fixture {
         host.host(&self.path)?;
         host.send(
             &self.path,
-            &crate::fixtures::sender(),
-            &crate::fixtures::request("next")?,
+            &crate::conformance::fixtures::sender(),
+            &crate::conformance::fixtures::request("next")?,
         )
         .await?;
         if host.runtime().drain().await.is_empty() {

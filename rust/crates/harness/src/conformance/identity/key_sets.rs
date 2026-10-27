@@ -72,8 +72,9 @@ pub(super) async fn verify(backend: &dyn Backend, now: u64) -> Result {
 
     // The reported RSA/EC mixture exercises the same selection with a real RSA
     // key, including duplicate kid values belonging to other signing families.
-    let dex: Value =
-        serde_json::from_slice(include_bytes!("../../../fixtures/identity/dex/jwks.body"))?;
+    let dex: Value = serde_json::from_slice(include_bytes!(
+        "../../../fixtures/conformance/identity/dex/jwks.body"
+    ))?;
     let rsa = dex["keys"][0].clone();
     let mut other = eligible;
     other["kid"] = rsa["kid"].clone();

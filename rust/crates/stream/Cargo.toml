@@ -30,6 +30,7 @@ name = "browser-test-host"
 required-features = ["grpc", "test-support"]
 
 [features]
+conformance = []
 model-checking = ["dep:loom", "dep:tempfile"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]

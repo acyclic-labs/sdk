@@ -3,7 +3,7 @@
 //! conflict for another prompt's sequence, and dropped once an archive clears
 //! it unanswered. It holds both for a turn that settles in one step and for a
 //! native-style turn that a host process settles later through hooks.
-use crate::{
+use crate::conformance::{
     Backend, Result,
     fixtures::{adopted, sender},
     observe::Observed,
