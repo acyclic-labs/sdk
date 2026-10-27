@@ -11,11 +11,13 @@ pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
     let manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
     Ok(Arc::new(wire::Remote::new(
         manifest,
-        move |bytes: Vec<u8>| -> GuestFuture<'static, Vec<u8>> {
+        move |bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
             let handler = handler.clone();
             Box::pin(async move {
                 let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
-                let transition = handler.on_record(delivery, checkpoint.as_ref()).await?;
+                let transition = handler
+                    .on_record(delivery, checkpoint.as_ref(), cancellation)
+                    .await?;
                 wire::encode_transition(&transition)
             })
         },
@@ -41,6 +43,7 @@ impl Handler for Stalled {
         &'a self,
         _: Delivery,
         _: Option<&'a Checkpoint>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         let aborted = Dropped(self.aborted.clone());
         Box::pin(async move {

@@ -22,7 +22,7 @@ test("the guest artifact runs one agent turn over in-memory host storage", async
     let deliveries = 0;
     agents = fixture.hosting(providers, {
       manifest: () => guest.manifest(),
-      onRecord: (delivery: Uint8Array, signal: AbortSignal) => { deliveries += 1; return guest.onRecord(delivery, signal); },
+      onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => { deliveries += 1; return guest.onRecord(delivery, signal, interrupt); },
     });
     const agent = await agents.create("agent-guest", "hello");
     const entries = await until(() => agents.read(agent, "conversation", 0n, 16), (entries: unknown[]) => entries.length === 1);

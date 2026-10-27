@@ -79,9 +79,10 @@ impl Handler for Participating {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         Box::pin(async move {
-            let mut transition = self.0.on_record(delivery, checkpoint).await?;
+            let mut transition = self.0.on_record(delivery, checkpoint, cancellation).await?;
             transition.participant = Some(Participant {
                 kind: "conformance".into(),
                 plan: bytes::Bytes::new(),

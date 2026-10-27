@@ -136,9 +136,10 @@ impl Handler for DropsAlarmClears {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         async move {
-            let mut transition = self.0.on_record(delivery, checkpoint).await?;
+            let mut transition = self.0.on_record(delivery, checkpoint, cancellation).await?;
             if transition.alarm == AlarmChange::Clear {
                 transition.alarm = AlarmChange::Keep;
             }
@@ -602,6 +603,7 @@ impl Limited {
                 code: crate::domain::CodeSha256::try_from(vec![0xa4; 32])?,
                 codec: conformance::codec(),
                 subscriptions: vec!["inbox".into()],
+                interrupts: Vec::new(),
                 bindings: Vec::new(),
                 limits: crate::domain::ActorLimits::new(timeout_ms, 1 << 20, checkpoint_bytes)?,
             },
@@ -617,11 +619,12 @@ impl Handler for Limited {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         if self.stall {
             return futures::future::pending().boxed();
         }
-        self.package.on_record(delivery, checkpoint)
+        self.package.on_record(delivery, checkpoint, cancellation)
     }
 }
 

@@ -18,6 +18,8 @@ pub(crate) struct Observed {
     pub writes: AtomicUsize,
     calls: AtomicUsize,
     commits: Mutex<Vec<CommitRequest>>,
+    follows: Mutex<Vec<(StreamPath, u64)>>,
+    appends: Mutex<Vec<AppendRequest>>,
     fault: Mutex<Option<(usize, Fault)>>,
     crash: Mutex<Option<(usize, Fault)>>,
 }
@@ -30,6 +32,8 @@ impl Observed {
             writes: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
             commits: Mutex::new(Vec::new()),
+            follows: Mutex::new(Vec::new()),
+            appends: Mutex::new(Vec::new()),
             fault: Mutex::new(None),
             crash: Mutex::new(None),
         }
@@ -49,6 +53,20 @@ impl Observed {
 
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
+    }
+
+    pub fn follows(&self) -> Vec<(StreamPath, u64)> {
+        self.follows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub fn appends(&self) -> Vec<AppendRequest> {
+        self.appends
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn crash_at(&self, at: usize, fault: Fault) {
@@ -134,6 +152,10 @@ impl StreamProvider for Observed {
         self.io(self.inner.bounds(path)).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        self.appends
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(request.clone());
         self.write_call();
         self.io(self.inner.append(request)).await
     }
@@ -151,6 +173,10 @@ impl StreamProvider for Observed {
         from: u64,
         filter: FollowFilter,
     ) -> Result<RecordStream, StreamError> {
+        self.follows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((path.clone(), from));
         self.read_call();
         self.io(self.inner.follow(path, from, filter)).await
     }

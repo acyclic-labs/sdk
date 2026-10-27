@@ -46,7 +46,7 @@ export class EventAgentHost {
       const events = this.events;
       this.host = WasmAgentServer.open(providers, options, owner, registry, access.admission, access.authority, {
         manifest: guest.manifest(),
-        onRecord: (delivery: Uint8Array, signal: AbortSignal) => guest.onRecord(delivery, signal),
+        onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => guest.onRecord(delivery, signal, interrupt),
         policy: (principal: Uint8Array, command: AgentCommand) => access.policy(principal, command),
         admitted: () => recoverable(storage, events),
       });

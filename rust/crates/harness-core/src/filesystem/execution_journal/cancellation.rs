@@ -1,4 +1,4 @@
-//! An agent turn's stop signal, followed during cancellable execution waits.
+//! Runtime-owned delivery cancellation used by execution waits.
 use super::*;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -11,8 +11,7 @@ where
         let Some(stop) = &self.stop else {
             return std::future::pending().await;
         };
-        stop.follow(&*self.stream)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))
+        stop.cancelled().await;
+        Ok(())
     }
 }

@@ -74,6 +74,10 @@ impl Package {
             manifest: Manifest {
                 code: crate::domain::CodeSha256::try_from(vec![0xa4; 32])?,
                 codec: codec(),
+                interrupts: vec![crate::guest::Interrupt {
+                    subscription: "inbox".into(),
+                    value_prefix: Bytes::from_static(b"cancel"),
+                }],
                 subscriptions: vec!["inbox".into()],
                 bindings: Vec::new(),
                 limits: crate::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -95,6 +99,7 @@ impl Handler for Package {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         async move {
             let checkpoint = checkpoint.ok_or_else(|| guest("missing ledger"))?;
@@ -110,6 +115,11 @@ impl Handler for Package {
                             (AlarmChange::Keep, Some(format!("r{sequence}")))
                         }
                         None if command == "clear" => (AlarmChange::Clear, None),
+                        None if command == "cancel" => (AlarmChange::Keep, None),
+                        None if command == "wait" => {
+                            cancellation.cancelled().await;
+                            (AlarmChange::Keep, Some(format!("c{sequence}")))
+                        }
                         Some(("set", delay)) => (
                             AlarmChange::Set {
                                 deadline_unix_ms: delivery
@@ -349,7 +359,21 @@ pub async fn verify<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Fai
     ordered(target, run).await?;
     alarms(target, run).await?;
     paused(target, run).await?;
+    interrupted(target, run).await?;
     restarted(target, run).await
+}
+
+/// A later control interrupts the current handler without consuming the
+/// intervening record or the control. Restart preserves all three cursors.
+async fn interrupted<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let mut actor = Fixture::create(target, run, "interrupted").await?;
+    actor.send("wait").await?;
+    actor.send("emit").await?;
+    actor.send("cancel").await?;
+    actor.expect(&["c0", "r1"]).await?;
+    target.restart().await?;
+    actor.send("emit").await?;
+    actor.expect(&["c0", "r1", "r3"]).await
 }
 
 /// Records are consumed in order, exactly once, by an actor nobody placed.

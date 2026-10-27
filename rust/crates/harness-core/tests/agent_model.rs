@@ -429,6 +429,7 @@ impl TurnDriver for Scripted {
         _agent: &'a AgentState,
         _cursor: u64,
         _input: Option<Queued>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         let next = self.0.lock().expect("script lock").pop_front();
         Box::pin(async move { next.ok_or(Error::Record("script exhausted")) })
@@ -468,6 +469,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
             sequence: 1,
             record: approval.clone(),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let reports = |outs: &[Out]| {
@@ -487,6 +489,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
             sequence: 2,
             record: approval,
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     assert_eq!(reports(&again.outs), 0);
@@ -516,6 +519,7 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
             sequence: 1,
             record: InboxRecord::Approval(Approval { id: intent("q1") }),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let failed = AgentOutcome::Failed {
@@ -564,6 +568,7 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
             sequence: 1,
             record: InboxRecord::Approval(Approval { id: intent("q1") }),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let failed = AgentOutcome::Failed {
@@ -623,9 +628,16 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
             sequence,
             record: request(sequence)?,
         };
-        state = step(&idle, &path, Some(state), sequence + 1, wake)
-            .await?
-            .state;
+        state = step(
+            &idle,
+            &path,
+            Some(state),
+            sequence + 1,
+            wake,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?
+        .state;
     }
     assert_eq!(state.queued.len(), MAX_QUEUED);
     assert_eq!(state.overflow, Some(33));
@@ -642,7 +654,15 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         sequence: 41,
         record: approval.clone(),
     };
-    let after = step(&resumed, &path, Some(state), 42, wake).await?;
+    let after = step(
+        &resumed,
+        &path,
+        Some(state),
+        42,
+        wake,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     state = after.state;
     assert_eq!(after.alarm, Alarm::At(CONTINUE_NOW));
     assert_eq!(state.taken, std::collections::BTreeSet::from([41]));
@@ -686,6 +706,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
             sequence: 1,
             record: archive_record,
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let archives = |outs: &[Out]| {
@@ -696,7 +717,15 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     assert_eq!(archives(&first.outs), MAX_FANOUT);
     assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
     assert!(!first.state.reported);
-    let second = step(&driver, &path, Some(first.state), 2, Wake::Alarm).await?;
+    let second = step(
+        &driver,
+        &path,
+        Some(first.state),
+        2,
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(archives(&second.outs), 40 - MAX_FANOUT);
     assert_eq!(second.alarm, Alarm::Clear);
     assert!(second.state.reported);
@@ -704,7 +733,15 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
         second.outs.last(),
         Some(Out::Send { to, record: InboxRecord::ChildDone(ChildDone { outcome: AgentOutcome::Archived, .. }) }) if *to == root
     ));
-    let third = step(&driver, &path, Some(second.state), 2, Wake::Alarm).await?;
+    let third = step(
+        &driver,
+        &path,
+        Some(second.state),
+        2,
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     assert!(third.outs.is_empty());
     Ok(())
 }
@@ -722,6 +759,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
             sequence: 0,
             record: InboxRecord::ForkAdopted(Box::new(adopted(id(2)))),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await;
     assert!(wrong.is_err());
@@ -734,6 +772,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
             sequence: 0,
             record: cancel("c1"),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await;
     assert!(not_adopted.is_err());
@@ -746,6 +785,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
             sequence: 0,
             record: InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     assert_eq!(adopted_step.state.phase, Phase::Idle);
@@ -869,13 +909,22 @@ async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other()
     // them in order and each records its outcome in the committed state.
     let (root, state) = one_below_the_child_limit()?;
     let driver = script(Vec::new());
-    let first = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let first = step(
+        &driver,
+        &root,
+        Some(state),
+        2,
+        spawn_request(1),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     let second = step(
         &driver,
         &root,
         Some(first.state.clone()),
         3,
         spawn_request(2),
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let (one, child) = requested_child(&root, 1)?;
@@ -905,6 +954,7 @@ impl TurnDriver for ToolSpawner {
         agent: &'a AgentState,
         _cursor: u64,
         _input: Option<Queued>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
         Box::pin(async move {
@@ -933,7 +983,15 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
     let driver = ToolSpawner(Mutex::new(None));
     // The spawn's step carries only the spawn: no turn runs while its child
     // is being created, so none can write to it in the creating commit.
-    let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let requested = step(
+        &driver,
+        &root,
+        Some(state),
+        2,
+        spawn_request(1),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(*driver.0.lock().expect("seen lock"), None);
     let (client, child) = requested_child(&root, 1)?;
     assert_eq!(spawns(&requested.outs), [client.clone()]);
@@ -946,7 +1004,15 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
     );
     // The queued turn continues at once, on the next step.
     assert_eq!(requested.alarm, Alarm::At(CONTINUE_NOW));
-    let stepped = step(&driver, &root, Some(requested.state), 2, Wake::Alarm).await?;
+    let stepped = step(
+        &driver,
+        &root,
+        Some(requested.state),
+        2,
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     // It runs with the client's child open and reachable, and the tool's
     // spawn past the limit is refused rather than failing every retry.
     assert_eq!(
@@ -990,7 +1056,15 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         drops: None,
     }]);
     // A client's spawn meanwhile is refused rather than taking that slot.
-    let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    let requested = step(
+        &driver,
+        &root,
+        Some(state),
+        2,
+        spawn_request(1),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     let (client, _) = requested_child(&root, 1)?;
     assert!(spawns(&requested.outs).is_empty());
     assert_eq!(
@@ -1009,6 +1083,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
             sequence: 2,
             record: InboxRecord::Approval(Approval { id: intent("q") }),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     assert_eq!(spawns(&resumed.outs), [intent("spawn:tool")]);
@@ -1041,6 +1116,7 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
             sequence: 1,
             record: InboxRecord::Approval(Approval { id: intent("q1") }),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let failed = AgentOutcome::Failed {

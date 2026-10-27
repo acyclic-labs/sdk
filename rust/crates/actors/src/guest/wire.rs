@@ -9,8 +9,8 @@
 //! smuggle data the host would ignore.
 
 use super::{
-    AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
-    Manifest, Participant, Transition, Trigger,
+    AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, Effect, GuestError,
+    GuestFuture, Handler, Interrupt, Manifest, Participant, Transition, Trigger,
 };
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{CommitRequest, IdempotencyKey, wire, wire_codec};
@@ -61,6 +61,16 @@ struct ManifestWire {
     bindings: Vec<crate::wire::Binding>,
     #[prost(message, optional, tag = "6")]
     limits: Option<crate::wire::ActorLimits>,
+    #[prost(message, repeated, tag = "7")]
+    interrupts: Vec<InterruptWire>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct InterruptWire {
+    #[prost(string, tag = "1")]
+    subscription: String,
+    #[prost(bytes = "bytes", tag = "2")]
+    value_prefix: Bytes,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
@@ -157,6 +167,14 @@ pub fn encode_manifest(manifest: &Manifest) -> Vec<u8> {
         codec_name: manifest.codec.name.clone(),
         codec_version: manifest.codec.version.clone(),
         subscriptions: manifest.subscriptions.clone(),
+        interrupts: manifest
+            .interrupts
+            .iter()
+            .map(|filter| InterruptWire {
+                subscription: filter.subscription.clone(),
+                value_prefix: filter.value_prefix.clone(),
+            })
+            .collect(),
         bindings: manifest.bindings.iter().cloned().map(Into::into).collect(),
         limits: Some(manifest.limits.into()),
     }
@@ -167,13 +185,21 @@ pub fn encode_manifest(manifest: &Manifest) -> Vec<u8> {
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
     let wire: ManifestWire = canonical(bytes, "manifest")?;
     let limits = wire.limits.ok_or_else(|| invalid("limits"))?;
-    Ok(Manifest {
+    let manifest = Manifest {
         code: domain::CodeSha256::try_from(wire.code.to_vec()).map_err(|_| invalid("code"))?,
         codec: CodecIdentity {
             name: wire.codec_name,
             version: wire.codec_version,
         },
         subscriptions: wire.subscriptions,
+        interrupts: wire
+            .interrupts
+            .into_iter()
+            .map(|filter| Interrupt {
+                subscription: filter.subscription,
+                value_prefix: filter.value_prefix,
+            })
+            .collect(),
         bindings: wire
             .bindings
             .into_iter()
@@ -181,7 +207,9 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
             .collect::<Result<_, _>>()
             .map_err(|_| invalid("binding"))?,
         limits: domain::ActorLimits::try_from(limits).map_err(|_| invalid("limits"))?,
-    })
+    };
+    manifest.validate_interrupts()?;
+    Ok(manifest)
 }
 
 /// Encode one delivery and the actor's committed checkpoint for a guest.
@@ -322,7 +350,8 @@ pub struct Remote<F> {
 
 impl<F> Remote<F>
 where
-    F: Fn(Vec<u8>) -> GuestFuture<'static, Vec<u8>> + acyclic_stream::ProviderPlatform,
+    F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
+        + acyclic_stream::ProviderPlatform,
 {
     /// The guest of `manifest`, as [`decode_manifest`] admitted it.
     pub const fn new(manifest: Manifest, call: F) -> Self {
@@ -332,7 +361,8 @@ where
 
 impl<F> Handler for Remote<F>
 where
-    F: Fn(Vec<u8>) -> GuestFuture<'static, Vec<u8>> + acyclic_stream::ProviderPlatform,
+    F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
+        + acyclic_stream::ProviderPlatform,
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -342,8 +372,9 @@ where
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: CancellationToken,
     ) -> GuestFuture<'a, Transition> {
-        let call = (self.call)(encode_delivery(&delivery, checkpoint));
+        let call = (self.call)(encode_delivery(&delivery, checkpoint), cancellation);
         Box::pin(async move { decode_transition(&call.await?) })
     }
 }
@@ -417,6 +448,21 @@ mod tests {
         assert_eq!(decode_delivery(&bytes)?, (delivery, Some(committed)));
         bytes.extend_from_slice(&[0x40, 0x01]);
         assert!(decode_delivery(&bytes).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn interrupt_filters_round_trip_and_refuse_empty_or_undeclared_prefixes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let package = crate::conformance::Package::new()?;
+        let mut manifest = decode_manifest(&encode_manifest(package.manifest()))?;
+        let encoded = encode_manifest(&manifest);
+        assert_eq!(encode_manifest(&decode_manifest(&encoded)?), encoded);
+        manifest.interrupts[0].value_prefix = Bytes::new();
+        assert!(decode_manifest(&encode_manifest(&manifest)).is_err());
+        manifest.interrupts[0].value_prefix = Bytes::from_static(b"stop");
+        manifest.interrupts[0].subscription = "another-subscription".into();
+        assert!(decode_manifest(&encode_manifest(&manifest)).is_err());
         Ok(())
     }
 }

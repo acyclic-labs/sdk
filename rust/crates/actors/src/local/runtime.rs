@@ -6,6 +6,8 @@
 //! dispatcher polls with that registration's waker.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
+mod dispatcher;
+mod interrupt;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
@@ -17,9 +19,10 @@ use acyclic_stream::{
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, hash_map::RandomState},
     convert::Infallible,
     future::poll_fn,
+    hash::BuildHasher,
     sync::Arc,
     task::{Context, Poll, Waker},
 };
@@ -103,7 +106,8 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
-    actors: SyncMutex<HashMap<ActorReference, Arc<Slot>>>,
+    actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
+    shards: RandomState,
     /// Identity of this runtime's placement attempts: two hosts claiming the
     /// same cut never share an idempotency key, so only one claim commits.
     instance: uuid::Uuid,
@@ -118,7 +122,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             handler,
             clock,
             ready: ReadySet::default(),
-            actors: SyncMutex::new(HashMap::new()),
+            actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
+            shards: RandomState::new(),
             instance: uuid::Uuid::new_v4(),
         }
     }
@@ -156,7 +161,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             return Err(Error::Invalid("actor is outside this runtime's claims"));
         }
         let mut actors = self
-            .actors
+            .shard(&actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(slot) = actors.get(&actor) {
@@ -181,7 +186,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// settle before releasing. Its durable state is untouched.
     pub fn release(&self, actor: &ActorReference) -> bool {
         let mut actors = self
-            .actors
+            .shard(actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(slot) = actors.get(actor) else {
@@ -273,10 +278,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 path: root.clone(),
                 records: vec![b"open".to_vec().into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: Some(key(
+                    &Snapshot {
+                        path: root.clone(),
+                        tail: 0,
+                        anchor: None,
+                        state: None,
+                    },
+                    "open",
+                )?),
             })
             .await?;
-        let mut created = provider.follow(root, 0, FollowFilter::default()).await?;
+        let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
+        let mut dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
+        // A cursor alone would forget all previously discovered subscriptions
+        // and alarms. Rebuild residents from current state names, without
+        // replaying their creation history. New creations race safely with the
+        // enumeration: the follow starts at the checkpoint read BEFORE it.
+        self.restore().await?;
+        let from = dispatcher
+            .state()
+            .and_then(|state| state.cursor("activation"))
+            .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
+        let mut created = provider.follow(root, from, FollowFilter::default()).await?;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxProviderFuture<'static, ()>)> = None;
         loop {
@@ -318,6 +342,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     {
                         self.track(actor)?;
                     }
+                    dispatcher = self
+                        .advance_dispatcher(&dispatch_store, dispatcher, &record)
+                        .await?;
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> =
@@ -339,11 +366,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     fn slot(&self, actor: &ActorReference) -> Option<Arc<Slot>> {
-        self.actors
+        self.shard(actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(actor)
             .cloned()
+    }
+
+    fn shard(&self, actor: &ActorReference) -> &SyncMutex<HashMap<ActorReference, Arc<Slot>>> {
+        &self.actors[(self.shards.hash_one(actor) as usize) % self.actors.len()]
     }
 
     async fn execute(
@@ -371,6 +402,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         slot: &Slot,
         inputs: Inputs,
     ) -> Result<(), Error> {
+        self.handler.manifest().validate_interrupts()?;
         let mut inner = slot.inner.lock().await;
         if inner.released {
             return Ok(());
@@ -456,6 +488,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
+            let cancellation = crate::guest::CancellationToken::new();
+            self.interrupt_follows(&mut inner, state, &trigger).await?;
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
@@ -468,18 +502,32 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     record: record.clone(),
                 },
                 state.checkpoint(),
+                cancellation.clone(),
             );
-            let transition = match futures::future::select(
-                handled,
-                sleep(limits.handler_timeout_millis()),
-            )
-            .await
-            {
-                futures::future::Either::Left((transition, _)) => transition?,
-                futures::future::Either::Right(_) => {
-                    return Err(Error::Invalid("handler exceeded its manifest timeout"));
+            let result = {
+                let interrupted = self.interrupt(&mut inner, cancellation);
+                futures::pin_mut!(interrupted);
+                match futures::future::select(
+                    handled,
+                    futures::future::select(sleep(limits.handler_timeout_millis()), interrupted),
+                )
+                .await
+                {
+                    futures::future::Either::Left((transition, _)) => {
+                        transition.map_err(Error::from)
+                    }
+                    futures::future::Either::Right((futures::future::Either::Left(_), _)) => {
+                        Err(Error::Invalid("handler exceeded its manifest timeout"))
+                    }
+                    futures::future::Either::Right((
+                        futures::future::Either::Right((error, _)),
+                        _,
+                    )) => Err(error),
                 }
             };
+            // Release any pending provider I/O before checkpoint publication.
+            inner.follows.clear();
+            let transition = result?;
             if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
                 > limits.checkpoint_bytes()
             {

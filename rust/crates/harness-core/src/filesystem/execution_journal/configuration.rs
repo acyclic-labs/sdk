@@ -260,7 +260,7 @@ where
 
     /// Cancels the turn's model calls and tools once `stop` fires.
     #[must_use]
-    pub fn with_stop(mut self, stop: Arc<crate::agent::TurnStop>) -> Self {
+    pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
         self.stop = Some(stop);
         self
     }

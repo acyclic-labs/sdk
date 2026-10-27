@@ -82,7 +82,7 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     /// from the agent's own conversation stream; any other selection is refused.
     bound_selection: Option<crate::projection::SelectedModelContext>,
     /// An agent turn's stop signal, followed as the executor's cancellation.
-    stop: Option<Arc<crate::agent::TurnStop>>,
+    stop: Option<acyclic_actors::guest::CancellationToken>,
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,

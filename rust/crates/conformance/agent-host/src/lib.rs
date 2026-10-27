@@ -6,8 +6,10 @@
 
 mod admission;
 mod approvals;
+mod dispatcher;
 pub mod fixtures;
 mod identity;
+mod interrupt;
 mod observe;
 pub mod protocol;
 mod publication;
@@ -68,6 +70,11 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     identified("roots", roots::verify(backend).await)?;
     identified("approvals", approvals::verify(backend).await)?;
     identified("guest wire", wire::verify(backend).await)?;
+    identified("runtime interrupt (G41)", interrupt::verify(backend).await)?;
+    identified(
+        "activation checkpoint (G40)",
+        dispatcher::verify(backend).await,
+    )?;
     identified("restart", vectors::restart(backend).await)?;
     identified("serving protocol", protocol::verify(backend).await)?;
     Ok(())

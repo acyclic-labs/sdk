@@ -74,6 +74,7 @@ impl TurnDriver for Driver {
         _agent: &'a AgentState,
         _cursor: u64,
         input: Option<Queued>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let id = match input.map(|queued| queued.input) {
