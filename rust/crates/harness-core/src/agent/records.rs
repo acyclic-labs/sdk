@@ -9,8 +9,11 @@ use super::{AgentId, AgentPath, Error};
 use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
-/// Largest encoded inbox, status or close record. Payloads live in volume files.
-pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+/// Largest agent record. Every part of one is bounded (paths by
+/// [`super::MAX_DEPTH`], file and volume references by the conversation
+/// maxima, texts by their own limits), so every record a step builds is
+/// within this; `checkpoint`'s bound test checks each kind at its worst.
+pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 /// Largest intent identity.
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Largest failure message carried in a record.

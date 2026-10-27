@@ -130,6 +130,9 @@ impl FileDescriptor {
         if byte_length > MAX_EXACT_JS_INTEGER {
             return Some("file byte length exceeds cross-language precision");
         }
+        if media_type.len() > MAX_LABEL_BYTES {
+            return Some("media type is invalid");
+        }
         let Some((kind, subtype)) = media_type.split_once('/') else {
             return Some("media type is invalid");
         };

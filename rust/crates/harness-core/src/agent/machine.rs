@@ -23,14 +23,12 @@ pub const MAX_QUEUED: usize = 32;
 /// Most encoded bytes of the inputs held in the checkpoint behind the first:
 /// the window always holds its front input, and holds more only within this.
 pub const MAX_QUEUED_BYTES: usize = 8 * 1024;
-/// Largest encoded outcome a turn may settle with. It travels in the parent's
-/// `ChildDone` next to the child's path, so it is well within that record.
-pub const MAX_OUTCOME_BYTES: usize = 8 * 1024;
+/// Largest encoded outcome a turn may settle with: above every success, whose
+/// one file reference is bounded, so only an overlong failure message is
+/// replaced. It travels in the parent's `ChildDone` next to the child's path.
+pub const MAX_OUTCOME_BYTES: usize = 16 * 1024;
 /// The failure an agent settles with when its own state cannot be checkpointed.
 pub const OVERSIZED_STATE: &str = "agent state exceeds MAX_CHECKPOINT_BYTES";
-/// The failure an agent settles with when a step would append a record
-/// beyond its limit; that record is not appended.
-pub const OVERSIZED_RECORD: &str = "agent step appends a record beyond its limit";
 /// The failure a turn settles with when its outcome exceeds [`MAX_OUTCOME_BYTES`].
 pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 
@@ -446,12 +444,6 @@ pub async fn step<T: TurnDriver + ?Sized>(
         run(driver, &mut state, cursor, alarm_wake, &mut outs).await?;
     }
     apply_spawns(&mut state, &mut outs, applied);
-    // Every record the step appends must fit its record limit: one that does
-    // not is never appended, and the agent fails visibly instead of retrying
-    // a commit that can never be built.
-    if drop_unappendable(&mut state, &mut outs, cursor) {
-        shed(&mut state, &mut outs, OVERSIZED_RECORD);
-    }
     // The one point every state passes before it is checkpointed: one that
     // would not fit fails the agent visibly, shedding everything a step can
     // grow, so no step ever produces a record its stream refuses.
@@ -554,7 +546,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
 }
 
 /// The turn input an inbox record at `sequence` carries.
-fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
+pub(super) fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
     match record {
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
@@ -641,45 +633,6 @@ async fn run<T: TurnDriver + ?Sized>(
         _ => Phase::Idle,
     };
     Ok(())
-}
-
-/// Drops each out whose record would exceed its limit, and the child a
-/// dropped spawn opened; whether any was dropped. Conversation entries, sends
-/// and spawn adoptions carry driver and tool content; an archive and the
-/// records [`shed`] adds are built from bounded parts, which `checkpoint`'s
-/// tests check at the configured limits.
-fn drop_unappendable(state: &mut AgentState, outs: &mut Vec<Out>, cursor: u64) -> bool {
-    let fits: Vec<bool> = outs
-        .iter()
-        .map(|out| match out {
-            Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
-            Out::Send { record, .. } => super::AgentRecord::encode(record).is_ok(),
-            Out::Spawn {
-                intent, volumes, ..
-            } => super::commit::spawn(
-                &state.path,
-                intent,
-                cursor,
-                super::lower::adoption(state, volumes, cursor, u64::MAX),
-            )
-            .is_ok(),
-            Out::Archive { .. } => true,
-        })
-        .collect();
-    if fits.iter().all(|fits| *fits) {
-        return false;
-    }
-    let mut fits = fits.into_iter();
-    outs.retain(|out| {
-        let keep = fits.next().unwrap_or(true);
-        if let (false, Out::Spawn { intent, .. }) = (keep, out)
-            && let Ok(child) = state.spawned(intent)
-        {
-            state.open_children.remove(&child);
-        }
-        keep
-    });
-    true
 }
 
 /// `outcome`, or a failure naming it oversized: the parent's `ChildDone`

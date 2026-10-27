@@ -167,7 +167,12 @@ fn descriptor_checks_exact_bytes() -> Result<()> {
 
 #[test]
 fn configured_limits_reject_oversized_references() -> Result<()> {
-    Limits::default().validate_file(&file(AgentId::new(), &"x".repeat(4_097))?, &mut None)?;
+    Limits::default().validate_file(
+        &file(AgentId::new(), &"x".repeat(MAX_PATH_BYTES))?,
+        &mut None,
+    )?;
+    // Every reference is bounded by the protocol maxima, whatever the limits.
+    assert!(file(AgentId::new(), &"x".repeat(MAX_PATH_BYTES + 1)).is_err());
     let file = file(AgentId::new(), "message.txt")?;
     let mut limits = Limits {
         file_bytes: 4,
