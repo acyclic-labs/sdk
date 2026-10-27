@@ -3,6 +3,7 @@
 //! These are the exact commit shapes of the wave-2 agent model, expressed with
 //! public provider operations only: spawn (subtree fork + adoption record +
 //! companion writes), a closed inbox, inherited follows and fork-of-fork lineage.
+use futures::TryFutureExt as _;
 use super::fork::{absent, append, facts, key, path, values};
 use super::{Failure, History, Invariant};
 use crate::{
@@ -491,7 +492,7 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
     let missing = path(history, "/children/missing/conversation")?;
     match history
         .provider
-        .follow(missing.clone(), 0, FollowFilter::default())
+        .follow(crate::FollowRequest { path: missing.clone(), from: 0, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await
     {
         Err(StreamError::NotFound) => {}
@@ -525,14 +526,14 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
         "follow_source",
         history
             .provider
-            .follow(source.clone(), 2, FollowFilter::default())
+            .follow(crate::FollowRequest { path: source.clone(), from: 2, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await,
     )?;
     let mut inherited_follow = history.result(
         "follow_inherited",
         history
             .provider
-            .follow(inherited.clone(), 1, FollowFilter::default())
+            .follow(crate::FollowRequest { path: inherited.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await,
     )?;
     // Source first: a shared wake or shared history would surface it in the child.

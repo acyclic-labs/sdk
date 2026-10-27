@@ -167,19 +167,14 @@ impl StreamProvider for Observed {
         self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.read(request)).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
         self.follows
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .push((path.clone(), from));
+            .push((request.path.clone(), request.from));
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);
-        self.io(self.inner.follow(path, from, filter)).await
+        self.io(self.inner.follow(request)).await
     }
     async fn children_page(
         &self,

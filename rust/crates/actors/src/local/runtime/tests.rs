@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
@@ -617,7 +618,7 @@ async fn created<P: StreamProvider + ?Sized>(
     wake: StreamPath,
     path: StreamPath,
 ) -> TestResult {
-    let mut wakes = provider.follow(wake, 0, FollowFilter::default()).await?;
+    let mut wakes = provider.follow(acyclic_stream::FollowRequest { path: wake, from: 0, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only).await?;
     loop {
         match provider.tail(path.clone()).await {
             Ok(_) => return Ok(()),

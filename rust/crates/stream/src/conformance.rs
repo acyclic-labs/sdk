@@ -14,6 +14,7 @@ pub mod wave1 {
 pub use backend::injected;
 pub use backend::{Backend, Failure, Fixture, Measurement, bench, suite, verify};
 
+use futures::TryFutureExt as _;
 use crate::OwnedBytes as Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
 
@@ -195,7 +196,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         return Err(StreamError::Unavailable);
     }
     let mut follow = provider
-        .follow(child.clone(), 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest { path: child.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await?;
     provider
         .append(AppendRequest {

@@ -419,8 +419,16 @@ async fn commit_retry<P: StreamProvider + ?Sized>(history: &History<'_, P>) -> R
         Invariant::StableKeyRetry,
         matches!(success, CommitOutcome::Committed(_)),
     )?;
+    let envelope = match &success {
+        CommitOutcome::Committed(receipt) => fork::facts(history, receipt).await?,
+        CommitOutcome::Conflict(_) => return Err(Failure::Violation {
+            case: history.case,
+            step: "committed_facts",
+            invariant: Invariant::RecoveryMatchesReceipt,
+        }),
+    };
     history
-        .require_recovery(IdempotencyOutcome::Commit(success.clone()))
+        .require_recovery(IdempotencyOutcome::Commit(envelope.clone()))
         .await?;
     let replay = history.result("replay_commit", history.provider.commit(request).await)?;
     history.check("replay_commit", Invariant::ExactReplay, replay == success)?;
@@ -432,7 +440,7 @@ async fn commit_retry<P: StreamProvider + ?Sized>(history: &History<'_, P>) -> R
             .await,
     )?;
     history
-        .require_recovery(IdempotencyOutcome::Commit(success))
+        .require_recovery(IdempotencyOutcome::Commit(envelope))
         .await?;
     history.require_values(&[b"seed", b"intent"]).await
 }
@@ -450,8 +458,16 @@ async fn absent_zero_tail<P: StreamProvider + ?Sized>(
         Invariant::ZeroTailAbsence,
         matches!(success, CommitOutcome::Committed(_)),
     )?;
+    let envelope = match &success {
+        CommitOutcome::Committed(receipt) => fork::facts(history, receipt).await?,
+        CommitOutcome::Conflict(_) => return Err(Failure::Violation {
+            case: history.case,
+            step: "committed_facts",
+            invariant: Invariant::RecoveryMatchesReceipt,
+        }),
+    };
     history
-        .require_recovery(IdempotencyOutcome::Commit(success.clone()))
+        .require_recovery(IdempotencyOutcome::Commit(envelope.clone()))
         .await?;
     let replay = history.result("replay_zero", history.provider.commit(request).await)?;
     history.check("replay_zero", Invariant::ExactReplay, replay == success)?;

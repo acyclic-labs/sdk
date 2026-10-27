@@ -5,6 +5,7 @@
 //! state root. The suite creates actors with the companion create mutation,
 //! appends commands to their inboxes and observes their committed outboxes;
 //! only pause/resume and restart go through [`Backend`].
+use futures::TryFutureExt as _;
 use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
@@ -329,16 +330,12 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         // The outbox is created by a publication, which always appends the
         // actor's state in the same commit: wake on state records until it exists.
         let mut state = provider
-            .follow(
-                self.target.store().path(&self.actor)?,
-                0,
-                FollowFilter::default(),
-            )
+            .follow(acyclic_stream::FollowRequest { path: self.target.store().path(&self.actor)?, from: 0, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
             .await
             .map_err(Error::from)?;
         let mut follow = loop {
             match provider
-                .follow(self.outbox.clone(), 0, FollowFilter::default())
+                .follow(acyclic_stream::FollowRequest { path: self.outbox.clone(), from: 0, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
                 .await
             {
                 Ok(follow) => break follow,
