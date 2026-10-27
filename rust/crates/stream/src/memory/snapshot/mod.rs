@@ -173,6 +173,11 @@ fn decode(encoded: &[u8]) -> Option<State> {
     let inventory = std::mem::take(&mut state.retained);
     let builder = MemoryStream::default();
     for envelope in inventory.iter().filter_map(Retained::envelope) {
+        if envelope.committed_at_micros < state.last_committed_at_micros
+            || envelope.committed_at_micros > time
+        {
+            return None;
+        }
         for mutation in &envelope.mutations {
             match mutation {
                 CommittedMutation::Append(append) => {
@@ -214,6 +219,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
         )
         .ok()?;
         state.decision = state.decision.checked_add(1)?;
+        state.last_committed_at_micros = envelope.committed_at_micros;
     }
     state.retained = inventory;
     state.decision = decision;
