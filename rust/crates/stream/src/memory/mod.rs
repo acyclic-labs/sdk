@@ -82,6 +82,7 @@ include!("history_cursor.rs");
 include!("work.rs");
 
 include!("commit.rs");
+include!("receipt.rs");
 
 #[cfg(test)]
 impl UnixMillisClock for std::sync::atomic::AtomicU64 {

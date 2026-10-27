@@ -302,6 +302,7 @@ message CommittedMutation {
 message CommittedEnvelope {
   bytes commit_id = 1;
   repeated CommittedMutation mutations = 2;
+  uint64 committed_at_micros = 3;
 }
 
 message TailCommitConflict {
@@ -339,9 +340,22 @@ message CommitConflicts {
 
 message CommitResponse {
   oneof outcome {
-    CommittedEnvelope committed = 1;
+    CommitReceipt committed = 1;
     CommitConflicts conflict = 2;
   }
+}
+
+message AppendRange {
+  string path = 1;
+  uint64 start = 2;
+  uint64 tail = 3;
+}
+
+message CommitReceipt {
+  bytes commit_id = 1;
+  uint64 committed_at_micros = 2;
+  repeated AppendRange appends = 3;
+  repeated ForkReceipt forks = 4;
 }
 
 message ReadCommitRequest {

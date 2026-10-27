@@ -1,0 +1,81 @@
+/// The affected range of one append, without echoing its record values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppendRange {
+    /// Destination path.
+    pub path: StreamPath,
+    /// First sequence assigned by this commit.
+    pub start: u64,
+    /// Exclusive resulting tail.
+    pub tail: u64,
+}
+
+/// Compact acknowledgment of one atomic publication. Full immutable records
+/// remain available through `StreamProvider::read_commit`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitReceipt {
+    /// Identity shared by every record and fork in this publication.
+    pub commit_id: CommitId,
+    /// Canonical publication time, including publications with no new records.
+    pub committed_at_micros: u64,
+    /// Assigned append ranges, in request order.
+    pub appends: Vec<AppendRange>,
+    /// Captured fork cuts, in request order.
+    pub forks: Vec<ForkReceipt>,
+}
+
+impl CommitReceipt {
+    pub(crate) fn project(
+        envelope: &CommittedEnvelope,
+        time: u64,
+        mut appends: Vec<AppendRange>,
+        mut forks: Vec<ForkReceipt>,
+        mut inspect: impl FnMut() -> Result<(), StreamError>,
+    ) -> Result<Self, StreamError> {
+        for mutation in &envelope.mutations {
+            inspect()?;
+            match mutation {
+                CommittedMutation::Append(append) => appends.push(AppendRange {
+                    path: append.path.clone(), start: append.start, tail: append.tail,
+                }),
+                CommittedMutation::Fork(fork) => forks.push(ForkReceipt {
+                    source: fork.source.clone(), destination: fork.destination.clone(),
+                    forked_at: fork.forked_at, tail: fork.tail, commit_id: envelope.commit_id,
+                }),
+            }
+        }
+        Ok(Self { commit_id: envelope.commit_id, committed_at_micros: time, appends, forks })
+    }
+
+    pub(crate) fn matches_envelope(&self, envelope: &CommittedEnvelope) -> bool {
+        self.commit_id == envelope.commit_id
+            && self.committed_at_micros == envelope.committed_at_micros
+            && self.appends.iter().map(|a| (&a.path, a.start, a.tail)).eq(
+                envelope.mutations.iter().filter_map(|mutation| match mutation {
+                    CommittedMutation::Append(a) => Some((&a.path, a.start, a.tail)),
+                    CommittedMutation::Fork(_) => None,
+                }))
+            && self.forks.iter().map(|f| (&f.source, &f.destination, f.forked_at, f.tail, f.commit_id)).eq(
+                envelope.mutations.iter().filter_map(|mutation| match mutation {
+                    CommittedMutation::Fork(f) => Some((&f.source, &f.destination, f.forked_at, f.tail, envelope.commit_id)),
+                    CommittedMutation::Append(_) => None,
+                }))
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        let count = self.appends.len().checked_add(self.forks.len())
+            .ok_or(StreamError::InvalidArgument)?;
+        if count == 0 || count > MAX_ITEMS
+            || self.appends.windows(2).any(|pair| pair[0].path >= pair[1].path)
+            || self.forks.windows(2).any(|pair| pair[0].destination >= pair[1].destination)
+            || self.appends.iter().any(|a| a.start >= a.tail
+                || a.tail - a.start > MAX_ITEMS as u64
+                || self.forks.binary_search_by(|f| f.destination.cmp(&a.path)).is_ok())
+            || self.forks.iter().any(|f| f.source == f.destination
+                || f.forked_at > f.tail || f.tail - f.forked_at > MAX_ITEMS as u64
+                || f.commit_id != self.commit_id)
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(())
+    }
+}

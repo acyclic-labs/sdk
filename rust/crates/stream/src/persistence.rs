@@ -85,8 +85,8 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
                 return Err(StreamError::InvalidArgument);
             }
         }
-        IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => {
-            validate_envelope(envelope)?;
+        IdempotencyOutcome::Commit(CommitOutcome::Committed(receipt)) => {
+            receipt.validate()?;
         }
         IdempotencyOutcome::Commit(CommitOutcome::Conflict(conflicts)) => {
             if conflicts.is_empty() || conflicts.len() > MAX_ITEMS {
@@ -133,7 +133,7 @@ fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
         return Err(StreamError::InvalidArgument);
     }
     let mut previous: Option<&StreamPath> = None;
-    let mut time = None;
+    let mut time = Some(value.committed_at_micros);
     for mutation in &value.mutations {
         let (path, start, end, records) = match mutation {
             CommittedMutation::Append(append) => {

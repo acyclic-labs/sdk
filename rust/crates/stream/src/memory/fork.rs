@@ -38,8 +38,9 @@ impl MemoryStream {
             tail: forked_at,
             commit_id,
         };
-        let envelope = CommittedEnvelope {
+        let mut envelope = CommittedEnvelope {
             commit_id,
+            committed_at_micros: 0,
             mutations: vec![CommittedMutation::Fork(CommittedFork {
                 exclude: crate::request::canonical_exclusions(&request.exclude)?,
                 source: receipt.source.clone(),
@@ -56,6 +57,11 @@ impl MemoryStream {
             bytes: 0,
             install: move |state: &mut State, _durable| {
                 let _holds = (_histories, _paths);
+                let time = crate::preparation::committed_time(
+                    state.last_committed_at_micros,
+                    self.commit_clock.now_unix_millis(),
+                );
+                bind_envelope(&mut envelope, commit_id, time);
                 publish(
                     state,
                     paths,
@@ -64,6 +70,7 @@ impl MemoryStream {
                     &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
                 )?;
                 state.decision = decision;
+                state.last_committed_at_micros = time;
                 retain(
                     state,
                     &mut || self.record_replay_probe(&mut probes),

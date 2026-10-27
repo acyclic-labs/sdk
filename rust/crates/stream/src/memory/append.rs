@@ -83,6 +83,7 @@ impl MemoryStream {
         self.reserve_retained(state)?;
         let mut envelope = CommittedEnvelope {
             commit_id,
+            committed_at_micros: 0,
             mutations: facts,
         };
         Ok(Decision::Accepted {

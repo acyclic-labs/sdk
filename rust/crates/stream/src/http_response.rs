@@ -136,6 +136,7 @@ fn envelope_value(value: &wire::CommittedEnvelope) -> Result<Value> {
     Ok(json!({
         "commitId": STANDARD.encode(&value.commit_id),
         "mutations": mutations,
+        "committedAtMicros": value.committed_at_micros.to_string(),
     }))
 }
 
@@ -199,28 +200,16 @@ fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
 
 fn commit_value(value: wire::CommitResponse) -> Result<Value> {
     Ok(match value.outcome.ok_or("invalid_response")? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            let envelope_json = envelope_value(&envelope)?;
-            validate("commits/read", &envelope_json)?;
-            let mut tails = serde_json::Map::new();
-            let mut forks = Vec::new();
-            for mutation in &envelope.mutations {
-                match mutation.mutation.as_ref().ok_or("invalid_response")? {
-                    wire::committed_mutation::Mutation::Append(value) => {
-                        tails.insert(value.path.clone(), json!(value.tail.to_string()));
-                    }
-                    wire::committed_mutation::Mutation::Fork(value) => forks.push(json!({
-                        "path": value.destination,
-                        "tail": value.tail.to_string(),
-                    })),
-                }
-            }
+        wire::commit_response::Outcome::Committed(receipt) => {
+            crate::wire_codec::receipt_from_wire(receipt.clone()).map_err(|_| "invalid_response")?;
             json!({
                 "ok": true,
-                "commitId": STANDARD.encode(envelope.commit_id),
-                "tails": tails,
-                "forks": forks,
-                "envelope": envelope_json,
+                "commitId": STANDARD.encode(receipt.commit_id),
+                "committedAtMicros": receipt.committed_at_micros.to_string(),
+                "appends": receipt.appends.into_iter().map(|range| json!({
+                    "path": range.path, "start": range.start.to_string(), "tail": range.tail.to_string(),
+                })).collect::<Vec<_>>(),
+                "forks": receipt.forks.into_iter().map(fork_value).collect::<Vec<_>>(),
             })
         }
         wire::commit_response::Outcome::Conflict(conflicts) => json!({

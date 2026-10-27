@@ -64,14 +64,13 @@ impl MemoryStream {
         for value in [&mut plan.result, &mut plan.cached] {
             let append = append_mut(value);
             append.start = expected;
-            append.end = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
-            append.tail = append.end;
-            append
-                .records
-                .first_mut()
-                .ok_or(StreamError::Unavailable)?
-                .sequence = expected;
+            append.tail = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
         }
+        let fact = envelope_append_mut(&mut plan.envelope);
+        fact.start = expected;
+        fact.end = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+        fact.tail = fact.end;
+        fact.records.first_mut().ok_or(StreamError::Unavailable)?.sequence = expected;
         history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
             expected;
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
@@ -97,7 +96,7 @@ impl MemoryStream {
         let codec = work.record(NativeCodecReservation::new(
             Arc::clone(&work.meter),
             NativeCodecWork {
-                copied: (3 * std::mem::size_of::<Record>())
+                copied: (2 * std::mem::size_of::<Record>())
                     .max(4 * std::mem::size_of::<CommitConflict>()) as u64,
                 hashed: maximum_hash + identity_bytes(),
                 ..NativeCodecWork::default()
@@ -201,7 +200,7 @@ impl MemoryStream {
                     return Ok((None, None));
                 };
                 let (value, claim) = copy_outcome(
-                    &stored.result,
+                    stored,
                     &recovery_conditions,
                     maximum,
                     prototype,
@@ -209,12 +208,11 @@ impl MemoryStream {
                 )?;
                 observed = observed
                     .take()
-                    .or(bytes.record(envelope_payload_bytes(&value)).err());
-                observed = observed
-                    .take()
                     .or(record_codec(&mut codec, copied_bytes(&value), 0).err());
                 if let CommitOutcome::Committed(_) = &value {
-                    let append = append(&value);
+                    let envelope = stored.envelope().ok_or(StreamError::IdempotencyMismatch)?;
+                    observed = observed.take().or(bytes.record(envelope_payload_bytes(envelope)).err());
+                    let append = envelope_append(envelope);
                     let (digest, hashed) = digest(
                         &recovery_conditions,
                         &append.path,
@@ -290,7 +288,7 @@ impl PreparedCommit {
                     return Err(StreamError::IdempotencyMismatch);
                 }
                 let result = copy_outcome(
-                    &stored.result,
+                    stored,
                     &self.conditions,
                     body.payload_bytes(),
                     (self.plan.result, self.plan.output_claim),
@@ -329,7 +327,7 @@ impl PreparedCommit {
                     self.plan.bind(id, time)?;
                     let _ = work.record(record_codec(
                         &mut self.codec,
-                        3 * std::mem::size_of::<Record>() as u64,
+                        2 * std::mem::size_of::<Record>() as u64,
                         identity_bytes(),
                     ));
                     self.plan.publish(
@@ -381,33 +379,41 @@ fn prepared_hash_bytes(request: &CommitRequest, maximum: usize) -> u64 {
 }
 
 fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), StreamError> {
-    for value in [&mut plan.result, &mut plan.cached] {
-        let record = append_mut(value)
-            .records
-            .first_mut()
-            .ok_or(StreamError::Unavailable)?;
-        record.value = body.value.clone();
-        record.headers = body.headers.clone();
-    }
+    let record = envelope_append_mut(&mut plan.envelope).records.first_mut()
+        .ok_or(StreamError::Unavailable)?;
+    record.value = body.value.clone();
+    record.headers = body.headers.clone();
     let record = history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?;
     record.value = body.value;
     record.headers = body.headers;
     Ok(())
 }
 
-fn append(value: &CommitOutcome) -> &crate::CommittedAppend {
-    let CommitOutcome::Committed(envelope) = value else {
+fn append(value: &CommitOutcome) -> &crate::AppendRange {
+    let CommitOutcome::Committed(receipt) = value else {
         unreachable!()
     };
+    let [append] = receipt.appends.as_slice() else {
+        unreachable!()
+    };
+    append
+}
+fn append_mut(value: &mut CommitOutcome) -> &mut crate::AppendRange {
+    let CommitOutcome::Committed(receipt) = value else {
+        unreachable!()
+    };
+    let [append] = receipt.appends.as_mut_slice() else {
+        unreachable!()
+    };
+    append
+}
+fn envelope_append(envelope: &CommittedEnvelope) -> &crate::CommittedAppend {
     let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
         unreachable!()
     };
     append
 }
-fn append_mut(value: &mut CommitOutcome) -> &mut crate::CommittedAppend {
-    let CommitOutcome::Committed(envelope) = value else {
-        unreachable!()
-    };
+fn envelope_append_mut(envelope: &mut CommittedEnvelope) -> &mut crate::CommittedAppend {
     let [CommittedMutation::Append(append)] = envelope.mutations.as_mut_slice() else {
         unreachable!()
     };
@@ -444,15 +450,16 @@ fn digest(
     (hash.finalize().into(), bytes)
 }
 fn copy_outcome(
-    source: &IdempotencyOutcome,
+    stored: &Retained,
     conditions: &[CommitCondition; 2],
     maximum: usize,
     (mut output, output_claim): (CommitOutcome, Allocation),
     (mut conflicts, conflict_claim): (Vec<CommitConflict>, Allocation),
 ) -> Result<(CommitOutcome, Allocation), StreamError> {
-    match source {
-        IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => {
-            if envelope.mutations.len() > 1 {
+    match &stored.result {
+        IdempotencyOutcome::Commit(CommitOutcome::Committed(receipt)) => {
+            let envelope = stored.envelope().ok_or(StreamError::IdempotencyMismatch)?;
+            if envelope.mutations.len() > 1 || receipt.appends.len() > 1 || !receipt.forks.is_empty() {
                 return Err(StreamError::LimitExceeded);
             }
             let [CommittedMutation::Append(source)] = envelope.mutations.as_slice() else {
@@ -465,9 +472,9 @@ fn copy_outcome(
                 return Err(StreamError::IdempotencyMismatch);
             };
             let target = append_mut(&mut output);
-            if source.path != target.path
+            if !receipt.matches_envelope(envelope)
+                || source.path != target.path
                 || source.start != target.start
-                || source.end != target.end
                 || source.tail != target.tail
                 || record.sequence != target.start
             {
@@ -476,11 +483,11 @@ fn copy_outcome(
             if record.payload_bytes() > maximum {
                 return Err(StreamError::LimitExceeded);
             }
-            *target.records.first_mut().ok_or(StreamError::Unavailable)? = record.clone();
-            let CommitOutcome::Committed(output_envelope) = &mut output else {
+            let CommitOutcome::Committed(output_receipt) = &mut output else {
                 unreachable!()
             };
-            output_envelope.commit_id = envelope.commit_id;
+            output_receipt.commit_id = receipt.commit_id;
+            output_receipt.committed_at_micros = receipt.committed_at_micros;
             Ok((output, output_claim))
         }
         IdempotencyOutcome::Commit(CommitOutcome::Conflict(source)) => {
@@ -504,7 +511,7 @@ fn copy_outcome(
 }
 fn copied_bytes(value: &CommitOutcome) -> u64 {
     match value {
-        CommitOutcome::Committed(_) => std::mem::size_of::<Record>() as u64,
+        CommitOutcome::Committed(_) => std::mem::size_of::<crate::CommitReceipt>() as u64,
         CommitOutcome::Conflict(conflicts) => {
             (conflicts.len() * std::mem::size_of::<CommitConflict>()) as u64
         }

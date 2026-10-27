@@ -1,6 +1,60 @@
 use super::super::*;
 
 #[tokio::test]
+async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reopen()
+-> Result<(), StreamError> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("receipt/source")?;
+    let request = CommitRequest {
+        conditions: Vec::new(),
+        mutations: vec![CommitMutation::Append {
+            path: source.clone(),
+            records: vec![Bytes::from(vec![42; 4096]).into()],
+        }],
+        idempotency_key: IdempotencyKey::new(b"receipt-body".as_slice())?,
+    };
+    let written = provider.commit(request.clone()).await?;
+    let CommitOutcome::Committed(receipt) = &written else {
+        return Err(StreamError::Unavailable);
+    };
+    assert_eq!(receipt.appends, vec![crate::AppendRange {
+        path: source.clone(), start: 0, tail: 1,
+    }]);
+    assert!(receipt.forks.is_empty());
+    let facts = provider.read_commit(receipt.commit_id).await?;
+    assert!(receipt.matches_envelope(&facts));
+    let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
+        return Err(StreamError::Unavailable);
+    };
+    assert_eq!(append.records[0].value.as_ref(), &[42; 4096]);
+    assert_eq!(append.records[0].committed_at_micros, receipt.committed_at_micros);
+    let fork = CommitRequest {
+        conditions: Vec::new(),
+        mutations: vec![CommitMutation::Fork {
+            source, destination: StreamPath::new("receipt/fork")?, at_tail: 1,
+            exclude: Vec::new(), records: Vec::new(),
+        }],
+        idempotency_key: IdempotencyKey::new(b"receipt-empty-fork".as_slice())?,
+    };
+    let forked = provider.commit(fork.clone()).await?;
+    let CommitOutcome::Committed(fork_receipt) = &forked else {
+        return Err(StreamError::Unavailable);
+    };
+    assert!(fork_receipt.appends.is_empty());
+    assert_eq!(fork_receipt.forks.len(), 1);
+    assert!(fork_receipt.committed_at_micros >= receipt.committed_at_micros);
+    let fork_facts = provider.read_commit(fork_receipt.commit_id).await?;
+    assert!(fork_receipt.matches_envelope(&fork_facts));
+    let reopened = MemoryStream::default();
+    reopened.install_state(&provider.encode_state().await).await?;
+    assert_eq!(reopened.commit(request).await?, written);
+    assert_eq!(reopened.commit(fork).await?, forked);
+    assert_eq!(reopened.read_commit(receipt.commit_id).await?, facts);
+    assert_eq!(reopened.read_commit(fork_receipt.commit_id).await?, fork_facts);
+    Ok(())
+}
+
+#[tokio::test]
 async fn present_send_requires_the_precommit_path_and_preserves_retry_and_close_fences()
 -> Result<(), StreamError> {
     let provider = MemoryStream::default();

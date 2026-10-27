@@ -238,7 +238,6 @@ impl MemoryStream {
             let output = work.record(crate::native::clone_commit(
                 value,
                 &work.meter,
-                NativeOperationKind::Write,
             ))?;
             let (value, allocation) = output.into_parts();
             return Ok((value, Some(allocation)));

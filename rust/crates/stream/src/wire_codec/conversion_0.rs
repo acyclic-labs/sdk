@@ -152,13 +152,7 @@ pub(crate) fn observation_from_wire(
             IdempotencyOutcome::Append(append_outcome_from_wire(value)?)
         }
         wire::idempotency_observation::Outcome::Fork(value) => {
-            IdempotencyOutcome::Fork(ForkReceipt {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
-                forked_at: value.forked_at,
-                tail: value.tail,
-                commit_id: commit_id(&value.commit_id)?,
-            })
+            IdempotencyOutcome::Fork(fork_receipt_from_wire(value)?)
         }
         wire::idempotency_observation::Outcome::Commit(value) => {
             IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
@@ -208,8 +202,8 @@ pub(crate) fn commit_outcome_from_wire(
     value: wire::CommitResponse,
 ) -> Result<CommitOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
+        wire::commit_response::Outcome::Committed(receipt) => {
+            Ok(CommitOutcome::Committed(receipt_from_wire(receipt)?))
         }
         wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
             conflicts
@@ -458,6 +452,7 @@ pub(crate) fn envelope_from_wire(
 ) -> Result<CommittedEnvelope, StreamError> {
     Ok(CommittedEnvelope {
         commit_id: commit_id(&value.commit_id)?,
+        committed_at_micros: value.committed_at_micros,
         mutations: value
             .mutations
             .into_iter()
@@ -469,8 +464,8 @@ pub(crate) fn envelope_from_wire(
 /// Converts a commit outcome into its generated wire representation.
 pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
-        crate::CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
+        crate::CommitOutcome::Committed(receipt) => {
+            wire::commit_response::Outcome::Committed(receipt_to_wire(receipt))
         }
         crate::CommitOutcome::Conflict(conflicts) => {
             wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
@@ -487,6 +482,7 @@ pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitRespon
 pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: bytes::Bytes::copy_from_slice(value.commit_id.as_bytes()),
+        committed_at_micros: value.committed_at_micros,
         mutations: value
             .mutations
             .into_iter()

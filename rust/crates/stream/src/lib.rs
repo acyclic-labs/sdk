@@ -187,6 +187,7 @@ pub use path::StreamPath;
 
 include!("lib/domain.rs");
 include!("lib/head.rs");
+include!("lib/receipt.rs");
 
 mod changes;
 mod record_headers;

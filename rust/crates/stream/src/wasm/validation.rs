@@ -415,17 +415,6 @@ mod http {
         Ok(result.into())
     }
 
-    fn tails_js(value: &Value) -> Result<JsValue> {
-        let null_prototype: Object = JsValue::NULL.unchecked_into();
-        let result = Object::create(&null_prototype);
-        for (path_name, tail) in object(value)? {
-            // A null prototype keeps `__proto__` as an own data property.
-            crate::StreamPath::new(path_name).map_err(|_| "invalid path")?;
-            set(&result, path_name, &bigint_js(tail)?)?;
-        }
-        Ok(result.into())
-    }
-
     fn commit_result_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         let result = Object::new();
@@ -434,20 +423,16 @@ mod http {
         if ok {
             id(field(item, "commitId")?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-            set(&result, "tails", &tails_js(field(item, "tails")?)?)?;
-            set(
-                &result,
-                "forks",
-                &array_js(field(item, "forks")?, |value| {
-                    let fork = object(value)?;
-                    path(field(fork, "path")?)?;
-                    u64_string(field(fork, "tail")?)?;
-                    let result = Object::new();
-                    set(&result, "path", &string_js(field(fork, "path")?)?)?;
-                    set(&result, "tail", &bigint_js(field(fork, "tail")?)?)?;
-                    Ok(result.into())
-                })?,
-            )?;
+            set(&result, "committedAtMicros", &bigint_js(field(item, "committedAtMicros")?)?)?;
+            set(&result, "appends", &array_js(field(item, "appends")?, |value| {
+                let range = object(value)?;
+                let result = Object::new();
+                set(&result, "path", &string_js(field(range, "path")?)?)?;
+                set(&result, "start", &bigint_js(field(range, "start")?)?)?;
+                set(&result, "tail", &bigint_js(field(range, "tail")?)?)?;
+                Ok(result.into())
+            })?)?;
+            set(&result, "forks", &array_js(field(item, "forks")?, fork_receipt_js)?)?;
         } else {
             if string(field(item, "code")?)? != "conflict" {
                 return Err("invalid commit conflict code");
@@ -530,8 +515,10 @@ mod http {
     fn envelope_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         id(field(item, "commitId")?)?;
+        u64_string(field(item, "committedAtMicros")?)?;
         let result = Object::new();
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
+        set(&result, "committedAtMicros", &bigint_js(field(item, "committedAtMicros")?)?)?;
         set(
             &result,
             "mutations",

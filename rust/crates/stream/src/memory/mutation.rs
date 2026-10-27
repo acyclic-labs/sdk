@@ -89,14 +89,6 @@ fn retain(
     result: IdempotencyOutcome,
     allocation: Allocation,
 ) {
-    let envelope = if matches!(
-        &result,
-        IdempotencyOutcome::Commit(CommitOutcome::Committed(_))
-    ) {
-        None
-    } else {
-        envelope
-    };
     let entry = Retained {
         replay: key.map(|key| key.0),
         replay_left: None,

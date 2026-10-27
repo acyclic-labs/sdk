@@ -141,6 +141,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
         .collect::<Result<Vec<_>, StreamError>>()?;
     let envelope = CommittedEnvelope {
         commit_id: parse_id(field(value, "commitId")?)?,
+        committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
         mutations,
     };
     wire_codec::envelope_from_wire(wire_codec::envelope_to_wire(envelope))

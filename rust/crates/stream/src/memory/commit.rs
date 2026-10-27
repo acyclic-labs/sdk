@@ -1,4 +1,5 @@
 struct CommitPlan {
+    envelope: CommittedEnvelope,
     result: CommitOutcome,
     cached: CommitOutcome,
     histories: Vec<Arc<History>>,
@@ -10,9 +11,14 @@ struct CommitPlan {
 
 impl CommitPlan {
     fn bind(&mut self, commit_id: CommitId, time: u64) -> Result<(), StreamError> {
+        bind_envelope(&mut self.envelope, commit_id, time);
         for output in [&mut self.result, &mut self.cached] {
-            if let CommitOutcome::Committed(envelope) = output {
-                bind_envelope(envelope, commit_id, time);
+            if let CommitOutcome::Committed(receipt) = output {
+                receipt.commit_id = commit_id;
+                receipt.committed_at_micros = time;
+                for fork in &mut receipt.forks {
+                    fork.commit_id = commit_id;
+                }
             }
         }
         bind_histories(&mut self.histories, commit_id, time)
@@ -27,16 +33,13 @@ impl CommitPlan {
         digest: [u8; 32],
         time: u64,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        let CommitOutcome::Committed(envelope) = &self.result else {
-            unreachable!()
-        };
-        publish(state, self.paths, self.histories, envelope, build)?;
+        publish(state, self.paths, self.histories, &self.envelope, build)?;
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
             state,
             probe,
-            None,
+            Some(self.envelope),
             Some(key),
             digest,
             IdempotencyOutcome::Commit(self.cached),
@@ -279,17 +282,22 @@ impl MemoryStream {
         commit_id: CommitId,
         time: u64,
     ) -> Result<CommitPlan, StreamError> {
-        let (facts, output_claim) = self.facts(state, &request.mutations, commit_id, time)?;
+        let (facts, facts_claim) = self.facts(state, &request.mutations, commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
         let (paths, paths_claim) =
             self.paths(state, request.mutations.iter().map(mutation_path))?;
-        let result = CommitOutcome::Committed(CommittedEnvelope {
+        let envelope = CommittedEnvelope {
             commit_id,
+            committed_at_micros: time,
             mutations: facts,
-        });
-        let (cached, resident) = self.copy_commit(&result)?;
+        };
+        let (receipt, output_claim) = self.receipt(&envelope, time)?;
+        let result = CommitOutcome::Committed(receipt);
+        let (cached, mut resident) = self.copy_commit(&result)?;
+        self.absorb(&mut resident, facts_claim)?;
         self.absorb(&mut scratch, paths_claim)?;
         Ok(CommitPlan {
+            envelope,
             result,
             cached,
             histories,
@@ -389,7 +397,7 @@ impl MemoryStream {
         self.reserve_retained(state)?;
         let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
         Ok(Decision::Accepted {
-            bytes: envelope_payload_bytes(&plan.result),
+            bytes: envelope_payload_bytes(&plan.envelope),
             install: move |state: &mut State, durable: bool| {
                 if !durable {
                     check_deadline()?;
@@ -479,20 +487,14 @@ fn identity_bytes() -> u64 {
     b"acyclic.stream.commit.v1\0".len() as u64 + 8 + 32
 }
 
-fn envelope_payload_bytes(result: &CommitOutcome) -> usize {
-    match result {
-        CommitOutcome::Committed(envelope) => envelope
-            .mutations
-            .iter()
-            .flat_map(fact_records)
-            .map(|record| record.payload_bytes())
-            .sum(),
-        CommitOutcome::Conflict(_) => 0,
-    }
+fn envelope_payload_bytes(envelope: &CommittedEnvelope) -> usize {
+    envelope.mutations.iter().flat_map(fact_records)
+        .map(|record| record.payload_bytes()).sum()
 }
 
 fn bind_envelope(envelope: &mut CommittedEnvelope, commit_id: CommitId, time: u64) {
     envelope.commit_id = commit_id;
+    envelope.committed_at_micros = time;
     for mutation in &mut envelope.mutations {
         let records = match mutation {
             CommittedMutation::Append(append) => &mut append.records,

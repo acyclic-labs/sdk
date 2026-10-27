@@ -339,6 +339,8 @@ pub enum CommittedMutation {
 pub struct CommittedEnvelope {
     /// Content-bound identity.
     pub commit_id: CommitId,
+    /// Publication time, including forks that append no records.
+    pub committed_at_micros: u64,
     /// Canonically ordered mutation facts.
     pub mutations: Vec<CommittedMutation>,
 }
@@ -495,7 +497,7 @@ pub enum CommitConflict {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
     /// Every mutation committed.
-    Committed(CommittedEnvelope),
+    Committed(CommitReceipt),
     /// Nothing changed.
     Conflict(Vec<CommitConflict>),
 }

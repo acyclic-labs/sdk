@@ -13,9 +13,6 @@ struct Retained {
 
 impl Retained {
     fn envelope(&self) -> Option<&CommittedEnvelope> {
-        match &self.result {
-            IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => Some(envelope),
-            _ => self.envelope.as_ref(),
-        }
+        self.envelope.as_ref()
     }
 }

@@ -279,12 +279,18 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                     envelope,
                 )
             }
-            None => (
-                None,
-                [0; 32],
-                crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)),
-                None,
-            ),
+            None => {
+                let envelope = envelope?;
+                let appends = envelope.mutations.iter()
+                    .filter(|m| matches!(m, CommittedMutation::Append(_))).count();
+                let receipt = crate::CommitReceipt::project(
+                    &envelope, envelope.committed_at_micros,
+                    Vec::with_capacity(appends),
+                    Vec::with_capacity(envelope.mutations.len() - appends), || Ok(()),
+                ).ok()?;
+                (None, [0; 32], crate::IdempotencyOutcome::Commit(
+                    crate::CommitOutcome::Committed(receipt)), Some(envelope))
+            },
         };
         retain(
             state,
@@ -330,7 +336,7 @@ fn replay_commit_id(
             Some(receipt.commit_id)
         }
         crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(committed)) => {
-            if envelope != Some(committed) {
+            if !envelope.is_some_and(|envelope| committed.matches_envelope(envelope)) {
                 return None;
             }
             Some(committed.commit_id)

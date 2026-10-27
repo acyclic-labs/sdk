@@ -4,6 +4,7 @@ import type {
   CommittedAppend as WireCommittedAppend, CommittedFork as WireCommittedFork,
   CommittedMutation as WireCommittedMutation, CommittedEnvelope as WireCommittedEnvelope,
   CommitResponse as WireCommitResponse, AppendResponse as WireAppendResponse,
+  CommitReceipt as WireCommitReceipt, AppendRange as WireAppendRange,
   IdempotencyObservation as WireIdempotencyObservation,
   CommitCondition as WireCommitCondition,
   CommitMutation as WireCommitMutation,
@@ -96,6 +97,12 @@ export type CommittedMutation =
   | (PublicWire<WireCommittedAppend, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "append"> })
   | (PublicWire<WireCommittedFork, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "fork"> });
 export type CommittedEnvelope = PublicWire<WireCommittedEnvelope, { readonly commitId: CommitId; readonly mutations: readonly CommittedMutation[] }>;
+export type AppendRange = PublicWire<WireAppendRange>;
+export type CommitReceipt = PublicWire<WireCommitReceipt, {
+  readonly commitId: CommitId;
+  readonly appends: readonly AppendRange[];
+  readonly forks: readonly ForkReceipt[];
+}>;
 export type CommitConflict =
   | (PublicWire<WireMissingCommitConflict, { readonly expectedPresent: true }> & { readonly actual: Extract<CommitConflictKind, "missing"> })
   | PublicWire<WireHeadCommitConflict, { readonly expectedCommitId: CommitId; readonly actualCommitId: CommitId }, "expected" | "actual">
@@ -105,7 +112,7 @@ export type CommitConflict =
     }, "expected" | "actual">
   | (PublicWire<WireExistsCommitConflict, { readonly expectedAbsent: true }> & { readonly actual: Extract<CommitConflictKind, "exists"> });
 export type CommitResult =
-  | { readonly ok: true; readonly commitId: CommitId; readonly tails: Readonly<{ readonly [path: string]: Sequence }>; readonly forks: readonly { readonly path: string; readonly tail: Sequence }[] }
+  | (CommitReceipt & { readonly ok: true })
   | { readonly ok: false; readonly code: "conflict"; readonly conflicts: readonly CommitConflict[] };
 export interface CommitRequest { readonly conditions: readonly CommitCondition[]; readonly mutations: readonly CommitMutation[] }
 export interface CommitOptions { readonly idempotencyKey: IdempotencyKey; readonly deadlineUnixMillis?: bigint }

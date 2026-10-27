@@ -89,16 +89,22 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
         let commit_id = CommitId::from_bytes(key);
         let envelope = CommittedEnvelope {
             commit_id,
+            committed_at_micros: 0,
             mutations: Vec::new(),
         };
         let mut probes = 0;
         retain(
             &mut state,
             &mut || probes += 1,
-            None,
+            Some(envelope),
             None,
             [0; 32],
-            IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)),
+            IdempotencyOutcome::Commit(CommitOutcome::Committed(crate::CommitReceipt {
+                commit_id,
+                committed_at_micros: 0,
+                appends: Vec::new(),
+                forks: Vec::new(),
+            })),
             Default::default(),
         );
         assert!(probes <= COMMIT_INDEX_PROBES);
