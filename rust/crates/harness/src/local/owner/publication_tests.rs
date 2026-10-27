@@ -253,7 +253,11 @@ fn concurrent_owner_migration_cannot_publish_another_callers_provisional_key() -
             let reference = winner
                 .key_ref
                 .ok_or_else(|| Error::Invalid("missing published key".into()))?;
-            assert!(reference.with_seed(|stored| stored == seed).map_err(storage)?);
+            assert!(
+                reference
+                    .with_seed(|stored| stored == seed)
+                    .map_err(storage)?
+            );
             assert_eq!(Owner::load(&path)?.key_ref, Some(reference));
         } else {
             assert!(

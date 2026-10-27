@@ -392,10 +392,12 @@ impl Owner {
         // before reading a legacy seed until publication or custody rollback,
         // so another reader cannot publish a key this reader still owns.
         let lock_path = path.with_extension("lock");
-        let file = acyclic_native_runtime::private_file::open_or_create(&lock_path)
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
-                _ => storage(error),
+        let file =
+            acyclic_native_runtime::private_file::open_or_create(&lock_path).map_err(|error| {
+                match error.kind() {
+                    std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
+                    _ => storage(error),
+                }
             })?;
         let acquire: fn(
             fs::File,
@@ -408,8 +410,8 @@ impl Owner {
         } else {
             acquire
         };
-        let _publication = acquire(file, acyclic_native_runtime::FileLockMode::Exclusive)
-            .map_err(storage)?;
+        let _publication =
+            acquire(file, acyclic_native_runtime::FileLockMode::Exclusive).map_err(storage)?;
         Self::load_record(path)
     }
 
