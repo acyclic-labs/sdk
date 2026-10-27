@@ -33,6 +33,7 @@ proptest::proptest! {
                     at_tail: Some(0), exclude: vec![], idempotency_key: append.idempotency_key.clone(),
                 };
                 let commit = super::CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![acyclic_stream::CommitCondition::Tail { path: path.clone(), expected: 0 }],
                     mutations: vec![acyclic_stream::CommitMutation::Append {
                         path, records: vec![bytes::Bytes::copy_from_slice(&payload).into()],
@@ -48,7 +49,7 @@ proptest::proptest! {
                     assert!(matches!(attested.append(append.clone()).await, Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.fork(fork.clone()).await, Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.commit(commit.clone()).await, Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.commit_before(commit.clone(), u64::MAX).await, Err(super::StreamError::AccessDenied)));
+                    assert!(matches!(attested.commit(super::CommitRequest { deadline_unix_millis: Some(u64::MAX), ..commit.clone() }).await, Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.native_append(append.clone(), work.runtime_meter()).await.expect("native transport"), Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.native_commit(commit.clone(), None, work.runtime_meter()).await.expect("native transport"), Err(super::StreamError::AccessDenied)));
                     let guarded = attested.native_commit_guarded::<super::StreamError, _, _>(

@@ -32,6 +32,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         idempotency_key: Some(IdempotencyKey::new(b"corrected-fork".to_vec())?),
     };
     let commit = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: 1,
@@ -57,7 +58,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         ));
     }
     assert!(matches!(
-        provider.commit_before(commit.clone(), 0).await,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(0), ..commit.clone() }).await,
         Err(StreamError::DeadlineElapsed)
     ));
     for key in [
@@ -81,7 +82,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
     assert!(accepted.1 > 0);
     let reopened = PostgresStream::connect(database, &namespace).await?;
     assert_eq!(reopened.append(append).await?, appended);
-    assert_eq!(reopened.commit_before(commit, 0).await?, committed);
+    assert_eq!(reopened.commit(CommitRequest { deadline_unix_millis: Some(0), ..commit }).await?, committed);
     assert_eq!(reopened.fork(fork).await?, forked);
     assert_eq!(retained(&client, &namespace).await?, accepted);
     println!(

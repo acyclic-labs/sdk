@@ -418,6 +418,7 @@ async fn workflow(
                 })
                 .collect();
             copy.commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions,
                 mutations,
                 idempotency_key: acyclic_stream::IdempotencyKey::new(format!("copy-{index}"))

@@ -261,6 +261,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
     forged.state.anchor = *blake3::hash(&observation).as_bytes();
     let execution = crate::distributed::execution_path(operation, &mut None)?;
     let request = acyclic_stream::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             acyclic_stream::CommitCondition::Tail {
                 path: (*head).clone(),

@@ -71,6 +71,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         2
     );
     let committed = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: 3,
@@ -82,7 +83,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         idempotency_key: IdempotencyKey::new(b"deadline-replay".to_vec())?,
     };
     let outcome = provider.commit(committed.clone()).await?;
-    assert_eq!(peer.commit_before(committed, 0).await?, outcome);
+    assert_eq!(peer.commit(CommitRequest { deadline_unix_millis: Some(0), ..committed }).await?, outcome);
     let reopened = PostgresStream::connect(database, &namespace).await?;
     assert_eq!(reopened.tail(path).await?, 4);
     println!("Cross-session replay, exact CAS, LISTEN/NOTIFY and reopen checks passed");

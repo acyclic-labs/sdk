@@ -216,16 +216,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
             .commit(request)
             .await
     }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.target(|| commit_digest(&request))
-            .await?
-            .commit_before(request, deadline_unix_millis)
-            .await
-    }
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(commit_id).await
     }
@@ -450,13 +440,6 @@ mod tests {
         ) -> Result<super::CommitOutcome, super::StreamError> {
             Err(self.write(super::commit_digest(&request)?))
         }
-        async fn commit_before(
-            &self,
-            request: super::CommitRequest,
-            _: u64,
-        ) -> Result<super::CommitOutcome, super::StreamError> {
-            Err(self.write(super::commit_digest(&request)?))
-        }
         async fn read_commit(
             &self,
             id: super::CommitId,
@@ -519,6 +502,7 @@ mod tests {
         );
         let path = StreamPath::new("attested/native")?;
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected: 0,
@@ -563,6 +547,7 @@ mod tests {
         );
         let path = StreamPath::new("attested/prepared")?;
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected: 0,

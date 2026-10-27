@@ -386,6 +386,7 @@ fn commit_request<P: ?Sized>(
     value: &'static [u8],
 ) -> CommitRequest {
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: history.path.clone(),
             expected,

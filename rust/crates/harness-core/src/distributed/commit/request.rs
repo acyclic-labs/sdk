@@ -20,6 +20,7 @@ pub(crate) fn commit_request<'a, 'b>(
 ) -> (acyclic_stream::CommitRequest, CodecQuota<'a, 'b>) {
     (
         acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
             conditions: Vec::new(),
             mutations: Vec::new(),
             idempotency_key: key,

@@ -27,6 +27,7 @@ fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
 async fn append(provider: &MemoryStream, path: &AgentPath, records: Vec<Vec<u8>>) -> Result {
     let conversation = path.conversation()?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: conversation.clone(),
             expected: 0,

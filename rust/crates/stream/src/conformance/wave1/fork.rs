@@ -313,6 +313,7 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
     let destination = prepare(history).await?;
     let branch = path(history, "/branch")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: history.path.clone(),

@@ -220,6 +220,7 @@ async fn seeded() -> Result<Seeded> {
     let conversation = parent.conversation()?;
     let status = parent.status()?;
     let seeded = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: conversation.clone(),

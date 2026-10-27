@@ -26,6 +26,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         assert!(matches!(
             provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions,
                     mutations,
                     idempotency_key: IdempotencyKey::new(format!("scale-{base}").into_bytes())?,

@@ -234,6 +234,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: source.clone(),
@@ -267,6 +268,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     let absent = path("conformance/absent-tail")?;
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: absent.clone(),
             expected: 0,
@@ -342,6 +344,7 @@ async fn verify_stale_tail_condition(
     }]);
     if provider
         .commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![
                 CommitCondition::Tail {
                     path: source.clone(),
@@ -377,6 +380,7 @@ async fn verify_fork_with_records(
 ) -> Result<(), StreamError> {
     let destination = path("conformance/forked-and-extended")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: source.clone(),
@@ -481,6 +485,7 @@ async fn verify_unspent_conflicts(
     }
     let commit_key = key(b"unspent-commit")?;
     let mut request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: 0,
@@ -575,6 +580,7 @@ fn subtree_request() -> Result<CommitRequest, StreamError> {
     let destination = path("conformance/tree/children/fork")?;
     let marker = path("conformance/adopted")?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent {
                 path: destination.clone(),
@@ -823,6 +829,7 @@ pub async fn verify_page_tails(
     }
     let cut = provider
         .commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: [&a, &b]
                 .into_iter()
                 .map(|path| CommitCondition::Tail {
