@@ -203,10 +203,16 @@ impl WasmAgentServer {
     #[wasm_bindgen(js_name = validateAdopt)]
     pub async fn validate_adopt(&self, agent: String) -> std::result::Result<(), JsValue> {
         let path = AgentPath::try_from(agent.clone()).map_err(agent_error)?;
-        self.bound
-            .admit_agent(&path, &self.root_request(path.id())?.fresh)
+        self.bound.admit_path(&path).map_err(agent_error)?;
+        let state = self
+            .bound
+            .agents()
+            .state(&path)
+            .await
             .map_err(agent_error)?;
-        self.observation.validate_adopt(agent).await
+        self.bound
+            .admit_agent(&path, &state.volumes)
+            .map_err(agent_error)
     }
 
     /// Root volumes and adoption are the one shared atomic root submission.
@@ -253,8 +259,7 @@ impl WasmAgentServer {
     /// Explicit placement of a committed child; observing it never activates it.
     pub async fn adopt(&self, agent: String) -> std::result::Result<(), JsValue> {
         let agent = AgentPath::try_from(agent).map_err(agent_error)?;
-        let volumes = self.root_request(agent.id())?.fresh;
-        let server = hosting::reopen(self.bound.clone(), self.platform.clone(), agent, &volumes)
+        let server = hosting::reopen(self.bound.clone(), self.platform.clone(), agent)
             .await
             .map_err(agent_error)?;
         *self.server.borrow_mut() = Some(server);

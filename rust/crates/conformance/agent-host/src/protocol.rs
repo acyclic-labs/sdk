@@ -79,7 +79,8 @@ pub trait Endpoint: ProviderPlatform {
     fn effects(&self) -> BoxProviderFuture<'_, Result<u64>>;
 }
 
-async fn call(
+/// Send one canonical command through an endpoint and decode its typed reply.
+pub async fn call(
     endpoint: &dyn Endpoint,
     command: &AgentCommand,
 ) -> Result<std::result::Result<AgentReply, AgentControlFailure>> {

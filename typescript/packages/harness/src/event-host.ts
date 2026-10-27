@@ -11,7 +11,7 @@ export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
 
 interface Identity {
   intent: string; brief?: string; path: string; create: boolean;
-  stage: "claiming" | "opening" | "ready";
+  stage: "claiming" | "creating" | "ready";
 }
 
 /** Verified by the owning platform before it opens the host, never by a guest. */
@@ -61,7 +61,7 @@ export class EventAgentHost {
     if (typeof row !== "object" || row === null || !("intent" in row) || typeof row.intent !== "string"
       || ("brief" in row && typeof row.brief !== "string") || !("path" in row) || typeof row.path !== "string"
       || !("create" in row) || typeof row.create !== "boolean" || !("stage" in row)
-      || (row.stage !== "claiming" && row.stage !== "opening" && row.stage !== "ready")) {
+      || (row.stage !== "claiming" && row.stage !== "creating" && row.stage !== "ready")) {
       throw new Error("STEP actor-identity failed; recovery: restore host metadata from a verified backup");
     }
     return row as unknown as Identity;
@@ -79,7 +79,7 @@ export class EventAgentHost {
         await this.retain(null);
         throw new Error(`STEP actor-placement refused: ${placement.refused}; recovery: choose an unclaimed actor path and an available consistency domain`);
       }
-      identity = { ...identity, stage: "opening" };
+      identity = { ...identity, stage: "creating" };
       await this.retain(identity);
     }
     // A reopened event host binds the same committed tree before any command.
@@ -90,7 +90,7 @@ export class EventAgentHost {
       if (identity.brief !== undefined) await this.host.command({ kind: "prompt", agent: identity.path,
         id: identity.intent, body: identity.brief }, this.access.credential);
     } else await this.host.adopt(identity.path);
-    if (identity.stage === "opening") {
+    if (identity.stage === "creating") {
       identity = { ...identity, stage: "ready" };
       await this.retain(identity);
     }
@@ -120,6 +120,8 @@ export class EventAgentHost {
     return this.command(async () => {
       await recoverable(this.storage, this.events);
       const generation = this.events.generation;
+      const identity = this.identity();
+      if (identity?.stage === "ready") await this.resume(identity);
       return { value: await action(), generation };
     }).then(({ value, generation }) => {
       const next = this.serial.then(() => this.drain(generation));
@@ -158,7 +160,6 @@ export class EventAgentHost {
     return this.event(async () => {
       const identity = this.identity();
       if (identity?.stage !== "ready") throw new Error("STEP actor-send failed; recovery: complete create with the actor's original intent and prompt");
-      await this.resume(identity);
       return this.host.command({ kind: "prompt", agent: identity.path, id: intent,
         body: text }, this.access.credential);
     });

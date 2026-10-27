@@ -152,21 +152,21 @@ where
     Ok(Serving::Served(server(bound, platform, root)))
 }
 
-/// Restores a platform's durable placement of an already adopted tree, using
-/// its committed volume bindings. Revalidates admission without storage IO.
+/// Restores a platform's durable placement of an already adopted tree.
+/// Revalidates the original scope without storage IO; this grants no file
+/// authority. File operations and turns use the agent's committed bindings.
 /// The platform validates adoption before retaining placement; restoring it
 /// neither runs the agent nor activates children.
 pub async fn reopen<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
-    volumes: &[crate::agent::VolumeBinding],
 ) -> Result<Arc<Server<P, O>>, Error>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    bound.admit_agent(&root, volumes)?;
+    bound.admit_path(&root)?;
     Ok(server(bound, platform, root))
 }
 

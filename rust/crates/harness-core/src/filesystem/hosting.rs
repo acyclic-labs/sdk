@@ -335,6 +335,7 @@ where
     /// Reads immutable content under the binding's original admission, as a
     /// turn does. Host custody cannot widen an admitted caller's file access.
     pub async fn read_file(&self, agent: &AgentPath, file: &FileRef) -> Result<Vec<u8>, Error> {
+        self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
             .map_err(turn)?;
@@ -364,6 +365,7 @@ where
         &self,
         agent: &AgentPath,
     ) -> Result<Option<(IntentId, Interaction)>, Error> {
+        self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         self.turns.pending_approval(&state).await.map_err(turn)
     }
@@ -400,6 +402,7 @@ where
         let shown = match pending {
             Some(shown) => binds(Some(shown)),
             None => {
+                self.admit_path(agent)?;
                 let state = self.agents.state(agent).await?;
                 binds(
                     self.turns
@@ -446,6 +449,7 @@ where
         intent: &IntentId,
         text: &str,
     ) -> Result<FileRef, Error> {
+        self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
             .map_err(turn)?;
@@ -483,6 +487,13 @@ where
             .await
             .map_err(turn)?;
         Ok(staged.0)
+    }
+
+    /// Verifies original scope identity, audience, lifetime and attenuation
+    /// before observing an agent's committed bindings. Performs no IO.
+    pub fn admit_path(&self, agent: &AgentPath) -> Result<(), Error> {
+        self.admission.derive(&self.issuer, agent).map_err(turn)?;
+        Ok(())
     }
 
     /// Revalidates an existing agent's admission against its committed volume

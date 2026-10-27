@@ -176,3 +176,69 @@ fn to_value(value: &impl serde::Serialize) -> Result<JsValue, serde_wasm_bindgen
             .serialize_missing_as_null(true),
     )
 }
+
+/// Capture adoption and exact volume grants from an actual production spawn.
+#[wasm_bindgen(js_name = spawnAdoptionFixture)]
+pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
+    use acyclic_agent_host_conformance::protocol;
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    use acyclic_harness_core::{
+        agent::{AgentRecord as _, InboxRecord, IntentId},
+        approvals::ApprovalPolicy,
+        conversation::VolumeOperation,
+        model::ModelContent,
+    };
+    use futures::TryStreamExt as _;
+    let result: SuiteResult<JsValue> = async {
+        let endpoint = open(&factory, ApprovalPolicy::accept_all("conformance")).await?;
+        let AgentReply::Root { agent: root } =
+            protocol::call(endpoint.as_ref(), &AgentCommand::Root).await??
+        else {
+            return Err("fixture Root reply differs".into());
+        };
+        let AgentReply::Spawned { agent: child, .. } = protocol::call(
+            endpoint.as_ref(),
+            &AgentCommand::Spawn {
+                parent: root,
+                id: IntentId::try_from("adoption-fixture")?,
+                brief: ModelContent::Text("Respond after explicit adoption".into()),
+            },
+        )
+        .await??
+        else {
+            return Err("fixture Spawn reply differs".into());
+        };
+        let inbox: Vec<acyclic_stream::Record> = endpoint
+            .provider()
+            .read(acyclic_stream::ReadRequest {
+                path: child.inbox()?,
+                from: 0,
+                limit: 64,
+            })
+            .await?
+            .try_collect()
+            .await?;
+        let adopted = InboxRecord::decode(&inbox.last().ok_or("fixture adoption missing")?.value)?;
+        let InboxRecord::ForkAdopted(adopted) = adopted else {
+            return Err("fixture adoption differs".into());
+        };
+        let private = adopted
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "private")
+            .ok_or("fixture private volume missing")?;
+        let grants = vec![
+            acyclic_harness_core::contract::capability::INTERACTION_ROUTE.to_owned(),
+            private
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+            private
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+        ];
+        to_value(&serde_json::json!({"child": child, "grants": grants})).map_err(Into::into)
+    }
+    .await;
+    result.map_err(|error| JsValue::from_str(&format!(
+        "STEP adoption-fixture spawn failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
+}

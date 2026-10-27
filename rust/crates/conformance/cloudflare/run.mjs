@@ -85,8 +85,16 @@ async function main() {
     const placementOutput = await placement.text();
     if (!placement.ok) throw new Error(`placement HTTP ${placement.status}: ${placementOutput}`);
     console.log(`workerd review: ${placementOutput}`);
+    const interrupted = await fetch("http://127.0.0.1:15420/creation-interrupted");
+    const interruptedOutput = await interrupted.text();
+    if (!interrupted.ok) throw new Error(`creation interruption HTTP ${interrupted.status}: ${interruptedOutput}`);
+    console.log(`workerd review: ${interruptedOutput}`);
     await stop();
     await start();
+    const creation = await fetch("http://127.0.0.1:15420/creation-replay");
+    const creationOutput = await creation.text();
+    if (!creation.ok) throw new Error(`creation restart HTTP ${creation.status}: ${creationOutput}`);
+    console.log(`workerd review: ${creationOutput}`);
     const deadlineReplay = await fetch("http://127.0.0.1:15420/deadline-replay");
     const deadlineReplayOutput = await deadlineReplay.text();
     if (!deadlineReplay.ok) throw new Error(`deadline restart HTTP ${deadlineReplay.status}: ${deadlineReplayOutput}`);
