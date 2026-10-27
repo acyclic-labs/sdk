@@ -23,6 +23,9 @@ use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Sys
 use acyclic_stream::{ReadRequest, StreamError, StreamProvider as _};
 use futures::TryStreamExt as _;
 
+mod steps;
+use steps::{apply, idle, reject, start, waiting};
+
 /// Host name of the inbox records this owner writes for a native session.
 const HOST: &str = "native";
 /// Bound of one session event, prompt or native resume reference.
@@ -90,8 +93,6 @@ pub(super) struct Session {
     pub(super) native: Option<Value>,
     /// Requested lifecycle.
     pub(super) control: Control,
-    /// A cancel or archive at this inbox sequence dropped every input before it.
-    pub(super) dropped_before: u64,
     /// The last request refused, so its sender learns why.
     pub(super) rejected: Option<Rejected>,
 }
@@ -286,7 +287,7 @@ impl HostDriver {
         let Some(Queued { inbox, input }) = input else {
             return Ok(idle(Vec::new()));
         };
-        let mut outs = Vec::new();
+        let (mut outs, mut drops) = (Vec::new(), None);
         let settled = match &input {
             TurnInput::Brief { brief } => {
                 let bytes = self.read(agent, brief).await?;
@@ -308,7 +309,17 @@ impl HostDriver {
             TurnInput::Hook { host, id, event } if host == HOST => {
                 let bytes = self.read(agent, event).await?;
                 match serde_json::from_slice::<Event>(&bytes) {
-                    Ok(event) => apply(agent, &mut session, inbox, id, event, &mut outs)?,
+                    Ok(event) => {
+                        // A stop drops every input queued before it.
+                        drops = matches!(
+                            event,
+                            Event::Control {
+                                control: Control::Cancel | Control::Archive
+                            }
+                        )
+                        .then_some(inbox);
+                        apply(agent, &mut session, inbox, id, event, &mut outs)?
+                    }
                     Err(error) => reject(&mut session, id, &error.to_string()),
                 }
             }
@@ -321,7 +332,12 @@ impl HostDriver {
         let (inbox, input) = match settled {
             Some(running) => (running.inbox, running.input),
             // A request to the open turn is held in its checkpoint.
-            None if session.running.is_some() => return waiting(&session, outs),
+            None if session.running.is_some() => {
+                return Ok(TurnStep {
+                    drops,
+                    ..waiting(&session, outs)?
+                });
+            }
             None => (inbox, input),
         };
         let bytes = serde_json::to_vec(&session).map_err(storage)?;
@@ -332,7 +348,10 @@ impl HostDriver {
             output,
         };
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
-        Ok(idle(outs))
+        Ok(TurnStep {
+            drops,
+            ..idle(outs)
+        })
     }
 }
 
@@ -347,173 +366,12 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
     OperationId::from_bytes(bytes)
 }
 
-/// Opens the turn that runs `input` until a native process settles it; an
-/// input a cancel or archive dropped starts none.
-fn start(mut session: Session, inbox: u64, input: TurnInput) -> Result<TurnStep> {
-    if inbox < session.dropped_before || session.control == Control::Archive {
-        return Ok(idle(Vec::new()));
-    }
-    session.running = Some(Running {
-        inbox,
-        input,
-        claimed: None,
-    });
-    waiting(&session, Vec::new())
-}
-
-/// The open turn's step: `session` in its checkpoint, awaiting the next hook.
-fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
-    Ok(TurnStep {
-        reserved_children: 0,
-        checkpoint: Some(serde_json::to_vec(session).map_err(storage)?),
-        outs,
-        wait: Wait::Host(HOST.into()),
-    })
-}
-
-fn idle(outs: Vec<Out>) -> TurnStep {
-    TurnStep {
-        reserved_children: 0,
-        checkpoint: None,
-        outs,
-        wait: Wait::Input,
-    }
-}
-
-fn reject(session: &mut Session, id: &IntentId, reason: &str) -> Option<Running> {
-    session.rejected = Some(Rejected {
-        id: id.clone(),
-        reason: reason.into(),
-    });
-    None
-}
-
-/// Applies owner request `id` at inbox sequence `inbox`, returning the input it
-/// settled. Stale or replayed requests are recorded, never failed: a failed
-/// turn would leave its input queued ahead of every later one.
-fn apply(
-    agent: &AgentState,
-    session: &mut Session,
-    inbox: u64,
-    id: &IntentId,
-    event: Event,
-    outs: &mut Vec<Out>,
-) -> Result<Option<Running>> {
-    session.rejected = None;
-    match event {
-        Event::Spawn { reference, prompt } => {
-            let intent = IntentId::try_from(reference.as_str()).map_err(storage)?;
-            if agent
-                .open_children
-                .contains(&child(&agent.path, &reference)?)
-            {
-                return Ok(reject(session, id, "native child already exists"));
-            }
-            let brief = serde_json::to_vec(&Brief {
-                reference: reference.clone(),
-                prompt,
-            })
-            .map_err(storage)?;
-            outs.push(Out::Spawn {
-                intent,
-                brief: Some(brief),
-                volumes: Vec::new(),
-            });
-            session.spawned.push(reference);
-        }
-        Event::Claim => {
-            let reason = match &session.running {
-                None => Some("native session has no pending input"),
-                Some(running) if running.claimed.is_some() => Some("native input already claimed"),
-                Some(_) if session.control != Control::Resume => Some("native session is stopped"),
-                Some(_) => None,
-            };
-            if let Some(reason) = reason {
-                return Ok(reject(session, id, reason));
-            }
-            // Named by its turn number, so a replayed claim names it again.
-            let claim = OperationId::from_bytes(claim_bytes(agent, session));
-            if let Some(running) = &mut session.running {
-                running.claimed = Some(claim);
-            }
-        }
-        Event::Complete { operation, outcome } => {
-            if session.claimed() != Some(operation) {
-                return Ok(reject(
-                    session,
-                    id,
-                    "native completion differs from its claim",
-                ));
-            }
-            session.settled += 1;
-            session.result = Some(bounded(outcome));
-            return Ok(session.running.take());
-        }
-        Event::Native { session: native } => session.native = Some(native),
-        Event::Control { control }
-            if session.control == Control::Archive && control != Control::Archive =>
-        {
-            return Ok(reject(session, id, "native session is archived"));
-        }
-        Event::Control { control } => {
-            session.control = control;
-            if matches!(control, Control::Cancel | Control::Archive) {
-                session.dropped_before = inbox;
-            }
-            // An unstarted input owns no process: a stop settles it cancelled.
-            if control != Control::Resume
-                && session.running.is_some()
-                && session.claimed().is_none()
-            {
-                session.settled += 1;
-                session.result = Some(crate::Outcome::Cancelled);
-                return Ok(session.running.take());
-            }
-        }
-    }
-    Ok(None)
-}
-
 /// Spawned session `reference` of `parent`: the spawn intent names it.
 pub(super) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
     let intent = IntentId::try_from(reference).map_err(storage)?;
     parent
         .child(&AgentId::derive(&parent.id(), intent.as_str()))
         .map_err(storage)
-}
-
-/// The claim identity of `agent`'s next turn: one per turn number, so a
-/// replayed claim names the same operation.
-fn claim_bytes(agent: &AgentState, session: &Session) -> [u8; 16] {
-    let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.claim.v1");
-    hasher.update(agent.path.as_str().as_bytes());
-    hasher.update(&[0]);
-    hasher.update(&(session.settled + 1).to_le_bytes());
-    let mut bytes = [0; 16];
-    hasher.finalize_xof().fill(&mut bytes);
-    bytes
-}
-
-fn bounded(outcome: crate::Outcome<TurnOutput>) -> crate::Outcome<TurnOutput> {
-    let truncate = |text: String| -> String {
-        let mut end = text.len().min(MAXIMUM_MESSAGE);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text[..end].to_owned()
-    };
-    match outcome {
-        crate::Outcome::Succeeded(mut output) => {
-            output.text = truncate(output.text);
-            output.metadata = Value::Null;
-            output.attachments.clear();
-            crate::Outcome::Succeeded(output)
-        }
-        crate::Outcome::Failed { message } => crate::Outcome::Failed {
-            message: truncate(message),
-        },
-        other => other,
-    }
 }
 
 /// The runtime's handle on the driver the owner also reads sessions through.

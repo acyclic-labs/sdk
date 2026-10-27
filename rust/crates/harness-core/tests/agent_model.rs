@@ -454,6 +454,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
         checkpoint: None,
         outs: vec![Out::Conversation(b"answer".to_vec())],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
+        drops: None,
     }]);
     let approval = InboxRecord::Approval(Approval { id: intent("q1") });
     let first = step(
@@ -502,6 +503,7 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
         checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
         outs: vec![Out::Conversation(b"partial".to_vec())],
         wait: Wait::Continue,
+        drops: None,
     }]);
     let stepped = step(
         &driver,
@@ -549,6 +551,7 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
         wait: Wait::Done(AgentOutcome::Failed {
             message: "x".repeat(MAX_OUTCOME_BYTES),
         }),
+        drops: None,
     }]);
     let stepped = step(
         &driver,
@@ -630,6 +633,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
+        drops: None,
     }]);
     let approval = InboxRecord::Approval(Approval { id: intent("q") });
     let wake = Wake::Inbox {
@@ -911,6 +915,7 @@ impl TurnDriver for ToolSpawner {
                     volumes: Vec::new(),
                 }],
                 wait: Wait::Input,
+                drops: None,
             })
         })
     }
@@ -980,6 +985,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
             volumes: Vec::new(),
         }],
         wait: Wait::Input,
+        drops: None,
     }]);
     // A client's spawn meanwhile is refused rather than taking that slot.
     let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
@@ -1022,6 +1028,7 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
             Out::Conversation(b"fits".to_vec()),
         ],
         wait: Wait::Input,
+        drops: None,
     }]);
     let stepped = step(
         &driver,

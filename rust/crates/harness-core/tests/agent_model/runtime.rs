@@ -39,6 +39,7 @@ impl TurnDriver for Spawner {
                     Vec::new()
                 },
                 wait: Wait::Input,
+                drops: None,
             })
         })
     }

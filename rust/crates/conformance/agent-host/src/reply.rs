@@ -59,6 +59,7 @@ impl TurnDriver for Replying {
                     checkpoint: Some(Vec::new()),
                     outs: Vec::new(),
                     wait: Wait::Approval(id.clone()),
+                    drops: None,
                 });
             }
             if id.as_str().starts_with("native-") {
@@ -69,6 +70,7 @@ impl TurnDriver for Replying {
                     checkpoint: Some(checkpoint),
                     outs: Vec::new(),
                     wait: Wait::Host(HOST.into()),
+                    drops: None,
                 });
             }
             settle(inbox, input)
@@ -92,6 +94,7 @@ fn settle(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> 
         checkpoint: None,
         outs: vec![Out::Conversation(entry.encode()?)],
         wait: Wait::Input,
+        drops: None,
     })
 }
 

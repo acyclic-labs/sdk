@@ -248,7 +248,13 @@ impl HostWorkspaceOwner {
     /// The open children `parent` spawned, by parent-local name. `after` is
     /// returned unchanged: the list is the whole bounded set.
     pub(super) async fn sessions(&self, parent: &AgentPath, after: Option<u64>) -> Result<Value> {
-        let (_, session) = self.native.session(parent).await?;
-        Ok(json!({"after":after,"references":session.spawned}))
+        let (state, session) = self.native.session(parent).await?;
+        // A child whose report a stop dropped is closed all the same.
+        let open = |reference: &&String| {
+            agents::child(&state.path, reference)
+                .is_ok_and(|path| state.open_children.contains(&path))
+        };
+        let references = session.spawned.iter().filter(open).collect::<Vec<_>>();
+        Ok(json!({"after":after,"references":references}))
     }
 }

@@ -206,6 +206,16 @@ impl AgentState {
         self.taken.clear();
     }
 
+    /// Drops every pending input before inbox sequence `end`; the inbox
+    /// read-back resumes at `end`.
+    fn drop_before(&mut self, end: u64) {
+        self.queued.retain(|queued| queued.inbox >= end);
+        self.taken.retain(|sequence| *sequence >= end);
+        if self.overflow.is_some_and(|from| from < end) {
+            self.overflow = Some(end);
+        }
+    }
+
     /// The overflowed inbox records to read back before inbox sequence `end`:
     /// the first sequence and a record bound that refills the window past
     /// every taken sequence.
@@ -305,6 +315,9 @@ pub struct TurnStep {
     pub outs: Vec<Out>,
     /// What to wait for next.
     pub wait: Wait,
+    /// Drops every input pending before this inbox sequence, held or still
+    /// in the inbox: the host's own cancel or archive, taken out of order.
+    pub drops: Option<u64>,
 }
 
 /// Future returned by a turn driver: `Send` on native hosts, event-loop
@@ -593,7 +606,11 @@ async fn run<T: TurnDriver + ?Sized>(
             wait: Wait::Done(AgentOutcome::Failed {
                 message: INADMISSIBLE_EFFECT.into(),
             }),
+            drops: None,
         };
+    }
+    if let Some(end) = turn.drops {
+        state.drop_before(end);
     }
     outs.extend(turn.outs);
     let wait = match turn.wait {

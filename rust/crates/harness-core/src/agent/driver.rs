@@ -299,6 +299,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
+                    drops: None,
                 });
             }
             let failed = |message: &str| TurnStep {
@@ -308,6 +309,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 wait: Wait::Done(AgentOutcome::Failed {
                     message: message.to_owned(),
                 }),
+                drops: None,
             };
             let progress = match progress {
                 Ok(progress) => progress,
@@ -358,6 +360,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         checkpoint: None,
                         outs,
                         wait,
+                        drops: None,
                     }
                 }
                 ExecutionProgress::Pending(approval) => {
@@ -391,6 +394,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         reserved_children,
                         outs,
                         wait: Wait::Approval(id),
+                        drops: None,
                     });
                 }
                 ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),

@@ -93,6 +93,7 @@ impl TurnDriver for Driver {
                 checkpoint: None,
                 outs,
                 wait: Wait::Input,
+                drops: None,
             })
         })
     }
