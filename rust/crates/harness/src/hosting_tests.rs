@@ -249,8 +249,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
 }
 
 #[test]
-fn a_children_cursor_carries_its_hierarchy_version_and_last_path()
--> Result<(), Box<dyn std::error::Error>> {
+fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
     let version = CommitId::from_bytes([0xa5; 32]);
     let after = StreamPath::new("agents/root/children/a")?;
     let cursor = children_cursor(&version, &after);
