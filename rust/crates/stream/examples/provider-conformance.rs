@@ -14,9 +14,14 @@ mod postgres_scale;
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!(
-            "STEP_FAILED stream-provider-conformance: {error}; recovery: set ACYCLIC_CONFORMANCE_ENDPOINT and ACYCLIC_CONFORMANCE_TOKEN, then cargo run --locked -p acyclic-stream --features http,conformance --example provider-conformance; for the local HTTPS fixture run node typescript/packages/stream/test/http-provider-conformance.mjs"
-        );
+        let recovery = if std::env::args().nth(1).as_deref() == Some("--postgres") {
+            "pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"
+        } else if std::env::args().nth(1).as_deref() == Some("--fixture") {
+            "node typescript/packages/stream/test/http-provider-conformance.mjs"
+        } else {
+            "set ACYCLIC_CONFORMANCE_ENDPOINT and ACYCLIC_CONFORMANCE_TOKEN, then cargo run --locked -p acyclic-stream --features http,conformance --example provider-conformance"
+        };
+        eprintln!("STEP_FAILED stream-provider-conformance: {error}; recovery: {recovery}");
         std::process::exit(1);
     }
 }
