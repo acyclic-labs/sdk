@@ -130,7 +130,18 @@ and independent input limits. The execution journal retains the exact request
 artifact and rechecks it before replay or reconciliation. TypeScript providers
 receive the same Rust-admitted bytes as `serializedInput`.
 
-The unchanged JSON corpus also runs as a report. Run
+Enable the `conformance` feature to run the public AgentHost suite against your
+own backend. Implement `conformance::Backend` and register its async factory
+with `acyclic_harness::conformance::suite!(MyBackend::fresh)`. The suite owns
+its fault injection and assertions; the backend supplies retained storage and
+its actual handler and hosting transport. `conformance::bench` and
+`conformance::scale` report data and control requests through the shared
+`acyclic_stream::testing::Counted` ledger. See the
+[backend guide](../conformance/agent-host/README.md) for setup and on-demand
+commands. The current actor runtime still performs pre-handler control reads;
+these measurements do not establish zero control traffic.
+
+The historical JSON corpus also runs as a report. Run
 `cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --report out.json`.
 The report accounts for every case, including capability skips for native
 fixture introspection. See the [scenario substrate guide](../harness-conformance/README.md).
