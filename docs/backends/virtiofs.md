@@ -91,16 +91,17 @@ and socket implementation (job `1793061176450-13144-f5af43b2`). This proves
 compilation, not a public source admission, protocol interoperability or mount.
 
 The latest completed Linux filesystem library run, including every existing
-ignored mount test, finished in 30.37 seconds: 2,477 passed and 23 failed,
-with zero ignored or filtered tests (source `8a24213bc2f9cc07753ef29a7f2def82c0a39059`,
-job `1793064983779-30633-ebe95600`). Its compile-only gate passed in 95 seconds;
-test compilation took 564 seconds. Worker retirement, event-counter custody,
-shared-view isolation, node-facts writes and both kernel packet replays passed.
-Original mount cancellation returned ENODEV instead of ECANCELED, and the
-cross-descriptor fsync vector failed its second pending-write assertion. There
-were also 21 failures routed to the filesystem owner. This is not a passing
-suite. The subsequent source preserves the original host source refusal until
-physical unmount and shares host/vring readiness; those edits await qualification.
+ignored mount test, finished in 30.36 seconds: 2,479 passed and 22 failed,
+with zero ignored or filtered tests (source `84a4d7157b8958cee1684eb26a8c76b5f57a2afe`,
+job `1793066388995-42644-71f49414`). Its compile-only gate passed in 96 seconds;
+test compilation took 560 seconds. Worker retirement, event-counter custody,
+shared-view isolation, node-facts writes, original finite cancellation, terminal
+source refusal and both kernel packet replays passed. The live mount cases
+returned an error without identifying the case; the previous run's fsync
+pending-write assertion was not reproduced in this log. There were also 21
+failures routed to the filesystem owner. This is not a passing suite. Subsequent
+source tightens first-error publication and post-effect refusal and identifies
+returned case errors; those changes await qualification.
 
 A new real QEMU/cloud-hypervisor vector requires prepared guest artifacts:
 
@@ -116,8 +117,8 @@ The mount-free replay of that saved fixture also passed. Both QEMU and
 cloud-hypervisor booted real guests, mounted the standard socket, wrote/read
 the test bytes, deleted the file and verified absence, unmounted and powered
 off with exit status zero. Both servers positively joined with `transport=Ok(())`
-and no callback failure. Each server recorded 755 backend reads, 11 backend
-writes and 3,255 callback items examined. These are private fixture-source
+and no callback failure. Each server recorded 755 backend reads and 11 backend
+writes; QEMU examined 3,253 callback items and cloud-hypervisor 3,255. These are private fixture-source
 interoperability results, not public hosted admission or page-fault revocation
 proof. The canonical receipt confirms home, targets, outer targets and outer
 temporary directory cleanup.
@@ -129,6 +130,5 @@ artifact provenance and copies no host initrd or configuration. The vector
 retains the socket and VMM process tree through positive exit/cleanup.
 The standard protocol-before-SET_OWNER negotiation, CALL/ERR-before-SET_FEATURES
 setup and CALL replacement on a settled enabled queue were exercised by these
-actual VMMs. The subsequent guest vector additionally asserts nonzero source
-callback work and refuses unexpected transport retirement; its stronger
-assertions await execution against that source.
+actual VMMs. The guest vector additionally asserted nonzero source callback
+work and refused unexpected transport retirement in this run.
