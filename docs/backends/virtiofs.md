@@ -113,13 +113,33 @@ No private Firecracker variant is supplied. References:
 
 ## Validation
 
-Current Bound/daemon source is awaiting the single bb2 validation at signed
-`2d555684ffa3730b602c54db888d1620bf2c6865`:
+The current bb2 run uses signed source
+`41955b03d096e0c8d7a180619dbba35dae40905a`:
 
 ```powershell
 pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'bash scripts/validate-virtiofs.sh'
 ```
 
+All three compile gates passed. Complete runtime results at that source:
+
+- Filesystem: **2483 pass / 22 fail / 0 ignored / 0 filtered**, 30.35 s.
+  Every FUSE-module test, Linux mount behavior case and private fixture-source
+  VMM passed, including revoked/missing-guard/identity/metadata refusals.
+- Harness library: **133 pass / 2 fail**, 1.73 s. The failures are oversized
+  command-result omission and restrictive checkout-policy setup.
+- Bound agent suite: **29 pass / 0 fail**, 0.22 s.
+- Public Bound/standalone daemon: **2 pass / 0 fail**, 1.38 s. Both QEMU and
+  cloud-hypervisor mounted the actual canonical local volume, wrote/read/deleted,
+  unmounted and powered off exit 0. Both daemons exited 0 and retired their owned
+  sockets. Frontends emitted teardown disconnect warnings after session retirement.
+
+Overall rc **101**; this is not a passing complete suite. The filesystem and
+harness failures are owner-routed, without claiming main-baseline equivalence.
+Canonical cleanup confirms home, targets, outer targets and outer temporary
+storage removed. bb2 job `1793086189051-119691-9ce6908e`, log
+`/home/var/log/buildbox/1793086155710-119691-79f2abab.log`; canonical wall time
+1851.215 s includes compilation. No runtime replay is claimed after later
+documentation-only edits.
 The script compiles first, then runs complete relevant suites without name
 filters, including real host FUSE/kernel replay and both actual VMMs through
 the public standalone daemon. Refusal vectors check revoked guards, wrong
