@@ -469,7 +469,9 @@ impl<'a> Names<'a> {
                 Ok((binding.canonical != wire).then_some(binding.canonical))
             }
             Err(_) if unchanged(wire) => Ok(None),
-            Err(_) => Err(crate::invalid("provider named an undeclared tool alias")),
+            Err(_) => Err(crate::diagnostic::rejection(crate::invalid(
+                "provider named an undeclared tool alias",
+            ))),
         }
     }
 
