@@ -125,9 +125,11 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         let clock = Arc::new(Clock::default());
+        // Both planning and recorded admission use the transaction's database
+        // clock. A process wall-clock skew cannot override SQL admission.
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
-            Arc::new(SystemUnixMillisClock),
+            clock.clone(),
             clock.clone(),
         );
         let (failure, _) = watch::channel(false);
