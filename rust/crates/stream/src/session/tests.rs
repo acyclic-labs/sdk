@@ -2,6 +2,7 @@ mod calls;
 mod filtered_progress;
 mod properties;
 mod queue_scaling;
+mod resource_admission;
 
 use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
