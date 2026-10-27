@@ -96,7 +96,7 @@ impl ToolProvider for Coordination {
         let Some(children) = self.children.as_mut() else {
             return Ok(None);
         };
-        let (flowed, _) = children.pump()?;
+        let flowed = children.pump()?;
         // A parked wait settles once its child is idle: its own process
         // exited, or a cancel or archive stopped it.
         for reference in parked {
