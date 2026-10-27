@@ -1,16 +1,29 @@
 use super::*;
 
-#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+// The pool fixtures and searches drive the native gRPC transport.
+#[cfg(all(
+    any(test, acyclic_stream_loom),
+    feature = "grpc",
+    not(target_arch = "wasm32")
+))]
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
 #[cfg(test)]
-#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(
+    not(acyclic_stream_loom),
+    feature = "grpc",
+    not(target_arch = "wasm32")
+))]
 mod ordering;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod retry_model;
 #[cfg(test)]
-#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(
+    not(acyclic_stream_loom),
+    feature = "grpc",
+    not(target_arch = "wasm32")
+))]
 mod route_searches;
 
 impl Pool {
@@ -713,5 +726,9 @@ pub(super) fn poll_dials(
 }
 
 #[cfg(test)]
-#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(
+    not(acyclic_stream_loom),
+    feature = "grpc",
+    not(target_arch = "wasm32")
+))]
 mod filtered_credit_tests;

@@ -6,9 +6,13 @@ use tokio::sync::mpsc;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 use native::Connect;
-#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(test, acyclic_stream_loom),
+    feature = "grpc",
+    not(target_arch = "wasm32")
+))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
@@ -54,8 +58,9 @@ mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]
 pub use progress::verify_latest_progress;
+// The client tests drive the native gRPC transport.
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;

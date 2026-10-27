@@ -5,6 +5,7 @@ mod queue_scaling;
 use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use futures::channel::mpsc;
+use futures::stream::BoxStream;
 use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
