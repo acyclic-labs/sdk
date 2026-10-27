@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { initSync, qualifyCloudflare, qualifyCloudflareRpc, appendWakeRecord } from "./generated/acyclic_cloudflare_conformance.js";
+import { initSync, qualifyCloudflare, qualifyCloudflareRpc, appendWakeRecord, spawnAdoptionFixture } from "./generated/acyclic_cloudflare_conformance.js";
 import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
@@ -64,6 +64,7 @@ export class Agent extends DurableObject {
     this.agent = openCloudflareAgent(ctx, env.LEDGER.getByName("suite"), ctx.id.name!, { ...options, handler_timeout_ms: ctx.id.name === "timeout" ? 1000n : options.handler_timeout_ms }, this.owner, this.registry);
   }
   create(intent: string, brief?: string) { return this.agent.create(intent, brief); }
+  adopt(path: string) { return this.agent.adopt(path); }
   send(intent: string, text: string) { return this.agent.send(intent, text); }
   read(stream: "inbox" | "conversation" | "status") { return this.agent.read(stream); }
   pause(paused: boolean) { return this.agent.pause(paused); }
@@ -134,8 +135,34 @@ export default {
       if (path !== await agent.create("valid-root")) {
         throw new Error("STEP valid-create recovery failed; recovery: bash scripts/qualify-cloudflare.sh");
       }
+      const adoption = env.AGENT.getByName("invalid-adopt");
+      let refused = 0;
+      for (const candidate of ["not-an-agent", "harness/agents/ffffffffffffffffffffffffffffffff",
+        "harness/agents/ffffffffffffffffffffffffffffffff/children/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]) {
+        try { await adoption.adopt(candidate); } catch { refused += 1; }
+      }
+      await adoption.wake();
+      if (refused !== 3 || (await adoption.read("inbox")).length !== 0) {
+        throw new Error("STEP invalid-adopt refusal failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      const child = await spawnAdoptionFixture(streamLedgerPort(env.LEDGER.getByName("suite"), ""));
+      await adoption.adopt(child);
+      await adoption.adopt(child);
+      await adoption.cancel("adopted-control");
+      if ((await adoption.read("status")).length === 0) {
+        throw new Error("STEP valid-adopt recovery failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
       await env.SUITE.getByName("wake-failure").wakeIsolation();
-      return Response.json({ creation: "invalid input leaves identity available", wakes: "failed delivery retains only itself" });
+      return Response.json({ creation: "invalid input leaves identity available", adoption: "invalid or absent agents leave placement available; saved child runs", child, wakes: "failed delivery retains only itself" });
+    }
+    if (new URL(request.url).pathname === "/adoption-replay") {
+      const adoption = env.AGENT.getByName("invalid-adopt");
+      await adoption.adopt(new URL(request.url).searchParams.get("path")!);
+      await adoption.cancel("adopted-control");
+      if ((await adoption.read("status")).length === 0) {
+        throw new Error("STEP adopted-host restart failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      return Response.json({ adoption: "saved child placement survives emulator restart" });
     }
     if (new URL(request.url).pathname === "/cancel") {
       const agent = env.AGENT.getByName("cancel");

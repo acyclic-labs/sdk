@@ -354,6 +354,15 @@ impl WasmAgents {
         Ok(())
     }
 
+    /// Checks the canonical path and its committed adoption before an event
+    /// host retains permanent placement. Observing state does not activate it.
+    #[wasm_bindgen(js_name = validateAdopt)]
+    pub async fn validate_adopt(&self, agent: String) -> std::result::Result<(), JsValue> {
+        let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+        self.agents.state(&agent).await.map_err(agent_error)?;
+        Ok(())
+    }
+
     /// Opens the providers and starts hosting every agent. `owner` holds the
     /// signing custody of every agent's authority. `report` receives each
     /// failed agent delivery, which stays queued.

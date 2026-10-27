@@ -6,7 +6,31 @@
 //! their actual host binding, invocation and reply; these helpers invent none.
 
 use crate::Result;
+use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_harness_core::agent::*;
+use acyclic_stream::StreamProvider;
+use std::sync::Arc;
+
+/// Save a real spawn without activating its child. Endpoint hosts can then
+/// adopt that child through their public placement API, including after reopen.
+pub async fn spawned(
+    provider: Arc<dyn StreamProvider>,
+    within: ActorReference,
+) -> Result<AgentPath> {
+    let handler = Arc::new(AgentHandler::new(
+        actor_store(&provider)?,
+        Driver,
+        ActorLimits::new(1_000, 1 << 20, 1 << 16)?,
+    )?);
+    let host = AgentHost::hosting(provider, within, handler, Arc::new(SystemClock), None)?;
+    let root = host
+        .create(&IntentId::try_from("fixture-root")?, adopted())
+        .await?;
+    host.drain(&root).await?;
+    host.send(&root, &sender(), &request("spawn")?).await?;
+    host.drain(&root).await?;
+    Ok(root.child(&AgentId::derive(&root.id(), "child"))?)
+}
 
 /// Initial root used by creation, exact replay, spawn and restart scenarios.
 pub fn adopted() -> ForkAdopted {

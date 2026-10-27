@@ -85,6 +85,10 @@ async function main() {
       throw new Error(`guest restart differs: HTTP ${replay.status}: ${replayOutput}`);
     }
     console.log("workerd guest: SQLite survived a full emulator restart; exact create/send retries retained one turn");
+    const adopted = await fetch(`http://127.0.0.1:15420/adoption-replay?path=${encodeURIComponent(JSON.parse(reviewOutput).child)}`);
+    const adoptedOutput = await adopted.text();
+    if (!adopted.ok) throw new Error(`adoption restart HTTP ${adopted.status}: ${adoptedOutput}`);
+    console.log(`workerd review: ${adoptedOutput}`);
   } finally {
     await stop();
     if (persistence) await rm(persistence, { recursive: true, force: true });

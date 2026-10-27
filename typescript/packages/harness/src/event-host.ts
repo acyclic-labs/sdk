@@ -121,6 +121,7 @@ export class EventAgentHost {
       if (identity && identity.path !== path) {
         throw new Error("STEP actor-adopt conflict; recovery: route this path to a different named actor host");
       }
+      await this.host.validateAdopt(path);
       if (!identity) this.storage.put("identity", JSON.stringify({ intent: path, path }));
       await this.storage.flush();
     });
