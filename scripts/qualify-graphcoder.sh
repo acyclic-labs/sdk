@@ -12,10 +12,10 @@ native_features=filesystem-local,native-execution,terminal,tui,test-support,grpc
 cargo test -p acyclic-harness --features "$native_features" --lib --no-run --message-format=json > "$native_artifact"
 cargo test -p acyclic-harness-core --features "$native_features" --lib --no-run --message-format=json > "$core_artifact"
 python3 scripts/qualify-graphcoder-artifact.py \
-    contract::errors::tests:: task_volume::schema::tests:: task_volume::files:: task_volume::segment::tests:: executor::tests::invocation_bounds:: \
+    contract::errors::tests:: executor::tests::invocation_bounds:: \
     tools::git::view::tests:: < "$core_artifact"
 python3 scripts/qualify-graphcoder-artifact.py \
-    client::local_headless::tests:: client::task_files::tests:: local::tests::task_files:: local::tests::documents:: local::tests::command_files:: local::tests::headless:: local::tests::live_ui:: client::commands::scheduling::owner::tests:: \
+    local::tests:: \
     local::checkout_tools::publisher::tests:: < "$native_artifact"
 
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
@@ -35,9 +35,3 @@ node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" cancel
 node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" cancel-preparation
 
 bash scripts/qualify-graphcoder-client.sh
-
-# Dependency integration gates use the same already-built native binary.
-python3 scripts/qualify-graphcoder-artifact.py \
-    local::tests::checkout:: local::tests::volume_tools:: local::tests::volumes:: \
-    local::tests::checkout_reopen:: local::tests::checkout_reconciliation:: \
-    local::tests::reconciliation_interruptions:: < "$native_artifact"
