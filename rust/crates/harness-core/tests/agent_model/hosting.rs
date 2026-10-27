@@ -56,8 +56,12 @@ fn provider() -> Result<ProviderRef> {
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
 #[tokio::test]
 async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before_io() -> Result {
+    use super::wired::Refusing;
     use acyclic_fs::native_mount::GuestPosixPolicy;
-    use acyclic_harness_core::filesystem::hosting::LocalGuestEnrollment;
+    use acyclic_harness_core::{
+        contract::Capabilities,
+        filesystem::hosting::{LocalGuestEnrollment, VerifiedCaller},
+    };
     acyclic_native_runtime::initialize_native_io_services()?;
     acyclic_fs::initialize_native_mount_services()?;
     let stream = Arc::new(Refusing::default());
