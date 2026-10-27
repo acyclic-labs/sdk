@@ -135,9 +135,13 @@ async fn shared_command_completion_and_abandon_retire_only_their_view()
     workspace.write_text("/result.txt", "original").await?;
     let root = tempfile::tempdir()?;
     let admission = Arc::new(crate::hold_root(root.path())?);
-    let options = MountOptions::read_write()
-        .publication(MountPublication::Manual)
-        .view_root(admission);
+    let options = super::tests::fixture_options(
+        &workspace,
+        MountOptions::read_write()
+            .publication(MountPublication::Manual)
+            .view_root(admission),
+    )
+    .await?;
     let retained = workspace.mount_view(options.clone()).await?;
     let completed = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), completed.path().parent());

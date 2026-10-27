@@ -16,6 +16,15 @@ import urllib.request
 
 
 def run(step, command, **kwargs):
+    executable = shutil.which(str(command[0])) or shutil.which(
+        str(command[0]), path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+    if executable is None:
+        raise RuntimeError(
+            f"step={step}: missing executable {command[0]}; "
+            f"recovery: command -v {shlex.quote(str(command[0]))}"
+        )
+    command = [executable, *command[1:]]
     result = subprocess.run(command, capture_output=True, **kwargs)
     if result.returncode:
         raise RuntimeError(

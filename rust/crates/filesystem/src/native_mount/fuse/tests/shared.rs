@@ -16,9 +16,13 @@ fn tracking_views(count: usize) -> Result<Vec<MemorySource>, Box<dyn std::error:
     )?
     .into_iter()
     .map(|checkout| {
-        MemorySource::new(
-            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-            config,
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
         )
         .map_err(Into::into)
     })
