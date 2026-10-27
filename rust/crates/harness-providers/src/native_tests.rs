@@ -236,7 +236,10 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
         // Mutate the existing shared protocol fixture at the returned name;
         // preserve its original framing, arguments, finish and usage records.
         let malformed = response.replace("\"echo\"", "\"bad/tool\"");
-        assert_ne!(malformed, response, "fixture must exercise the returned name");
+        assert_ne!(
+            malformed, response,
+            "fixture must exercise the returned name"
+        );
         let (mut provider, _) = provider(adapter, 200);
         let fixture = Arc::new(Fixture {
             response: Bytes::from(malformed),
@@ -245,10 +248,21 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
         provider.transport =
             crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
-        let ordinary = provider.generate(&request, dispatch).try_collect::<Vec<_>>().await;
-        assert!(matches!(ordinary, Err(Error::ModelDiagnostic {
-            code: acyclic_harness_core::wire::ErrorCode::Invalid, custody: None, ..
-        })), "{adapter:?}: {ordinary:?}");
+        let ordinary = provider
+            .generate(&request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await;
+        assert!(
+            matches!(
+                ordinary,
+                Err(Error::ModelDiagnostic {
+                    code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                    custody: None,
+                    ..
+                })
+            ),
+            "{adapter:?}: {ordinary:?}"
+        );
 
         let work = work(&CancellationToken::new())?;
         let baseline = work.live_allocation_bytes();
@@ -260,15 +274,21 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
                 match stream.next().await {
                     Some(Err(error)) => break error,
                     Some(Ok((event, custody))) => {
-                        assert!(!matches!(event, ModelEvent::ToolCall(_) | ModelEvent::Completed { .. }));
+                        assert!(!matches!(
+                            event,
+                            ModelEvent::ToolCall(_) | ModelEvent::Completed { .. }
+                        ));
                         drop(custody);
                     }
                     None => return Err(invalid("malformed tool alias completed without refusal")),
                 }
             };
-            assert!(matches!(&error, Error::ModelDiagnostic {
+            assert!(
+                matches!(&error, Error::ModelDiagnostic {
                 code: acyclic_harness_core::wire::ErrorCode::Invalid, custody: Some(custody), ..
-            } if custody.work().shares_allocation_context(&work)), "{adapter:?}: {error:?}");
+            } if custody.work().shares_allocation_context(&work)),
+                "{adapter:?}: {error:?}"
+            );
             drop(error);
         }
         assert_eq!(work.live_allocation_bytes(), baseline, "{adapter:?}");
