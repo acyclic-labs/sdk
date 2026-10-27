@@ -37,6 +37,8 @@ blake3.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+tokio = { workspace = true, features = ["test-util"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 async-trait.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }

@@ -32,7 +32,7 @@ class QualificationPaths(unittest.TestCase):
             with patch.dict(os.environ, {"E2E_OUTPUT": temporary}, clear=True), patch("subprocess.run") as run:
                 run.return_value = subprocess.CompletedProcess([], 1)
                 self.assertEqual(MODULE["main"](manifest), 1)
-                self.assertEqual(run.call_args.args[0], ["node", "scripts/graphcoder-e2e/run.mjs", *paths])
+                self.assertEqual(run.call_args.args[0], ["node", "scripts/graphcoder-e2e/serial.mjs", *paths])
                 self.assertEqual(json.loads((root / "wall.json").read_text())["exit"], 1)
             # Negative control: the previous directory guess cannot name the artifact.
             with self.assertRaises(FileNotFoundError):

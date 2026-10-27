@@ -15,7 +15,7 @@ def main(manifest):
     selected = binaries(manifest)
     start = time.perf_counter()
     result = subprocess.run([
-        "node", "scripts/graphcoder-e2e/run.mjs",
+        "node", "scripts/graphcoder-e2e/serial.mjs",
         selected["graphcoder"], selected["harness-mock-model"],
     ])
     wall = time.perf_counter() - start
