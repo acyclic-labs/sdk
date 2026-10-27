@@ -16,8 +16,8 @@ test("main covers targets and docs, retains errors and never retries failures", 
     writeFileSync(join(cwd, "bin/bun"), '#!/bin/bash\necho "format $*" >> calls\nexit "${FORMAT_RC:-0}"\n');
     chmodSync(join(cwd, "bin/bun"), 0o755);
     writeFileSync(join(cwd, "scripts/gate-test-runner.sh"), readFileSync(join(dirname(runner), "gate-test-runner.sh")));
-    mkdirSync(join(cwd, "scripts/buildbox/coordinator"), { recursive: true });
-    writeFileSync(join(cwd, "scripts/buildbox/coordinator/gate-clippy.py"), readFileSync(join(dirname(runner), "buildbox/coordinator/gate-clippy.py")));
+    mkdirSync(join(cwd, "scripts/external-gate"), { recursive: true });
+    writeFileSync(join(cwd, "scripts/external-gate/gate-clippy.py"), readFileSync(process.env.SDK_GATE_CLIPPY || "/home/var/bin/gate-clippy.py"));
     const cargo = join(cwd, "bin", "cargo");
     writeFileSync(cargo, `#!/bin/bash
 echo "$*" >> calls
@@ -46,7 +46,7 @@ esac
     for (const [target, doc, features, browser, expected, early = false, build = false] of [[0, 0, 0, 0, 0], [101, 0, 0, 0, 101], [0, 101, 0, 0, 101], [0, 0, 1, 0, 1], [0, 0, 0, 101, 101], [101, 0, 0, 0, 101, true], [101, 0, 0, 0, 101, false, true]]) {
       writeFileSync(join(cwd, "calls"), "");
       const result = spawnSync("bash", [runner, "--each-feature", "--locked", "-p", "harness", "--all-features", "--no-fail-fast", "--", "--skip", "known-hang"], {
-        cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), EARLY_FAIL: early ? "1" : "0", BUILD_FAIL: build ? "1" : "0", TARGET_RC: String(target), DOC_RC: String(doc), FEATURE_RC: String(features), BROWSER_RC: String(browser), WINDOWS_FEATURE_RC: "0" },
+        cwd, encoding: "utf8", env: { ...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"), PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), EARLY_FAIL: early ? "1" : "0", BUILD_FAIL: build ? "1" : "0", TARGET_RC: String(target), DOC_RC: String(doc), FEATURE_RC: String(features), BROWSER_RC: String(browser), WINDOWS_FEATURE_RC: "0" },
       });
       assert.equal(result.status, expected, result.stdout + result.stderr);
       const tests = readFileSync(join(cwd, "calls"), "utf8").trim().split("\n").filter(line => line.startsWith("test "));
@@ -72,7 +72,7 @@ esac
       assert.match(result.stdout, new RegExp(`GATE_DONE rc=${expected}`));
     }
     const windowsFailure = spawnSync("bash", [runner], {
-      cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), EARLY_FAIL: "0", TARGET_RC: "0", DOC_RC: "0", FEATURE_RC: "0", BROWSER_RC: "0", WINDOWS_FEATURE_RC: "101" },
+      cwd, encoding: "utf8", env: { ...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"), PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), EARLY_FAIL: "0", TARGET_RC: "0", DOC_RC: "0", FEATURE_RC: "0", BROWSER_RC: "0", WINDOWS_FEATURE_RC: "101" },
     });
     assert.equal(windowsFailure.status, 101, windowsFailure.stdout + windowsFailure.stderr);
     assert.match(windowsFailure.stdout, /GATE_DONE rc=101/u);
@@ -84,7 +84,7 @@ esac
       writeFileSync(selected, negative ? source.replace(formatHook, ":") : source);
       writeFileSync(join(cwd, "calls"), "");
       const result = spawnSync("bash", [selected], {
-        cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), FORMAT_RC: "101", TARGET_RC: "0", DOC_RC: "0", FEATURE_RC: "0", BROWSER_RC: "0", WINDOWS_FEATURE_RC: "0", EARLY_FAIL: "0", BUILD_FAIL: "0" },
+        cwd, encoding: "utf8", env: { ...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"), PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), FORMAT_RC: "101", TARGET_RC: "0", DOC_RC: "0", FEATURE_RC: "0", BROWSER_RC: "0", WINDOWS_FEATURE_RC: "0", EARLY_FAIL: "0", BUILD_FAIL: "0" },
       });
       assert.equal(result.status, negative ? 0 : 101, result.stdout + result.stderr);
       const calls = readFileSync(join(cwd, "calls"), "utf8").trim().split("\n");
@@ -95,7 +95,7 @@ esac
     }
     writeFileSync(join(cwd,'scripts/gate-target-cache.py'),readFileSync(join(dirname(runner),'gate-target-cache.py')));
     rmSync(join(cwd,'.gate-main-metadata.json'),{force:true});
-    const privateRun=spawnSync('bash',[runner],{cwd,encoding:'utf8',env:{...process.env,PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),EARLY_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
+    const privateRun=spawnSync('bash',[runner],{cwd,encoding:'utf8',env:{...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"),PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),EARLY_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
     assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
     assert.throws(()=>readFileSync(join(cwd,'.gate-main-metadata.json')),/ENOENT/);
     const output=/^GATE_OUTPUT_DIRECTORY (.+)$/mu.exec(privateRun.stdout);
@@ -110,7 +110,7 @@ esac
       const selected=join(cwd,'environment-runner.sh');
       writeFileSync(selected,negative?source.replace(exports,'').replace('( CARGO_TARGET_DIR="$clippy_target"',exports+'( CARGO_TARGET_DIR="$clippy_target"'):source);
       writeFileSync(join(cwd,'phase-env'),'');
-      const result=spawnSync('bash',[selected],{cwd,encoding:'utf8',env:{...process.env,PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:'',GATE_FUZZ_EXECUTABLES:'',EARLY_FAIL:'0',BUILD_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
+      const result=spawnSync('bash',[selected],{cwd,encoding:'utf8',env:{...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"),PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:'',GATE_FUZZ_EXECUTABLES:'',EARLY_FAIL:'0',BUILD_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
       assert.equal(result.status,0,result.stdout+result.stderr);
       const phases=readFileSync(join(cwd,'phase-env'),'utf8').trim().split('\n').map(line=>line.split('|'));
       const compilerInputs=()=>{for(const phase of ['clippy','features'])assert.deepEqual(phases.find(([name])=>name===phase),[phase,'','']);};

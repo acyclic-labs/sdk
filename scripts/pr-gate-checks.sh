@@ -163,7 +163,12 @@ echo "GATE_CLIPPY rc=$(cat "$gate_output/.gate-clippy.rc")"
 # Preserve every clippy diagnostic and its cause without confusing the test
 # compile verdict with the separate clippy ratchet.
 sed 's/^/GATE_CLIPPY_RAW /' "$gate_output/.gate-clippy.out"
-python3 scripts/buildbox/coordinator/gate-clippy.py emit "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")" || exit 224
+gate_clippy=${SDK_GATE_CLIPPY:-/home/var/bin/gate-clippy.py}
+if [ ! -f "$gate_clippy" ]; then
+  echo "STEP_FAILED gate-clippy: external decoder missing at $gate_clippy; recovery: SDK_GATE_CLIPPY=/absolute/path/to/coordinator/gate-clippy.py bash scripts/pr-gate-checks.sh" >&2
+  exit 224
+fi
+python3 "$gate_clippy" emit "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")" || exit 224
 if [ -n "$features" ]; then
   wait "$features"
   printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"
@@ -182,7 +187,13 @@ else
 fi
 echo "GATE_WALL seconds=$((SECONDS-started)) test_rc=$rc"
 if [ "$windows_required" = 1 ]; then
-  GATE_WINDOWS_RUNTIME_OUTPUT_DIR="$gate_output" bash scripts/buildbox/coordinator/gate-checks.sh --windows-runtime-only; windows_rc=$?
+  windows_gate=${SDK_WINDOWS_GATE:-/home/var/bin/gate-checks.sh}
+  if [ ! -f "$windows_gate" ]; then
+    echo "STEP_FAILED windows-runtime: external gate missing at $windows_gate; recovery: SDK_WINDOWS_GATE=/absolute/path/to/coordinator/gate-checks.sh bash scripts/pr-gate-checks.sh" >&2
+    windows_rc=224
+  else
+    GATE_WINDOWS_RUNTIME_OUTPUT_DIR="$gate_output" bash "$windows_gate" --windows-runtime-only; windows_rc=$?
+  fi
   [ "$rc" != 0 ] || rc=$windows_rc
 fi
 bash scripts/gate-windows-features.sh "$mode"; windows_features_rc=$?

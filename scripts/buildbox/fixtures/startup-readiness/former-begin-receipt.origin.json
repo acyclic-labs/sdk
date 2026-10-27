@@ -1,7 +1,0 @@
-{
-  "capture": "WSL /home/var/bin/buildbox.mjs, retained .bb-readiness-before.mjs from incident backport",
-  "fixture_sha256": "973de65ed2b8203a69c78a4c3d106716ee81871d993abcf51d44938fba4bb219",
-  "purpose": "actual pre-admission global recovery negative control",
-  "captured_at": "2026-10-26T03:23Z",
-  "captured_source_sha256": "775ecd15df4f175649aacf0b68c3e307da1524d4731a927d531943aafc909104"
-}

@@ -11,7 +11,7 @@ helper = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else Path(__file__
 spec = importlib.util.spec_from_file_location('gate_output_custody', helper)
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
-fixture = Path(__file__).parent / 'buildbox/coordinator/fixtures/e2e1495-clippy.txt'
+fixture = Path(os.environ.get('SDK_BUILD_TOOLS_DIR', '/home/var/lib/sdk-build-tools')) / 'coordinator/fixtures/e2e1495-clippy.txt'
 samples = fixture.read_bytes().splitlines(keepends=True)
 
 

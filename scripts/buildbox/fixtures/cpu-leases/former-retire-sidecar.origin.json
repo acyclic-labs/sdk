@@ -1,6 +1,0 @@
-{
-  "source": "git:3bae64ae9ef1811b6fd9b84151392f9fd1daff9e:scripts/buildbox/cpu_leases.py",
-  "selector": "def retire(token) through next top-level def",
-  "captured_at": "2026-10-25T23:44:27.7894526Z",
-  "sha256": "19ff265406abfeb7a9945b1a44c75b9ce100cb973104a6aa9382167c725e6ab9"
-}

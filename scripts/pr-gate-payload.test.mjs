@@ -17,7 +17,7 @@ test('PR dispatch owns the reviewed payload even when the installed runner repor
     writeFileSync(join(work, 'scripts/pr-gate-checks.sh'), reviewed);
     writeFileSync(join(work, 'scripts/gate-windows-features.sh'),
       '#!/bin/bash\necho "GATE_WINDOWS_FEATURES_START scope=$1"\necho "error[E0425]: missing Windows feature dependency"\nexit 101\n');
-    const source = readFileSync(new URL('./buildbox/coordinator/pr-gate.sh', import.meta.url), 'utf8');
+    const source = readFileSync(join(process.env.SDK_BUILD_TOOLS_DIR || '/home/var/lib/sdk-build-tools', 'coordinator/pr-gate.sh'), 'utf8');
     const start = source.indexOf('# The payload belongs');
     const end = source.indexOf('if [ "$(tr -d', start);
     assert.ok(start > 0 && end > start);

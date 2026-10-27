@@ -1,6 +1,0 @@
-{
-  "source": "Q:/lanes/gate-affected.py",
-  "sha256": "c3013692bd273bd3df5563ba81bcc0835aad0341bc2cf79acbca382d3afbce99",
-  "captured_at": "2026-10-26T02:17:13.3104111Z",
-  "purpose": "Actual installed selector before literal module-edge repair; test-only negative control, not a second public selector"
-}

@@ -1,8 +1,0 @@
-{
-  "extraction": "Exact generated shell launch tail, through echo launched. No modifications.",
-  "source": "signed5997eac11315bf4afbb03f0e1bb6e5c92efb41cc:scripts/buildbox/buildbox.mjs",
-  "remote_job": "1792974324079-233575-60e466a6",
-  "observed": "client job-lost00:25:46Z; actual remote exec00:25:55.300Z; terminal command failure retained separately",
-  "incident": "D:/lane-scratch/gate-speed/baseline-admission-20261026/controls.out and controls.remote-stderr.txt",
-  "sha256": "30d70e2d25cbd8dce087882d3be96fb79df2afcf6b35aeb8757e124123140b61"
-}

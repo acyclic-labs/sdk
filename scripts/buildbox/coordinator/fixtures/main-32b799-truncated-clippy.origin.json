@@ -1,6 +1,0 @@
-{
-  "source_sha256": "6105af43958b013be4e4a0e8c2b83d7d7c40b5fc7449e86a82df955be4cce98b",
-  "description": "Exact main Clippy block ends after 106496 finding bytes, mid-word before GATE_FEATURES. Also present in bb2 job 1792914953006-858659-7ef4df6b.out. No inferred missing findings.",
-  "captured_at": "2026-10-25T17:16:01.0505760Z",
-  "source": "Q:/lanes/main-gate/wide/32b79969bc504e875bb6e9f65611bf0d02ea45e9.log"
-}
