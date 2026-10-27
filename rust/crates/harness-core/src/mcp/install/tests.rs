@@ -520,7 +520,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
         "env":{"TOKEN":"${TOKEN}"}, "cwd":"child"}),
         Dialect::Claude,
     )?;
-    let command = native::command_for(&claude, &workspace, environment)?;
+    let command = native::command_for(&claude, &workspace, environment, &Default::default())?;
     assert_eq!(command.get_program(), executable.as_os_str());
     assert_eq!(
         command.get_args().collect::<Vec<_>>(),
@@ -545,7 +545,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
         json!({"command":executable, "args":["${PROGRAM}"], "env_vars":["TOKEN"], "env":{"TOKEN":"literal"}}),
         Dialect::Codex,
     )?;
-    let command = native::command_for(&codex, &workspace, environment)?;
+    let command = native::command_for(&codex, &workspace, environment, &Default::default())?;
     assert_eq!(command.get_program(), executable.as_os_str());
     assert_eq!(command.get_args().collect::<Vec<_>>(), ["${PROGRAM}"]);
     assert_eq!(
@@ -555,7 +555,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
             .and_then(|(_, value)| value),
         Some(std::ffi::OsStr::new("literal"))
     );
-    assert!(native::command_for(&claude, &workspace, |_| None).is_err());
+    assert!(native::command_for(&claude, &workspace, |_| None, &Default::default()).is_err());
     Ok(())
 }
 
@@ -577,12 +577,17 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
         Dialect::Claude,
     )?;
     let command = |program: &str, argument: &str, token: &str, directory: &Path| {
-        native::command_for(&config, directory, |name| match name {
-            "PROGRAM" => Some(program.into()),
-            "ARGUMENT" => Some(argument.into()),
-            "TOKEN" => Some(token.into()),
-            _ => None,
-        })
+        native::command_for(
+            &config,
+            directory,
+            |name| match name {
+                "PROGRAM" => Some(program.into()),
+                "ARGUMENT" => Some(argument.into()),
+                "TOKEN" => Some(token.into()),
+                _ => None,
+            },
+            &Default::default(),
+        )
     };
     let original = command(executable, "argument", "secret", &root)?;
     let binding = native::command_binding(&original, &config);
@@ -607,13 +612,18 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
 #[cfg(feature = "mcp-http")]
 #[test]
 fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result<()> {
-    let environment = |name: &str| (name == "TOKEN").then(|| "secret".into());
+    let environment = |_: &str| None::<std::ffi::OsString>;
+    let credentials = BTreeMap::from([(
+        "TOKEN".to_owned(),
+        crate::secrets::Secret::new("secret".into()),
+    )]);
     let headers = native::headers_for(
         &BTreeMap::from([("X-Static".into(), "${MISSING:-fallback}".into())]),
         &BTreeMap::from([("X-Env".into(), "TOKEN".into())]),
         Some("TOKEN"),
         true,
         environment,
+        &credentials,
     )?;
     assert_eq!(headers["x-static"], "fallback");
     assert_eq!(headers["x-env"], "secret");
@@ -632,6 +642,7 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
             bearer,
             false,
             environment,
+            &credentials,
         )
         .err()
         .expect("invalid headers");
@@ -643,7 +654,8 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
             &BTreeMap::new(),
             Some("MISSING"),
             false,
-            environment
+            environment,
+            &credentials,
         )
         .is_err()
     );
@@ -716,6 +728,7 @@ IFS= read -r input
                 tool_bytes: 8192,
                 ..Default::default()
             },
+            Arc::new(crate::secrets::EnvSecrets),
         )
         .await?;
     assert!(installed.diagnostics.is_empty());

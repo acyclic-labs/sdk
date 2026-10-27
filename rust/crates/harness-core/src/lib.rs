@@ -114,6 +114,7 @@ pub mod projection;
 pub mod registry;
 pub mod resources;
 pub mod runtime;
+pub mod secrets;
 pub mod source_authorization;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]
