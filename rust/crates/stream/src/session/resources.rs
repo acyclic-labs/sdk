@@ -3,7 +3,6 @@ use acyclic_auth::authority::{PolicyDecision, Request, Target};
 use acyclic_auth::contract::{
     GrantKind, Limits as Usage, Principal, RecordAttributes, ResourcePattern,
 };
-use acyclic_auth::verify::VerifiedCapability;
 
 /// Immutable channel identity and the current verified credential. Only session
 /// admission can construct this value; resource providers cannot mint authority.
@@ -11,14 +10,14 @@ use acyclic_auth::verify::VerifiedCapability;
 pub struct ResourceAuthorization {
     authority: Arc<Authority>,
     pub(super) resource: Arc<str>,
-    capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
+    capability: Arc<std::sync::Mutex<Arc<dyn Admission>>>,
     pub(super) action: &'static str,
 }
 impl ResourceAuthorization {
     pub(super) fn new(
         authority: Arc<Authority>,
         resource: String,
-        capability: Arc<VerifiedCapability>,
+        capability: Arc<dyn Admission>,
     ) -> Self {
         Self {
             authority,
@@ -33,7 +32,7 @@ impl ResourceAuthorization {
             .capability
             .lock()
             .map_err(|_| StreamError::AccessDenied)?;
-        Ok(capability.effective().principal().clone())
+        Ok(capability.principal().clone())
     }
     /// Current trusted runtime clock for the volume policy's time conditions.
     pub fn now_unix_seconds(&self) -> Result<u64, StreamError> {
@@ -115,7 +114,7 @@ impl ResourceAuthorization {
             .map_err(|_| StreamError::AccessDenied)?
             .clone();
         let mut wire = filter.transport_filter()?;
-        for grants in capability.effective().grants() {
+        for grants in capability.grants() {
             let mut ranges = Vec::new();
             let mut all = false;
             for grant in &grants.grants {
@@ -188,16 +187,14 @@ impl ResourceAuthorization {
     pub async fn expires_at(&self, unix_seconds: u64) {
         self.authority.state.expires_at(unix_seconds).await;
     }
-    pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
+    pub(super) fn renew(&self, next: Arc<dyn Admission>) -> Result<(), authority::Rejection> {
         let mut current = self
             .capability
             .lock()
             .map_err(|_| authority::Rejection::Forbidden)?;
         // Queued entries were authorized under these exact grants and identity.
         // A changed ceiling closes the channel so replay uses the new scope.
-        if current.effective().principal() != next.effective().principal()
-            || !current.effective().grants().eq(next.effective().grants())
-        {
+        if current.principal() != next.principal() || !current.grants().eq(next.grants()) {
             return Err(authority::Rejection::Forbidden);
         }
         *current = next;

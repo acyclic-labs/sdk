@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_auth::contract::*;
 use acyclic_auth::testing as signed;
+use acyclic_auth::verify;
 use std::sync::{
     RwLock,
     atomic::{AtomicU64, Ordering},
@@ -628,4 +629,170 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
                 .is_err()
         );
     }
+}
+
+/// A gateway's own credential format, `gateway:<principal>:<actor>`: not
+/// this SDK's capability envelope.
+struct Gateway {
+    verified: AtomicU64,
+}
+
+/// What the gateway admits: invoking one actor, until its expiry.
+struct GatewayAdmission {
+    principal: Principal,
+    grants: GrantSet,
+    actor: String,
+    expires: u64,
+}
+
+impl CredentialVerifier for Gateway {
+    fn verify(
+        &self,
+        credential: &[u8],
+        _: &TrustSnapshot,
+    ) -> Result<Arc<dyn Admission>, VerifyError> {
+        self.verified.fetch_add(1, Ordering::SeqCst);
+        let text = std::str::from_utf8(credential).map_err(|_| VerifyError::Malformed)?;
+        let mut parts = text.splitn(3, ':');
+        let (Some("gateway"), Some(id), Some(actor)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(VerifyError::Malformed);
+        };
+        Ok(Arc::new(GatewayAdmission {
+            principal: Principal {
+                kind: PrincipalKind::User,
+                id: id.into(),
+                lineage: vec![],
+                groups: vec![],
+                roles: vec![],
+                attributes: vec![],
+            },
+            grants: GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: actor.into(),
+                            prefix: false,
+                        },
+                        actions: vec!["actors/invoke".into()],
+                    }),
+                }],
+            },
+            actor: actor.into(),
+            expires: signed::NOW + 60,
+        }))
+    }
+}
+
+impl Admission for GatewayAdmission {
+    fn principal(&self) -> &Principal {
+        &self.principal
+    }
+
+    fn expires_at_unix_seconds(&self) -> u64 {
+        self.expires
+    }
+
+    fn grants(&self) -> Box<dyn Iterator<Item = &GrantSet> + '_> {
+        Box::new(std::iter::once(&self.grants))
+    }
+
+    fn authorize(
+        &self,
+        _: &(dyn acyclic_auth::verify::Trust + Send + Sync),
+        request: &Request<'_>,
+        policy: PolicyDecision,
+        scope: acyclic_auth::authority::Scope,
+    ) -> Result<(), VerifyError> {
+        let admitted = matches!(
+            (scope, &request.target),
+            (acyclic_auth::authority::Scope::Exact, Target::Resource { action: "actors/invoke", resource })
+                if *resource == self.actor
+        );
+        if request.now_unix_seconds >= self.expires {
+            return Err(VerifyError::Time);
+        }
+        if admitted && policy == PolicyDecision::Allow {
+            Ok(())
+        } else {
+            Err(VerifyError::Malformed)
+        }
+    }
+
+    fn follow_filter(
+        &self,
+        requested: wire::SessionFilter,
+    ) -> Result<crate::FollowFilter, StreamError> {
+        crate::FollowFilter::new(requested)
+    }
+}
+
+#[test]
+fn a_hosts_own_verifier_is_the_only_one_and_its_admission_is_call_authority() {
+    let state = State::new();
+    let gateway = Arc::new(Gateway {
+        verified: AtomicU64::new(0),
+    });
+    let auth = Arc::new(authority(state.clone()).verified_by(gateway.clone()));
+    let mut slots = Slots::default();
+    // The stock envelope is not this session's format: the host's verifier
+    // alone admits credentials.
+    auth.register(&mut slots, 1, &token("agents", |_| {}), 4)
+        .unwrap();
+    assert!(
+        auth.bind_call(&slots, 1, "actors:/agents/server".into(), 1)
+            .is_err()
+    );
+    auth.register(&mut slots, 0, b"gateway:alice:actors:/agents/server", 4)
+        .unwrap();
+    assert_eq!(gateway.verified.load(Ordering::SeqCst), 2);
+    let (_, call) = auth
+        .bind_call(&slots, 0, "actors:/agents/server".into(), 1)
+        .unwrap();
+    assert_eq!(call.principal().unwrap().id, "alice");
+    let attributes = RecordAttributes::try_new(vec![]).unwrap();
+    assert!(
+        call.authorize(
+            "actors:/agents/server",
+            &[],
+            &attributes,
+            PolicyDecision::Allow
+        )
+        .is_ok()
+    );
+    assert!(
+        call.authorize(
+            "actors:/agents/server",
+            &[],
+            &attributes,
+            PolicyDecision::Deny
+        )
+        .is_err()
+    );
+    // It names one actor and admits no follow.
+    assert!(
+        auth.bind_call(&slots, 0, "actors:/agents/other".into(), 1)
+            .is_err()
+    );
+    assert!(
+        auth.bind(
+            &slots,
+            0,
+            &StreamPath::new("agents/server").unwrap(),
+            Default::default(),
+            1
+        )
+        .is_err()
+    );
+    // Its expiry closes the call like any credential's.
+    state.publish(signed::Snapshot::default(), signed::NOW + 60);
+    assert!(
+        call.authorize(
+            "actors:/agents/server",
+            &[],
+            &attributes,
+            PolicyDecision::Allow
+        )
+        .is_err()
+    );
 }

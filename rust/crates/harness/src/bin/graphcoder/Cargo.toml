@@ -8,6 +8,9 @@ publish = false
 autobins = false
 autotests = false
 
+[lib]
+path = "lib.rs"
+
 [[bin]]
 name = "graphcoder"
 path = "../graphcoder.rs"

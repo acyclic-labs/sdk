@@ -100,6 +100,50 @@ impl Preset {
         StockExecutors::new(model, tools, (limits, compaction), context)
             .with_agent_tools(&self.tools, self.max_children)
     }
+
+    /// This preset's tools, the one construction every host takes them from:
+    /// the catalog tools it selects that the host can back (the volume tools
+    /// always; the workspace tools, the shell among them, only with
+    /// `workspace`), then the host's own `tools`. Its agent tools are bound
+    /// per turn by [`Self::executors`].
+    ///
+    /// # Errors
+    /// When the preset names an unknown tool, or two tools share a name.
+    pub fn tools(&self, workspace: bool, tools: Vec<crate::tool::Tool>) -> Result<ToolRegistry> {
+        let mut registry = ToolRegistry::default();
+        crate::tools::bind_defaults(
+            &mut registry,
+            &mut Vec::new(),
+            None,
+            &self.tools,
+            true,
+            workspace,
+        )?;
+        for tool in tools {
+            registry.register((tool, None), &mut None, None)?;
+        }
+        Ok(registry)
+    }
+
+    /// The call grant of every tool in `tools` and of this preset's agent
+    /// tools, which bind per turn outside the registry.
+    ///
+    /// # Errors
+    /// When a definition of `tools` cannot be produced.
+    pub fn tool_grants(&self, tools: &ToolRegistry) -> Result<Vec<String>> {
+        let agent_tools = self
+            .tools
+            .iter()
+            .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
+            .cloned();
+        Ok(tools
+            .definitions(None)?
+            .into_iter()
+            .map(|definition| definition.name)
+            .chain(agent_tools)
+            .map(|name| crate::contract::capability::tool_call(&name))
+            .collect())
+    }
 }
 
 impl StockExecutors {

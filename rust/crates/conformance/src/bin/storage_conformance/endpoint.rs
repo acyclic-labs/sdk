@@ -266,10 +266,7 @@ async fn verify_pair<P: StreamProvider + 'static, Q: ObjectsProvider + 'static>(
         let mut serving = Owner(tokio::spawn(async move {
             acyclic_harness::server::serve(
                 listener,
-                ServerConfig {
-                    harness: host,
-                    tls: None,
-                },
+                ServerConfig::new(host),
                 move |endpoint| {
                     assert_eq!(endpoint.server, acyclic_harness::server::IDENTITY);
                     let _ =

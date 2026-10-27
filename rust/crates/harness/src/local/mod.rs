@@ -50,6 +50,8 @@ mod settings;
 mod tests;
 mod tool_metadata;
 mod tool_output;
+mod verifier;
+pub use verifier::{Custody, KeyFileVerifier, Verifier};
 #[cfg(feature = "search-http")]
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
@@ -86,20 +88,16 @@ pub struct LocalHarness {
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
-    approval_policy: crate::approvals::ApprovalPolicy,
+    /// The agents' defaults: prompt, tools, open-children bound and approval
+    /// policy. Every turn's tools and executor are built from it.
+    preset: crate::preset::Preset,
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
     context_manifest: Option<crate::conversation::FileRef>,
-    /// System prompt of every agent turn.
-    prompt: Option<String>,
-    /// Open children each agent may have at once.
-    max_children: Option<u32>,
-    /// Agents are admitted under the owner scope; see
+    /// The verifier of a served tree's caller and clients; see
     /// [`LocalHarnessConfig::served`].
-    served: bool,
-    /// The agent tools selected among the standard tools, bound per turn.
-    agent_tools: Vec<String>,
+    served: Option<Arc<dyn Verifier>>,
     active_directory: String,
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]

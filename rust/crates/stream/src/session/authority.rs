@@ -34,6 +34,7 @@ pub trait AuthorityState: crate::ProviderPlatform {
 /// The runtime supplies public trust; the host never receives a root signer.
 pub struct Authority {
     pub(super) state: Arc<dyn AuthorityState>,
+    verifier: Arc<dyn CredentialVerifier>,
     pub(super) audience: String,
     pub(super) holder: Option<String>,
 }
@@ -64,7 +65,7 @@ impl From<VerifyError> for Rejection {
         }
     }
 }
-type Credential = Result<Arc<VerifiedCapability>, Rejection>;
+type Credential = Result<Arc<dyn Admission>, Rejection>;
 #[derive(Default)]
 pub(super) struct Slots {
     entries: BTreeMap<u32, (u64, usize, Credential)>,
@@ -97,7 +98,12 @@ fn stream_resource(path: Option<&StreamPath>) -> String {
     )
 }
 impl Authority {
-    /// Binds a canonical authenticated audience and presenting account.
+    /// Binds a canonical authenticated audience and presenting account,
+    /// verifying credentials as this SDK's capability envelope
+    /// ([`CapabilityVerifier`]).
+    ///
+    /// # Errors
+    /// When `audience` is not a resource or `holder` is empty.
     pub fn new(
         state: Arc<dyn AuthorityState>,
         audience: String,
@@ -110,9 +116,20 @@ impl Authority {
         }
         Ok(Self {
             state,
+            verifier: Arc::new(CapabilityVerifier),
             audience,
             holder,
         })
+    }
+
+    /// Verifies every credential a client presents through `verifier`
+    /// instead: the one place this session verifies credentials. Calls,
+    /// reads and follows are admitted from what it returns, under the same
+    /// slots, renewal, expiry, revocation and credit as the stock envelope.
+    #[must_use]
+    pub fn verified_by(mut self, verifier: Arc<dyn CredentialVerifier>) -> Self {
+        self.verifier = verifier;
+        self
     }
     pub(super) fn snapshot(&self) -> Result<TrustSnapshot, Rejection> {
         self.state.snapshot().map_err(Into::into)
@@ -139,11 +156,9 @@ impl Authority {
             slots.credential_bytes = credential_bytes;
             return Ok(());
         }
-        let credential = self.snapshot().and_then(|snapshot| {
-            verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
-                .map(Arc::new)
-                .map_err(Into::into)
-        });
+        let credential = self
+            .snapshot()
+            .and_then(|snapshot| self.verifier.verify(bytes, &snapshot).map_err(Into::into));
         let revision = slots
             .next_revision
             .checked_add(1)
@@ -151,7 +166,7 @@ impl Authority {
         slots.next_revision = revision;
         if let Ok(capability) = &credential {
             slots.expiries.push(std::cmp::Reverse((
-                capability.effective().expires_at_unix_seconds(),
+                capability.expires_at_unix_seconds(),
                 revision,
                 slot,
             )));
@@ -166,11 +181,7 @@ impl Authority {
                 .iter()
                 .filter_map(|(slot, (revision, _, credential))| {
                     credential.as_ref().ok().map(|cap| {
-                        std::cmp::Reverse((
-                            cap.effective().expires_at_unix_seconds(),
-                            *revision,
-                            *slot,
-                        ))
+                        std::cmp::Reverse((cap.expires_at_unix_seconds(), *revision, *slot))
                     })
                 })
                 .collect();
@@ -255,7 +266,8 @@ impl Authority {
             .2
             .as_ref()
             .map_err(|error| *error)?;
-        crate::FollowFilter::authorized(binding.requested.clone(), capability)
+        capability
+            .follow_filter(binding.requested.clone())
             .map_err(|_| Rejection::Filter)
     }
     pub(super) fn bind(

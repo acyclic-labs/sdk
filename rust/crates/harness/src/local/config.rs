@@ -52,7 +52,7 @@ pub struct LocalHarnessConfig {
     /// Open children each agent may have at once.
     pub(super) max_children: Option<u32>,
     /// Hosts the agents for [`crate::server::serve`].
-    pub(super) served: bool,
+    pub(super) served: Option<Arc<dyn super::Verifier>>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
     pub(super) approval_issuer: Option<AuthorityRoot>,
     pub(super) approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
@@ -122,7 +122,7 @@ impl LocalHarnessConfig {
             default_tools: crate::tools::default_names(),
             prompt: None,
             max_children: None,
-            served: false,
+            served: None,
             approval_policy: Default::default(),
             approval_issuer: None,
             approval_models: Default::default(),
@@ -283,8 +283,8 @@ impl LocalHarnessConfig {
     /// verified caller, instead of as the tree's root custody.
     #[must_use]
     #[cfg(feature = "serve")]
-    pub(crate) const fn served(mut self) -> Self {
-        self.served = true;
+    pub(crate) fn served(mut self, verifier: Arc<dyn super::Verifier>) -> Self {
+        self.served = Some(verifier);
         self
     }
     /// Applies `preset`'s prompt, tool selection, limits and approval policy. Its model is
@@ -304,6 +304,23 @@ impl LocalHarnessConfig {
         }
         self.approval_policy = preset.approval_policy.clone();
         self
+    }
+    /// The preset this configuration applies: its prompt, tool selection,
+    /// open-children bound and approval policy, its step limit already in
+    /// [`Limits`].
+    pub(super) fn preset_value(&self) -> crate::preset::Preset {
+        crate::preset::Preset {
+            model: None,
+            prompt: self.prompt.clone(),
+            tools: self.default_tools.clone(),
+            #[cfg(feature = "search-http")]
+            web_tools: self.web_tools,
+            #[cfg(not(feature = "search-http"))]
+            web_tools: false,
+            max_steps: None,
+            max_children: self.max_children,
+            approval_policy: self.approval_policy.clone(),
+        }
     }
     /// Disables the default set, retaining every custom tool.
     #[must_use]

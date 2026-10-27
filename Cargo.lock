@@ -198,6 +198,7 @@ dependencies = [
  "bytes",
  "divan",
  "futures",
+ "graphcoder",
  "hex",
  "notify",
  "object_store",

@@ -13,6 +13,8 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
+mod admission;
+pub use admission::{Admission, CapabilityVerifier, CredentialVerifier};
 mod authority;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

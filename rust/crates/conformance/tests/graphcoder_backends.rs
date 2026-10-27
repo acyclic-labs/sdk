@@ -1,9 +1,11 @@
 //! One `GraphCoder` binary, built once, run unchanged against each backend:
-//! this machine's harness, and the self-hosted endpoint (`graphcoder
-//! --serve`) over gRPC. Only the endpoint differs. Both run one scenario on
-//! the loopback fixture model, a shell call held for one human approval, a
-//! file write, a spawned child's turn and a reconnect while the approval is
-//! pending, and must commit the same history shape.
+//! this machine's harness, the self-hosted endpoint (`graphcoder serve`)
+//! over gRPC, and the same server entry point with injected seams
+//! (`graphcoder-seams serve`, its own verifier). Only the endpoint
+//! differs for the client, and only the seams for the server. Each runs one
+//! scenario on the loopback fixture model, a shell call held for one human
+//! approval, a file write, a spawned child's turn and a reconnect while the
+//! approval is pending, and must commit the same history shape.
 //!
 //! Build the binary first, with fixture signing custody:
 //! `cargo build -p graphcoder --features acyclic-native-runtime/test-support`.
@@ -245,8 +247,20 @@ impl Home {
 
     /// The binary with this home's harness arguments, then `args`.
     fn command(&self, model: &Model, policy: Option<&Path>, args: &[&str]) -> Command {
+        self.command_of(&executable(), model, policy, args)
+    }
+
+    /// `binary`, a build of `GraphCoder`, with this home's harness arguments,
+    /// then `args`.
+    fn command_of(
+        &self,
+        binary: &Path,
+        model: &Model,
+        policy: Option<&Path>,
+        args: &[&str],
+    ) -> Command {
         let settings = self.root.join("settings");
-        let mut command = Command::new(executable());
+        let mut command = Command::new(binary);
         self.custody.configure(&mut command);
         command
             .env("CODEX_HOME", settings.join(".codex"))
@@ -384,10 +398,18 @@ impl Running {
             "exit {status:?}\n{stdout:?}\n{}",
             self.seen
         );
-        (stdout.join("\n"), self.seen)
+        (stdout.join("\n"), std::mem::take(&mut self.seen))
     }
 
-    fn kill(mut self) {
+    /// Stops the binary now; dropping it does the same.
+    fn kill(self) {
+        drop(self);
+    }
+}
+
+/// A failed assertion leaves no binary running.
+impl Drop for Running {
+    fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -520,14 +542,26 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     )
     .unwrap();
     let mut shapes = Vec::new();
-    for name in ["local", "endpoint"] {
+    // The seams' server: the same entry point with this package's own
+    // verifier injected.
+    let seams = PathBuf::from(env!("CARGO_BIN_EXE_graphcoder-seams"));
+    for name in ["local", "endpoint", "seams"] {
         let model = model(&directory.path().join(name)).await;
         let home = Home::new(directory.path(), name);
         let (backend, server) = if name == "local" {
             (Backend::Local, None)
         } else {
-            let mut server =
-                Running::start(home.command(&model, Some(&policy), &["serve", "127.0.0.1:0"]));
+            let binary = if name == "seams" {
+                seams.clone()
+            } else {
+                executable()
+            };
+            let mut server = Running::start(home.command_of(
+                &binary,
+                &model,
+                Some(&policy),
+                &["serve", "127.0.0.1:0"],
+            ));
             let endpoint = served(&mut server);
             assert_eq!(endpoint["principal"], principal.as_str());
             let backend = Backend::Endpoint {
@@ -537,7 +571,12 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             (backend, Some(server))
         };
         let answer = tokio::task::block_in_place(|| scenario(&home, &model, &policy, &backend));
-        if let Some(server) = server {
+        if let Some(mut server) = server {
+            // The injected seams admitted the tree and every client.
+            if name == "seams" {
+                server.wait_for("seams: verified the caller");
+                server.wait_for("seams: verified a session credential");
+            }
             server.kill();
         }
         let steps = model.steps.lock().unwrap().clone();

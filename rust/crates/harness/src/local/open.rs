@@ -2,6 +2,8 @@ use super::*;
 
 struct Opening {
     config: LocalHarnessConfig,
+    /// The agents' defaults, from which their tools and turns are built.
+    preset: crate::preset::Preset,
     state_location: config::StateLocation,
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
@@ -67,7 +69,8 @@ impl Opening {
         if let Some((model, _)) = &config.model {
             model.validate()?;
         }
-        let tools = configure_tools(&mut config)?;
+        let preset = config.preset_value();
+        let tools = configure_tools(&preset, &mut config)?;
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let settings_configuration = if passive {
             None
@@ -124,6 +127,7 @@ impl Opening {
         }
         Ok(Self {
             config,
+            preset,
             state_location,
             tools,
             compaction,
@@ -405,20 +409,11 @@ impl Opening {
             journal,
             verifier,
             signed,
-            approval_policy: self.config.approval_policy,
+            preset: self.preset,
             approval_models: self.config.approval_models,
             agent: self.config.model,
             context_manifest: self.config.context_manifest,
-            prompt: self.config.prompt,
-            max_children: self.config.max_children,
             served: self.config.served,
-            agent_tools: self
-                .config
-                .default_tools
-                .iter()
-                .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
-                .cloned()
-                .collect(),
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
             #[cfg(test)]
@@ -466,16 +461,7 @@ fn scopes(
         }
         grants.push(volume.directory_read_capability("", &mut None)?);
     }
-    for definition in opening.tools.definitions(None)? {
-        grants.push(format!("tool:call:{}", definition.name));
-    }
-    // The agent tools bind per turn, outside the registry: grant the ones
-    // selected so a turn's tool authority admits their calls.
-    for name in &opening.config.default_tools {
-        if crate::tools::AGENT_TOOLS.contains(&name.as_str()) {
-            grants.push(format!("tool:call:{name}"));
-        }
-    }
+    grants.extend(opening.preset.tool_grants(&opening.tools)?);
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     grants.extend(
         opening
@@ -555,29 +541,28 @@ impl PrivateVolumes {
     }
 }
 
-fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
-    let mut tools = ToolRegistry::default();
-    crate::tools::bind_defaults(
-        &mut tools,
-        &mut Vec::new(),
-        None,
-        &config.default_tools,
-        true,
+fn configure_tools(
+    preset: &crate::preset::Preset,
+    config: &mut LocalHarnessConfig,
+) -> Result<ToolRegistry> {
+    let tools = preset.tools(
         cfg!(any(test, feature = "native-execution")),
+        std::mem::take(&mut config.tools),
     )?;
-    for tool in std::mem::take(&mut config.tools) {
-        tools.register((tool, None), &mut None, None)?;
-    }
     #[cfg(feature = "search-http")]
-    if config.model.is_none() && config.web_tools {
+    if config.model.is_none() && preset.web_tools {
         return Err(Error::Invalid(
             "native host coordination cannot register web tools".into(),
         ));
     }
     #[cfg(feature = "search-http")]
-    if config.web_tools {
+    let tools = if preset.web_tools {
+        let mut tools = tools;
         web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
-    }
+        tools
+    } else {
+        tools
+    };
     Ok(tools)
 }
 

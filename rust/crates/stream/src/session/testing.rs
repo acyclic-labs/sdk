@@ -21,6 +21,7 @@ impl AuthorityState for State {
 pub fn authority() -> Arc<Authority> {
     Arc::new(Authority {
         state: Arc::new(State(Arc::new(signed::Snapshot::default()))),
+        verifier: Arc::new(super::CapabilityVerifier),
         audience: "workers:/test".into(),
         holder: Some("account".into()),
     })

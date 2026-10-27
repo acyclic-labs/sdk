@@ -68,7 +68,7 @@ impl<'a> Effective<'a> {
         &self.capability.principal
     }
     /// Every returned union is a ceiling; all unions must allow the request.
-    pub fn grants(&self) -> impl Iterator<Item = &'a GrantSet> {
+    pub fn grants(&self) -> impl Iterator<Item = &'a GrantSet> + use<'a> {
         self.capability
             .blocks
             .first()

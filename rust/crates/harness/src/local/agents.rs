@@ -10,8 +10,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, StockExecutors, TurnAuthority,
-        TurnContext, TurnExecutors, TurnLimits,
+        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAuthority, TurnContext, TurnExecutors,
+        TurnLimits,
     },
     model::ModelContent,
 };
@@ -77,27 +77,6 @@ impl Drop for Hosted {
     fn drop(&mut self) {
         self.run.abort();
     }
-}
-
-/// The served tree's admission: the owner's grants, bound to no one agent
-/// and over every volume of the tree, so each spawned child is admitted
-/// under it exactly as a managed host admits its caller's whole tree.
-fn served_admission(
-    issuer: &crate::core::AuthorityRoot,
-    owner: &crate::core::Scope,
-) -> Result<crate::core::Scope> {
-    let tree = acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
-        .to_scope_label()
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    let grants = crate::Capabilities::new(
-        owner
-            .capabilities()
-            .iter()
-            .chain(std::iter::once(tree.as_str())),
-    );
-    issuer
-        .bootstrap_scope("served", &grants, None, &mut None)
-        .map_err(storage)
 }
 
 /// The local user owns the whole tree: its policy admits every command its
@@ -195,15 +174,12 @@ impl LocalHarness {
     /// harness's model, tools, limits and compaction, in its context.
     fn executors(self: &Arc<Self>) -> Arc<dyn TurnExecutors> {
         match &self.agent {
-            Some(model) => Arc::new(
-                StockExecutors::new(
-                    model.clone(),
-                    self.tools().clone(),
-                    (self.limits, self.compaction.clone()),
-                    Arc::new(LocalContext(Arc::downgrade(self))),
-                )
-                .with_agent_tools(&self.agent_tools, self.max_children),
-            ),
+            Some(model) => Arc::new(self.preset.executors(
+                model.clone(),
+                self.tools().clone(),
+                (self.limits, self.compaction.clone()),
+                Arc::new(LocalContext(Arc::downgrade(self))),
+            )),
             None => Arc::new(NativeHost),
         }
     }
@@ -238,7 +214,7 @@ impl LocalHarness {
                 },
                 actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 clock: Arc::new(SystemClock),
-                approval_policy: self.approval_policy.clone(),
+                approval_policy: self.preset.approval_policy.clone(),
             },
         )
         .map_err(storage)?;
@@ -265,7 +241,7 @@ impl LocalHarness {
         &self,
         root: &crate::agent::AgentId,
     ) -> Result<crate::conversation::FileRef> {
-        let policy = crate::contract::canonical_json_bytes(&self.approval_policy)
+        let policy = crate::contract::canonical_json_bytes(&self.preset.approval_policy)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.policy.v1");
         hasher.update(root.as_str().as_bytes());
@@ -306,19 +282,22 @@ impl LocalHarness {
             },
             actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
             clock: Arc::new(SystemClock),
-            approval_policy: self.approval_policy.clone(),
+            approval_policy: self.preset.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {
             turns
                 .with_approvers(self.approval_models.clone())
                 .with_goals(self.goal_continuations)
-                .with_prompt(self.prompt.as_deref())
+                .with_prompt(self.preset.prompt.as_deref())
         };
-        let bound = if self.served {
-            let caller = crate::hosting::VerifiedCaller {
-                audience: self.verifier.audience().clone(),
-                scope: served_admission(&authority, &self.signed)?,
-            };
+        let bound = if let Some(verifier) = &self.served {
+            let caller = verifier.caller(
+                &super::Custody {
+                    issuer: &authority,
+                    clock: &self.clock,
+                },
+                &self.signed,
+            )?;
             Bound::admitted_host(
                 authority,
                 caller,
