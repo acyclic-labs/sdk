@@ -777,3 +777,51 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
     }
     Ok(())
 }
+
+/// A settlement retried after an uncertain completion is the same intent:
+/// its key names the turn, step and call alone, so the journal recognises
+/// the retry and keeps one record, while another settlement at the same
+/// stale tail is refused.
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn a_retried_settlement_is_one_record() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let operation = OperationId::new();
+    journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let failed = |call: &str| ExecutionEvent::ToolFailed {
+        step: 0,
+        call_id: call.into(),
+        reason: ToolFailureKind::Unavailable,
+        cause: ToolFailureCause {
+            class: ToolErrorClass::Invalid,
+            message: "unavailable".into(),
+        },
+    };
+    let settle = failed("call");
+    for _ in 0..2 {
+        assert!(
+            journal
+                .append_if_tail(operation, 1, "tool:0:call:failed", &settle, None)?
+                .await?
+        );
+    }
+    // Control: a different intent at the same, now stale, tail.
+    let other = failed("other");
+    assert!(
+        !journal
+            .append_if_tail(operation, 1, "tool:0:other:failed", &other, None)?
+            .await?
+    );
+    assert_eq!(journal.replay(operation, 0, 8, None)?.await?.len(), 2);
+    Ok(())
+}
