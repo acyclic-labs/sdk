@@ -122,6 +122,7 @@ pub(super) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Head { path, .. }
         | CommitCondition::Tail { path, .. }
+        | CommitCondition::Present { path }
         | CommitCondition::Absent { path } => path,
     }
 }

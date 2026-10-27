@@ -210,6 +210,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     let path = match conflict {
                         acyclic_stream::CommitConflict::Tail { path, .. }
                         | acyclic_stream::CommitConflict::Head { path, .. }
+                        | acyclic_stream::CommitConflict::Missing { path }
                         | acyclic_stream::CommitConflict::Exists { path } => path,
                     };
                     path == gate || lease_path.as_ref().is_some_and(|lease| path == lease)

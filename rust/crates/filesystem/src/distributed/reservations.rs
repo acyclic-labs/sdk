@@ -80,7 +80,7 @@ fn digest(
         let (path, scalar) = match condition {
             CommitCondition::Head { path, .. } => (path, 40),
             CommitCondition::Tail { path, .. } => (path, 8),
-            CommitCondition::Absent { path } => (path, 0),
+            CommitCondition::Absent { path } | CommitCondition::Present { path } => (path, 0),
         };
         bytes = bytes
             .checked_add(1 + 8 + path.as_str().len() as u64 + scalar)
