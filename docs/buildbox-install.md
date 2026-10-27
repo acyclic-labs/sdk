@@ -15,19 +15,43 @@ An older installed installer cannot qualify newly added tools. Preparation
 checks that its own bytes match the source installer, and never copies an
 earlier generation's qualification token into the new stage.
 
-For a change confined to selected tools, add `--only bb_target_store.py
-bb-install.py` to publication. The complete frozen candidate still qualifies;
-only the named tools are replaced, and the manifest records the actual live
-hashes of all tools. Qualification records installed predecessors. Publication
-refuses a selected destination that changed afterward, preserving another
-lane's newer deployment. Unselected tools are preserved, even if they advanced
-during qualification. The Cargo source-namespace controls are mandatory in the
-installer's qualification suite.
+Publication is whole-generation only; there is no per-tool selection. The
+qualified tool set is written to `/opt/buildbox/generations/<id>` and becomes
+visible by one rename. `/opt/buildbox/bin` (pinned at `/home/var/bin`) holds
+only absolute links through `/opt/buildbox/current`, so every lookup resolves
+within one complete generation, and a tool absent from it is absent rather
+than left over from a predecessor. `/opt/buildbox/previous` keeps the
+predecessor intact on disk. With admission drained (upgrade lock held, daemon
+retired), publication:
+
+1. canaries the staged generation: a real undeclared `bash -c` job and a
+   real `cargo build`, through `build-slot` with the stage bound over the
+   client entry and a private admission root (cold cache, since the host
+   cache authority is not yet switched);
+2. switches host services and `current` to the new generation;
+3. repeats both canaries through the live entry, and on failure switches
+   `current` and its services back to the predecessor before re-raising.
+
+Lane jobs therefore never observe a failing or mixed generation. Files the
+installer does not manage (other owners' shims and binaries such as
+`bb-cargo/cargo` or `tofu`) carry forward byte-exactly into the new
+generation; tools managed by this or the predecessor's installer never do.
+Roll back by re-activating a retained generation through the same canaries:
+
+```
+sudo /usr/bin/python3 -B /home/var/bin/bb-install.py --activate /opt/buildbox/generations/<id>
+```
+ Qualification
+records installed predecessors and publication refuses if any tool changed
+since. The Cargo source-namespace controls are mandatory in the installer's
+qualification suite. The first publication onto a regular-file store adopts
+those files as a retained `legacy-*` generation.
 
 The installer freezes a root-owned candidate, runs the receipt, runtime,
 admission and publication controls as `var`, and publishes only after they
-pass. Publication writes a temporary file beside the destination, flushes it,
-renames it and flushes the directory. Failed qualification changes no tool.
+pass. Each generation file is written beside its siblings, flushed and
+renamed, and the generation directory itself is exposed by one rename.
+Failed qualification or a failed canary changes no live tool.
 `installed-tools.json` records the qualified hashes. Bin directories and tools
 are root-owned and unwritable by the job/lane account; direct writes fail.
 The canonical store is `/opt/buildbox/bin`, below protected root parents.

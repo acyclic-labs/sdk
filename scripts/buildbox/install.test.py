@@ -1,4 +1,6 @@
 import concurrent.futures
+import contextlib
+import json
 import importlib.util
 import os
 from pathlib import Path
@@ -79,19 +81,6 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(tool.read_bytes(),b'original')
             self.assertEqual(list(Path(temporary).iterdir()),[tool])
 
-    def test_cache_generation_cannot_publish_partial_consumers(self):
-        for name in installer.CACHE_TOOLS:
-            with self.assertRaisesRegex(ValueError,'step=cache-generation-publication.*recovery='):
-                installer.migration_scope(Path('/mnt/bb/tmp/qualified'),[name])
-        with installer.migration_scope(Path('/unused'),['bb_target_store.py']):pass
-        # The former selected-file publisher had no family completeness check.
-        old=(Path(installer.__file__).read_text().replace(
-            'if not CACHE_TOOLS.issubset(selected):','if False:'))
-        namespace={'__file__':installer.__file__};exec(compile(old,'partial-cache-publication-control','exec'),namespace)
-        with patch.object(installer.importlib.util,'spec_from_file_location',side_effect=RuntimeError('would load migration')):
-            with self.assertRaisesRegex(RuntimeError,'would load migration'):
-                namespace['migration_scope'](Path('/unused'),['sccache-rustc'])
-
     def test_cache_and_retirement_controls_are_mandatory_before_publication(self):
         for suite in ['prune.test.py','cargo_cache.test.py','receipt-outcome.test.mjs','prune-admission.test.mjs','reaping.test.py','cache_policy.test.py','cpu_leases.test.py','job_caps.test.py','input_closure.test.py','command_custody.test.py']:
             with self.subTest(suite=suite):
@@ -111,47 +100,168 @@ class InstallTests(unittest.TestCase):
                 namespace={};exec(compile(old,'old-qualification','exec'),namespace)
                 with patch.object(installer.subprocess,'run',side_effect=run):namespace['qualify'](Path('/fixture'),'var')
 
-    def test_selected_publication_preserves_peers_and_fences_stale_predecessors(self):
-        driver='''import importlib.util,sys,tempfile,shutil,json,os
+    def test_generation_switch_is_one_rename_with_canaries_and_switch_back(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);store=root/'store';store.mkdir()
+            (store/'a').write_bytes(b'legacy-a');(store/'legacy-only').write_bytes(b'legacy')
+            calls=[];fail=set()
+            @contextlib.contextmanager
+            def drained(generation):calls.append(('drain',Path(generation).name));yield
+            @contextlib.contextmanager
+            def services(generation):calls.append(('services',Path(generation).name));yield
+            def canary(generation=None):
+                stage='staged' if generation else 'live';calls.append((stage,Path(generation or installer.current_generation()).name))
+                if stage in fail:raise RuntimeError('kind=GENERATION_CANARY stage='+stage)
+            state=lambda:calls.append(('state',))or'prior'
+            restored=lambda prior,failed=None:calls.append(('restore',prior))
+            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',drained), \
+                 patch.object(installer,'generation_services',services),patch.object(installer,'canary',canary), \
+                 patch.object(installer,'service_state',state),patch.object(installer,'restore_services',restored):
+                def read(name):return (store/name).read_bytes() if (store/name).exists() else None
+                one=installer.materialize({'a':b'one-a','b':b'one-b','bbcg/systemd-run':b'shim'},'one')
+                legacy=installer.deploy(one,store)
+                self.assertEqual(calls,[('drain','one'),('staged','one'),('state',),('services','one'),('live','one')])
+                self.assertEqual([read('a'),read('b'),read('bbcg/systemd-run'),read('legacy-only')],[b'one-a',b'one-b',b'shim',None])
+                self.assertEqual((legacy/'a').read_bytes(),b'legacy-a')  # predecessor retained whole
+                self.assertTrue(all(p.is_symlink() for p in store.iterdir()))
+                entry=os.lstat(store/'a')
+                two=installer.materialize({'a':b'two-a'},'two');calls.clear()
+                self.assertEqual(installer.deploy(two,store),one)
+                # A later switch only renames CURRENT: entries are untouched and
+                # a tool absent from the live generation is absent, not stale.
+                self.assertEqual((os.lstat(store/'a').st_ino,read('a'),read('b'),read('bbcg/systemd-run')),(entry.st_ino,b'two-a',None,None))
+                self.assertEqual(Path(os.readlink(root/'opt/previous')),one)
+                fail.add('live');three=installer.materialize({'a':b'three-a','c':b'c'},'three');calls.clear()
+                with self.assertRaisesRegex(RuntimeError,'stage=live'):installer.deploy(three,store)
+                self.assertEqual(calls,[('drain','three'),('staged','three'),('state',),('services','three'),('live','three'),('restore','prior')])
+                self.assertEqual((installer.current_generation(),read('a'),read('c')),(two,b'two-a',None))
+                self.assertEqual((three/'a').read_bytes(),b'three-a')
+                # A switch failing before the pointer rename leaves CURRENT
+                # unchanged and still restores the services it stopped.
+                fail.clear();calls.clear()
+                with patch.object(installer,'switch',side_effect=OSError('link failed')),self.assertRaises(OSError):
+                    installer.deploy(three,store)
+                self.assertEqual((calls[-1],installer.current_generation()),(('restore','prior'),two))
+                fail={'staged'};calls.clear()
+                with self.assertRaisesRegex(RuntimeError,'stage=staged'):installer.deploy(three,store)
+                self.assertEqual((calls,installer.current_generation()),([('drain','three'),('staged','three')],two))
+                # An interrupted generation write never becomes visible.
+                writes=[]
+                def interrupted(*args,**kwargs):
+                    writes.append(args)
+                    if len(writes)==2:raise OSError('interrupted')
+                    return original(*args,**kwargs)
+                original=installer.publish
+                with patch.object(installer,'publish',interrupted),self.assertRaises(OSError):
+                    installer.materialize({'a':b'four-a','b':b'four-b'},'four')
+                self.assertFalse((root/'opt/generations/four').exists());self.assertEqual(read('a'),b'two-a')
+                # Former per-file publication into a live store, interrupted at
+                # the same point, leaves exactly the mixed generation seen on bb2.
+                former=root/'former';former.mkdir();(former/'a').write_bytes(b'old-a');(former/'b').write_bytes(b'old-b')
+                writes.clear()
+                with patch.object(installer,'publish',interrupted),self.assertRaises(OSError):
+                    for name,data in [('a',b'new-a'),('b',b'new-b')]:installer.publish(former/name,data)
+                self.assertEqual([(former/n).read_bytes() for n in 'ab'],[b'new-a',b'old-b'])
+
+    def test_interrupted_first_adoption_never_removes_live_tools_and_resumes(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);store=root/'store';(store/'dir').mkdir(parents=True)
+            for name in 'abc':(store/name).write_bytes(b'legacy-'+name.encode())
+            (store/'dir'/'tool').write_bytes(b'legacy-dir')
+            seen=[];original=installer.exchange
+            def interrupted(a,b):
+                original(a,b);seen.append(sorted(p.name for p in store.iterdir() if not p.name.startswith('.')))
+                if len(seen)==2:raise KeyboardInterrupt  # Between an exchange and its retirement.
+            @contextlib.contextmanager
+            def nothing(*args):yield
+            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'exchange',interrupted), \
+                 patch.object(installer,'admission_drained',nothing),patch.object(installer,'generation_services',nothing), \
+                 patch.object(installer,'canary',lambda generation=None:None), \
+                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state,failed=None:None):
+                one=installer.materialize({'a':b'one-a'},'one')
+                with self.assertRaises(KeyboardInterrupt):installer.deploy(one,store)
+                # Every tool stayed reachable with its legacy bytes throughout.
+                self.assertEqual(seen[-1],['a','b','c','dir'])
+                self.assertEqual([(store/n).read_bytes() for n in 'abc']+[(store/'dir'/'tool').read_bytes()],
+                                 [b'legacy-a',b'legacy-b',b'legacy-c',b'legacy-dir'])
+            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',nothing), \
+                 patch.object(installer,'generation_services',nothing),patch.object(installer,'canary',lambda generation=None:None), \
+                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state,failed=None:None):
+                installer.deploy(one,store)  # The next run completes the adoption.
+                self.assertTrue(all(p.is_symlink() for p in store.iterdir()))
+                self.assertEqual(Path(os.readlink(root/'opt/previous')).name[:7],'legacy-')
+                self.assertEqual(((store/'a').read_bytes(),(store/'b').exists()),(b'one-a',False))
+                self.assertEqual(len(list((root/'opt/retired').iterdir())),4)
+        # The former adoption renamed every entry away before linking any: an
+        # interruption between those loops left the store empty of tools.
+        self.assertNotIn('os.rename(entry,retired',Path(installer.__file__).read_text())
+
+    def test_predecessor_cache_authority_is_restarted_not_migrated(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            legacy=Path(temporary)/'legacy';legacy.mkdir()
+            (legacy/'bb-cache.py').write_text('import contextlib\n@contextlib.contextmanager\ndef migration():\n    raise AssertionError("retakes upgrade.lock")\n    yield\n')
+            unit=Path(temporary)/'unit';unit.write_text('[Unit]\n');calls=[]
+            outgoing=Path(temporary)/'outgoing';outgoing.mkdir()
+            (outgoing/'bb-cache.py').write_text('import sys\ndef retire_owners():\n    sys.modules["installer_order"].append(["retire"])\n')
+            sys.modules['installer_order']=calls
+            run=lambda command,**kw:calls.append(command) or subprocess.CompletedProcess(command,0)
+            with patch.object(installer,'CACHE_UNIT',unit),patch.object(installer.subprocess,'run',run), \
+                 patch.object(installer,'current_generation',lambda:outgoing):
+                with installer.generation_services(legacy):pass
+            del sys.modules['installer_order']
+            # Retirement stops the unit: a try-restart after it would start nothing.
+            self.assertEqual(calls,[['systemctl','is-active','--quiet','buildbox-cache.service'],['retire'],
+                                    ['systemctl','restart','buildbox-cache.service']])
+
+    def test_switch_back_retires_the_failed_generations_cache_server_first(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            failed=Path(temporary)/'failed';failed.mkdir();order=[]
+            (failed/'bb-cache.py').write_text('import sys\ndef retire_owners():\n    sys.modules["installer_order"].append("retire")\n')
+            sys.modules['installer_order']=order
+            unit=Path(temporary)/'unit';unit.write_bytes(b'[Unit]\n')
+            with patch.object(installer,'CACHE_UNIT',unit), \
+                 patch.object(installer.subprocess,'run',lambda command,**kw:order.append(command[1])):
+                installer.restore_services({'unit':b'[Unit]\n','enabled':True,'active':True},failed)
+            del sys.modules['installer_order']
+            # KillMode=process: a restart alone leaves the failed server holding the endpoint.
+            self.assertEqual(order,['retire','enable','restart'])
+
+    def test_stale_predecessor_refuses_publication_without_touching_live_tools(self):
+        driver='''import importlib.util,sys,json,hashlib,tempfile,os
 from pathlib import Path
-source=Path(sys.argv[1]);s=importlib.util.spec_from_file_location('installer',source);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-stage=Path(tempfile.mkdtemp(prefix='bb-install-control-',dir='/mnt/bb/tmp'))
-live=stage/'live';live.mkdir()
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('i',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+stage=Path(tempfile.mkdtemp(prefix='bb-install-',dir='/mnt/bb/tmp'));live=Path(tempfile.mkdtemp(dir='/mnt/bb/tmp'))
 try:
- for name in m.TOOLS:
-  m.publish(stage/name,(source.parent/name).read_bytes(),0o444)
-  m.publish(live/name,('old-'+name).encode())
- hashes={name:m.file_hash(stage/name) for name in m.TOOLS}
- previous={name:m.file_hash(live/name) for name in m.TOOLS}
- m.publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
- m.publish(stage/'.predecessors.json',json.dumps(previous).encode(),0o400)
- m.BIN=live;m.secure_bin=lambda:live
- peer=live/'bb-job.py';m.publish(peer,b'newer peer runtime')
- for selection in [[],['unknown'],['bb-install.py','bb-install.py']]:
-  try:m.publish_candidate(stage,selection)
-  except ValueError:pass
-  else:raise AssertionError('invalid selection admitted')
- m.publish_candidate(stage,['bb_target_store.py','bb-install.py'])
- assert peer.read_bytes()==b'newer peer runtime'
- manifest=json.loads((live/'installed-tools.json').read_text())
- assert manifest['sha256']['bb-job.py']==m.file_hash(peer)
- assert m.file_hash(live/'bb_target_store.py')==hashes['bb_target_store.py']
- m.publish(live/'bb_target_store.py',b'newer selected tool')
- before={name:m.file_hash(live/name) for name in m.TOOLS}
- try:m.publish_candidate(stage,['bb_target_store.py'])
- except ValueError as error:assert 'predecessor changed' in str(error)
- else:raise AssertionError('stale candidate published')
- assert before=={name:m.file_hash(live/name) for name in m.TOOLS}
- # Actual unfenced former shape overwrites the newer selected tool.
- old={'__file__':str(source),'__name__':'old_installer'}
- code=source.read_text().replace('if any(file_hash(BIN/name) != previous.get(name) for name in selected):','if False:')
- exec(compile(code,'unfenced-installer','exec'),old)
- old['BIN']=live;old['secure_bin']=lambda:live
- old['publish_candidate'](stage,['bb_target_store.py'])
- assert before['bb_target_store.py']!=m.file_hash(live/'bb_target_store.py')
-finally:shutil.rmtree(stage)
+ os.chmod(stage,0o755)
+ payload={n:(Path(sys.argv[1]).read_bytes() if n=='bb-install.py' else n.encode()) for n in m.TOOLS}
+ for n,d in payload.items():m.publish(stage/n,d,0o444);m.publish(live/n,b'installed-'+n.encode(),0o555)
+ m.publish(stage/'.qualified.json',json.dumps({n:hashlib.sha256(d).hexdigest() for n,d in payload.items()}).encode(),0o444)
+ m.publish(stage/'.predecessors.json',json.dumps({n:m.file_hash(live/n) for n in m.TOOLS}).encode(),0o444)
+ changed=live/m.TOOLS[0];m.publish(changed,b'newer deployment',0o555)  # After qualification.
+ before={n:(live/n).read_bytes() for n in m.TOOLS}
+ with patch.object(m,'BIN',live),patch.object(m,'deploy',side_effect=AssertionError('deployed')):
+  try:m.publish_candidate(stage)
+  except ValueError as e:assert 'installed predecessor changed' in str(e),e
+  else:raise AssertionError('stale candidate published')
+ assert {n:(live/n).read_bytes() for n in m.TOOLS}==before
+finally:
+ import shutil;shutil.rmtree(stage);shutil.rmtree(live)
 '''
         subprocess.run(['sudo','-n',*python('-c',driver,HERE/'bb-install.py')],check=True)
+
+    def test_unmanaged_tools_carry_forward_and_managed_tools_never_do(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            source=Path(temporary)
+            for name in ['bb-cargo/cargo','bigstack/rustc','tofu','admission_policy.py','bbcg/systemd-run','retired_tool.py']:
+                (source/name).parent.mkdir(parents=True,exist_ok=True);(source/name).write_bytes(name.encode())
+            (source/'installed-tools.json').write_text(json.dumps({'sha256':{'retired_tool.py':None}}))
+            self.assertEqual(installer.carried(source),{'bb-cargo/cargo':b'bb-cargo/cargo','bigstack/rustc':b'bigstack/rustc','tofu':b'tofu'})
+            self.assertEqual(installer.carried(None),{})
+
+    def test_live_publication_has_no_partial_selection(self):
+        self.assertNotIn('--only',Path(installer.__file__).read_text())
+        self.assertEqual(installer.publish_candidate.__code__.co_argcount,1)
 
     def test_privileged_publication_refuses_direct_lane_edits(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
@@ -198,7 +308,7 @@ try:
  except ValueError as error:assert 'run the reviewed source installer' in str(error)
  else:raise AssertionError('different installer policy accepted')
  finally:new.__file__=own_file
- try:new.publish_candidate(stage,['bb-install.py'])
+ try:new.publish_candidate(stage)
  except ValueError as error:assert 'qualified candidate changed' in str(error)
  else:raise AssertionError('actual predecessor token qualified new tool set')
  assert (live/'bb-install.py').read_bytes()==b'installed-bb-install.py'
@@ -217,8 +327,12 @@ try:
  assert set(json.loads((qualified/'.qualified.json').read_text()))==set(new.TOOLS)
  assert json.loads((qualified/'.predecessors.json').read_text())['cpu_leases.py'] is None
  publisher=load('publisher',qualified/'bb-install.py');publisher.BIN=live;publisher.secure_bin=lambda:live
- publisher.publish_candidate(qualified,['bb-install.py'])
+ import contextlib
+ publisher.ROOT=root/'opt';publisher.canary=lambda generation=None:None
+ publisher.admission_drained=publisher.generation_services=lambda generation:contextlib.nullcontext()
+ publisher.publish_candidate(qualified)
  assert (live/'bb-install.py').read_bytes()==source.read_bytes()
+ assert (root/'opt/previous/bb-install.py').read_bytes()==b'installed-bb-install.py'
  def failed(directory,*args):
   stages.append(directory)
   raise RuntimeError('qualification failed control')

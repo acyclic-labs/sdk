@@ -316,42 +316,59 @@ def drain_admission(root=Path('/mnt/bb/admit')):
 
 
 @contextlib.contextmanager
-def _migration():
-    """Explicit migration; no cache deletion, numeric-PID kills or live job cutoffs."""
+def _admission_drained():
+    with open('/mnt/bb/admit/upgrade.lock', 'a') as admission:
+        fcntl.flock(admission, fcntl.LOCK_EX)
+        drain_admission()
+        yield
+
+
+def retire_owners():
+    """Stop the host service and end every verified cache owner and endpoint.
+    Callers hold upgrade.lock EX with admission drained (the unit uses
+    KillMode=process, so a server outlives its unit's stop or restart)."""
+    if Path('/etc/systemd/system/buildbox-cache.service').exists():
+        subprocess.run(['systemctl', 'stop', 'buildbox-cache.service'], check=True)
+    # All admitted jobs have drained. Private-namespace legacy servers
+    # must end with their owning jobs; never signal a namespace-local PID.
+    own_ns = os.readlink('/proc/self/ns/pid')
+    for owner in cache_owners():
+        pid, identity = owner['pid'], owner['identity']
+        try:
+            descriptor = os.pidfd_open(pid)
+            try:
+                if not identity or birth(pid) != identity: continue
+                if owner['pid_namespace'] == own_ns:
+                    endpoint=owner['environment'].get('SCCACHE_SERVER_UDS')
+                    if not endpoint:
+                        raise CachePolicyError(owner['environment'].get('SCCACHE_CACHE_SIZE','unknown'),
+                                               detail='legacy owner has no verifiable Unix endpoint')
+                    with socket.socket(socket.AF_UNIX) as connection:
+                        connection.connect(endpoint)
+                        peer_pid,peer_uid,_=peer(connection)
+                        if peer_pid!=pid or peer_uid!=pwd.getpwnam('var').pw_uid or birth(pid)!=identity:
+                            raise CachePolicyError(endpoint=endpoint,detail='legacy endpoint owner/birth mismatch')
+                    signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                select.select([descriptor], [], [])
+            finally: os.close(descriptor)
+        except (FileNotFoundError, ProcessLookupError): continue
+    CACHE_ENDPOINT.unlink(missing_ok=True); CONTROL.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def _migration(drained=False):
+    """Explicit migration; no cache deletion, numeric-PID kills or live job cutoffs.
+
+    `drained`: the generation installer already holds upgrade.lock EX and has
+    drained admission; a second lock description would deadlock against it.
+    """
     if os.geteuid() != 0: raise CachePolicyError(detail='recovery requires sudo')
     require_host_namespace()
     cache_environment(os.environ)
     CACHE_ROOT.mkdir(mode=0o755, exist_ok=True); protected(CACHE_ROOT)
-    with open('/mnt/bb/admit/upgrade.lock', 'a') as admission:
-        fcntl.flock(admission, fcntl.LOCK_EX)
-        drain_admission()
-        if Path('/etc/systemd/system/buildbox-cache.service').exists():
-            subprocess.run(['systemctl', 'stop', 'buildbox-cache.service'], check=True)
-        # All admitted jobs have drained. Private-namespace legacy servers
-        # must end with their owning jobs; never signal a namespace-local PID.
-        own_ns = os.readlink('/proc/self/ns/pid')
-        for owner in cache_owners():
-            pid, identity = owner['pid'], owner['identity']
-            try:
-                descriptor = os.pidfd_open(pid)
-                try:
-                    if not identity or birth(pid) != identity: continue
-                    if owner['pid_namespace'] == own_ns:
-                        endpoint=owner['environment'].get('SCCACHE_SERVER_UDS')
-                        if not endpoint:
-                            raise CachePolicyError(owner['environment'].get('SCCACHE_CACHE_SIZE','unknown'),
-                                                   detail='legacy owner has no verifiable Unix endpoint')
-                        with socket.socket(socket.AF_UNIX) as connection:
-                            connection.connect(endpoint)
-                            peer_pid,peer_uid,_=peer(connection)
-                            if peer_pid!=pid or peer_uid!=pwd.getpwnam('var').pw_uid or birth(pid)!=identity:
-                                raise CachePolicyError(endpoint=endpoint,detail='legacy endpoint owner/birth mismatch')
-                        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-                    select.select([descriptor], [], [])
-                finally: os.close(descriptor)
-            except (FileNotFoundError, ProcessLookupError): continue
-        CACHE_ENDPOINT.unlink(missing_ok=True); CONTROL.unlink(missing_ok=True)
-        # The installer publishes every consumer while admission is still
+    with (contextlib.nullcontext() if drained else _admission_drained()):
+        retire_owners()
+        # The installer switches the whole generation while admission is still
         # exclusively held. Only then may the new host service become READY.
         yield
         unit = ('[Unit]\nDescription=Birth-validated shared buildbox cache\n'
@@ -368,9 +385,9 @@ def _migration():
 
 
 @contextlib.contextmanager
-def migration():
+def migration(drained=False):
     try:
-        with _migration():yield
+        with _migration(drained):yield
     except CachePolicyError:raise
     except (OSError,ValueError,KeyError,subprocess.CalledProcessError) as error:
         raise CachePolicyError(detail='host migration: '+str(error)) from error
