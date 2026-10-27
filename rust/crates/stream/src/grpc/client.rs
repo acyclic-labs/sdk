@@ -144,7 +144,7 @@ impl StreamProvider for Client {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: Some(retry_identity(request.idempotency_key)),
+            idempotency_key: Some(retry_identity(request.idempotency_key)?),
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -164,7 +164,7 @@ impl StreamProvider for Client {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: Some(retry_identity(request.idempotency_key)),
+            idempotency_key: Some(retry_identity(request.idempotency_key)?),
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -281,9 +281,8 @@ impl Client {
     }
 }
 
-/// A fixed retry identity keeps transport retries of one append or fork exactly-once.
-fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
-    key.map_or_else(crate::new_identity_bytes, |key| {
-        Bytes::copy_from_slice(key.as_bytes())
-    })
+/// A mutation's retry identity belongs to its caller, including transport retries.
+fn retry_identity(key: Option<IdempotencyKey>) -> Result<Bytes, StreamError> {
+    let key = key.ok_or(StreamError::InvalidArgument)?;
+    Ok(Bytes::copy_from_slice(key.as_bytes()))
 }

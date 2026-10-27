@@ -29,7 +29,6 @@ const body = text => new TextEncoder().encode(text);
 
 async function validateFrames(options, prefix) {
   const provider = new GrpcStreamProvider(options);
-  const state = (mode, field) => provider.tail(`frame-state/${prefix}/${mode}/${field}`);
   const waitFor = async (mode, field, minimum = 1n) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error(`missing ${mode} ${field}`)), 2000);

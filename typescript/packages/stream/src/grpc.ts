@@ -4,7 +4,7 @@ import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
-import { createClient, ConnectError, Code, type Interceptor, type Client, type CallOptions } from "@connectrpc/connect";
+import { createClient, ConnectError, Code, type Interceptor, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
