@@ -166,6 +166,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-stream",
  "bytes",
+ "futures",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
