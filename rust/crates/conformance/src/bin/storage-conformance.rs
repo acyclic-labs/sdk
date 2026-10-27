@@ -1,6 +1,10 @@
 //! Runs the canonical Objects, Stream and filesystem composition suites.
+#[path = "storage_conformance/batch.rs"]
+mod batch;
 #[path = "storage_conformance/filesystem.rs"]
 mod filesystem;
+#[path = "storage_conformance/host.rs"]
+mod host;
 #[path = "storage_conformance/s3.rs"]
 mod s3;
 use acyclic_objects::{
@@ -80,13 +84,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PostgresStream::connect(&database, &namespace).await?,
             )),
             acyclic_fs::LogicalObjectStore::new(
-                Arc::new(S3Objects::open(store, prefix, capabilities).await?),
+                Arc::new(S3Objects::open(store.clone(), prefix, capabilities).await?),
                 bucket,
             ),
             acyclic_fs::EmbeddedCapabilities { durable: true },
         ))
     })
     .await?;
+    host::verify(&database, store, capabilities).await?;
     println!("All storage suites: {:?}", start.elapsed());
     Ok(())
 }

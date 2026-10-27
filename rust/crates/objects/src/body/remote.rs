@@ -1,12 +1,15 @@
 //! Immutable body transport; logical range selection stays in the shared core.
 use super::*;
 
-pub(crate) trait ImmutableBodies: Send + Sync {
+/// Immutable body IO used by the sealed durable publisher transport.
+pub trait ImmutableBodies: Send + Sync {
+    /// Write a body under its content digest.
     fn put(
         &self,
         id: [u8; 32],
         bytes: acyclic_stream::OwnedBytes,
     ) -> BoxFuture<'_, Result<(), Error>>;
+    /// Read a selected interval of a body with its expected complete length.
     fn get(
         &self,
         id: [u8; 32],

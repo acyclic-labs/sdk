@@ -9,7 +9,6 @@
 //! with nothing pending.
 use crate::{Backend, Result, observe::Observed, roots::volume, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
-use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::*,
@@ -45,7 +44,7 @@ const TOOL: &str = "conformance.echo";
 /// The default policy's one approver.
 const HUMAN: &str = "human";
 
-type Objects = LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
+type Objects = crate::ObjectStore;
 
 /// Calls the tool once, then answers.
 struct Scripted;
@@ -167,7 +166,12 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 async fn asked(
     backend: &dyn Backend,
     policy: ApprovalPolicy,
-) -> Result<(Bound<Observed, Objects>, AgentPath, Arc<AtomicUsize>)> {
+) -> Result<(
+    Bound<Observed, Objects>,
+    AgentPath,
+    Arc<AtomicUsize>,
+    Box<dyn crate::Storage>,
+)> {
     let storage = backend.fresh().await?;
     let stream = Arc::new(Observed::new(storage.open().await?));
     let audience = Authority {
@@ -187,7 +191,8 @@ async fn asked(
             .capability(VolumeOperation::Write, &mut None)?,
     ];
     let scope = issuer.bootstrap_scope("root", &Capabilities::new(grants), None, &mut None)?;
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = storage.objects().await?;
+    let capabilities = objects.capabilities;
     let calls = Arc::new(AtomicUsize::new(0));
     let bound = Bound::admitted(
         issuer,
@@ -195,8 +200,8 @@ async fn asked(
         Placement {
             filesystem: acyclic_fs::Fs::new(
                 acyclic_fs::StreamAuthorityStore::new(stream),
-                LogicalObjectStore::new(Arc::new(objects), bucket),
-                EmbeddedCapabilities::MEMORY,
+                objects.into_store(storage.as_ref())?,
+                capabilities,
             ),
             provider: private.volume.provider().clone(),
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
@@ -247,13 +252,17 @@ async fn asked(
             }),
         )
         .await?;
-    bound.agents().drain(&root).await?;
-    Ok((bound, root, calls))
+    bound
+        .agents()
+        .drain(&root)
+        .await
+        .map_err(|error| format!("initial approval drain: {error}"))?;
+    Ok((bound, root, calls, storage))
 }
 
 /// The generic default asks the human, and the decision path completes.
 async fn human_decides(backend: &dyn Backend) -> Result {
-    let (bound, root, calls) = asked(backend, ApprovalPolicy::default()).await?;
+    let (bound, root, calls, _storage) = asked(backend, ApprovalPolicy::default()).await?;
 
     // The turn waits on the tool call, which has not run.
     let Some((
@@ -288,7 +297,11 @@ async fn human_decides(backend: &dyn Backend) -> Result {
     bound
         .decide(&root, &pending, &exact, HUMAN, true, None)
         .await?;
-    bound.agents().drain(&root).await?;
+    bound
+        .agents()
+        .drain(&root)
+        .await
+        .map_err(|error| format!("approved continuation drain: {error}"))?;
     let state = bound.agents().state(&root).await?;
     if state.phase != Phase::Idle || calls.load(Ordering::SeqCst) != 1 {
         return Err(format!(
@@ -306,7 +319,11 @@ async fn human_decides(backend: &dyn Backend) -> Result {
     bound
         .decide(&root, &pending, &exact, HUMAN, true, None)
         .await?;
-    bound.agents().drain(&root).await?;
+    bound
+        .agents()
+        .drain(&root)
+        .await
+        .map_err(|error| format!("replayed decision drain: {error}"))?;
     if bound.agents().state(&root).await?.phase != Phase::Idle || calls.load(Ordering::SeqCst) != 1
     {
         return Err("a replayed decision ran the tool again".into());
@@ -316,7 +333,8 @@ async fn human_decides(backend: &dyn Backend) -> Result {
 
 /// A preset that explicitly accepts every action runs the call unasked.
 async fn accepted(backend: &dyn Backend) -> Result {
-    let (bound, root, calls) = asked(backend, ApprovalPolicy::accept_all("conformance")).await?;
+    let (bound, root, calls, _storage) =
+        asked(backend, ApprovalPolicy::accept_all("conformance")).await?;
     if bound.pending_approval(&root).await?.is_some() {
         return Err("an accept-all preset left the tool call pending".into());
     }

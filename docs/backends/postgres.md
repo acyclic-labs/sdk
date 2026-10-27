@@ -75,6 +75,21 @@ full filesystem qualification; its full workload corpus has no executable runner
 The conformance README labels the provider suites v2; its unchanged Stream export
 currently invokes the v1-protocol `acyclic_stream::conformance::verify`.
 
+On 2026-10-27 the same complete agent-host export passed over Postgres + memory
+Objects in 4.96 s and Postgres + MinIO in 6.16 s. The guest wire boundary, crash
+vectors, admitted roots and approval continuations retain their original
+assertions and actor deadlines. Evidence: job `1793127734572-64852-d7b53ebe`, log
+`/home/var/log/buildbox/1793127718113-64852-15957735.log`. This qualifies storage
+composition beneath the host; it does not qualify an OSS endpoint or real
+GraphCoder binary.
+
+That run also passed both local host baselines (6.38 s), the cross-session and
+listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
+(700 ms path creation), with two provider connections, four total tasks including
+the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
+fixtures compiled for wasm. Adapter inventory remains 495 Rust lines plus 13 SQL
+lines; the shared journal-orchestration extraction remains follow-up #1629.
+
 ## Live steps
 
 No paid provider account is required. The coordinator can repeat the same runner

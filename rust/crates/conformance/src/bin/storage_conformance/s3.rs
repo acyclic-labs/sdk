@@ -13,7 +13,7 @@ use std::{
     time::Instant,
 };
 #[path = "observed_store.rs"]
-mod observed_store;
+pub(super) mod observed_store;
 
 pub async fn verify(
     store: Arc<dyn ObjectStore>,
@@ -104,6 +104,7 @@ pub async fn verify(
         "S3 independent clients: create/update CAS races, immediate create/update/delete visibility, physical multipart, ranges and exact reopen replay: {:?}",
         start.elapsed()
     );
+    super::batch::verify(store.clone(), prefix.clone().join("batch"), capabilities).await?;
     cold_ranges(store, prefix.clone().join("cold-range"), capabilities).await?;
     Ok(())
 }
@@ -128,6 +129,7 @@ async fn cold_ranges(
         body_bytes: AtomicUsize::new(0),
         body_gets: AtomicUsize::new(0),
         metadata_bytes: AtomicUsize::new(0),
+        head_updates: AtomicUsize::new(0),
     });
     let provider = S3Objects::open(observed.clone(), prefix.clone(), capabilities).await?;
     let bucket = provider

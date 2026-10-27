@@ -87,6 +87,10 @@ step=compile
 cargo build --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
 step=canonical-suites
 timeout 60 cargo run --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
+step=compile-agent-host-baseline
+cargo test --locked -p acyclic-agent-host-conformance --features local --test local --no-run
+step=agent-host-baseline
+timeout 60 cargo test --locked -p acyclic-agent-host-conformance --features local --test local
 step=compile-postgres-checks
 cargo build --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
 step=postgres-cross-session

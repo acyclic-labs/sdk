@@ -12,6 +12,7 @@ pub struct ObservedStore {
     pub body_bytes: AtomicUsize,
     pub body_gets: AtomicUsize,
     pub metadata_bytes: AtomicUsize,
+    pub head_updates: AtomicUsize,
 }
 
 impl std::fmt::Display for ObservedStore {
@@ -28,7 +29,20 @@ impl ObjectStore for ObservedStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
-        self.inner.put_opts(path, payload, opts).await
+        let update = path.filename() == Some("head") && matches!(&opts.mode, PutMode::Update(_));
+        let started = std::time::Instant::now();
+        let result = self.inner.put_opts(path, payload, opts).await;
+        if std::env::var_os("STORAGE_IO_TRACE").is_some() {
+            println!(
+                "MinIO PUT {path} {:?} ok={}",
+                started.elapsed(),
+                result.is_ok()
+            );
+        }
+        if update && result.is_ok() {
+            self.head_updates.fetch_add(1, Ordering::Relaxed);
+        }
+        result
     }
     async fn put_multipart_opts(
         &self,
@@ -38,6 +52,7 @@ impl ObjectStore for ObservedStore {
         self.inner.put_multipart_opts(path, opts).await
     }
     async fn get_opts(&self, path: &Path, opts: GetOptions) -> Result<GetResult> {
+        let started = std::time::Instant::now();
         let result = self.inner.get_opts(path, opts).await?;
         let is_body = path
             .parent()
@@ -49,6 +64,13 @@ impl ObjectStore for ObservedStore {
         let attributes = result.attributes.clone();
         let extensions = result.extensions.clone();
         let bytes = result.bytes().await?;
+        if std::env::var_os("STORAGE_IO_TRACE").is_some() {
+            println!(
+                "MinIO GET {path} {:?} bytes={}",
+                started.elapsed(),
+                bytes.len()
+            );
+        }
         if is_body {
             println!(
                 "MinIO observed body GET path={path}, received bytes={}",

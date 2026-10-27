@@ -31,11 +31,66 @@ pub type Failure = Box<dyn std::error::Error>;
 /// A conformance operation's result.
 pub type Result<T = ()> = std::result::Result<T, Failure>;
 
+/// Object primitives used by the filesystem-backed host vectors.
+pub struct Objects {
+    /// The configured Objects provider, shared through the public seam.
+    pub provider: Arc<dyn acyclic_objects::ObjectsProvider>,
+    /// An empty logical bucket belonging only to this vector.
+    pub bucket: acyclic_objects::wire::BucketRef,
+    /// The provider's declared durability.
+    pub capabilities: acyclic_fs::EmbeddedCapabilities,
+}
+
+type CachedObjects = acyclic_fs::CachedObjectStore<
+    acyclic_fs::LogicalObjectStore<dyn acyclic_objects::ObjectsProvider>,
+>;
+/// The canonical native publication staging and immutable cache.
+#[cfg(not(target_arch = "wasm32"))]
+pub type ObjectStore = acyclic_fs::staged_objects::StagedObjects<CachedObjects>;
+/// The portable immutable cache for guest fixtures.
+#[cfg(target_arch = "wasm32")]
+pub type ObjectStore = CachedObjects;
+
+impl Objects {
+    /// Use the shared filesystem composition; native writes stage until publication.
+    pub fn into_store(self, storage: &dyn Storage) -> Result<ObjectStore> {
+        let cached = acyclic_fs::CachedObjectStore::new(
+            acyclic_fs::LogicalObjectStore::new(self.provider, self.bucket),
+            acyclic_fs::ObjectCacheOptions::default(),
+        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        return Ok(acyclic_fs::staged_objects::StagedObjects::open(
+            cached,
+            storage.staging_directory().to_owned(),
+        ));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = storage;
+            Ok(cached)
+        }
+    }
+
+    /// The original memory object fixture, for stream-only qualification.
+    pub fn memory() -> Self {
+        let (provider, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+        Self {
+            provider: Arc::new(provider),
+            bucket,
+            capabilities: acyclic_fs::EmbeddedCapabilities::MEMORY,
+        }
+    }
+}
+
 /// A fresh consistency domain. Every `open` must reopen the same durable data;
 /// no provider session or host survives a crash vector.
 pub trait Storage: ProviderPlatform {
+    /// Existing private spill directory, retained while this fixture is in use.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn staging_directory(&self) -> &std::path::Path;
     /// Open a new session on this vector's retained storage.
     fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>>;
+    /// Provision an empty object domain for the filesystem-backed vectors.
+    fn objects(&self) -> BoxProviderFuture<'_, Result<Objects>>;
 }
 
 /// Backend setup only. It must not interpret or replace any vector.

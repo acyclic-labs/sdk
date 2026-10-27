@@ -12,7 +12,7 @@ readme = "README.md"
 [features]
 inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
-storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "dep:object_store", "dep:async-trait", "dep:rustls"]
+storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "acyclic-stream/local", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
@@ -21,6 +21,7 @@ s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum
 graphcoder-backends = ["dep:axum", "dep:tempfile", "acyclic-harness/serve", "acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-agent-host-conformance = { path = "agent-host" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false }
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
