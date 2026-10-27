@@ -418,6 +418,7 @@ impl Opening {
             workspace,
             #[cfg(test)]
             environment_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(any(test, feature = "native-execution"))]
             clock: self.config.clock,
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: self.config.environment_platform,
