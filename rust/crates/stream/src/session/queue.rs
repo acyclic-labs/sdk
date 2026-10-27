@@ -57,6 +57,21 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 };
                 (cursor(next), item, key)
             }
+            Ok(Event::CallChunk {
+                index,
+                total,
+                bytes,
+            }) => {
+                let next = index.checked_add(1).ok_or(StreamError::OutOfRange)?;
+                (
+                    wire::SessionCursor {
+                        next,
+                        opaque: Bytes::copy_from_slice(&total.to_le_bytes()),
+                    },
+                    Item::ActorCall(bytes),
+                    None,
+                )
+            }
             Err(error) => {
                 if channel.revalidate.is_some()
                     && matches!(

@@ -413,6 +413,10 @@ impl Pool {
                 Ok(())
             }
             Some(Body::Moved(moved)) => {
+                if matches!(route.kind, Kind::ActorCall(_)) {
+                    self.reject(id, StreamError::Unavailable);
+                    return Ok(());
+                }
                 let destination = moved.node.ok_or(StreamError::Unavailable)?;
                 if destination.node_id.is_empty()
                     || destination.placement_epoch <= route.placement_epoch
@@ -562,13 +566,20 @@ impl Pool {
             (Kind::Follow(follow), _) => {
                 wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
+            (Kind::ActorCall(_), Some(Item::ActorCall(_))) => {
+                wire_codec::session::actor_call_sequence(
+                    route.received,
+                    &route.received_opaque,
+                    &data,
+                )?
+            }
             _ => return Err(StreamError::Unavailable),
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
         let item = if route.raw {
             Received::Frame(frame(id, generation, Body::Data(data)))
-        } else if matches!(route.kind, Kind::Follow(_)) {
+        } else if matches!(route.kind, Kind::Follow(_) | Kind::ActorCall(_)) {
             Received::Data(data)
         } else {
             return Err(StreamError::Unavailable);

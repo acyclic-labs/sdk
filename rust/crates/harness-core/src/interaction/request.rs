@@ -2,6 +2,7 @@ use super::*;
 
 /// One selectable choice presented to a participant.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ChoiceOption {
     /// Stable option identity returned in the response.
     pub id: String,
@@ -14,6 +15,7 @@ pub struct ChoiceOption {
 /// The authority that must review this request. Guard requests require a human
 /// independently of the ordinary tool policy; the immutable request binds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalRoute {
     /// Traverse the configured rule, model, parent and human policy chain.
@@ -24,6 +26,7 @@ pub enum ApprovalRoute {
 
 /// The exact action an approval decides, as its approver sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApprovalSubject {
     /// One model tool call with its exact admitted arguments. The approval's
@@ -62,6 +65,7 @@ fn legacy_approval_subject() -> ApprovalSubject {
 
 /// Typed interaction request. Executors decide how and where it is presented.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Interaction {
     /// Free-form value constrained by JSON Schema.
@@ -94,6 +98,7 @@ pub enum Interaction {
         /// Human-readable explanation of the requested action.
         prompt: String,
         /// Operation awaiting approval.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation_id: OperationId,
         /// Digest of the exact action being approved.
         action_digest: [u8; 32],

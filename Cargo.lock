@@ -150,6 +150,7 @@ dependencies = [
  "acyclic-agent-host-conformance",
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -162,6 +163,7 @@ dependencies = [
  "futures",
  "hex",
  "notify",
+ "prost",
  "rusqlite",
  "s3s",
  "serde",
@@ -439,10 +441,18 @@ dependencies = [
 name = "acyclic-harness-client"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
+ "acyclic-harness-core",
  "acyclic-stream",
  "bytes",
  "futures",
  "proptest",
+ "prost",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tsify",
+ "wasm-bindgen",
 ]
 
 [[package]]

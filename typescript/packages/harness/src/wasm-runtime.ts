@@ -1,6 +1,6 @@
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 
-let initialization: Promise<void> | undefined;
+let initialization: Promise<Record<string, unknown>> | undefined;
 
 /** Every JS function used by either Harness initialization path. */
 const REQUIRED_HARNESS_WASM_EXPORTS = [
@@ -41,8 +41,15 @@ function hasClass(exports: Record<string, unknown>, name: string, prefix: string
       && methods.every(method => typeof exports[method === "free" ? `__wbg_${prefix}_free` : `${prefix}_${method}`] === "function");
 }
 
+function hasStaticMethods(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[]): boolean {
+  return typeof exports[name] === "function"
+    ? methods.every(method => typeof (exports[name] as unknown as Record<string, unknown>)[method] === "function")
+    : methods.every(method => typeof exports[`${prefix}_${method}`] === "function");
+}
+
 /** Reject a stale binding before runtime code can call a missing validator. */
 export function assertHarnessWasmExports(value: unknown): void {
+  assertClientWasmExports(value);
   if (value === null || typeof value !== "object") {
     throw new Error("harness WASM does not provide the required validators");
   }
@@ -50,30 +57,49 @@ export function assertHarnessWasmExports(value: unknown): void {
   const contentStore = typeof exports.WasmContentStore === "function"
     ? true
     : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
-  const stream = hasClass(exports, "WasmStream", "wasmstream", [], true);
   const hypotheses = hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", HYPOTHESIS_METHODS, true);
+  const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
+  const providers = typeof exports.WasmProviderRegistry === "function"
+    || typeof exports.wasmproviderregistry_new === "function";
+  if (!contentStore || !hypotheses || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+    throw new Error("harness WASM does not provide the required validators");
+  }
+}
+
+/** Public frontend admission depends only on the shipping client exports. */
+export function assertClientWasmExports(value: unknown): void {
+  if (value === null || typeof value !== "object") {
+    throw new Error("harness WASM does not provide the required client exports");
+  }
+  const exports = value as Record<string, unknown>;
+  const stream = hasClass(exports, "WasmStream", "wasmstream", ["registerCredential", "free"], true);
   const session = hasClass(exports, "WasmWireSession", "wasmwiresession", [
     "setView", "registerCredential", "openStream", "next", "close", "followedAgents",
     "viewRevision", "firstSequence", "recordCount", "record", "free",
   ], true);
   const agents = hasClass(exports, "WasmAgentClient", "wasmagentclient", [
     "setView", "selectedAgents", "agentWindow", "agentRecord", "agentStatus",
-    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
+    "openResource", "releaseResource", "resourceWindow", "resourceRecord",
+    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "controls", "free",
   ], true);
-  const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
+  const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
+    "bytes", "value", "reply", "free",
+  ], true) && hasStaticMethods(exports, "WasmAgentCommand", "wasmagentcommand", [
+    "maximumCommandBytes", "maximumInvocationBytes", "maximumReplyBytes",
+  ]);
+  const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
+  const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
   const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
     "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
   ], true);
   const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
-  const providers = typeof exports.WasmProviderRegistry === "function"
-    || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !stream || !hypotheses || !session || !agents || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
-    throw new Error("harness WASM does not provide the required validators");
+  if (typeof exports.decodeClientJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest) {
+    throw new Error("harness WASM does not provide the required client exports");
   }
 }
 
-/** Initializes the one WASM instance shared by the reducer and actor/session views. */
-export async function ensureHarnessWasm(): Promise<void> {
+/** One physical WASM initialization, shared by client and host facades. */
+async function loadHarnessWasm(): Promise<Record<string, unknown>> {
   if (initialization !== undefined) return initialization;
   let moduleLoaded = false;
   const attempt = (async () => {
@@ -82,13 +108,23 @@ export async function ensureHarnessWasm(): Promise<void> {
       ? (await import("node:fs/promises")).readFile(url).then(bytes => Uint8Array.from(bytes)) : url);
     const exports = await initWasm({ module_or_path: source });
     moduleLoaded = true;
-    assertHarnessWasmExports(exports);
+    return exports as unknown as Record<string, unknown>;
   })();
   initialization = attempt;
   try {
-    await attempt;
+    return await attempt;
   } catch (error) {
     if (!moduleLoaded && initialization === attempt) initialization = undefined;
     throw error;
   }
+}
+
+/** Initialize only the public agent/session frontend, without legacy tasks. */
+export async function ensureClientWasm(): Promise<void> {
+  assertClientWasmExports(await loadHarnessWasm());
+}
+
+/** Initialize the reducer/host surface on the same physical WASM instance. */
+export async function ensureHarnessWasm(): Promise<void> {
+  assertHarnessWasmExports(await loadHarnessWasm());
 }

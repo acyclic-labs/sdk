@@ -3,8 +3,8 @@
 //! Both native and browser callers supply the platform's existing authenticated
 //! Streams pool. This adapter owns no transport task, queue or recovery loop.
 
-use super::{DemandError, DemandPolicy, StreamView, WireSession, WireSessionError};
-use crate::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
+use crate::{DemandError, DemandPolicy, StreamView, WireSession, WireSessionError};
+use acyclic_harness_core::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
 use acyclic_stream::{StreamPath, session::Client, wire, wire_codec};
 use std::task::{Context, Poll};
 
@@ -16,10 +16,26 @@ pub enum AgentClientError {
     Session(#[from] WireSessionError),
     /// A bounded agent record failed its canonical decoder.
     #[error(transparent)]
-    Record(#[from] crate::agent::Error),
+    Record(#[from] acyclic_harness_core::agent::Error),
     /// A selected stream ended; the client must not invent an idle status.
     #[error("selected agent stream ended: {0}")]
     Closed(StreamPath),
+    /// A selected filesystem/tool-output stream ended, without ending others.
+    #[error("selected resource stream ended: {0}")]
+    ResourceClosed(String),
+}
+
+impl AgentClientError {
+    /// Preserve the canonical cause classification across platform adapters.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Session(cause) => cause.code(),
+            Self::Record(cause) => cause.code(),
+            Self::Closed(_) => "agent_stream_closed",
+            Self::ResourceClosed(_) => "agent_resource_closed",
+        }
+    }
 }
 
 /// One observed transition, already applied to the shared bounded Rust fold.
@@ -46,6 +62,14 @@ pub enum AgentEvent {
         /// Exact status published by the agent host.
         status: StatusRecord,
     },
+    /// Tool-output/filesystem progress folded into the same bounded owner.
+    /// Renderers borrow only displayed records via `resource_view`.
+    Resource {
+        /// Exact selected canonical filesystem resource.
+        resource: String,
+        /// Revision of its retained display window, with no payload copy.
+        revision: u64,
+    },
     /// Admission or watermark progress, without a fabricated record.
     Progress,
 }
@@ -69,11 +93,18 @@ pub struct AgentClient {
     agent: AgentPath,
     conversation: StreamPath,
     streams: Vec<(AgentPath, bool, StreamPath)>,
+    resources: Vec<String>,
     next_stream: usize,
     credential: u32,
 }
 
 impl AgentClient {
+    /// Bind controls to this observer's exact authenticated pool and slot.
+    /// The host supplies canonical routing; no second wire owner is opened.
+    pub fn controls(&self, binding: crate::AgentBinding) -> crate::AgentControls {
+        crate::AgentControls::new(self.session.client().clone(), self.credential, binding)
+    }
+
     /// Follow from explicit exclusive cursors. Callers choose a bounded history
     /// page or retained cursor; opening never snapshots an entire conversation.
     /// The credential must already be registered on `client`.
@@ -90,6 +121,7 @@ impl AgentClient {
             agent: agent.clone(),
             conversation,
             streams: Vec::new(),
+            resources: Vec::new(),
             next_stream: 0,
             credential,
         };
@@ -151,7 +183,7 @@ impl AgentClient {
         self.agent = focused.agent;
         self.conversation = conversation;
         self.streams = streams;
-        self.next_stream %= self.streams.len();
+        self.next_stream %= self.streams.len() + self.resources.len();
         Ok(())
     }
 
@@ -247,6 +279,46 @@ impl AgentClient {
         &self.session
     }
 
+    /// Select filtered filesystem/tool output on the same fold, credential and
+    /// total interest budget as conversation/status. No second read loop.
+    pub fn open_resource(
+        &mut self,
+        subscription: wire::SessionSubscription,
+    ) -> Result<(), AgentClientError> {
+        if subscription.credential != self.credential {
+            return Err(WireSessionError::InvalidSubscription.into());
+        }
+        let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
+            return Err(WireSessionError::InvalidSubscription.into());
+        };
+        wire_codec::session::validate_resource(&follow.resource)
+            .map_err(WireSessionError::Stream)?;
+        let resource = follow.resource.clone();
+        self.session.begin_resource(subscription)?;
+        if !self.resources.contains(&resource) {
+            self.resources.push(resource);
+        }
+        Ok(())
+    }
+
+    /// Borrow only the requested resource's bounded display window.
+    pub fn resource_view(&self, resource: &str) -> Result<&StreamView, AgentClientError> {
+        self.session
+            .resource_view(resource)
+            .ok_or_else(|| WireSessionError::NotRequested.into())
+    }
+
+    /// Release both live interest and retained output custody, including after
+    /// a failure. The next combined read can continue with healthy selections.
+    pub fn release_resource(&mut self, resource: &str) -> Result<bool, AgentClientError> {
+        let released = self.session.release_resource(resource)?;
+        if released {
+            self.resources.retain(|selected| selected != resource);
+            self.next_stream %= self.streams.len() + self.resources.len();
+        }
+        Ok(released)
+    }
+
     /// Fairly poll only the bounded selected streams. There is no population scan
     /// and no per-agent queue, task or unbounded status cache.
     pub fn poll_next(
@@ -254,8 +326,47 @@ impl AgentClient {
         context: &mut Context<'_>,
     ) -> Poll<Result<AgentEvent, AgentClientError>> {
         let mut waiting = false;
-        for offset in 0..self.streams.len() {
-            let index = (self.next_stream + offset) % self.streams.len();
+        let count = self.streams.len() + self.resources.len();
+        for offset in 0..count {
+            let index = (self.next_stream + offset) % count;
+            if index >= self.streams.len() {
+                let resource = &self.resources[index - self.streams.len()];
+                if !self.session.is_resource_following(resource) {
+                    continue;
+                }
+                let outcome = self.session.poll_resource(resource, context);
+                if outcome.is_ready() {
+                    self.next_stream = (index + 1) % count;
+                }
+                match outcome {
+                    Poll::Pending => {
+                        waiting = true;
+                        continue;
+                    }
+                    Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
+                    Poll::Ready(Ok(None)) => {
+                        return Poll::Ready(Err(AgentClientError::ResourceClosed(
+                            resource.clone(),
+                        )));
+                    }
+                    Poll::Ready(Ok(Some(frame))) => {
+                        if matches!(frame.body, Some(wire::session_frame::Body::Closed(_))) {
+                            return Poll::Ready(Err(AgentClientError::ResourceClosed(
+                                resource.clone(),
+                            )));
+                        }
+                        let revision = self
+                            .session
+                            .resource_view(resource)
+                            .expect("selected resource owns a view")
+                            .revision();
+                        return Poll::Ready(Ok(AgentEvent::Resource {
+                            resource: resource.clone(),
+                            revision,
+                        }));
+                    }
+                }
+            }
             let (agent, status, path) = &self.streams[index];
             // WireSession releases terminal follows but retains their final
             // views. Poll only its actual live ownership, so reporting one
@@ -265,7 +376,7 @@ impl AgentClient {
             }
             let outcome = self.session.poll_stream(path, context);
             if outcome.is_ready() {
-                self.next_stream = (index + 1) % self.streams.len();
+                self.next_stream = (index + 1) % count;
             }
             let frame = match outcome {
                 Poll::Pending => {

@@ -22,7 +22,9 @@ mod sources;
 #[cfg(acyclic_stream_loom)]
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 
+mod calls;
 mod resources;
+pub use calls::{CallAuthorization, CallProvider};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
@@ -104,6 +106,11 @@ enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Progress(wire::SessionWatermark),
+    CallChunk {
+        index: u64,
+        total: u64,
+        bytes: Bytes,
+    },
 }
 type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
 type Source = crate::BoxProviderStream<'static, SourceItem>;
@@ -115,6 +122,7 @@ struct Session<P: ?Sized> {
     deadline: Option<u64>,
     provider: Arc<P>,
     resources: Option<Arc<dyn ResourceProvider>>,
+    calls: Option<Arc<dyn CallProvider>>,
     executor: Arc<dyn crate::runtime::Executor>,
     limits: Limits,
     node: String,
@@ -193,6 +201,43 @@ fn serve_on_with_resources<P: StreamProvider + ?Sized>(
     incoming: transport::Responses,
     executor: Arc<dyn crate::runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
+    serve_on_with_products(
+        provider, authority, resources, None, node, limits, incoming, executor,
+    )
+}
+
+/// Opens follows and canonical Actors calls on one authenticated session.
+pub fn serve_with_products<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    authority: Arc<Authority>,
+    resources: Option<Arc<dyn ResourceProvider>>,
+    calls: Arc<dyn CallProvider>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+) -> Result<transport::Responses, StreamError> {
+    serve_on_with_products(
+        provider,
+        authority,
+        resources,
+        Some(calls),
+        node,
+        limits,
+        incoming,
+        Arc::new(crate::runtime::PlatformExecutor),
+    )
+}
+
+fn serve_on_with_products<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    authority: Arc<Authority>,
+    resources: Option<Arc<dyn ResourceProvider>>,
+    calls: Option<Arc<dyn CallProvider>>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+    executor: Arc<dyn crate::runtime::Executor>,
+) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
         || limits.channels == 0
         || limits.pending_frames == 0
@@ -211,6 +256,7 @@ fn serve_on_with_resources<P: StreamProvider + ?Sized>(
         deadline: None,
         provider,
         resources,
+        calls,
         executor,
         node,
         limits,

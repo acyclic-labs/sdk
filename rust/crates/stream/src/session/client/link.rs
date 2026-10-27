@@ -289,6 +289,17 @@ impl Pool {
         if node == self.home {
             self.reset_home();
         }
+        // Follows have durable cursors; calls do not. Never splice a partial
+        // response with a recomputed response, or repeat a mutating invocation.
+        let calls = self
+            .routes
+            .iter()
+            .filter(|(_, route)| route.node == node && matches!(route.kind, Kind::ActorCall(_)))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in calls {
+            self.reject(id, StreamError::Unavailable);
+        }
         // The authenticated discovery endpoint may now host a replacement
         // node. Rediscover there without retaining the previous destination;
         // moved-node endpoints must still prove their exact node identity.

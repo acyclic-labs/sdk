@@ -1,6 +1,6 @@
 //! Browser access to the same selected-stream owner used by native clients.
 
-use acyclic_harness_client::{DemandPolicy, ViewDemand, WireSession, WireSessionError};
+use acyclic_harness_client::{DemandPolicy, StreamView, ViewDemand, WireSession, WireSessionError};
 use acyclic_stream::{StreamPath, WasmStream, wire};
 use js_sys::{Array, JsString, Uint8Array};
 use prost::Message as _;
@@ -12,7 +12,46 @@ struct ReadState {
     cancelled: bool,
 }
 
-type Readers = Rc<RefCell<BTreeMap<StreamPath, ReadState>>>;
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ReadKey {
+    Stream(StreamPath),
+    Resource(String),
+}
+
+pub(super) fn resource(value: JsString) -> Result<String, JsValue> {
+    let ReadKey::Resource(resource) = ReadKey::parse(value)? else {
+        return Err(error("CLIENT_INVALID_RESOURCE"));
+    };
+    Ok(resource)
+}
+
+impl ReadKey {
+    fn parse(value: JsString) -> Result<Self, JsValue> {
+        if value.length() as usize > acyclic_stream::MAX_PATH_BYTES + 4 {
+            return Err(error("CLIENT_PATH_CAPACITY"));
+        }
+        let text = value
+            .as_string()
+            .ok_or_else(|| error("CLIENT_INVALID_PATH"))?;
+        if text.starts_with("fs:/") {
+            acyclic_stream::wire_codec::session::validate_resource(&text).map_err(stream_error)?;
+            Ok(Self::Resource(text))
+        } else {
+            StreamPath::new(text)
+                .map(Self::Stream)
+                .map_err(stream_error)
+        }
+    }
+
+    fn view<'a>(&self, session: &'a WireSession) -> Option<&'a StreamView> {
+        match self {
+            Self::Stream(path) => session.view(path),
+            Self::Resource(resource) => session.resource_view(resource),
+        }
+    }
+}
+
+type Readers = Rc<RefCell<BTreeMap<ReadKey, ReadState>>>;
 
 fn error(message: impl std::fmt::Display) -> JsValue {
     let message = message.to_string();
@@ -73,12 +112,12 @@ fn paths(input: &Array, maximum: usize) -> Result<Vec<StreamPath>, JsValue> {
 
 struct ReadGuard {
     readers: Readers,
-    path: StreamPath,
+    key: ReadKey,
 }
 
 impl Drop for ReadGuard {
     fn drop(&mut self) {
-        self.readers.borrow_mut().remove(&self.path);
+        self.readers.borrow_mut().remove(&self.key);
     }
 }
 
@@ -125,8 +164,10 @@ impl WasmWireSession {
             .map_err(session_error)?;
         {
             let session = self.session.borrow();
-            for (path, state) in self.readers.borrow_mut().iter_mut() {
-                state.cancelled |= !session.demand().contains_full(path);
+            for (key, state) in self.readers.borrow_mut().iter_mut() {
+                if let ReadKey::Stream(path) = key {
+                    state.cancelled |= !session.demand().contains_full(path);
+                }
             }
         }
         self.wake_readers();
@@ -159,23 +200,59 @@ impl WasmWireSession {
             .map_err(session_error)
     }
 
+    /// Select filtered filesystem/tool output on the same pool and view budget.
+    #[wasm_bindgen(js_name = openResource)]
+    pub fn open_resource(&self, subscription: Uint8Array) -> Result<(), JsValue> {
+        let bytes = command_bytes(&subscription, "CLIENT_SUBSCRIPTION_CAPACITY")?;
+        let subscription = wire::SessionSubscription::decode(bytes.as_slice())
+            .map_err(|cause| coded_error("invalid_subscription", cause))?;
+        self.session
+            .borrow_mut()
+            .begin_resource(subscription)
+            .map_err(session_error)
+    }
+
+    /// Release output custody and wake any pending read of this generation.
+    #[wasm_bindgen(js_name = releaseResource)]
+    pub fn release_resource(&self, resource: JsString) -> Result<bool, JsValue> {
+        let resource = self::resource(resource)?;
+        let released = self
+            .session
+            .borrow_mut()
+            .release_resource(&resource)
+            .map_err(session_error)?;
+        if let Some(state) = self
+            .readers
+            .borrow_mut()
+            .get_mut(&ReadKey::Resource(resource))
+        {
+            state.cancelled = true;
+        }
+        self.wake_readers();
+        Ok(released)
+    }
+
     /// Consume one bounded canonical frame. Only one pending read per stream;
     /// demand changes remain callable while this future awaits the network.
     pub async fn next(&self, resource: JsString) -> Result<Option<Uint8Array>, JsValue> {
-        let path = path(resource)?;
-        if !self.session.borrow().demand().contains_full(&path) {
+        let key = ReadKey::parse(resource)?;
+        let requested = match &key {
+            ReadKey::Stream(path) => self.session.borrow().demand().contains_full(path),
+            ReadKey::Resource(resource) => self.session.borrow().resource_view(resource).is_some(),
+        };
+        if !requested {
             return Err(error("CLIENT_NOT_REQUESTED"));
         }
         {
             let mut readers = self.readers.borrow_mut();
-            if readers.contains_key(&path) {
+            if readers.contains_key(&key) {
                 return Err(error("CLIENT_READ_BUSY"));
             }
             if readers.len() >= self.policy.selected_capacity() {
                 return Err(error("CLIENT_READ_CAPACITY"));
             }
             readers.insert(
-                path.clone(),
+                key.clone(),
                 ReadState {
                     waker: None,
                     cancelled: false,
@@ -184,10 +261,10 @@ impl WasmWireSession {
         }
         let guard = ReadGuard {
             readers: self.readers.clone(),
-            path,
+            key,
         };
         let frame = futures::future::poll_fn(|context| {
-            if let Some(state) = self.readers.borrow_mut().get_mut(&guard.path) {
+            if let Some(state) = self.readers.borrow_mut().get_mut(&guard.key) {
                 // Sticky until this read settles: deselect/reselect must not let
                 // an older pending read consume a replacement subscription.
                 if state.cancelled {
@@ -197,7 +274,11 @@ impl WasmWireSession {
                 }
                 state.waker = Some(context.waker().clone());
             }
-            self.session.borrow_mut().poll_stream(&guard.path, context)
+            let mut session = self.session.borrow_mut();
+            match &guard.key {
+                ReadKey::Stream(path) => session.poll_stream(path, context),
+                ReadKey::Resource(resource) => session.poll_resource(resource, context),
+            }
         })
         .await
         .map_err(session_error)?;
@@ -206,10 +287,7 @@ impl WasmWireSession {
 
     /// Retire every interest and wake pending readers to observe the refusal.
     pub fn close(&self) -> Result<(), JsValue> {
-        self.session
-            .borrow_mut()
-            .set_view(ViewDemand::default())
-            .map_err(session_error)?;
+        self.session.borrow_mut().clear().map_err(session_error)?;
         for state in self.readers.borrow_mut().values_mut() {
             state.cancelled = true;
         }
@@ -223,13 +301,17 @@ impl WasmWireSession {
         self.session.borrow().followed_agents()
     }
 
+    /// Counts conversation, status and filesystem interests together.
+    #[wasm_bindgen(js_name = followedInterests)]
+    pub fn followed_interests(&self) -> usize {
+        self.session.borrow().followed_interests()
+    }
+
     /// Revision of the shared Rust fold. An unchanged view needs no JS rebuild.
     #[wasm_bindgen(js_name = viewRevision)]
     pub fn view_revision(&self, resource: JsString) -> Result<u64, JsValue> {
-        let path = path(resource)?;
-        self.session
-            .borrow()
-            .view(&path)
+        let key = ReadKey::parse(resource)?;
+        key.view(&self.session.borrow())
             .map(|view| view.revision())
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
     }
@@ -237,10 +319,8 @@ impl WasmWireSession {
     /// Earliest displayed sequence; moves when the bounded live tail evicts.
     #[wasm_bindgen(js_name = firstSequence)]
     pub fn first_sequence(&self, resource: JsString) -> Result<u64, JsValue> {
-        let path = path(resource)?;
-        self.session
-            .borrow()
-            .view(&path)
+        let key = ReadKey::parse(resource)?;
+        key.view(&self.session.borrow())
             .map(|view| view.first_sequence())
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
     }
@@ -248,20 +328,18 @@ impl WasmWireSession {
     /// Number of records in the current bounded display tail.
     #[wasm_bindgen(js_name = recordCount)]
     pub fn record_count(&self, resource: JsString) -> Result<usize, JsValue> {
-        let path = path(resource)?;
-        self.session
-            .borrow()
-            .view(&path)
+        let key = ReadKey::parse(resource)?;
+        key.view(&self.session.borrow())
             .map(|view| view.records().len())
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
     }
 
     /// Copy one canonical record across the host boundary, never the whole view.
     pub fn record(&self, resource: JsString, index: usize) -> Result<Option<Uint8Array>, JsValue> {
-        let path = path(resource)?;
+        let key = ReadKey::parse(resource)?;
         let session = self.session.borrow();
-        let view = session
-            .view(&path)
+        let view = key
+            .view(&session)
             .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))?;
         Ok(view
             .record(index)

@@ -10,8 +10,9 @@ use acyclic_auth::verify::VerifiedCapability;
 #[derive(Clone)]
 pub struct ResourceAuthorization {
     authority: Arc<Authority>,
-    resource: Arc<str>,
+    pub(super) resource: Arc<str>,
     capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
+    pub(super) action: &'static str,
 }
 impl ResourceAuthorization {
     pub(super) fn new(
@@ -23,6 +24,7 @@ impl ResourceAuthorization {
             authority,
             resource: resource.into(),
             capability: Arc::new(std::sync::Mutex::new(capability)),
+            action: "fs/list",
         }
     }
     /// Issuer-attested structured identity, including delegation lineage.
@@ -74,7 +76,7 @@ impl ResourceAuthorization {
                 snapshot.trust.as_ref(),
                 &Request {
                     target: Target::Resource {
-                        action: "fs/list",
+                        action: self.action,
                         resource,
                     },
                     audience: &self.authority.audience,

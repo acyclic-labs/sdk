@@ -23,7 +23,10 @@ use acyclic_stream::{
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Delivered {
     /// Committed exactly once (an exact replay also reports this) at inbox
     /// sequence `inbox`. A message's settled turn carries the same sequence in

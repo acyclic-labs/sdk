@@ -8,6 +8,7 @@ struct Opened {
 enum Admission {
     Open(Box<Opened>),
     Denied(wire::SessionChannel, authority::Rejection),
+    Failed(wire::SessionChannel, StreamError),
 }
 
 impl<P: StreamProvider + ?Sized> Session<P> {
@@ -58,6 +59,18 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     self.close_authority(identity, reason)?;
                     continue;
                 }
+                Admission::Failed(identity, error) => {
+                    self.remove(identity.channel_id)?;
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        identity.generation,
+                        Body::Closed(wire::SessionClosed {
+                            code: error.code().into(),
+                            message: String::new(),
+                        }),
+                    ));
+                    continue;
+                }
             };
             let Opened {
                 identity,
@@ -92,7 +105,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
-        let opaque_cursor = false;
+        let mut opaque_cursor = false;
         let binding;
         let mut terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
@@ -156,6 +169,39 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     );
                     (latest, source, None)
                 }
+            }
+            Some(Kind::ActorCall(invocation)) => {
+                if invocation.is_empty()
+                    || invocation.len() > crate::MAX_COMMAND_BYTES
+                    || resume.next != 0
+                    || !resume.opaque.is_empty()
+                    || subscription.filter.is_some()
+                {
+                    return Err(StreamError::InvalidArgument);
+                }
+                let Some(provider) = self.calls.as_ref() else {
+                    return Ok(Admission::Failed(identity, StreamError::Unsupported));
+                };
+                let resource = match provider.resource(&invocation) {
+                    Ok(resource) => resource,
+                    Err(error) => return Ok(Admission::Failed(identity, error)),
+                };
+                let (authorization, context) = match self.authority.bind_call(
+                    &self.slots,
+                    subscription.credential,
+                    resource,
+                    channels,
+                ) {
+                    Ok(binding) => binding,
+                    Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                };
+                binding = Some(authorization);
+                opaque_cursor = true;
+                (
+                    false,
+                    calls::source(Arc::clone(provider), invocation, context, identity),
+                    None,
+                )
             }
             _ => return Err(StreamError::Unsupported),
         };

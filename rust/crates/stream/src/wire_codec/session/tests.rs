@@ -2,6 +2,41 @@ use super::*;
 use bytes::Bytes;
 use wire::{session_data::Item, session_frame::Body};
 
+#[test]
+fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
+    let total = crate::MAX_RECORD_BYTES + 1;
+    let mut data = wire::SessionData {
+        after: Some(wire::SessionCursor {
+            next: 1,
+            opaque: (total as u64).to_le_bytes().to_vec().into(),
+        }),
+        accepted: 1,
+        durable: 0,
+        item: Some(Item::ActorCall(vec![7; crate::MAX_RECORD_BYTES].into())),
+    };
+    assert_eq!(actor_call_sequence(0, &[], &data), Ok(0));
+    let opaque = data.after.as_ref().unwrap().opaque.clone();
+    data.after.as_mut().unwrap().next = 2;
+    data.accepted = 2;
+    data.item = Some(Item::ActorCall(Bytes::from_static(b"x")));
+    assert_eq!(actor_call_sequence(1, &opaque, &data), Ok(1));
+    assert!(
+        actor_call_sequence(0, &opaque, &data).is_err(),
+        "a hole must be refused"
+    );
+    let changed = ((total + 1) as u64).to_le_bytes();
+    assert!(
+        actor_call_sequence(1, &changed, &data).is_err(),
+        "a changed response cannot be spliced"
+    );
+    data.after.as_mut().unwrap().next = 1;
+    data.accepted = 1;
+    assert!(
+        actor_call_sequence(0, &[], &data).is_err(),
+        "small nonterminal fragments must not amplify work"
+    );
+}
+
 fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::DecodeError> {
     wire::SessionFrame::decode(frame.encode_to_vec().as_slice())
 }

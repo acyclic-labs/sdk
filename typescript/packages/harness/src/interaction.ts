@@ -3,14 +3,11 @@ import type { FileRef } from "./conversation.js";
 import type { OperationId, Scope } from "./index.js";
 import type { InteractionKind } from "./enums.js";
 export type { InteractionKind } from "./enums.js";
+import type { ApprovalBinding } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { ApprovalBinding } from "../generated/wasm/acyclic_harness_wasm.js";
 
 declare const interactionBrand: unique symbol;
 export type InteractionId = string & { readonly [interactionBrand]: "InteractionId" };
-
-export interface ApprovalBinding {
-  readonly operation_id: OperationId;
-  readonly action_digest: readonly number[];
-}
 
 export type InteractionTicket = Readonly<{ id: InteractionId; request: FileRef; deadline_unix_ms: bigint | null }> & (
   | Readonly<{ kind: "approval"; approval: ApprovalBinding }>

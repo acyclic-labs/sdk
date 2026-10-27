@@ -70,3 +70,30 @@ pub enum Error {
     #[error(transparent)]
     Turn(Box<crate::Error>),
 }
+
+impl Error {
+    /// Stable public classification shared by native and WASM client adapters.
+    /// The error value itself retains its typed cause and uncertain request.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Path(_) => "invalid_agent_path",
+            Self::Record(_) => "invalid_agent_record",
+            Self::NoSuchAgent => "no_such_agent",
+            Self::Unknown(_) => "agent_unknown",
+            Self::Stream(cause) => cause.code(),
+            Self::Actor(_) => "agent_runtime_error",
+            Self::Turn(_) => "agent_turn_error",
+        }
+    }
+
+    /// Borrow the original commit while retaining ownership of the error.
+    /// Presentation may inspect it, but must not reconstruct it from prose.
+    #[must_use]
+    pub fn unknown_request(&self) -> Option<&acyclic_stream::CommitRequest> {
+        match self {
+            Self::Unknown(request) => Some(request),
+            _ => None,
+        }
+    }
+}

@@ -14,6 +14,7 @@ pub mod transport;
 use transport::Endpoint;
 
 mod admissions;
+mod call;
 mod data;
 use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
@@ -134,6 +135,7 @@ impl Delivery {
                 Some(Item::LatestValue(_)) => {
                     progress.consume_latest(self.generation, self.sequence)
                 }
+                Some(Item::ActorCall(_)) => progress.consume_latest(self.generation, self.sequence),
                 _ => Err(StreamError::Unavailable),
             },
             Received::Frame(wire::SessionFrame {

@@ -5,6 +5,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::StreamExt;
+use prost::Message as _;
 use std::{
     borrow::Borrow,
     collections::BTreeMap,
@@ -88,6 +89,11 @@ pub struct WireSession {
 }
 
 impl WireSession {
+    /// Shared control handles borrow the same physical session ownership.
+    pub(crate) const fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Take the platform-created pool; native and WASM use the same owner.
     #[must_use]
     pub fn new(client: Client, policy: DemandPolicy) -> Self {
@@ -141,6 +147,9 @@ impl WireSession {
             demand.expanded().cloned(),
         )
         .map_err(WireSessionError::Demand)?;
+        if demand.full().count() + self.resource_views.len() > self.policy.selected_capacity() {
+            return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
+        }
         if demand == self.demand {
             return Ok(());
         }
@@ -188,7 +197,7 @@ impl WireSession {
                 return Err(WireSessionError::AlreadyOpen);
             }
         }
-        if requested.len() + self.resources.len() > self.policy.selected_capacity() {
+        if requested.len() + self.resource_views.len() > self.policy.selected_capacity() {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         let demand = ViewDemand::new(
@@ -283,7 +292,7 @@ impl WireSession {
         if self.follows.contains_key(&agent) {
             return Err(WireSessionError::AlreadyOpen);
         }
-        self.admit_one()?;
+        self.admit_one(self.views.contains_key(&agent))?;
         let from = validate_subscription(&agent, &subscription)?;
         let revision = self
             .revision
@@ -361,7 +370,7 @@ impl WireSession {
         if self.resources.contains_key(&resource) {
             return Err(WireSessionError::AlreadyOpen);
         }
-        self.admit_one()?;
+        self.admit_one(self.resource_views.contains_key(&resource))?;
         let revision = self
             .revision
             .checked_add(1)
@@ -413,11 +422,38 @@ impl WireSession {
         Ok(true)
     }
 
-    fn admit_one(&self) -> Result<(), WireSessionError> {
-        if self.follows.len() + self.resources.len() >= self.policy.selected_capacity() {
+    fn admit_one(&self, replacing_view: bool) -> Result<(), WireSessionError> {
+        // Terminal follows retain their last view. Charge that custody too,
+        // otherwise repeatedly opening different failed resources grows memory
+        // even though the number of live subscriptions stays bounded.
+        if !replacing_view
+            && self.views.len() + self.resource_views.len() >= self.policy.selected_capacity()
+        {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         Ok(())
+    }
+
+    /// Release every stream/resource interest and its retained view atomically.
+    /// Dropping subscriptions uses the pool's existing cancellation custody.
+    pub fn clear(&mut self) -> Result<(), WireSessionError> {
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        self.follows.clear();
+        self.views.clear();
+        self.resources.clear();
+        self.resource_views.clear();
+        self.demand = ViewDemand::default();
+        self.revision = revision;
+        Ok(())
+    }
+
+    /// Live and opening interests across all products on this bounded owner.
+    #[must_use]
+    pub fn followed_interests(&self) -> usize {
+        self.follows.len() + self.resources.len()
     }
 
     /// Admitted selected follows, including pending opens, independent of swarm size.
@@ -432,12 +468,19 @@ impl WireSession {
     pub fn is_following(&self, stream: &StreamPath) -> bool {
         self.follows.contains_key(stream)
     }
+
+    /// A failed resource keeps its final view but must never be polled again.
+    #[must_use]
+    pub fn is_resource_following(&self, resource: &str) -> bool {
+        self.resources.contains_key(resource)
+    }
 }
 
 fn validate_subscription(
     path: &StreamPath,
     subscription: &wire::SessionSubscription,
 ) -> Result<u64, WireSessionError> {
+    validate_subscription_bytes(subscription)?;
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
     };
@@ -553,6 +596,7 @@ fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
 fn validate_resource_subscription(
     subscription: &wire::SessionSubscription,
 ) -> Result<(String, u64), WireSessionError> {
+    validate_subscription_bytes(subscription)?;
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
     };
@@ -568,4 +612,13 @@ fn validate_resource_subscription(
         .ok_or(WireSessionError::InvalidSubscription)?;
     wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
     Ok((follow.resource.clone(), resume.next))
+}
+
+fn validate_subscription_bytes(
+    subscription: &wire::SessionSubscription,
+) -> Result<(), WireSessionError> {
+    if subscription.encoded_len() > acyclic_stream::MAX_COMMAND_BYTES {
+        return Err(WireSessionError::Stream(StreamError::LimitExceeded));
+    }
+    Ok(())
 }

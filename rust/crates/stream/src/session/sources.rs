@@ -331,7 +331,11 @@ impl Channel {
             // One bounded lookahead permits metadata progress without data
             // credit. A matching record fills the queue and stops this path.
             let latest = (self.latest && self.pending.len() < 3)
-                || (self.pending.is_empty() && self.binding.is_some());
+                || (self.pending.is_empty()
+                    && self
+                        .binding
+                        .as_ref()
+                        .is_some_and(|binding| !binding.is_call()));
             match (all, latest) {
                 (true, true) => Some(EITHER),
                 (true, false) => Some(ALL),

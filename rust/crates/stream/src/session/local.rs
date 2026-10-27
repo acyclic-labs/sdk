@@ -1,5 +1,5 @@
 //! In-process platform I/O over the same multiplexed session implementation.
-use super::{Client, Limits, ResourceProvider, transport};
+use super::{CallProvider, Client, Limits, ResourceProvider, transport};
 use crate::runtime::Executor;
 use crate::{BoxProviderFuture, StreamError, StreamProvider};
 use futures::StreamExt as _;
@@ -10,6 +10,7 @@ struct Local<P: ?Sized> {
     executor: Arc<dyn Executor>,
     authority: Arc<super::Authority>,
     resources: Option<Arc<dyn ResourceProvider>>,
+    calls: Option<Arc<dyn CallProvider>>,
 }
 impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
     fn session(
@@ -17,10 +18,11 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
         source: transport::Requests,
     ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
         Box::pin(async move {
-            super::serve_on_with_resources(
+            super::serve_on_with_products(
                 self.provider.clone(),
                 self.authority.clone(),
                 self.resources.clone(),
+                self.calls.clone(),
                 "local".into(),
                 Limits::default(),
                 Box::pin(source.map(Ok)),
@@ -38,7 +40,7 @@ impl Client {
         authority: Arc<super::Authority>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        Self::local(provider, authority, None, executor)
+        Self::local(provider, authority, None, None, executor)
     }
 
     /// The in-process pool whose product follows, such as `fs:/` filesystem
@@ -50,13 +52,25 @@ impl Client {
         resources: Arc<dyn ResourceProvider>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        Self::local(provider, authority, Some(resources), executor)
+        Self::local(provider, authority, Some(resources), None, executor)
+    }
+
+    /// Uses the identical channel admission/credit/dispatch as a network host.
+    pub fn in_process_with_products<P: StreamProvider + ?Sized>(
+        provider: Arc<P>,
+        authority: Arc<super::Authority>,
+        resources: Option<Arc<dyn ResourceProvider>>,
+        calls: Arc<dyn CallProvider>,
+        executor: Arc<dyn Executor>,
+    ) -> Self {
+        Self::local(provider, authority, resources, Some(calls), executor)
     }
 
     fn local<P: StreamProvider + ?Sized>(
         provider: Arc<P>,
         authority: Arc<super::Authority>,
         resources: Option<Arc<dyn ResourceProvider>>,
+        calls: Option<Arc<dyn CallProvider>>,
         executor: Arc<dyn Executor>,
     ) -> Self {
         let endpoint: transport::Endpoint = Arc::new(Local {
@@ -64,6 +78,7 @@ impl Client {
             executor: executor.clone(),
             authority,
             resources,
+            calls,
         });
         let local = endpoint.clone();
         Self::with_transport(

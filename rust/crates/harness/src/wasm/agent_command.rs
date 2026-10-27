@@ -1,0 +1,242 @@
+//! Admission and ownership of frontend commands, using the public Rust codec.
+
+use acyclic_harness_client::{
+    AgentBinding, AgentControlFailure, AgentControls, AgentExchangeError, CommandError,
+    MAX_AGENT_COMMAND_BYTES, MAX_AGENT_REPLY_BYTES, PreparedAgentInvocation, PreparedCommand,
+    decode_agent_reply,
+};
+use js_sys::Uint8Array;
+use std::rc::Rc;
+use wasm_bindgen::prelude::*;
+
+fn command_error(cause: CommandError) -> JsValue {
+    let error = js_sys::Error::new(&cause.to_string());
+    error.set_name(cause.code());
+    error.into()
+}
+
+fn exchange_error(cause: AgentExchangeError) -> JsValue {
+    match cause {
+        AgentExchangeError::Session(cause) => {
+            let error = js_sys::Error::new(&cause.to_string());
+            error.set_name(cause.code());
+            if let Err(cause) = js_sys::Reflect::set(
+                error.as_ref(),
+                &JsValue::from_str("source"),
+                &JsValue::from_str("session"),
+            ) {
+                return cause;
+            }
+            error.into()
+        }
+        AgentExchangeError::Control(AgentControlFailure::Unknown(request)) => {
+            super::agent_client::actor_error(crate::agent::Error::Unknown(request))
+        }
+        AgentExchangeError::ActorStatus(status) => {
+            let error = js_sys::Error::new("actor invocation refused");
+            error.set_name("actor_invocation_refused");
+            if let Err(cause) = js_sys::Reflect::set(
+                error.as_ref(),
+                &JsValue::from_str("status"),
+                &JsValue::from_f64(f64::from(status)),
+            ) {
+                return cause;
+            }
+            error.into()
+        }
+        cause => {
+            let error = js_sys::Error::new(&cause.to_string());
+            error.set_name(cause.code());
+            error.into()
+        }
+    }
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const SESSION_FAILURE: &str = r#"
+/** No agent result was decoded. The prepared invocation remains caller-owned.
+ * The name is the original canonical session error code, including admission
+ * and authorization refusals; this does not assert mutation settlement. */
+export interface WasmAgentSessionError extends Error {
+    readonly source: 'session';
+}
+"#;
+
+pub(super) fn binding(encoded: &Uint8Array) -> Result<AgentBinding, JsValue> {
+    let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+        if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+            Err(command_error(CommandError::Capacity))
+        } else {
+            Ok(())
+        }
+    })?;
+    AgentBinding::new(&bytes).map_err(command_error)
+}
+
+/// Thin ownership of public Rust controls on the host's existing shared pool.
+#[wasm_bindgen]
+pub struct WasmAgentControls {
+    controls: Rc<AgentControls>,
+}
+
+impl WasmAgentControls {
+    pub(super) fn from_controls(controls: AgentControls) -> Self {
+        Self {
+            controls: Rc::new(controls),
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl WasmAgentControls {
+    /// Host bootstrap supplies canonical routing and the registered credential;
+    /// this constructor creates no connection or independent transport.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        stream: &acyclic_stream::WasmStream,
+        encoded_binding: &Uint8Array,
+        credential: u32,
+    ) -> Result<Self, JsValue> {
+        let binding = binding(encoded_binding)?;
+        let client = stream.session_client().ok_or_else(|| {
+            let error = js_sys::Error::new("an authenticated session is required");
+            error.set_name("client_no_session");
+            JsValue::from(error)
+        })?;
+        Ok(Self::from_controls(AgentControls::new(
+            client, credential, binding,
+        )))
+    }
+
+    /// Own the exact encoded command and invocation before any side effect.
+    pub fn prepare(&self, command: &WasmAgentCommand) -> Result<WasmAgentInvocation, JsValue> {
+        let invocation = self
+            .controls
+            .prepare(command.command.clone())
+            .map_err(command_error)?;
+        Ok(WasmAgentInvocation {
+            controls: self.controls.clone(),
+            invocation,
+        })
+    }
+
+    /// Observe through the same pool and slot used for these controls.
+    pub fn observe(
+        &self,
+        agent: js_sys::JsString,
+        conversation_from: u64,
+        status_from: u64,
+    ) -> Result<super::agent_client::WasmAgentClient, JsValue> {
+        let selection = acyclic_harness_client::AgentSelection {
+            agent: super::agent_client::agent_path(agent)?,
+            conversation_from,
+            status_from,
+        };
+        let client = self
+            .controls
+            .observe(selection)
+            .map_err(super::agent_client::client_error)?;
+        Ok(super::agent_client::WasmAgentClient::from_client(client))
+    }
+}
+
+/// Caller-owned invocation survives interrupted exchange and JS error handling.
+#[wasm_bindgen]
+pub struct WasmAgentInvocation {
+    controls: Rc<AgentControls>,
+    invocation: PreparedAgentInvocation<'static>,
+}
+
+#[wasm_bindgen]
+impl WasmAgentInvocation {
+    /// Original canonical Actors request, including the original command intent.
+    pub fn bytes(&self) -> Vec<u8> {
+        self.invocation.as_bytes().to_vec()
+    }
+
+    /// Execute once; no automatic intent replacement or invocation replay.
+    #[wasm_bindgen(unchecked_return_type = "AgentReply")]
+    pub async fn execute(&self) -> Result<JsValue, JsValue> {
+        let reply = self
+            .controls
+            .execute(&self.invocation)
+            .await
+            .map_err(exchange_error)?;
+        super::json::to_js_client_admitted(&reply)
+    }
+}
+
+/// One immutable admitted command. The caller owns it until the exchange has a
+/// definitive result; transport interruption never creates a replacement intent.
+#[wasm_bindgen]
+pub struct WasmAgentCommand {
+    command: PreparedCommand,
+}
+
+#[wasm_bindgen]
+impl WasmAgentCommand {
+    /// Canonical pre-copy limits, shared with endpoint conformance drivers.
+    #[wasm_bindgen(js_name = maximumCommandBytes)]
+    pub fn maximum_command_bytes() -> u32 {
+        MAX_AGENT_COMMAND_BYTES as u32
+    }
+    #[wasm_bindgen(js_name = maximumInvocationBytes)]
+    pub fn maximum_invocation_bytes() -> u32 {
+        acyclic_stream::MAX_COMMAND_BYTES as u32
+    }
+    #[wasm_bindgen(js_name = maximumReplyBytes)]
+    pub fn maximum_reply_bytes() -> u32 {
+        MAX_AGENT_REPLY_BYTES as u32
+    }
+
+    /// Snapshot only after the encoded byte length passes the Rust limit.
+    #[wasm_bindgen(constructor)]
+    pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
+        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+            if length > MAX_AGENT_COMMAND_BYTES as u64 {
+                Err(command_error(CommandError::Capacity))
+            } else {
+                Ok(())
+            }
+        })?;
+        let command = PreparedCommand::from_bytes(bytes).map_err(command_error)?;
+        Ok(Self { command })
+    }
+
+    /// An owned copy; callers cannot mutate the request retained in WASM.
+    pub fn bytes(&self) -> Vec<u8> {
+        self.command.as_bytes().to_vec()
+    }
+
+    /// Decode through the canonical Rust schema with exact integer values.
+    #[wasm_bindgen(unchecked_return_type = "AgentCommand")]
+    pub fn value(&self) -> Result<JsValue, JsValue> {
+        let value = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
+        super::json::to_js_client_admitted(&value)
+    }
+
+    /// Decode the host result against this exact original command. An uncertain
+    /// result throws the shared typed error with its owned protobuf request.
+    #[wasm_bindgen(unchecked_return_type = "AgentReply")]
+    pub fn reply(&self, encoded: &Uint8Array) -> Result<JsValue, JsValue> {
+        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+            if length > MAX_AGENT_REPLY_BYTES as u64 {
+                Err(command_error(CommandError::Capacity))
+            } else {
+                Ok(())
+            }
+        })?;
+        let command = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
+        match decode_agent_reply(&bytes, &command).map_err(command_error)? {
+            Ok(reply) => super::json::to_js_client_admitted(&reply),
+            Err(AgentControlFailure::Unknown(request)) => Err(super::agent_client::actor_error(
+                crate::agent::Error::Unknown(request),
+            )),
+            Err(cause) => {
+                let error = js_sys::Error::new(&cause.to_string());
+                error.set_name(cause.code());
+                Err(error.into())
+            }
+        }
+    }
+}

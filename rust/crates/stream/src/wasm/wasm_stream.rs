@@ -113,6 +113,29 @@ impl WasmStream {
         })
     }
 
+    /// Invokes a canonical Actors message through the existing shared session.
+    /// The caller keeps its admitted command until the whole reply is received.
+    #[wasm_bindgen(js_name = actorCall)]
+    pub async fn actor_call(
+        &self,
+        invocation: &[u8],
+        credential: u32,
+        maximum_reply_bytes: u32,
+    ) -> Result<Vec<u8>, JsValue> {
+        check_command_size(invocation)?;
+        self.session
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .actor_call(
+                &bytes::Bytes::copy_from_slice(invocation),
+                credential,
+                maximum_reply_bytes as usize,
+            )
+            .await
+            .map(|reply| reply.to_vec())
+            .map_err(js_error)
+    }
+
     /// Executes one finite unary operation over canonical protobuf bytes.
     #[wasm_bindgen]
     pub async fn dispatch(&self, operation: &str, input: &[u8]) -> Result<Vec<u8>, JsValue> {

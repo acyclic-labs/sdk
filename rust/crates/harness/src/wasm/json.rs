@@ -20,6 +20,12 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     to_js(&parse_json_bytes(bytes)?)
 }
 
+/// External client fixtures retain exact integers and ordinary object fields.
+#[wasm_bindgen(js_name = decodeClientJson)]
+pub fn decode_client_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    to_js_client(&parse_json_bytes(bytes)?)
+}
+
 /// Admits one canonical ref-only execution journal observation through Rust.
 #[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
 pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
@@ -271,6 +277,12 @@ pub(super) fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> 
     serialize_js(value, false)
 }
 
+/// Public client types describe object properties, including nested approval
+/// arguments. Keep JSON maps as objects and retain exact 64-bit integers.
+pub(super) fn to_js_client<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    serialize_js(value, true)
+}
+
 fn serialize_js<T: serde::Serialize>(value: &T, object_maps: bool) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_maps_as_objects(object_maps)
@@ -294,7 +306,20 @@ pub(super) fn to_js_page_value(value: &serde_json::Value) -> Result<JsValue, JsV
 // represented as Number and every other 64-bit integer remains BigInt.
 // Generic events, snapshots, model values and extension payloads use to_js.
 pub(super) fn to_js_admitted<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
-    let js = to_js(value)?;
+    serialize_admitted(value, false)
+}
+
+/// The same admitted descriptor projection with the public client's object
+/// representation, so displayed approval arguments match their TS schema.
+pub(super) fn to_js_client_admitted<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    serialize_admitted(value, true)
+}
+
+fn serialize_admitted<T: serde::Serialize>(
+    value: &T,
+    object_maps: bool,
+) -> Result<JsValue, JsValue> {
+    let js = serialize_js(value, object_maps)?;
     let json =
         serde_json::to_value(value).map_err(|error| JsValue::from_str(&error.to_string()))?;
     normalize_descriptor_lengths(&js, &json)?;

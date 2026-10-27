@@ -6,6 +6,58 @@ use prost::Message as _;
 mod resource;
 pub use resource::{stream_path, stream_resource, validate_resource};
 
+/// Finite canonical Actors response plus its enclosing product result.
+pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
+
+/// Actor-call chunks carry the immutable total byte length as an eight-byte
+/// little-endian opaque cursor. The record cursor counts consecutive chunks.
+pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> {
+    let opaque = &data
+        .after
+        .as_ref()
+        .ok_or(StreamError::InvalidResponse)?
+        .opaque;
+    let bytes: [u8; 8] = opaque
+        .as_ref()
+        .try_into()
+        .map_err(|_| StreamError::InvalidResponse)?;
+    usize::try_from(u64::from_le_bytes(bytes))
+        .ok()
+        .filter(|total| *total > 0 && *total <= MAX_ACTOR_CALL_REPLY_BYTES)
+        .ok_or(StreamError::InvalidResponse)
+}
+
+/// Admit one ordered, bounded fragment without returning credit or advancing
+/// application progress. The entire response belongs to this one generation.
+pub fn actor_call_sequence(
+    next: u64,
+    previous_opaque: &[u8],
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    let total = actor_call_total(data)?;
+    let Some(wire::session_data::Item::ActorCall(chunk)) = &data.item else {
+        return Err(StreamError::InvalidResponse);
+    };
+    let start = usize::try_from(next)
+        .ok()
+        .and_then(|index| index.checked_mul(crate::MAX_RECORD_BYTES))
+        .filter(|start| *start < total)
+        .ok_or(StreamError::InvalidResponse)?;
+    if chunk.is_empty()
+        || chunk.len() > crate::MAX_RECORD_BYTES
+        || chunk.len() > total
+        || chunk.len() != (total - start).min(crate::MAX_RECORD_BYTES)
+        || (!previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref())
+        || after.next != next.checked_add(1).ok_or(StreamError::OutOfRange)?
+        || data.accepted != after.next
+        || data.durable != 0
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok(next)
+}
+
 /// Decodes a bounded peer session message; protocol validation remains in the pool.
 pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
     if bytes.len() > crate::MAX_COMMAND_BYTES {

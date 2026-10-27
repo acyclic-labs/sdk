@@ -4,11 +4,12 @@
 //! This suite neither replaces the endpoint with memory nor creates an agent by
 //! writing records around AgentHost. It checks observation, not turn execution.
 
-use acyclic_harness::{
-    agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord},
-    client::{
-        AgentClient, AgentClientError, AgentEvent, AgentSelection, DemandError, WireSessionError,
-    },
+pub mod controls;
+pub mod tool_output;
+
+use acyclic_harness_client::{
+    AgentClient, AgentClientError, AgentEvent, AgentPath, AgentRecord as _, AgentSelection,
+    ConversationEntry, DemandError, StatusRecord, WireSessionError,
 };
 use acyclic_stream::{StreamProvider, session::Client};
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,14 @@ pub async fn verify<P: StreamProvider + ?Sized>(
     credential: u32,
     fixture: &Fixture,
 ) -> Result<Report, Failure> {
+    validate_fixture(provider, fixture).await?;
+    verify_observation(session, credential, fixture).await
+}
+
+async fn validate_fixture<P: StreamProvider + ?Sized>(
+    provider: &P,
+    fixture: &Fixture,
+) -> Result<(), Failure> {
     fixture
         .entry
         .encode()
@@ -98,6 +107,14 @@ pub async fn verify<P: StreamProvider + ?Sized>(
             ));
         }
     }
+    Ok(())
+}
+
+async fn verify_observation(
+    session: Client,
+    credential: u32,
+    fixture: &Fixture,
+) -> Result<Report, Failure> {
     let selection = || AgentSelection {
         agent: fixture.agent.clone(),
         conversation_from: fixture.conversation_from,
@@ -149,6 +166,9 @@ pub async fn verify<P: StreamProvider + ?Sized>(
                 status = true;
             }
             AgentEvent::Progress => {}
+            AgentEvent::Resource { .. } => {
+                return Err(failure("not_requested", "unrequested resource delivery"));
+            }
         }
     }
     let cursor = client.conversation().next_sequence();

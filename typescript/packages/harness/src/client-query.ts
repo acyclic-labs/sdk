@@ -1,5 +1,16 @@
 /** Shared Rust actor/session views; the runtime owns transport and controls. */
 export {
+  decodeClientJson,
+  WasmAgentCommand as PreparedAgentCommand,
+  WasmAgentControls as AgentControls,
+  WasmAgentInvocation as PreparedAgentInvocation,
+  type AgentCommand,
+  type AgentReply,
+  type AgentPageRequest,
+  type ApprovalBinding,
+  type ChildAgent,
+  type Delivered,
+  type PendingApproval,
   WasmAgentClient as AgentClient,
   type AgentWindow,
   type AgentEvent,
@@ -12,8 +23,9 @@ export {
   type ChildDone,
   type WasmAgentFileRef as AgentFileRef,
   type WasmUnknownAgentError as UnknownAgentError,
+  type WasmAgentSessionError as AgentSessionError,
   WasmWireSession as WireSession,
   WasmStream,
   WasmSessionAuthority,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-export { ensureHarnessWasm as initializeClientQueries } from "./wasm-runtime.js";
+export { ensureClientWasm as initializeClientQueries } from "./wasm-runtime.js";

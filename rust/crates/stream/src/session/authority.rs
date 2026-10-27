@@ -82,6 +82,14 @@ pub(super) struct Binding {
     resource_authorization: Option<ResourceAuthorization>,
 }
 
+impl Binding {
+    pub(super) fn is_call(&self) -> bool {
+        self.resource_authorization
+            .as_ref()
+            .is_some_and(|value| value.action == "actors/invoke")
+    }
+}
+
 fn stream_resource(path: Option<&StreamPath>) -> String {
     path.map_or_else(
         || String::from("streams:/"),
@@ -197,11 +205,10 @@ impl Authority {
         };
         let request = Request {
             target: Target::Resource {
-                action: if binding.resource_authorization.is_some() {
-                    "fs/list"
-                } else {
-                    "streams/follow"
-                },
+                action: binding
+                    .resource_authorization
+                    .as_ref()
+                    .map_or("streams/follow", |authorization| authorization.action),
                 resource: &binding.resource,
             },
             audience: &self.audience,
@@ -213,7 +220,13 @@ impl Authority {
             cpu_millis: 0,
             memory_bytes: 0,
         };
-        if binding.resource_authorization.is_some() {
+        if binding
+            .resource_authorization
+            .as_ref()
+            .is_some_and(|value| value.action == "actors/invoke")
+        {
+            capability.authorize(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
+        } else if binding.resource_authorization.is_some() {
             capability.authorize_resource_follow(
                 snapshot.trust.as_ref(),
                 &request,
@@ -304,7 +317,13 @@ impl Authority {
         if revision == binding.credential_revision {
             return self.authorize(slots, binding, channels);
         }
-        if self.filter(slots, binding, channels)?.digest() != binding.filter_digest {
+        let call = binding
+            .resource_authorization
+            .as_ref()
+            .is_some_and(|value| value.action == "actors/invoke");
+        if call {
+            self.authorize(slots, binding, channels)?;
+        } else if self.filter(slots, binding, channels)?.digest() != binding.filter_digest {
             return Err(Rejection::Forbidden);
         }
         if let Some(authorization) = &binding.resource_authorization {
@@ -319,6 +338,32 @@ impl Authority {
         }
         binding.credential_revision = revision;
         Ok(())
+    }
+    pub(super) fn bind_call(
+        self: &Arc<Self>,
+        slots: &Slots,
+        slot: u32,
+        resource: String,
+        channels: usize,
+    ) -> Result<(Binding, CallAuthorization), Rejection> {
+        if !acyclic_auth::valid_resource(&resource) || !resource.starts_with("actors:/") {
+            return Err(Rejection::Forbidden);
+        }
+        let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let capability = credential.as_ref().map_err(|error| *error)?;
+        let mut authorization =
+            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+        authorization.action = "actors/invoke";
+        let binding = Binding {
+            credential_revision: *revision,
+            slot,
+            resource,
+            requested: wire::SessionFilter::default(),
+            filter_digest: [0; 32],
+            resource_authorization: Some(authorization.clone()),
+        };
+        self.authorize(slots, &binding, channels)?;
+        Ok((binding, CallAuthorization(authorization)))
     }
     pub(super) fn deadline(&self, slots: &mut Slots) -> Option<u64> {
         let now = self.snapshot().ok()?.now_unix_seconds;
