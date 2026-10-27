@@ -1,13 +1,16 @@
+#[macro_use]
+#[path = "../../../tests/support/unbounded.rs"]
+mod unbounded;
+
 use super::*;
+
+use crate as acyclic_fs;
 
 #[tokio::test]
 async fn incremental_capture_honors_unchanged_nested_ignore() {
     let workspace = memory_workspace("git-incremental-nested").await;
     let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x65; 16])).await;
-    initial
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(initial, create_dir_all("/src")).expect("directory");
     initial
         .write_text("/src/.gitignore", "*.tmp\n")
         .await
@@ -45,31 +48,10 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
     )
     .await
     .expect("incremental capture");
-    assert!(
-        captured
-            .generation
-            .stat(
-                "/src/new.tmp",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/src/new.tmp")).is_err());
     assert_eq!(
-        captured
-            .generation
-            .read(
-                "/src/kept.txt",
-                64,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
+        unbounded!(captured.generation, read("/src/kept.txt", 64))
             .expect("kept")
-            .value
             .as_ref(),
         b"after"
     );
@@ -88,20 +70,13 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .await
         .expect("initial transaction")
         .value;
-    initial
-        .create_dir_all("/sub", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("subdirectory");
+    unbounded!(initial, create_dir_all("/sub")).expect("subdirectory");
     initial
         .write_text("/sub/.gitignore", "*.tmp\n")
         .await
         .expect("nested ignore");
     publish_fixture(initial).await;
-    let before = workspace
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("before")
-        .value;
+    let before = unbounded!(workspace, head()).expect("before");
     workspace
         .write_text("/scratch.tmp", "child")
         .await
@@ -119,20 +94,13 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .await
         .expect("build transaction")
         .value;
-    build
-        .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("build directory");
+    unbounded!(build, create_dir_all("/build")).expect("build directory");
     build
         .write_text("/build/output.bin", "generated")
         .await
         .expect("generated file");
     publish_fixture(build).await;
-    let after = workspace
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("after")
-        .value;
+    let after = unbounded!(workspace, head()).expect("after");
     let changes = before
         .diff_to(&after, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -245,57 +213,19 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
         "incremental capture must fork from the prior filtered capture"
     );
     assert_eq!(
-        captured
-            .generation
-            .read(
-                "/kept.txt",
-                64,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
+        unbounded!(captured.generation, read("/kept.txt", 64))
             .expect("edited file")
-            .value
             .as_ref(),
         b"after"
     );
     assert_eq!(
-        captured
-            .generation
-            .read(
-                "/unchanged.txt",
-                64,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
+        unbounded!(captured.generation, read("/unchanged.txt", 64))
             .expect("unchanged file")
-            .value
             .as_ref(),
         b"same"
     );
-    assert!(
-        captured
-            .generation
-            .stat("/new.tmp", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
-    );
-    assert!(
-        captured
-            .generation
-            .stat(
-                "/previous.tmp",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/new.tmp")).is_err());
+    assert!(unbounded!(captured.generation, stat("/previous.tmp")).is_err());
     assert_eq!(
         captured.tracked_paths,
         BTreeSet::from(["kept.txt".to_owned(), "unchanged.txt".to_owned()])
@@ -306,10 +236,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
 async fn nested_gitignore_change_forces_exact_capture() {
     let workspace = memory_workspace("git-capture-nested-ignore").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x61; 16])).await;
-    transaction
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/src")).expect("directory");
     transaction
         .write_text("/src/ignored.txt", "present before ignore")
         .await
@@ -341,30 +268,6 @@ async fn nested_gitignore_change_forces_exact_capture() {
     )
     .await
     .expect("capture");
-    assert!(
-        captured
-            .generation
-            .stat(
-                "/src/ignored.txt",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
-    );
-    assert!(
-        captured
-            .generation
-            .stat(
-                "/src/.gitignore",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_ok()
-    );
+    assert!(unbounded!(captured.generation, stat("/src/ignored.txt")).is_err());
+    assert!(unbounded!(captured.generation, stat("/src/.gitignore")).is_ok());
 }

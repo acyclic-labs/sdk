@@ -21,11 +21,11 @@ macro_rules! value {
     };
 }
 
-macro_rules! unbounded {
-    ($receiver:expr, $method:ident($($arg:expr),* $(,)?)) => {
-        value!($receiver.$method($($arg,)* WorkBudget::UNBOUNDED, &CancellationToken::new()).await)
-    };
-}
+#[macro_use]
+#[path = "../../../tests/support/unbounded.rs"]
+mod unbounded;
+
+use crate as acyclic_fs;
 
 fn allow<E>(
     _: WorkBudget,

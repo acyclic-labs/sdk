@@ -37,12 +37,7 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     agent.write_text("/shared", "agent").await?;
     main.write_text("/shared", "main").await?;
 
-    let plan = agent
-        .join_into(&main)
-        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let plan = unbounded!(agent.join_into(&main), plan())?;
     let mut registry = crate::MergeDriverRegistry::new();
     registry.register("theirs", Arc::new(SelectTheirsDriver))?;
     registry.set_default("theirs")?;
@@ -99,12 +94,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     agent.write_text("/shared", "agent\n").await?;
     main.write_text("/shared", "main\n").await?;
 
-    let plan = agent
-        .join_into(&main)
-        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let plan = unbounded!(agent.join_into(&main), plan())?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
@@ -215,13 +205,7 @@ async fn replaced_file_join(history: JoinHistory) -> Result<(), Box<dyn Error>> 
         assert_ne!(unbounded!(replacing, stat("/shared"))?.file_id, original);
         editing.write_text("/shared", editing_text).await?;
 
-        let plan = agent
-            .join_into(&main)
-            .history(history)
-            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        let plan = unbounded!(agent.join_into(&main).history(history), plan())?;
         // Equal content merges without a driver; edits on both sides reach
         // the text driver as one text conflict at the path.
         let outcome = match plan
@@ -316,12 +300,7 @@ async fn joins_keep_a_file_moved_onto_a_deleted_path_conflicted() -> Result<(), 
     main.write_text("/a", "b one\nb TWO\n").await?;
     agent.write_text("/a", "A ONE\na two\n").await?;
 
-    let plan = agent
-        .join_into(&main)
-        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let plan = unbounded!(agent.join_into(&main), plan())?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
@@ -416,12 +395,7 @@ async fn joins_merge_a_replaced_file_under_a_renamed_directory() -> Result<(), B
         assert_ne!(unbounded!(replacing, stat("/e/a"))?.file_id, original);
         editing.write_text("/e/a", "ONE\ntwo\nthree\n").await?;
 
-        let plan = agent
-            .join_into(&main)
-            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        let plan = unbounded!(agent.join_into(&main), plan())?;
         let JoinOutcome::Conflicted {
             conflicts,
             truncated,

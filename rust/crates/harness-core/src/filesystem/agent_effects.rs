@@ -1,5 +1,5 @@
 //! [`TurnEffects`] as internal files on the agent's private volume: one file
-//! `effects/<turn>/<call>.json` per agent tool call, in the internal interaction
+//! `effects/v2/<turn>/<call>.json` per agent tool call, in the internal interaction
 //! area, so no file tool can forge an effect past the call's approval.
 
 use super::agent_internal::AgentInternalFiles;
@@ -32,7 +32,7 @@ impl<P, A, O> FilesystemTurnEffects<P, A, O> {
             files,
             stream,
             agent,
-            directory: format!("effects/{turn}"),
+            directory: format!("effects/v2/{turn}"),
             maximum_bytes,
         }
     }
@@ -64,20 +64,12 @@ where
                     "agent effect call key is not a file name".into(),
                 ));
             }
-            // Calls run one at a time, so the number of effects already
-            // recorded is this call's position in the turn; a retried call
-            // finds its own file by its key.
-            let names = self.files.list(&self.directory).await?;
-            let suffix = format!("-{call}.json");
-            if let Some(name) = names.iter().find(|name| name.ends_with(&suffix)) {
-                let existing = self
-                    .files
-                    .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
-                    .await?
-                    .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
+            // The call key already orders effects by model step. The file's
+            // create-once identity supplies replay without a directory index.
+            let path = format!("{}/{call}.json", self.directory);
+            if let Some(existing) = self.files.read(&path, self.maximum_bytes).await? {
                 return decode(&existing);
             }
-            let path = format!("{}/{:010}{suffix}", self.directory, names.len());
             // A spawn names a new child: a name already taken would make the
             // step's fork conflict on every retry.
             if let TurnEffect::Spawn { intent, .. } = effect {
@@ -110,5 +102,89 @@ where
             }
             Ok(recorded)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AgentId, Capabilities,
+        agent::IntentId,
+        conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+        core::{AggregateKind, Authority, AuthorityRoot},
+        filesystem::FilesystemHost,
+        resources::ProviderRef,
+    };
+
+    #[tokio::test]
+    async fn call_files_replay_first_effect_and_order_by_key() -> Result<()> {
+        let provider =
+            ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+        let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16]));
+        let owner = AgentId::from_bytes(agent.id().to_bytes());
+        let volume = VolumeRef::new(
+            provider,
+            "effects-test".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(owner),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let issuer = AuthorityRoot::new(
+            "effects",
+            [4; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "effects".into(),
+            },
+        );
+        let scope = issuer.bootstrap_scope(
+            "owner",
+            &Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]),
+            Some(owner),
+            &mut None,
+        )?;
+        let write = ContentGrant::verify(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        let files = Arc::new(AgentInternalFiles::new(host, volume, write));
+        let effects = FilesystemTurnEffects::new(
+            files.clone(),
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            agent,
+            OperationId::from_bytes([5; 16]),
+            4096,
+        );
+        let effect = |name: &str| -> Result<TurnEffect> {
+            Ok(TurnEffect::Spawn {
+                intent: IntentId::try_from(name)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                brief: name.into(),
+            })
+        };
+        let first = effect("first")?;
+        let later = effect("later")?;
+        assert_eq!(effects.record("0000000002-b", &later).await?, later);
+        assert_eq!(effects.record("0000000001-a", &first).await?, first);
+        assert_eq!(effects.record("0000000001-a", &later).await?, first);
+        assert_eq!(effects.recorded().await?, vec![first, later]);
+        assert_eq!(
+            files.list(&effects.directory).await?,
+            ["0000000001-a.json", "0000000002-b.json"]
+        );
+        for call in ["", "../escape", "slash/name", "dot.name"] {
+            assert!(matches!(
+                effects.record(call, &effect("invalid")?).await,
+                Err(Error::Invalid(_))
+            ));
+        }
+        Ok(())
     }
 }

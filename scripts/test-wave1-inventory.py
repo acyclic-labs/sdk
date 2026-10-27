@@ -18,12 +18,44 @@ from unittest.mock import patch
 
 # Imported helpers must not create artifacts before the checker loads.
 sys.dont_write_bytecode = True
-from proof_fixture_paths import repository_path
+from proof_fixture_paths import CAPTURE_ALIASES, repository_path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class EvidencePolicy(unittest.TestCase):
+    def test_shared_capture_bytes_retain_original_receipt_hashes(self):
+        references = (MANIFEST['partial_proofs']['append-eof'], MANIFEST['owner_observations']['updates-v1'])
+        captures = [capture for reference in references
+                    for capture in json.loads(repository_path(ROOT, reference['repo_receipt']).read_bytes())['captures']]
+        checked = set()
+        for capture in captures:
+            logical = capture['repo_path'].replace('docs/proofs/evidence/', 'scripts/tests/fixtures/proof-policy/', 1)
+            if logical not in CAPTURE_ALIASES:
+                continue
+            with self.subTest(capture=logical):
+                shared = repository_path(ROOT, logical)
+                self.assertEqual(shared, repository_path(ROOT, capture['repo_path']))
+                self.assertEqual(hashlib.sha256(shared.read_bytes()).hexdigest(), capture['sha256'])
+                self.assertEqual(shared.stat().st_size, capture['bytes'])
+                self.assertFalse((ROOT / logical).exists())
+                checked.add(logical)
+        self.assertEqual(checked, {name for name in CAPTURE_ALIASES if name.endswith('.rs')})
+
+    def test_shared_entrypoint_mutants_retain_both_executed_hashes(self):
+        aliases = {name: shared for name, shared in CAPTURE_ALIASES.items() if name.endswith('.py')}
+        self.assertEqual(len(aliases), 4)
+        for logical, shared in aliases.items():
+            with self.subTest(capture=logical):
+                source = repository_path(ROOT, logical)
+                self.assertEqual(source, ROOT / shared)
+                self.assertFalse((ROOT / logical).exists())
+                for original in (logical, shared):
+                    receipt = json.loads((ROOT / original).with_name('receipt.json').read_bytes())
+                    run = next(run for run in receipt['runs'] if run['label'] == Path(original).stem)
+                    self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),
+                                     run['implementations']['scripts/check-proof-coverage.py'])
+
     def test_historical_checker_controls_reconstruct_exact_executed_bytes(self):
         captures = ROOT / "scripts/tests/fixtures/proof-policy"
         controls = 0

@@ -1,13 +1,16 @@
+#[macro_use]
+#[path = "../../../tests/support/unbounded.rs"]
+mod unbounded;
+
 use super::*;
+
+use crate as acyclic_fs;
 
 #[tokio::test]
 async fn tree_walk_and_grep_are_generation_bound_and_portable() {
     let workspace = memory_workspace("git-inspection").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x32; 16])).await;
-    transaction
-        .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("directory");
+    unbounded!(transaction, create_dir_all("/src")).expect("directory");
     for (path, text) in [
         ("/src/a.txt", "one\nneedle\n"),
         ("/src/b.txt", "needle two\n"),
@@ -18,15 +21,14 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             .await
             .expect("fixture text");
     }
-    transaction
-        .write(
+    unbounded!(
+        transaction,
+        write(
             "/src/binary.bin",
-            bytes::Bytes::from_static(b"needle\xffbinary"),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            bytes::Bytes::from_static(b"needle\xffbinary")
         )
-        .await
-        .expect("binary file");
+    )
+    .expect("binary file");
     let generation = publish_fixture(transaction).await;
     let entries = walk_git_tree(&generation, &GitIgnorePolicy::default(), Some("src"), 10)
         .await
@@ -95,16 +97,8 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         panic!("patch did not commit");
     };
     assert_eq!(
-        generation
-            .read(
-                "/a.txt",
-                1_024,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
+        unbounded!(generation, read("/a.txt", 1_024))
             .expect("patched file")
-            .value
             .as_ref(),
         b"one\nnew\n"
     );
@@ -144,16 +138,8 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         panic!("add/delete patch did not commit");
     };
     assert_eq!(
-        generation
-            .read(
-                "/nested/new.txt",
-                1_024,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
+        unbounded!(generation, read("/nested/new.txt", 1_024))
             .expect("created file")
-            .value
             .as_ref(),
         b"made\n"
     );
@@ -213,24 +199,9 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
         crate::LogicalObjectStore::new(Arc::new(objects), bucket),
         crate::EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs
-        .create_workspace(
-            "git-group",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("workspace")
-        .value;
-    let mut seed = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("seed transaction")
-        .value;
+    let workspace = unbounded!(fs, create_workspace("git-group")).expect("workspace");
+    let mut seed =
+        unbounded!(workspace, begin_transaction(IdempotencyKey::new())).expect("seed transaction");
     for name in ["/a.txt", "/b.txt"] {
         seed.write_text(name, "old\n").await.expect("seed file");
     }
@@ -317,11 +288,7 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
     .into_iter()
     .enumerate()
     {
-        let read = workspace
-            .read(name, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("final file")
-            .value;
+        let read = unbounded!(workspace, read(name, 16)).expect("final file");
         assert_eq!(read.as_ref(), expected);
         assert!(matches!(
             apply_git_patch(
@@ -366,16 +333,8 @@ async fn git_patch_preimage_cannot_overwrite_a_newer_transaction_base() {
         "stale Git preimage overwrote the newer base"
     );
     assert_eq!(
-        workspace
-            .read(
-                "/a.txt",
-                16,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
+        unbounded!(workspace, read("/a.txt", 16))
             .expect("current file")
-            .value
             .as_ref(),
         b"other\n"
     );

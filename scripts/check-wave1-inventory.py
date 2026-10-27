@@ -117,7 +117,7 @@ def check_observations(reference):
     output = (base / "fs339/append-segments.out").read_text(encoding="utf-8")
     require("running 6 tests" in output and "6 passed; 0 failed; 0 ignored;" in output, "append observation lacks actual six-case pass")
     for name, expected in admission["archive_members"].items():
-        captured = base / "fs339" / name.removeprefix(".bb-fs-segments-records/")
+        captured = source_path((base / "fs339" / name.removeprefix(".bb-fs-segments-records/")).relative_to(ROOT).as_posix())
         if captured.is_file():
             require(sha256(captured) == expected, "append archive member changed")
     client = observations["client-node-existing-wasm"]
@@ -324,12 +324,12 @@ def check_append_eof(reference):
         require(observed["archive_sha256"] == admission["archive_sha256"] and 0 < observed["seconds"] < 10, "append EOF run identity/runtime differs")
         require(all(observed[key] == check[key] for key in ("exit", "seconds", "executable_sha256", "compiled_source_manifest_sha256")), "append EOF executable receipt differs")
         for name, expected in admission["archive_members"].items():
-            captured = base / run_id / name.removeprefix(".bb-fs-segments-records/")
+            captured = source_path((base / run_id / name.removeprefix(".bb-fs-segments-records/")).relative_to(ROOT).as_posix())
             if captured.is_file():
                 require(sha256(captured) == expected, "append EOF archived member differs")
-        require(sha256(base / run_id / oracle["file"]) == oracle["sha256"], "append EOF oracle differs across production/control")
-    production = (base / "341" / source).read_bytes()
-    require(production == (base / "342" / source).read_bytes(), "append EOF original sources differ")
+        require(sha256(source_path((base / run_id / oracle["file"]).relative_to(ROOT).as_posix())) == oracle["sha256"], "append EOF oracle differs across production/control")
+    production = source_path((base / "341" / source).relative_to(ROOT).as_posix()).read_bytes()
+    require(production == source_path((base / "342" / source).relative_to(ROOT).as_posix()).read_bytes(), "append EOF original sources differ")
     before, after = receipt["mutation"]["before"], receipt["mutation"]["after"]
     require(before.endswith("cancellation, true)") and after == before.replace("cancellation, true)", "cancellation, false)"), "append EOF mutation selects wrong operation")
     require(production.count(before.encode()) == 1 and production.replace(before.encode(), after.encode()) == (base / "342/mutant.rs").read_bytes(), "append EOF mutation changes more than terminal observation")
