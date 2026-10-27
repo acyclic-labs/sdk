@@ -1,12 +1,10 @@
 //! Standard in-process endpoint fixture over each backend's real storage.
 use super::*;
-use crate::{Storage, observe::Observed};
+use crate::conformance::{Storage, observe::Observed};
+use crate::hosting::{self, Bound, Placement, RootRequest, Server, Serving, Turns, VerifiedCaller};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock, wire};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{Fs, StreamAuthorityStore};
-use acyclic_harness::hosting::{
-    self, Bound, Placement, RootRequest, Server, Serving, Turns, VerifiedCaller,
-};
 use acyclic_harness_core::{
     Capabilities,
     context::CompactionPolicy,
@@ -20,7 +18,7 @@ use acyclic_harness_core::{
 use acyclic_stream::{BoxProviderStream, FollowFilter, session::Client};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-type Objects = crate::ObjectStore;
+type Objects = crate::conformance::ObjectStore;
 struct Owner;
 impl hosting::Platform for Owner {
     fn policy<'a>(
@@ -148,7 +146,7 @@ pub async fn open<B: Backend + ?Sized>(
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: Fs::new(StreamAuthorityStore::new(stream), objects, capabilities),
-            provider: crate::roots::volume(PRIVATE_VOLUME, crate::fixtures::adopted().agent)?
+            provider: crate::conformance::roots::volume(PRIVATE_VOLUME, crate::conformance::fixtures::adopted().agent)?
                 .volume
                 .provider()
                 .clone(),
@@ -173,10 +171,10 @@ pub async fn open<B: Backend + ?Sized>(
         Arc::new(Owner),
         &IntentId::try_from("root")?,
         RootRequest {
-            agent: crate::fixtures::adopted().agent,
-            fresh: vec![crate::roots::volume(
+            agent: crate::conformance::fixtures::adopted().agent,
+            fresh: vec![crate::conformance::roots::volume(
                 PRIVATE_VOLUME,
-                crate::fixtures::adopted().agent,
+                crate::conformance::fixtures::adopted().agent,
             )?],
             retained: Vec::new(),
             brief: None,

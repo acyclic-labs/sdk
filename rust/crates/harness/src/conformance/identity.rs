@@ -1,7 +1,7 @@
 //! Actual OIDC admission into the same FilesystemTurnHost, including zero-read refusals.
 mod key_sets;
 mod tokens;
-use crate::{Backend, Result, admission::fixture::Fixture};
+use crate::conformance::{Backend, Result, admission::fixture::Fixture};
 use acyclic_harness_core::{
     Capabilities,
     conversation::VolumeOperation,

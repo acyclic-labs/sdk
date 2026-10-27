@@ -1,4 +1,4 @@
-use crate::{Backend, Result, fixtures, observe::Observed, vectors};
+use crate::conformance::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::guest::{
     self, Checkpoint, Delivery, GuestFuture, Handler, Manifest, Transition, wire,
 };

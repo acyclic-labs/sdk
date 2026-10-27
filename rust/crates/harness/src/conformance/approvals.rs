@@ -7,7 +7,7 @@
 //! that decision after the agent resumed replays instead of deciding again.
 //! Under a preset that explicitly accepts every action, the same call runs
 //! with nothing pending.
-use crate::{Backend, Result, observe::Observed, roots::volume, vectors};
+use crate::conformance::{Backend, Result, observe::Observed, roots::volume, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
 use acyclic_harness_core::{
     Capabilities, OperationId,
@@ -179,7 +179,7 @@ async fn asked(
         id: "workload".into(),
     };
     let issuer = AuthorityRoot::new("conformance", [7; 32], audience.clone());
-    let agent = crate::fixtures::adopted().agent;
+    let agent = crate::conformance::fixtures::adopted().agent;
     let private = volume(PRIVATE_VOLUME, agent.clone())?;
     let grants = vec![
         INTERACTION_ROUTE.to_owned(),

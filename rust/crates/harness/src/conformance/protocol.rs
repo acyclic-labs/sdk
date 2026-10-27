@@ -1,6 +1,6 @@
 //! Hosted Spawn, Approvals and reply vectors. Endpoint and in-process drivers
 //! use these identical commands, fixtures and assertions.
-use crate::{Backend, Result};
+use crate::conformance::{Backend, Result};
 use acyclic_harness_client::{
     AgentBinding, AgentCommand, AgentControlFailure, AgentReply, PreparedCommand,
     decode_agent_reply,

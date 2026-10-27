@@ -1,6 +1,8 @@
 # Agent host conformance
 
-`acyclic_conformance::agent_host::verify` drives the public `AgentHost` API over a fresh backend. The implementation lives in a small independent crate so browser wasm does not pull the native qualification CLI and its process dependencies into the build.
+`acyclic_harness::conformance::verify` drives the public `AgentHost` API over a fresh backend. Enable the published crate's `conformance` feature. This compatibility crate re-exports that same implementation for existing native, browser and hosted adapters.
+
+Downstream backends can register the suite with `acyclic_harness::conformance::suite!(MyBackend::create)`, where `create` is an async factory returning `Result<MyBackend>`. Use `suite!(backend_name, MyBackend::create)` when registering several backends in one test module. Native test crates need Tokio's test macros; browser test crates use `wasm-bindgen-test`.
 
 A backend implements two setup traits. `Backend::fresh` returns disposable storage, and `Storage::open` opens a new session on that same retained data. `Storage::objects` provisions the Objects provider, an empty logical bucket and its declared durability for filesystem-backed root and approval vectors. Native fixtures also supply a private staging directory and retain it for the fixture lifetime. The suite composes the existing immutable cache and native publication staging. Stream-only fixtures explicitly use `Objects::memory()`. `Backend::handler` installs its actual handler transport. `Backend::serving` opens its production hosting endpoint with the requested preset approval policy and shared `protocol` model/tool fixtures. Its endpoint supplies canonical binding/exchange, explicit delivery and observations; it cannot replace a vector. The suite owns all fault injection and assertions.
 
