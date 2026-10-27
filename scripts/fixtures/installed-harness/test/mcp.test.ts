@@ -90,7 +90,7 @@ test("installed MCP callback primitives and new stdio services use runtime contr
     params: { messages: [{ role: "user", content: { type: "text", text: "input" } }], maxTokens: 128 } };
   const request: McpCallbackRequest = {
     parent: operation,
-    policy: { server: "installed", revision: "1", sampling: true, elicitation: false, maximum_requests: 1 },
+    policy: { server: "installed", revision: "1", sampling: true, maximum_requests: 1 },
     message,
   };
   validateMcpCallbackRequest(request);

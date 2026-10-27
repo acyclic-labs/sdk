@@ -6,5 +6,14 @@ export {
   type AlloySelection,
   type ModelFeatures,
   type ProviderSpec,
+  type Model,
+  type ModelEvent,
+  type ModelRole,
+  type ModelDispatch,
+  type ModelContextCapacity,
+  type ModelTokenCount,
+  type CompactionPolicy,
+  type CompactionRetention,
+  type ThresholdCompaction,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureModelWasm as initializeModelProviders } from "./wasm-runtime.js";
