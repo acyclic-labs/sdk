@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "complete": "/au",
-  "expect": {"completions":["audit"],"result":{"kind":"select","query":"plan"}}
-}

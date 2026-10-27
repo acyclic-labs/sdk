@@ -15,7 +15,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         candidate: FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        self.verify_creation(io).await?;
         self.grant
             .require(&self.volume, VolumeOperation::Write, io)?;
         crate::executor::with_history_io(io, |work| {
@@ -46,7 +45,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &owned
         };
-        let workspace_ref = super::super::fork_preparer_io::content_workspace(
+        let workspace_ref = super::super::bounded_io::content_workspace(
             &self.host.provider,
             &self.volume,
             Some(io),
@@ -87,7 +86,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     .await,
             )?,
         );
-        super::super::fork_preparer_io::retain(&candidate_generation, Some(io)).await?;
+        super::super::bounded_io::retain(&candidate_generation, Some(io)).await?;
         self.grant.recheck(Some(io))?;
         self.host.seal_publication(candidate, Some(io))
     }

@@ -333,19 +333,8 @@ fn assert_fresh_stage_requests(provider: &ScriptedModelProvider, limits: Limits)
 #[path = "../context_continuation/projection.rs"]
 mod projection;
 
-#[path = "../context_continuation/canonical.rs"]
-mod canonical;
-
 #[path = "../context_continuation/snapshot.rs"]
 mod snapshot;
 
 #[path = "../context_continuation/recovery.rs"]
 mod recovery;
-use recovery::*;
-
-#[path = "../context_continuation/publication.rs"]
-mod publication;
-use publication::*;
-
-#[path = "../context_continuation/working_cut.rs"]
-mod working_cut;

@@ -59,9 +59,9 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
     use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
     for answer in ["", "final λ\n"] {
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
-        let context = Arc::new(capture_admitted_context(scope.clone()).await?);
+        let context = Arc::new(admitted_context(scope.clone())?);
         let parent = OperationId::new();
-        let tool = crate::runtime::ToolContext::new(context, parent, "remote", None)?;
+        let tool = crate::runtime::ToolContext::new(context, parent, "remote")?;
         let model = Arc::new(ScriptedModelProvider::new([tool_turn([
             ModelEvent::Content {
                 delta: "older answer".into(),
@@ -93,7 +93,6 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
                 server: "sample".into(),
                 revision: "1".into(),
                 sampling: true,
-                elicitation: false,
                 maximum_requests: 1,
             },
             message: json!({"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage",

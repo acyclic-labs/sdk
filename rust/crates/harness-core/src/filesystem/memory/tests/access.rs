@@ -139,7 +139,7 @@ proptest! {
                 }.to_scope_label().map_err(|error| Error::Invalid(error.to_string()))?])
             } else { Capabilities::new([storage.read_capability.clone()]) };
             let task = context::content_context(storage.content_verifier.clone(), None, grants).await?;
-            let context = crate::runtime::ToolContext::new(task, invocation.operation_id, &invocation.call_id, None)?;
+            let context = crate::runtime::ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
             for (index, denied) in revisions.into_iter().enumerate() {
                 policy(&fs, &storage, index as u64 + 2, denied.then_some(FsAction::List), "notes/two").await?;
                 let replay = tool.executor.execute(invocation.clone(), Some(context.clone())).await;

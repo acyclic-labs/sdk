@@ -50,8 +50,6 @@ pub(crate) use copying::{
     copy_resource, copy_text, copy_vector, reserve_copy_vector,
 };
 pub(crate) use ownership::inspect_metadata;
-#[cfg(feature = "filesystem")]
-pub(crate) use ownership::resource_creation_clone_reservation;
 pub(crate) use ownership::{
     OwnedBytes, event_owned_bytes, owned_buffer, owned_effect, owned_sum, owned_vector,
 };

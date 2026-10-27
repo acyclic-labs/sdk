@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::{AggregateKind, AuthorityRoot};
+use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
     let issuer = AuthorityRoot::new(
@@ -114,7 +115,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 .await?,
             Some(original)
         );
-        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let before = host.resolve(&workspace, None).await?;
         assert!(
             host.put_content(
@@ -330,7 +331,7 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
                 1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
                 _ => Some(PreparationIo::from_native_work(&native)?),
             };
-            let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+            let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
             let case = InternalPublicationCase {
                 host: &host,
                 volume: &volume,
@@ -405,7 +406,6 @@ async fn immutable_record_batch(adapter: u8) -> Result<()> {
         &first,
         IdempotencyKey::new("create-original")?,
         io.as_ref(),
-        None,
     )?
     .await?;
     let before = host.resolve(&workspace, None).await?;
@@ -433,8 +433,7 @@ async fn immutable_record_batch(adapter: u8) -> Result<()> {
                 &workspace,
                 &forged,
                 IdempotencyKey::new("overwrite-sealed")?,
-                io.as_ref(),
-                None
+                io.as_ref()
             )?
             .await,
             Err(error) if error.code() == crate::wire::ErrorCode::Conflict

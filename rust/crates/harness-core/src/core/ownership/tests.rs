@@ -1,9 +1,6 @@
 //! Allocation measurements are independent of the structural accounting walk.
 use super::OwnedBytes;
-use crate::{
-    Error, Result, conversation::*, core::*, fork::*, interaction::*, resource_preparation::*,
-    runtime::TaskAdmissionRecord,
-};
+use crate::{Error, Result, conversation::*, core::*, fork::*, interaction::*};
 use acyclic_test_support::measure;
 use proptest::prelude::*;
 use serde::de::DeserializeOwned;
@@ -64,12 +61,9 @@ fn every_admission_root_and_its_fields_have_accounting() {
         ReferencedAttachments, Attachment, ModelContextSelection,
         InteractionTicket, InteractionKind, ApprovalBinding,
         InteractionResolution, InteractionOutcome,
-        TaskAdmissionRecord, crate::runtime::ExecutionPlacement,
-        crate::runtime::TaskRunLimits, ResourcePreparationRequest,
-        ResourceCreationProofRef, ResourceCreationOrigin,
+        crate::runtime::TaskRunLimits,
         crate::source_authorization::ProjectSourceAuthorization,
-        crate::registry::ComponentIdentity, crate::workflow::MachineIdentity,
-        crate::workflow::WorkflowCommand, crate::scheduler::LeaseFence,
+        crate::registry::ComponentIdentity, crate::source_authorization::LeaseFence,
         crate::resources::ProviderRef, crate::resources::ResourceRef,
         crate::resources::GenerationRef, crate::resources::StreamRef,
         crate::resources::ContextRef, crate::resources::ArtifactRef,
@@ -291,35 +285,15 @@ fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> 
         effect_kind: "send".into(),
         request: Box::new(file.clone()),
         request_digest: [0; 32],
-        result_schema: file.clone(),
+        result_schema: file,
         result_schema_digest: [0; 32],
         status: EffectStatus::Planned,
         planning: Some(Box::new(planning)),
         attempts: Vec::with_capacity(spare),
     };
-    let mut admission = fixture!(TaskAdmissionRecord, "task-admission")?;
-    admission.input = payload.clone();
-    admission.resource_proofs.reserve_exact(spare);
-    let request = ResourcePreparationRequest {
-        provider: file.volume().provider().clone(),
-        child: admission,
-        creation_grant: String::with_capacity(spare),
-        maximum_resources: 1,
-        maximum_work: 1,
-        maximum_bytes: 1,
-        payload,
-        command: Some(crate::workflow::WorkflowCommand {
-            operation_id: crate::OperationId::from_bytes([1; 16]),
-            kind: "prepare".into(),
-            payload: file.clone(),
-        }),
-        source_checkpoint: Some(file.clone()),
-        input_files: vec![file],
-        read_authorization: None,
-    };
     let mut output: Vec<Box<dyn OwnedBytes>> = vec![
         Box::new(effect),
-        Box::new(request),
+        Box::new(payload),
         Box::new(fixture!(ForkSeed, "fork-seed")?),
         Box::new(fixture!(ForkRequest, "fork-request")?),
         Box::new(fixture!(ResourceRevision, "resource-revision")?),
@@ -337,10 +311,6 @@ fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> 
         )?),
         Box::new(fixture!(ExtensionConfiguration, "extension-configuration")?),
         Box::new(fixture!(ExtensionAdmission, "extension-admission")?),
-        Box::new(fixture!(
-            crate::runtime::ExecutionPlacement,
-            "execution-placement"
-        )?),
     ];
     for payload in event_payloads()? {
         output.push(Box::new(

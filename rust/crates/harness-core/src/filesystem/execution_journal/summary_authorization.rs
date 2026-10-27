@@ -8,20 +8,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn verify_summary_owner(&self, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some((owner, _)) = &self.owner {
-            owner
-                .verify_read_access(
-                    &mut io
-                        .map(PreparationIo::history_io)
-                        .as_mut()
-                        .map(|work| work as &mut dyn crate::store::HistoryIo),
-                )
-                .await?;
-        }
-        Ok(())
-    }
-
     pub(super) async fn authenticate_summary_with_io(
         &self,
         file: &FileRef,
@@ -45,21 +31,6 @@ where
             if self.execution.is_some_and(|bound| bound.0 != operation) {
                 return Ok(false);
             }
-            if let Some((owner, bound)) = &self.owner {
-                let Some((execution, turn)) = self.execution else {
-                    return Ok(false);
-                };
-                if *bound != execution
-                    || execution
-                        != super::super::task_runtime::execution_operation(
-                            owner.task_id(),
-                            turn,
-                            io,
-                        )?
-                {
-                    return Ok(false);
-                }
-            }
             crate::executor::with_history_io(io, |work| {
                 ContentGrant::authorize_volume(
                     &self.verifier,
@@ -78,7 +49,6 @@ where
             let path_hold = io
                 .map(|io| io.guard_owned((retry.as_str().len() + path.capacity()) as u64))
                 .transpose()?;
-            self.verify_summary_owner(io).await?;
             // Only the original harness upload receipt authenticates this
             // provenance. A file at the same mutable Head path is insufficient.
             let Some((provenance, Some(bytes))) = self
@@ -106,7 +76,6 @@ where
             let allowed = decode_summary(&bytes, operation, file, io)?;
             drop(bytes);
             drop(provenance);
-            self.verify_summary_owner(io).await?;
             drop(retry);
             drop(path);
             drop(path_hold);

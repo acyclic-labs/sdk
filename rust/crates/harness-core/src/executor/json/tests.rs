@@ -739,49 +739,6 @@ mod object_work {
     }
 }
 
-// A name decoded through `try_from = "String"` is copied into an `Arc<str>`:
-// the reservation covers the shared copy and its header, not only the text.
-#[test]
-fn converted_names_reserve_their_shared_copies() {
-    let components: Vec<crate::task_volume::Component> = (0..256)
-        .map(|index| crate::task_volume::Component::new(format!("c{}", index % 10)).unwrap())
-        .collect();
-    let plans: Vec<crate::task_volume::PlanName> = (0..256)
-        .map(|index| crate::task_volume::PlanName::try_from(format!("p{}", index % 10)).unwrap())
-        .collect();
-    assert_layout_covers_decode(&components);
-    assert_layout_covers_decode(&plans);
-    // Negative control: the same conversion laid out as the `String` it
-    // decodes from reserves less than its decode really holds.
-    #[derive(serde::Deserialize, crate::HeapLayout)]
-    #[serde(from = "String")]
-    #[heap_layout(as = String)]
-    struct AsString(std::sync::Arc<str>);
-    impl From<String> for AsString {
-        fn from(text: String) -> Self {
-            Self(std::sync::Arc::from(text))
-        }
-    }
-    let bytes = serde_json::to_vec(&components).unwrap();
-    let as_string = layout_reservation::<Vec<AsString>>(&bytes).unwrap();
-    let mut decoded = Vec::new();
-    let peak = acyclic_test_support::measure(|| {
-        decoded = serde_json::from_slice::<Vec<AsString>>(&bytes).unwrap();
-    })
-    .bytes_max as u64;
-    // The decoded names are the components the conversion holds.
-    assert!(
-        decoded
-            .iter()
-            .zip(&components)
-            .all(|(name, component)| *name.0 == *component.as_str())
-    );
-    assert!(
-        as_string < peak,
-        "{as_string} reserved as strings / {peak} decode peak"
-    );
-}
-
 // An untagged enum buffers its value as `Content` and decodes a variant by
 // copying out of that buffer, and an untagged enum nested inside it clones
 // the buffer again, at the same JSON position. Every escaped string and key

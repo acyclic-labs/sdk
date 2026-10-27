@@ -45,13 +45,7 @@ fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
     // The shared support modules main.rs includes by path.
     // The single infrastructure guard and its virtual-clock controls live in
     // progress_guard{,_tests}.rs. Scenario semantics still cannot use a clock.
-    for name in [
-        "quiescent.rs",
-        "scenario_data.rs",
-        "swarm_session.rs",
-        "progress_registry.rs",
-        "notification_runtime_tests.rs",
-    ] {
+    for name in ["quiescent.rs", "scenario_data.rs", "progress_registry.rs"] {
         sources.push(tests.join("support").join(name));
     }
     let mut found = Vec::new();
@@ -63,7 +57,7 @@ fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
             found.push(format!("{}:{hit}", path.display()));
         }
     }
-    assert!(sources.len() > 40, "scanned only {} sources", sources.len());
+    assert!(sources.len() > 30, "scanned only {} sources", sources.len());
     assert!(
         found.is_empty(),
         "wall-clock deadlines in e2e sources:\n{}",

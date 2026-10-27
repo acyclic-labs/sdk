@@ -116,7 +116,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         &mut self,
         report: ForkReport,
         scope: Scope,
-        #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<ApplyResult> {
         if let Some(observer) = work.as_deref_mut() {
@@ -129,27 +128,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "fork report belongs to another parent",
             ));
         }
-        #[cfg(feature = "filesystem")]
-        if let Some(owner) = owner {
-            owner.authenticate_fork_parent(self.reducer.authority(), work)?;
-            if scope.agent() != Some(owner.authenticated_fork_agent(work)?) {
-                return Err(guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "fork publication scope differs from its admitted caller",
-                ));
-            }
-        }
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let seed = report.into_seed(custody.work())?;
-        self.publish_fork_seed(
-            seed,
-            scope,
-            #[cfg(feature = "filesystem")]
-            owner,
-            &mut custody,
-        )
-        .await
+        self.publish_fork_seed(seed, scope, &mut custody).await
     }
 
     // Both public report routes validate and consume the report exactly once.
@@ -159,7 +140,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         &mut self,
         seed: ForkSeed,
         scope: Scope,
-        #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<ApplyResult> {
         let vector_slots = seed.resources.capacity() as u64
@@ -185,19 +165,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             causal_parent: None,
             action: Action::PublishFork { seed },
         };
-        #[cfg(feature = "filesystem")]
-        if owner.is_some() {
-            return self
-                .publish(
-                    command,
-                    owner,
-                    crate::distributed::JournalWrite::Fresh,
-                    false,
-                    custody.work(),
-                )
-                .await
-                .map(|(result, _)| result);
-        }
         self.execute(command, custody.work()).await
     }
 
@@ -227,23 +194,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut publication_work = None;
         let mut custody = crate::wire_codec::CodecQuota::new(&mut publication_work, 0)?;
         parent
-            .publish_fork_seed(
-                seed.clone(),
-                parent_scope,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut custody,
-            )
+            .publish_fork_seed(seed.clone(), parent_scope, &mut custody)
             .await?;
-        self.bind_published_child(
-            parent,
-            &seed,
-            child_scope,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+        self.bind_published_child(parent, &seed, child_scope, &mut None)
+            .await?;
         Ok(seed)
     }
 
@@ -253,20 +207,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         parent: &Self,
         seed: &ForkSeed,
         scope: Scope,
-        #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         seed.validate(quota.work())?;
-        #[cfg(feature = "filesystem")]
-        let parent_agent = if let Some(owner) = owner {
-            owner.authenticate_fork_parent(&seed.parent, quota.work())?;
-            Some(owner.authenticated_fork_agent(quota.work())?)
-        } else {
-            None
-        };
-        #[cfg(not(feature = "filesystem"))]
-        let parent_agent: Option<crate::AgentId> = None;
         if parent.reducer.authority() != &seed.parent
             || parent.reducer.fork(&seed.child) != Some(seed)
             || self.reducer.authority() != &seed.child
@@ -278,9 +222,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "child binding has no published parent fork or matching scope",
             ));
         }
-        parent
-            .verify_parent_fork(seed, parent_agent, &mut quota)
-            .await?;
+        parent.verify_parent_fork(seed, &mut quota).await?;
         let (operation, causal) = fork_child_binding_with_work(seed, quota.work())?;
         quota.adopt(causal.authority.id.capacity() as u64)?;
         let conversation = self.reducer.conversation().ok_or_else(|| {
@@ -304,10 +246,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "child conversation was bound outside its published fork",
                 ));
             }
-            #[cfg(feature = "filesystem")]
-            if let Some(owner) = owner {
-                owner.verify(false, quota.work()).await?;
-            }
             return Ok(());
         }
         if self.reducer.revision() != 0 || conversation.agent.is_some() {
@@ -330,20 +268,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 agent: seed.child_agent,
             },
         };
-        #[cfg(feature = "filesystem")]
-        let (result, owned) = self
-            .publish(
-                command,
-                owner,
-                crate::distributed::JournalWrite::Fresh,
-                false,
-                quota.work(),
-            )
-            .await?;
-        #[cfg(not(feature = "filesystem"))]
-        let (result, owned) = (self.execute(command, quota.work()).await?, 0);
-        quota.adopt(owned)?;
-        drop(result);
+        drop(self.execute(command, quota.work()).await?);
         Ok(())
     }
 
@@ -364,7 +289,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     async fn verify_parent_fork(
         &self,
         seed: &ForkSeed,
-        parent_agent: Option<crate::AgentId>,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<()> {
         let revision = crate::contract::next_revision(seed.parent_revision)?;
@@ -372,7 +296,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         quota.adopt(owned)?;
         if publication.revision != revision
             || publication.operation_id != seed.operation_id
-            || parent_agent.is_some_and(|agent| publication.scope.agent() != Some(agent))
             || !matches!(&publication.payload, EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
         {
             return Err(guarded_boundary(

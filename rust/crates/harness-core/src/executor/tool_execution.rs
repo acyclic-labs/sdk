@@ -398,13 +398,6 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         started: bool,
     ) -> Result<Option<PolicyStop>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(stop) = self
-            .settle_native_tool_policy(journal, operation_id, invocation, &tool.definition, started)
-            .await?
-        {
-            return Ok(Some(stop));
-        }
         if !stock_is_native(self.io) {
             let scope = &self.stock.tool_scope;
             if let Some(policy) = &self.stock.policy {
@@ -433,10 +426,7 @@ impl StockExecution<'_> {
                                 "stock tool approval requires interaction:route".into(),
                             ));
                         }
-                        let task = self.stock.task.as_ref().map_or(
-                            TaskId::from_bytes(operation_id.into_bytes()),
-                            |(_, task, _)| *task,
-                        );
+                        let task = TaskId::from_bytes(operation_id.into_bytes());
                         let ((approval_operation, request), _hold) = tool_approval_request(
                             task,
                             self.stock.policy_identity.as_ref().ok_or_else(|| {
@@ -484,8 +474,6 @@ impl StockExecution<'_> {
             journal,
             (operation_id, step),
             &record,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            context,
             started,
         ))
         .await?;
@@ -718,9 +706,6 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
         record: &crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] context: &Option<
-            crate::runtime::ToolContext,
-        >,
         started: bool,
     ) -> Result<bool> {
         let (operation_id, step) = identity;
@@ -764,22 +749,7 @@ impl StockExecution<'_> {
                 .append_if_tail(operation_id, tail, &key, &event, self.io)?
                 .await
             {
-                Ok(true) => {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if let Some(work) = self.native_work() {
-                        context
-                            .as_ref()
-                            .ok_or_else(|| {
-                                stock_boundary(
-                                    self.io,
-                                    crate::wire::ErrorCode::Unauthorized,
-                                    "native tool acceptance has no issued context",
-                                )
-                            })?
-                            .validate_native_mcp_context(work)?;
-                    }
-                    true
-                }
+                Ok(true) => true,
                 Err(error) if !error.leaves_effect_uncertain() => return Err(error),
                 Ok(false) | Err(_) => {
                     return Err(Error::Indeterminate(operation_id));

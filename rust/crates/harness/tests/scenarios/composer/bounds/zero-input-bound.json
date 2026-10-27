@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "maximum_bytes": 0,
-  "expect": {"error":"command input exceeds byte bound"}
-}

@@ -35,7 +35,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             paths,
             idempotency_key,
             None,
-            None,
         )
         .await
     }
@@ -49,22 +48,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         paths: Option<Vec<String>>,
         key: &IdempotencyKey,
         io: Option<&PreparationIo>,
-        preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<WorkspaceObservation>
     where
         A: 'static,
     {
         let host = self;
 
-        if io.is_some_and(|io| io.original_native_work().is_some()) && preparation.is_none() {
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
-                "task-bound native fork requires its original issued creation guard",
+                "volume fork does not accept task-bound native work",
             ));
-        }
-        if let Some(task) = preparation {
-            task.verify(false, io)?.await?;
         }
         grant.require(source, VolumeOperation::Read, io)?;
         let owned = if io.is_none() {
@@ -82,12 +77,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
         })?;
         validate_fork_volumes(source, child, &host.provider, io)?;
-        let reference = fork_preparer_io::content_workspace(&host.provider, source, Some(io))?;
+        let reference = bounded_io::content_workspace(&host.provider, source, Some(io))?;
         let workspace = host.open(&reference, Some(io)).await?;
         let pinned = host.generation(&workspace, selected, Some(io)).await?;
-        fork_preparer_io::retain(&pinned, Some(io)).await?;
+        bounded_io::retain(&pinned, Some(io)).await?;
         let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
-        let operation = fork_preparer_io::operation_key(key, Some(io))?;
+        let operation = bounded_io::operation_key(key, Some(io))?;
         let forked = io.sdk(
             workspace
                 .with_stable_policy(io, io.cancellation(), || async {
@@ -98,49 +93,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         Some(paths) => options.inherit_paths(paths),
                         None => options,
                     };
-                    let forked = match preparation {
-                        Some(task) => io.sdk(
-                            workspace
-                                .fork::<_, _, Error>(
-                                    &name,
-                                    options,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io,
-                                    io.cancellation(),
-                                    task.as_ref(),
-                                )
-                                .await,
-                        )?,
-                        None => io.sdk(
-                            workspace
-                                .fork::<_, _, Error>(
-                                    &name,
-                                    options,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io,
-                                    io.cancellation(),
-                                    &mut |_| {
-                                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                                            value: (),
-                                            work: WorkCounters::default(),
-                                        }))
-                                    },
-                                )
-                                .await,
-                        )?,
-                    };
+                    let forked = io.sdk(
+                        workspace
+                            .fork::<_, _, Error>(
+                                &name,
+                                options,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io,
+                                io.cancellation(),
+                                &mut |_| {
+                                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: WorkCounters::default(),
+                                    }))
+                                },
+                            )
+                            .await,
+                    )?;
                     Ok::<_, Error>(forked)
                 })
                 .await,
         )??;
         io.remaining()?;
-        let observed = host.fork_observation(&forked, name, operation, io).await?;
-        if io.original_native_work().is_none()
-            && let Some(task) = preparation
-        {
-            task.verify(false, Some(io))?.await?;
-        }
-        Ok(observed)
+        host.fork_observation(&forked, name, operation, io).await
     }
 
     async fn fork_observation(
@@ -163,14 +138,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "fork creation has no durable original generation",
                 )
             })?;
-        fork_preparer_io::retain(&initial, Some(io)).await?;
+        bounded_io::retain(&initial, Some(io)).await?;
         let observed = WorkspaceObservation {
             workspace: WorkspaceRef::new(
                 self.provider.clone_with_io(io)?,
                 name.into_bytes(),
                 None,
             )?,
-            generation: fork_preparer_io::generation_ref(&self.provider, initial.id(), Some(io))?,
+            generation: bounded_io::generation_ref(&self.provider, initial.id(), Some(io))?,
         };
         Ok(observed)
     }
@@ -291,185 +266,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         self.resolve(&workspace_ref(self.provider.clone(), &name)?, None)
             .await
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::durable_host::TaskJournalOwner;
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_fs::NativeMaterializationWork;
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_stream::StreamProvider;
-
-/// Canonical native ROOT bind identity; this derives an operation, not authority.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn native_root_output_binding_operation(
-    audience: &crate::core::Authority,
-    volume: &VolumeRef,
-    creation: acyclic_fs::OperationId,
-    work: &NativeMaterializationWork,
-) -> Result<crate::OperationId> {
-    let io = PreparationIo::from_native_work(work)?;
-    let encoded = io.encode(
-        &(
-            "harness/native-root-output-bind/v2",
-            audience,
-            volume,
-            crate::OperationId::from_bytes(creation.into_bytes()),
-        ),
-        work.remaining()?.bytes_encoded,
-        true,
-    )?;
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_hashed: encoded.len() as u64,
-        ..Default::default()
-    })?;
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&blake3::hash(&encoded).as_bytes()[..16]);
-    Ok(crate::OperationId::from_bytes(bytes))
-}
-
-/// Authenticates or publishes the original ROOT binding without minting a retry command.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "original creator, owner and paid authority are distinct"
-)]
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>(
-    stream: &std::sync::Arc<P>,
-    authority: (crate::core::Authority, crate::core::AuthorityRoot, Scope),
-    authority_custody: acyclic_fs::NativeAllocation,
-    owner: &TaskJournalOwner<P>,
-    private_volume: &VolumeRef,
-    original_creation: acyclic_fs::OperationId,
-    limits: crate::conversation::Limits,
-    work: &NativeMaterializationWork,
-) -> Result<()> {
-    let _authority_custody = authority_custody;
-    let (audience, issuer, scope) = authority;
-    let invalid = |reason| Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason,
-    };
-    if audience.kind != crate::core::AggregateKind::Conversation
-        || scope.agent().is_none()
-        || !scope.capabilities().contains("conversation:bind")
-        || limits.file_bytes == 0
-    {
-        return Err(invalid(
-            "ROOT binding requires its original conversation authority and finite event allowance",
-        ));
-    }
-    owner
-        .verify(
-            false,
-            &mut Some(&mut crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(work)?,
-            )),
-        )
-        .await?;
-    let verifier_io = PreparationIo::from_native_work(work)?;
-    let verifier = issuer.verifier(&mut Some(&mut verifier_io.history_io()))?;
-    let retained = verifier_io.owned_bytes()?;
-    let _verifier_custody = verifier_io.into_native_custody(retained)?;
-    let operation =
-        native_root_output_binding_operation(&audience, private_volume, original_creation, work)?;
-    let mut reader_io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    let reader =
-        crate::store::HistoryReader::new(stream, &audience, &verifier, &mut Some(&mut reader_io))?;
-    let reader_custody = reader_io.into_custody()?;
-    let mut event_io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    let event = reader
-        .operation_event(operation, limits.file_bytes, &mut Some(&mut event_io))
-        .await?
-        .0;
-    event_io.return_staged_output()?;
-    let event_custody = event_io.into_custody()?;
-    let already_bound = match event.as_ref() {
-        None => false,
-        Some(event) => match &event.payload {
-            crate::core::EventPayload::ConversationBound { agent }
-                if Some(*agent) == scope.agent()
-                    && event.scope.agent() == scope.agent()
-                    && event.scope.id() == scope.id()
-                    && event.scope.capabilities() == scope.capabilities()
-                    && event.scope.wire_parts().0 == scope.issuer()
-                    && event.causal_parent.is_none() =>
-            {
-                if event.revision == 0 {
-                    return Err(invalid("original ROOT binding has no command revision"));
-                }
-                true
-            }
-            _ => {
-                return Err(invalid(
-                    "ROOT binding differs from the protected original creation",
-                ));
-            }
-        },
-    };
-    drop(event);
-    drop(event_custody);
-    drop(reader);
-    drop(reader_custody);
-    if already_bound {
-        let mut io = crate::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        verifier.verify(&scope, &mut Some(&mut io))?;
-        return Ok(());
-    }
-    let mut aggregate_io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    crate::store::history::HistoryIo::check_cancellation(&aggregate_io)?;
-    let mut aggregate = crate::store::StreamAggregate::open(
-        stream,
-        (audience, verifier, crate::core::SchemaRegistry::new()),
-        None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut Some(&mut aggregate_io),
-    )
-    .await?;
-    aggregate_io.return_staged_output()?;
-    let _aggregate_custody = aggregate_io.into_custody()?;
-    aggregate.set_limits(limits)?;
-    if aggregate
-        .reducer()
-        .conversation()
-        .and_then(|state| state.agent)
-        .is_some()
-    {
-        return Err(invalid(
-            "ROOT conversation changed during original binding admission",
-        ));
-    }
-    let key = work.display(&format_args!(
-        "harness/native-root-output-bind/v2/{operation}"
-    ))?;
-    let key = (crate::IdempotencyKey::new(key.0)?, key.1);
-    let agent = scope
-        .agent()
-        .ok_or_else(|| invalid("ROOT binding has no owning agent"))?;
-    let command = crate::core::Command {
-        operation_id: operation,
-        idempotency_key: key.0,
-        expected_revision: aggregate.reducer().revision(),
-        causal_parent: None,
-        action: crate::core::Action::BindConversation { agent },
-        scope,
-    };
-    let mut io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    crate::store::history::HistoryIo::retain_owned(
-        &mut io,
-        std::mem::size_of::<crate::core::ApplyResult>() as u64,
-    )?;
-    let applied = aggregate
-        .execute_with_owner(command, owner, &mut Some(&mut io))
-        .await?;
-    drop(applied);
-    Ok(())
 }
 
 fn validate_fork_volumes(

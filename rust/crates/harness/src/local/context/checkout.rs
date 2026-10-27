@@ -213,7 +213,7 @@ mod tests {
                 &workspace,
                 &names,
                 1024,
-                harness.input_publisher()?.as_ref(),
+                harness.input_publisher_with_limit(1024)?.as_ref(),
             )
             .await?;
         assert_eq!(found.instructions.len(), 1);
@@ -249,7 +249,7 @@ mod tests {
                     &workspace,
                     &names,
                     1024,
-                    harness.input_publisher()?.as_ref(),
+                    harness.input_publisher_with_limit(1024)?.as_ref(),
                 )
                 .await,
             Err(Error::FilesystemAccessConfiguration("checkout context"))

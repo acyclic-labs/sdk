@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(feature = "filesystem")]
-#[path = "working_context/native.rs"]
-mod native;
-
 #[tokio::test]
 async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Result<()> {
     let mut journal = Journal::default();

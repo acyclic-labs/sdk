@@ -1,7 +1,4 @@
 //! Standard coding tools and shared host executors.
-pub(crate) mod children;
-pub use children::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
-mod agent_files;
 mod agents;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
@@ -43,7 +40,3 @@ pub fn rejected_input(error: crate::Error) -> crate::tool::ToolResult {
         value: serde_json::json!({"error": error.to_string()}),
     }
 }
-
-#[cfg(acyclic_harness_loom)]
-#[doc(hidden)]
-pub use children::cancellable as cancellable_child_wait;

@@ -37,7 +37,6 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
             path: execution.clone(),
         },
         head_condition: CommitCondition::Absent { path: head.clone() },
-        owner: None,
         execution_tail: 0,
         head_tail: 0,
         base: 0,
@@ -114,99 +113,5 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
             "snapshot publication retained native custody"
         );
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn staged_pages_do_not_publish_a_claim_after_its_owner_is_revoked() -> Result<()> {
-    let provider = Arc::new(acyclic_stream::MemoryStream::default());
-    let execution = StreamPath::new("fenced-snapshot/execution")?;
-    let head = StreamPath::new("fenced-snapshot/head")?;
-    let pages = StreamPath::new("fenced-snapshot/pages")?;
-    let owner = StreamPath::new("fenced-snapshot/owner")?;
-    let first = provider
-        .append(acyclic_stream::AppendRequest {
-            path: owner.clone(),
-            records: vec![OwnedBytes::from_static(b"owner").into()],
-            if_tail: Some(0),
-            idempotency_key: None,
-        })
-        .await?;
-    assert!(matches!(first, AppendOutcome::Committed(_)));
-    let mut cut = Cut {
-        operation: OperationId::from_bytes([8; 16]),
-        execution: &execution,
-        head: &head,
-        pages: &pages,
-        execution_condition: CommitCondition::Absent {
-            path: execution.clone(),
-        },
-        head_condition: CommitCondition::Absent { path: head.clone() },
-        owner: Some(CommitCondition::Tail {
-            path: owner.clone(),
-            expected: 1,
-        }),
-        execution_tail: 0,
-        head_tail: 0,
-        base: 0,
-        digest: [8; 32],
-    };
-    let records = vec![OwnedBytes::from_static(b"page"); acyclic_stream::MAX_ITEMS + 1];
-    let staged = cut
-        .stage(&provider, 0, &records, &mut None)
-        .await?
-        .expect("staged snapshot");
-    assert!(matches!(
-        provider.tail(execution.clone()).await,
-        Err(StreamError::NotFound)
-    ));
-    assert!(matches!(
-        provider.tail(head.clone()).await,
-        Err(StreamError::NotFound)
-    ));
-    let revoked = provider
-        .append(acyclic_stream::AppendRequest {
-            path: owner,
-            records: vec![OwnedBytes::from_static(b"revoked").into()],
-            if_tail: Some(1),
-            idempotency_key: None,
-        })
-        .await?;
-    assert!(matches!(revoked, AppendOutcome::Committed(_)));
-    cut.base = staged as u64;
-    let observation = OwnedBytes::from_static(b"claim");
-    let checkpoint = OwnedBytes::from_static(b"checkpoint");
-    assert!(
-        !cut.publish(
-            &provider,
-            &records[staged..],
-            &observation,
-            &checkpoint,
-            &mut None
-        )
-        .await?
-    );
-    assert!(
-        matches!(
-            provider.tail(execution.clone()).await,
-            Err(StreamError::NotFound)
-        ),
-        "revoked owner published a claim"
-    );
-    // Omitting only the original owner fence admits the same final cut.
-    cut.owner = None;
-    cut.digest = [9; 32];
-    assert!(
-        cut.publish(
-            &provider,
-            &records[staged..],
-            &observation,
-            &checkpoint,
-            &mut None
-        )
-        .await?,
-        "unfenced negative control did not admit the revoked owner's claim"
-    );
-    assert_eq!(provider.tail(execution).await?, 1);
     Ok(())
 }

@@ -16,7 +16,6 @@ use crate::{
         ApprovalBinding, Interaction, InteractionOutcome, InteractionResolution,
         InteractionResponse, InteractionTicket, ResolutionReceipt,
     },
-    runtime::InteractionResolver,
     store::StreamAggregate,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};

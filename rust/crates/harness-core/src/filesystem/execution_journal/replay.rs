@@ -286,15 +286,6 @@ where
                     model,
                 ));
             }
-            if let Some((owner, _)) = &self.owner {
-                owner
-                    .verify_model_history(
-                        operation_id,
-                        result.iter().map(|(record, _)| record),
-                        &mut work,
-                    )
-                    .await?;
-            }
             Ok(result)
         }
         .await;

@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "maximum_bytes": 5,
-  "expect": {"result":{"kind":"select","query":"plan"}}
-}

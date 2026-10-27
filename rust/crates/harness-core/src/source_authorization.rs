@@ -7,8 +7,6 @@ use crate::conversation::{VolumeClass, VolumeRef};
 use crate::core::AuthorityVerifier;
 use crate::core::{Authority, Scope};
 use crate::resources::GenerationRef;
-use crate::runtime::TaskAdmissionRecord;
-use crate::scheduler::LeaseFence;
 use crate::store::{guarded_boundary, history::HistoryIo};
 use crate::wire::ErrorCode;
 use crate::{Error, OperationId, Result, TaskId};
@@ -18,63 +16,13 @@ use serde_json::Value;
 /// MAC domain for project-source reads.
 pub const PROJECT_SOURCE_READ_PURPOSE: &str = "harness.project-source.read.v1";
 
-/// Exact backend snapshot to authenticate.
+/// Exact caller lease retained in persisted project-source authorizations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectSourceSnapshot {
-    /// Selected project volume.
-    pub project: VolumeRef,
-    /// Immutable generation.
-    pub generation: GenerationRef,
-    /// Backend snapshot evidence.
-    pub native_snapshot: Option<Value>,
-}
-
-/// Trusted coordinator facts for the original fork.
-pub struct RootProjectSourceContext<'a> {
-    /// Coordinator owner.
-    pub owner: &'a Authority,
-    /// Original caller admission.
-    pub caller: &'a TaskAdmissionRecord,
-    /// Selected task admission.
-    pub source: &'a TaskAdmissionRecord,
-    /// Common authenticated graph root.
-    pub graph_root: TaskId,
-    /// Original fork operation.
-    pub operation_id: OperationId,
-    /// Finite work allowance.
-    pub maximum_work: u64,
-    /// Finite byte allowance.
-    pub maximum_bytes: u64,
-    /// Original invocation cancellation.
-    #[cfg(feature = "filesystem")]
-    pub cancellation: &'a acyclic_fs::CancellationToken,
-    /// Authenticated creator-receipt mapping.
-    pub created_project_authenticated: bool,
-}
-
-/// Trusted backend snapshot policy.
-pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
-    /// Authenticates and approves the exact snapshot.
-    fn verify<'a>(
-        &'a self,
-        context: RootProjectSourceContext<'a>,
-        snapshot: &'a ProjectSourceSnapshot,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
-
-    /// Verifies on the invocation's original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_with_native_work<'a>(
-        &'a self,
-        _context: RootProjectSourceContext<'a>,
-        _snapshot: &'a ProjectSourceSnapshot,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: ErrorCode::Unsupported,
-            reason: "Root project source provider has no original native-ledger verifier",
-        })
-    }
+pub struct LeaseFence {
+    /// Provider lease identity.
+    pub reservation_id: String,
+    /// Worker or placement owning the lease.
+    pub placement: String,
 }
 
 /// Signed project selection retained with the original admission.
@@ -357,6 +305,11 @@ impl ProjectSourceReadHandle {
         Ok(())
     }
 }
+
+crate::core::ownership::owned_struct!(LeaseFence {
+    reservation_id,
+    placement
+});
 
 crate::core::ownership::owned_struct!(ProjectSourceAuthorization {
     owner,

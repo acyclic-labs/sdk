@@ -17,9 +17,8 @@ mod children;
 pub(in crate::local) mod git;
 mod mounts;
 pub(in crate::local) mod owner;
-mod task_views;
-pub(in crate::local) use children::created_project;
 pub(super) mod projection;
+mod task_views;
 pub(super) mod volumes;
 #[cfg(test)]
 #[cfg(all(any(test, feature = "native-execution"), unix))]
@@ -74,11 +73,6 @@ pub struct LocalWorkspace {
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
-    /// Child task views, indexed apart from `state` so a child never waits on
-    /// this owner's running command.
-    pub(super) children: StateArc<
-        super::checkout_tools::child_views::ChildViews<super::checkout_tools::CheckoutTools>,
-    >,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
@@ -181,55 +175,6 @@ impl LocalWorkspace {
         }
         Ok(owned)
     }
-    pub(super) async fn created_mounts(
-        &self,
-        project: &VolumeRef,
-        context: &crate::runtime::TaskContext,
-        scope: &RuntimeScope,
-    ) -> Result<(Arc<Mounts>, Scope)> {
-        let access = context.scope().created_access.as_ref().ok_or_else(|| {
-            Error::Unauthorized("child mounts require authenticated allocations".into())
-        })?;
-        let mut private = None;
-        for binding in &access.content {
-            if binding.volume.class() != VolumeClass::AgentPrivate {
-                continue;
-            }
-            let granted = [VolumeOperation::Read, VolumeOperation::Write]
-                .into_iter()
-                .map(|operation| binding.volume.capability(operation, &mut None))
-                .collect::<Result<Vec<_>>>()?
-                .iter()
-                .all(|grant| scope.grants().contains(grant));
-            if granted && private.replace(binding.volume.clone()).is_some() {
-                return Err(Error::Unauthorized(
-                    "child private mount is ambiguous".into(),
-                ));
-            }
-        }
-        let private = private.ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
-        let crate::conversation::VolumeOwner::Agent(agent) = private.owner() else {
-            return Err(Error::FilesystemAccessConfiguration("child mount owner"));
-        };
-        let agent = *agent;
-        let authority = self
-            .mount_authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
-        // The authenticated allocation and live task owner authorize these new
-        // volumes. Retain exactly the caller's ceiling in their signed binding.
-        let owner = context
-            .owned_mailbox
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
-        owner.validate_scope(scope, None)?;
-        let signed = authority.created_scope(context, scope).await?;
-        if signed.agent() != Some(agent) || signed.capabilities() != scope.grants() {
-            return Err(Error::Unauthorized("child mount workload differs".into()));
-        }
-        Ok((self.bound_mounts(project, private, &signed).await?, signed))
-    }
-
     /// The mounts of a view of `project` with `scratch` bound beside it, under
     /// the already signed workload `signed` that grants both.
     pub(super) async fn bound_mounts(
@@ -474,7 +419,6 @@ pub(super) async fn open(
         mount_authority,
         identity,
         state,
-        children: StateArc::new(Default::default()),
         context_line,
         mounts,
         processes,

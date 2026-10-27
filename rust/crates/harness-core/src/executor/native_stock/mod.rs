@@ -14,7 +14,3 @@ mod session;
 pub(in crate::executor) use session::*;
 mod tools;
 pub(in crate::executor) use tools::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod composition;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use composition::NativeStockExecutor;

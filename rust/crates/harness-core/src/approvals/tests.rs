@@ -96,26 +96,17 @@ fn approval_data_never_bypasses_the_interaction_gate() -> Result<()> {
 
 #[test]
 fn approval_obligation_survives_registry_clone_and_composition() -> Result<()> {
-    use crate::runtime::Bindings;
     let defaults = crate::tools::defaults()?;
     let mut combined = crate::tool::ToolRegistry::default();
+    assert!(!combined.requires_approval_policy());
     combined.extend(defaults.clone())?;
-    for tools in [defaults, combined] {
-        let missing = Bindings {
-            tools: tools.clone(),
-            ..Bindings::local()
-        }
-        .build(None);
-        assert!(matches!(missing, Err(Error::Invalid(_))));
-        let pinned = Bindings {
-            tools,
-            policy: Some(std::sync::Arc::new(ApprovalPolicy::default().bind()?)),
-            ..Bindings::local()
-        }
-        .build(None);
-        assert!(pinned.is_ok());
+    for tools in [defaults.clone(), combined] {
+        assert_eq!(
+            tools.requires_approval_policy(),
+            defaults.requires_approval_policy()
+        );
     }
-    assert!(Bindings::local().build(None).is_ok());
+    assert!(defaults.requires_approval_policy());
     Ok(())
 }
 

@@ -1,4 +1,0 @@
-{
-  "prompt": "/diff",
-  "expect": {"result":{"kind":"select","query":"diff"}}
-}

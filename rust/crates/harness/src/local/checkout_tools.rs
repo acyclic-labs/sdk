@@ -10,31 +10,11 @@ use acyclic_stream::BoxProviderFuture;
 
 pub(super) mod access;
 pub(super) mod capture;
-#[cfg(test)]
-#[cfg(all(
-    feature = "filesystem-local",
-    any(target_os = "linux", windows),
-    not(acyclic_harness_loom)
-))]
-mod child_progress_tests;
-pub(super) mod child_views;
-mod children;
 mod git;
-#[cfg(test)]
-#[cfg(all(unix, not(acyclic_harness_loom)))]
-mod git_mount_tests;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
 pub(super) mod shell;
-#[cfg(all(
-    test,
-    feature = "filesystem-local",
-    any(target_os = "linux", windows),
-    not(acyclic_harness_loom)
-))]
-mod task_view_volumes_tests;
-mod task_views;
 #[cfg(test)]
 #[cfg(acyclic_harness_loom)]
 mod tests;
@@ -57,7 +37,6 @@ pub(super) struct CheckoutTools {
     // guard. No path holds two checkout guards. Bindings share their
     // workspace's guard.
     state: StateArc<AsyncMutex<State>>,
-    selected: bool,
 }
 
 pub(in crate::local) struct State {
@@ -146,7 +125,6 @@ impl CheckoutTools {
             clock,
             expiry_unix_ms,
             state: shared,
-            selected: false,
         })
     }
 }
@@ -184,7 +162,7 @@ impl CheckoutTools {
             } = command;
             let result = serialized(&self.state, async |mut state| {
                 let owner = context.task();
-                let workspace = self.selected_workspace(&mut state, owner).await?;
+                let workspace = self.workspace.selected_workspace(&mut state, owner).await?;
                 let view = state
                     .active
                     .as_ref()
@@ -316,9 +294,8 @@ impl ToolExecutor for CheckoutTools {
         if (invocation.name != crate::tools::shell::PLATFORM.name && invocation.name != "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || (!(scope.grants().contains(&self.read_grant)
+            || !(scope.grants().contains(&self.read_grant)
                 && scope.grants().contains(&self.write_grant))
-                && self.child_project(context)?.is_none())
             || crate::tools::catalog()
                 .find(|spec| spec.name == invocation.name)
                 .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
@@ -340,39 +317,19 @@ impl ToolExecutor for CheckoutTools {
             let original = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
-            if let Some(project) = self.child_project(original)? {
-                let selected = self.child_checkout(original, project).await?;
-                return selected.execute(invocation, context).await;
-            }
-            if !self.selected {
-                let context = context
+            serialized(&self.state, async |state| {
+                let view = state
+                    .active
                     .as_ref()
-                    .ok_or_else(|| Error::Invalid("tool context missing".into()))?;
-                serialized(&self.state, async |state| {
-                    let view = state
-                        .active
-                        .as_ref()
-                        .unwrap_or_else(|| self.workspace.view());
-                    self.require_command_access(
-                        view.workspace(),
-                        context.effective_scope().grants(),
-                        invocation.name == "fs",
-                    )
-                    .await
-                })
-                .await?;
-            }
-            if !self.selected
-                && let Some(selected) = self
-                    .select(
-                        context
-                            .as_ref()
-                            .ok_or_else(|| Error::Invalid("tool context missing".into()))?,
-                    )
-                    .await?
-            {
-                return selected.execute(invocation, context).await;
-            }
+                    .unwrap_or_else(|| self.workspace.view());
+                self.require_command_access(
+                    view.workspace(),
+                    original.effective_scope().grants(),
+                    invocation.name == "fs",
+                )
+                .await
+            })
+            .await?;
             let request = if invocation.name == crate::tools::shell::PLATFORM.name {
                 serde_json::to_vec(&invocation).map_err(storage)?
             } else {

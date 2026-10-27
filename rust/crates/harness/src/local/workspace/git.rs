@@ -1,8 +1,6 @@
 //! Shared workspace git facade; no tool dispatch or agent execution.
 use super::super::checkout_tools::{State, capture, reconciliation};
 use super::owner::ViewOwner;
-#[cfg(all(test, not(acyclic_harness_loom)))]
-use super::owner::lease_identity;
 use super::*;
 
 pub(in crate::local) struct CommandContext<'a> {
@@ -463,8 +461,3 @@ async fn head(
         .map(|receipt| receipt.value)
         .map_err(storage)
 }
-
-#[cfg(test)]
-#[cfg(not(acyclic_harness_loom))]
-#[path = "../checkout_tools/git_tests.rs"]
-mod tests;

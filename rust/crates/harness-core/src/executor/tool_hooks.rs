@@ -62,7 +62,7 @@ impl StockExecution<'_> {
         let input = HookInput::Tool {
             invocation,
             response,
-            session_id: self.stock.task.as_ref().map(|(_, task, _)| *task),
+            session_id: None::<TaskId>,
         };
         if hooks
             .rules
@@ -87,7 +87,7 @@ impl StockExecution<'_> {
         })?;
         let phase = crate::hooks::effects::phase_operation(invocation.operation_id, event);
         let context =
-            crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id, None)?;
+            crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id)?;
         match executor
             .run_hooks(
                 (&hooks.rules, hooks.manifest),
@@ -120,10 +120,7 @@ impl StockExecution<'_> {
             self.stock.hooks.as_ref().ok_or_else(|| {
                 Error::Invalid("hook approval has no pinned configuration".into())
             })?;
-        let task = self.stock.task.as_ref().map_or(
-            TaskId::from_bytes(operation.into_bytes()),
-            |(_, task, _)| *task,
-        );
+        let task = TaskId::from_bytes(operation.into_bytes());
         let identity = crate::hooks::effects::approval_identity(hooks.manifest);
         let ((approval, request), _hold) = tool_approval_request(
             task,
@@ -172,7 +169,7 @@ impl StockExecution<'_> {
         };
         let event = HookEvent::only(HookSite::TurnEnd)?;
         let fields = serde_json::json!({
-            "session_id": self.stock.task.as_ref().map(|(_, task, _)| *task),
+            "session_id": None::<TaskId>,
             "stop_hook_active": active,
         });
         let input = HookInput::Fields(&fields);
@@ -201,7 +198,6 @@ impl StockExecution<'_> {
             Arc::clone(task),
             step_operation(operation, step),
             "stop",
-            None,
         )?;
         match executor
             .run_hooks(

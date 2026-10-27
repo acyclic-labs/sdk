@@ -149,7 +149,7 @@ impl crate::context::ContextSource for ChangingCompactionSource {
 }
 
 use crate::{
-    AgentId, Capabilities, Outcome,
+    AgentId, Capabilities,
     conversation::{FileDescriptor, VolumeOwner, VolumeRef},
     resources::ProviderRef,
     tool::ToolExecutor,
@@ -241,43 +241,19 @@ fn recoverable_model(attempts: usize) -> ScriptedModelProvider {
         }))
         .with_token_counter(fixture_token_count)
 }
-async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
-    let captured = Arc::new(Mutex::new(None));
-    let sink = captured.clone();
-    let mut tasks = crate::runtime::TaskRegistry::default();
-    tasks.register(crate::runtime::TaskDefinition::live(
-        "context-probe",
-        "1",
-        move |context, _: ()| {
-            let sink = sink.clone();
-            async move {
-                *sink.lock().unwrap() = Some(context);
-                Ok(())
-            }
-        },
-    )?)?;
-    let harness = crate::runtime::Bindings {
-        tasks,
-        tools: ToolRegistry::default(),
-        scope,
-        concurrency: 1,
-        ..crate::runtime::Bindings::local()
-    }
-    .build(None)?;
-    let definition = harness.task::<(), ()>("context-probe@1")?;
-    assert!(matches!(
-        harness.spawn(&definition, ()).await?.result().await?,
-        Outcome::Succeeded(())
-    ));
-    captured
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or_else(|| Error::NotFound("admitted context".into()))
+use crate::runtime::test_context::{NoReads, PrivateVolume, agent_context, private_volume};
+
+fn admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
+    agent_context(scope, None)
+}
+
+/// Each admitted context owns its own agent harness.
+fn context_identity(context: &crate::runtime::TaskContext) -> usize {
+    Arc::as_ptr(&context.harness) as usize
 }
 
 struct ContextOnlyTool {
-    admission: OperationId,
+    admission: usize,
     lost_response: fn() -> Error,
     calls: AtomicUsize,
     reconciles: AtomicUsize,
@@ -293,7 +269,7 @@ impl ToolExecutor for ContextOnlyTool {
             return Box::pin(async { Err(Error::Unsupported("original context required".into())) });
         };
         Box::pin(async move {
-            assert_eq!(context.task().id(), self.admission);
+            assert_eq!(context_identity(context.task()), self.admission);
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -310,7 +286,7 @@ impl ToolExecutor for ContextOnlyTool {
             return Box::pin(async { Err(Error::Unsupported("original context required".into())) });
         };
         Box::pin(async move {
-            assert_eq!(context.task().id(), self.admission);
+            assert_eq!(context_identity(context.task()), self.admission);
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
             self.reconciles.fetch_add(1, Ordering::SeqCst);
@@ -784,9 +760,6 @@ mod request_continuation;
 mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
-mod summary_file;
-#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-mod tool_hooks;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;

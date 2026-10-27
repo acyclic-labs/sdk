@@ -5,7 +5,6 @@ use crate::{
     filesystem::FilesystemContentVerifier,
 };
 
-pub(super) mod binding;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout;
 #[cfg(any(test, feature = "native-execution"))]
@@ -46,16 +45,6 @@ impl LocalHarness {
         )
     }
 
-    #[cfg(test)]
-    pub(super) async fn retained_context_manifest(
-        &self,
-        operation: OperationId,
-    ) -> Result<FileRef> {
-        self.observe_context_manifest(operation, self.input_publisher()?.as_ref())
-            .await?
-            .ok_or_else(|| Error::Storage("retained local input has no context manifest".into()))
-    }
-
     async fn observe_context_manifest(
         &self,
         operation: OperationId,
@@ -80,12 +69,6 @@ impl LocalHarness {
             ));
         }
         Ok(reference)
-    }
-
-    #[cfg(test)]
-    pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())?
-            .await
     }
 
     /// Pins the live file conventions once per admission, alongside instructions.
@@ -143,13 +126,10 @@ impl LocalHarness {
                     #[cfg(test)]
                     self.environment_reads
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let task = crate::runtime::task_id_for_admission(operation);
-                    // Parented tasks acquire a fresh per-owner mount during tool
-                    // execution. A switched native mount is likewise selected
-                    // later. Neither can truthfully advertise the parent path.
-                    let cwd = if self.admission_parent(task).await?.is_none()
-                        && !(workspace.mounted.is_some()
-                            && workspace.selected_view().await?.0.is_some())
+                    // A switched native mount is selected during tool
+                    // execution, so it cannot truthfully advertise this path.
+                    let cwd = if !(workspace.mounted.is_some()
+                        && workspace.selected_view().await?.0.is_some())
                     {
                         Some(workspace.path.as_path())
                     } else {
@@ -164,7 +144,7 @@ impl LocalHarness {
                             .await,
                             Ok(None)
                         );
-                    let model = self.admission_model(task).await?;
+                    let (model, _) = self.agent()?;
                     manifest.environment = Some(
                         environment::gather(
                             cwd,

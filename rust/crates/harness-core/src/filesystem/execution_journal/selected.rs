@@ -130,10 +130,7 @@ where
                 "conversation content verifier is not bound",
             )
         })?;
-        let limits = self
-            .owner
-            .as_ref()
-            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+        let limits = Limits::default();
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed
             .as_mut()
@@ -227,20 +224,10 @@ where
             &mut work,
         )?;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:messages");
-        let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
-            (
-                crate::conversation::MAX_PORTABLE_COUNT,
-                crate::conversation::MAX_PORTABLE_COUNT,
-                self.maximum_payload_bytes,
-            ),
-            |(owner, _)| {
-                let limits = owner.input_limits();
-                (
-                    limits.context_messages,
-                    limits.attachments,
-                    limits.render_bytes,
-                )
-            },
+        let (messages, attachments, render_bytes) = (
+            crate::conversation::MAX_PORTABLE_COUNT,
+            crate::conversation::MAX_PORTABLE_COUNT,
+            self.maximum_payload_bytes,
         );
         let resolver = JournalSelectedResolver {
             journal: self,
@@ -316,16 +303,12 @@ where
         file: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if let Some((owner, _)) = &self.owner {
-            owner.validate_input_file(file, io)
-        } else {
-            let mut borrowed = io.map(PreparationIo::history_io);
-            file.validate(
-                &mut borrowed
-                    .as_mut()
-                    .map(|work| work as &mut dyn crate::store::history::HistoryIo),
-            )
-        }
+        let mut borrowed = io.map(PreparationIo::history_io);
+        file.validate(
+            &mut borrowed
+                .as_mut()
+                .map(|work| work as &mut dyn crate::store::history::HistoryIo),
+        )
     }
 }
 

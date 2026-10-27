@@ -55,8 +55,6 @@ pub struct LocalHarnessConfig {
     pub(super) web_tools: bool,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
-    pub(super) session_limits: SessionLimits,
-    pub(super) concurrency: usize,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
@@ -124,13 +122,6 @@ impl LocalHarnessConfig {
             web_tools: false,
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
-            session_limits: SessionLimits {
-                active_tasks: 16,
-                total_tasks: 4096,
-                depth: 16,
-                model_steps: 65_536,
-            },
-            concurrency: 1,
             compaction: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: None,
@@ -381,25 +372,13 @@ impl LocalHarnessConfig {
         self.run_limits = limits;
         self
     }
-    /// Selects durable admission bounds.
-    #[must_use]
-    pub fn session_limits(mut self, limits: SessionLimits) -> Self {
-        self.session_limits = limits;
-        self
-    }
-    /// Selects the finite goal admission policy; `None` disables automatic continuations.
+    /// Selects the finite goal policy; `None` disables automatic continuations.
     #[must_use]
     pub fn goal_continuations(
         mut self,
         policy: Option<crate::goal::GoalContinuationPolicy>,
     ) -> Self {
         self.goal_continuations = policy;
-        self
-    }
-    /// Selects maximum concurrent local tasks.
-    #[must_use]
-    pub fn concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency;
         self
     }
     /// Selects an explicit compaction policy, validated without changing its budgets.

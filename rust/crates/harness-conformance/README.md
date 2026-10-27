@@ -3,15 +3,15 @@
 From the SDK root:
 
 ```sh
-cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate in-process --report out.json
-cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate http://127.0.0.1:8080/contract --filter core/ --report out.json
+cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --report out.json
+cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --filter core/ --report out.json
 ```
 
 Build on bb2. The runtime budget is measured separately from Cargo compilation.
 `--corpus DIR` selects an exported copy of `harness/tests/scenarios`. Defaults
 are merged by the existing corpus loader; no case JSON needs changing.
-`--substrate local` runs the same portable executor and composer fixtures
-directly, providing a baseline for the Actors adapter. The existing
+`--substrate local` (the only substrate) runs the portable executor and
+composer fixtures directly. The existing
 `cargo test -p acyclic-harness --test main` path retains its native driver
 selection and scenario inputs.
 
@@ -30,66 +30,29 @@ reference qualifies 436 executor/composer cases and explicitly skips 351
 native-fixture cases with the capabilities below. Defaults apply to their descendant
 cases; they are not executable scenarios.
 
-## External hosts
-
-Implement #1359's `ActorRuntime` and this crate's `substrate::Volume`, then use
-`substrate::Actors` with the host's explicit bindings. Install the identical
-`HarnessPackage`. Its pinned deterministic handler emits a
-`harness.scenario.compute` command; bind that command to `FixtureEffects` with
-an explicit `Providers` bundle (or an equivalent executor using
-`collect_on`). The effect runs the stock executor with a scripted model or the
-public command catalog APIs, using fixture-owned files. The package checkpoints
-the resulting immutable fs reference. The runner supplies fixture inputs and
-file paths to inspect, never expected answers. Assertions run on the client.
-The package digest pins shared parsing, defaults, discovery and observation
-code as well as the handler and composer fixture implementation.
-
-The runner uses only public Actors admission/recovery and fs publications. The
-runtime's inbox, checkpoint and outbox use Streams as specified in #1359. The
-reference host uses `InProcessRuntime` and disk-backed `LocalStream`; memory
-Streams cannot authorize durable outbox dispatch. Fixture fs durability lasts
-for its provider lifetime. Results reconcile by stable command identity.
-Executor journals use that same host Streams provider; executor files use the
-supplied fs providers. Hosts must not substitute fixture-private memory stores
-for the providers being qualified.
-This package qualifies operation-level executor hosting; it does not migrate
-GraphCoder's native per-step scheduler to Actors or qualify process-loss fs
-durability, live model HTTPS, production compute or workload authentication.
-
-For HTTP, route POSTs at the supplied URL to the public serde
-`substrate::remote::Request` enum. Respond with JSON-serialized
-`Result<serde_json::Value, String>` (`{"Ok": ...}` or `{"Err": "reason"}`).
-`Request::apply` is a reference bridge over an existing runtime and volume.
-The `install` request carries the manifest, whose code identity must match the
-host's pinned `HarnessPackage`; it never accepts arbitrary uploaded code.
-The bridge exposes `install`, `place`, `deliver`, `recover`, `cancel`, `put`,
-`get` and `lookup`. Production hosts supply admission policy and binding
-resolution; the unauthenticated fixture policy is for isolated tests only.
-
 ## Capabilities
 
 `executor` means turn/summary execution, scripted model recovery/replay,
 compaction, context discovery, fs staging/reading and complete journal
-observations. Both direct and Actors substrates declare it. Host adapters must
+observations. The local substrate declares it. A substrate must
 implement all these operations to declare `executor`; an unsupported operation
 is a failure, never a silent skip.
 
 `composer` means catalog capture/resolution, completion, pinned mention attachments,
 configuration publication and immutable fs reads through the supplied providers.
-Both substrates declare it; all 177 composer cases run through the package.
+The local substrate declares it.
 
 The resolved recipe driver tags cases requiring native fixture introspection as
 `local-driver:<driver>`, where `<driver>` is `local`, `goal-local`, `agents`,
 `notifications`, `task_query`, `subagents`,
 `swarm` or `plans`. They inspect native scheduler state, UI
 entrypoints, process fixtures, fixture-owned projections, native builder/run_prompt
-fixtures or instrumented provider counters outside the #1359 package adapter,
-and are explicitly skipped by this package. Each report reason identifies the
+fixtures or instrumented provider counters outside the portable fixtures,
+and are explicitly skipped by this runner. Each report reason identifies the
 concrete fixture dependency. These capabilities identify native fixture
 dependencies; declaring `executor` does not
 imply them. The report is the authoritative case and skip count for a corpus
 revision. Unknown drivers fail instead of acquiring an automatic capability.
 
 `tests/scenarios.rs` compares every portable case with the original direct
-driver, compares direct/Actors reports, exercises the HTTP bridge and proves
-that dropping a contract completion observation fails qualification.
+driver and proves that wrong answers and malformed cases fail qualification.

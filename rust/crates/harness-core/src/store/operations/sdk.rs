@@ -28,10 +28,7 @@ pub(crate) fn stream<P: StreamProvider>(
     client: &Arc<P>,
     path: &str,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(
-    acyclic_stream::Stream<P>,
-    Option<crate::runtime::NativeCustody>,
-)> {
+) -> Result<(acyclic_stream::Stream<P>, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let path_custody = if let Some(observer) = work
         .as_deref_mut()

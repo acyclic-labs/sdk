@@ -1,4 +1,4 @@
-//! Ordinary/native HTTP codec properties and shared fuzz corpus settlement checks.
+//! Ordinary/native HTTP codec properties and shared fuzz corpus checks.
 #![cfg(not(target_arch = "wasm32"))]
 #[path = "../search_http_codec/support.rs"]
 mod support;
@@ -30,9 +30,8 @@ proptest! {
         shape in any::<u8>(),
         leaf in json_leaf(),
     ) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         for exa in [true, false] {
-            runtime.block_on(support::check(support::response(depth, size, shape, &leaf), exa));
+            support::check(support::response(depth, size, shape, &leaf), exa);
         }
     }
 }
@@ -47,39 +46,35 @@ fn tinyfish_codec_seed_corpus_settles() {
     corpus(false);
 }
 
-#[tokio::test]
-async fn incomplete_and_over_depth_responses_publish_rejected() {
+#[test]
+fn incomplete_and_over_depth_responses_are_rejected() {
     for exa in [true, false] {
         for bytes in [
             br#"{"results":[]"#.to_vec(),
             support::response(4096, 0, 0, &serde_json::Value::Null),
         ] {
-            support::check(bytes, exa).await;
+            support::check(bytes, exa);
         }
     }
 }
 
 fn corpus(exa: bool) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
     for corpus in ["search_http_codec", "search_http_envelope"] {
         let corpus = acyclic_test_support::source_path("rust/crates/harness")
             .join("../harness-fuzz/corpus")
             .join(corpus);
         for entry in std::fs::read_dir(corpus).unwrap() {
             let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-            runtime.block_on(support::check(support::fuzz_response(&bytes), exa));
+            support::check(support::fuzz_response(&bytes), exa);
         }
     }
-    runtime.block_on(support::check(
+    support::check(
         support::response(0, 1_047_552, 1, &serde_json::Value::String(String::new())),
         exa,
-    ));
+    );
     for length in [1_048_575, 1_048_576, 1_048_577] {
         let mut bytes = support::response(0, 0, 0, &serde_json::Value::Null);
         bytes.resize(length, b' ');
-        runtime.block_on(support::check(bytes, exa));
+        support::check(bytes, exa);
     }
 }

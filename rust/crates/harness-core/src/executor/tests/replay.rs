@@ -469,7 +469,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         ]),
         Limits::default(),
     )?;
-    let context = capture_admitted_context(scope.clone()).await?;
+    let context = admitted_context(scope.clone())?;
     let tool = crate::tool::files::write()?;
     let mut tools = ToolRegistry::default();
     tools.register((tool, None), &mut None, None)?;

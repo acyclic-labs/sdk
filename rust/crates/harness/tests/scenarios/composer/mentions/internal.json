@@ -1,4 +1,0 @@
-{
-  "prompt": "@.git/config",
-  "expect": {"error":"path"}
-}

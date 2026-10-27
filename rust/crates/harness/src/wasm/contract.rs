@@ -1,19 +1,5 @@
 use super::*;
 
-/// Validates the immutable workflow admission through its core serde type.
-#[wasm_bindgen(js_name = validateWorkflowAdmission, unchecked_return_type = "WasmWorkflowAdmissionWire")]
-pub fn validate_workflow_admission(
-    #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
-) -> Result<JsValue, JsValue> {
-    let value: crate::workflow::WorkflowAdmission = from_js(value)?;
-    value.validate(None).map_err(js_error)?;
-    value
-        .serialize(
-            &serde_wasm_bindgen::Serializer::new().serialize_large_number_types_as_bigints(true),
-        )
-        .map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
 fn admit<T: serde::de::DeserializeOwned + Serialize, R>(
     value: JsValue,
     validate: impl FnOnce(&T) -> crate::Result<R>,
@@ -26,8 +12,7 @@ fn admit<T: serde::de::DeserializeOwned + Serialize, R>(
 /// Pure v2 contract admission shared by native and JavaScript hosts.
 #[wasm_bindgen(js_name = validateContract)]
 pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result<JsValue, JsValue> {
-    use crate::workflow::{MachineIdentity, WorkflowAdmission};
-    use crate::{conversation::PrivateDirectoryPage, runtime::ExecutionPlacement};
+    use crate::conversation::PrivateDirectoryPage;
     match kind {
         "provider_ref" => admit(value, |v: &ProviderRef| v.validate(&mut None)),
         "file_descriptor" => admit(value, |_: &FileDescriptor| Ok(())),
@@ -39,9 +24,6 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "file_ref" => admit(value, |v: &FileRef| v.validate(&mut None)),
         "attachments" => admit(value, |v: &ReferencedAttachments| v.validate(&mut None)),
         "task_outcome" => admit(value, |v: &TaskOutcomeRecord| v.validate()),
-        "execution_placement" => admit(value, |v: &ExecutionPlacement| v.validate(&mut None)),
-        "machine_identity" => admit(value, |v: &MachineIdentity| v.validate(&mut None)),
-        "workflow_admission" => admit(value, |v: &WorkflowAdmission| v.validate(None)),
         "resource_ref" => admit(value, |v: &ResourceRef| v.validate(&mut None)),
         "private_directory_page" => admit(value, |v: &PrivateDirectoryPage| v.validate()),
         "resource_revision" => admit(value, |v: &ResourceRevision| v.validate(&mut None)),
@@ -67,18 +49,6 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             ticket.validate(&mut None).map_err(js_error)?;
             admit(value, |v: &InteractionResolution| v.validate(&ticket))
         }
-        "task_admission" => {
-            let value = js_json_value(&value)?;
-            let request = TaskAdmissionRecord::from_canonical_value(value, &mut None)
-                .map_err(js_error)?
-                .0;
-            to_js_admitted(&request.canonical_value())
-        }
-        "durable_batch_request" => {
-            let value = js_json_value(&value)?;
-            let request = DurableBatchRequest::from_canonical_value(value).map_err(js_error)?;
-            to_js_admitted(&request.canonical_value())
-        }
         "limits" => {
             let value: Limits = from_js(value)?;
             value.validate(&mut None).map_err(js_error)?;
@@ -99,43 +69,6 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         _ => Err(JsValue::from_str("unknown Harness v2 contract kind")),
     }
-}
-
-/// Validates and reprojects one owner-retained direct-child page using the
-/// same bounds and bytewise slot ordering as native Harness hosts.
-#[wasm_bindgen(
-    js_name = validateTaskChildrenPage,
-    unchecked_return_type = "WasmTaskChildrenPage"
-)]
-pub fn validate_task_children_page(
-    #[wasm_bindgen(unchecked_param_type = "WasmTaskChildrenPageInput")] value: JsValue,
-) -> Result<JsValue, JsValue> {
-    let input: WasmTaskChildrenPageInput = from_js(value)?;
-    let maximum = usize::try_from(input.maximum)
-        .map_err(|_| JsValue::from_str("task child page maximum is not representable"))?;
-    validate_children_request(input.parent, input.after_slot.as_deref(), maximum)
-        .map_err(js_error)?;
-    let page = TaskChildrenPage {
-        revision: input.page.revision,
-        entries: input
-            .page
-            .entries
-            .iter()
-            .map(|entry| TaskChild {
-                slot: entry.slot.clone(),
-                task_id: entry.task_id,
-            })
-            .collect(),
-        next_after: input.page.next_after.clone(),
-    };
-    validate_children_page(
-        &page,
-        input.expected_revision,
-        input.after_slot.as_deref(),
-        maximum,
-    )
-    .map_err(js_error)?;
-    to_js(&input.page)
 }
 
 /// Applies the same JSON Schema admission used by Rust tool execution before a TypeScript facade turns an untrusted model value into a typed argument.

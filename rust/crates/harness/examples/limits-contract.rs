@@ -23,13 +23,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     defaults.validate(&mut None)?;
     maximum.validate(&mut None)?;
-    let session = acyclic_harness::scheduler::SessionLimits {
-        active_tasks: 1,
-        total_tasks: 1,
-        depth: 0,
-        model_steps: 1,
-    };
-    session.validate(&mut None)?;
     println!(
         "{}",
         json!({
@@ -40,7 +33,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "max_path_bytes": MAX_PATH_BYTES,
                 "max_label_bytes": MAX_LABEL_BYTES,
             },
-            "session": session,
             "fork": {
                 "agents": MAX_FORK_AGENTS,
                 "resources": MAX_FORK_RESOURCES,

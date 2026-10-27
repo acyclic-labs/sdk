@@ -1,4 +1,5 @@
 use super::*;
+use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 use crate::{
     Capabilities,
     core::{AggregateKind, AuthorityRoot},
@@ -75,7 +76,7 @@ fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant>
 async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
     let (host, uploaded) = published(b"").await?;
     let volume = uploaded.volume();
-    let workspace = fork_preparer_io::content_workspace(&host.provider, volume, None)?;
+    let workspace = bounded_io::content_workspace(&host.provider, volume, None)?;
     let generation = host
         .apply(
             &workspace,
@@ -147,7 +148,7 @@ async fn selection_case(body: Vec<u8>, a: u16, b: u16, mutate: bool) -> Result<(
     } else {
         changed.push(1);
     }
-    let workspace = fork_preparer_io::content_workspace(&host.provider, file.volume(), None)?;
+    let workspace = bounded_io::content_workspace(&host.provider, file.volume(), None)?;
     let generation = host
         .apply(
             &workspace,

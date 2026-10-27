@@ -7,32 +7,23 @@
     )
 )]
 #![doc = include_str!("../../docs/filesystem.md")]
-use crate::contract::capability;
 use crate::{
-    AgentId, Error, IdempotencyKey, Result,
+    Error, IdempotencyKey, Result,
     conversation::{
         Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef,
         MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
-        PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner,
-        VolumeRef,
+        PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeRef,
     },
-    core::{Authority, AuthorityVerifier, Reducer, Scope},
-    fork::{
-        ForkPublicationGuard, ForkSeed, ForkSeedVerifier, InheritedConversationPrefix,
-        ReferenceGrant, ResourceRevision,
-    },
-    merge::{ProjectMergeReceipt, ProjectMergeVerifier, ProviderJoinProof},
+    core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage, Fs,
-    Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
-    JoinOutcome, JoinPlan, MergeConflict, MergePlan, PublicationReservation, TransactionCommit,
-    Workspace, WorkspaceError, WorkspaceStat,
+    AsyncAuthorityStore, AsyncObjectStore, Digest, DirectoryPage, Fs, Generation, GenerationId,
+    IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
+    WorkspaceStat,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
@@ -53,53 +44,25 @@ pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
     TurnExecutors, TurnLimits, agent_authority,
 };
-mod fork_preparer;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use fork_preparer::AllocationClaim;
-use fork_preparer::bounded_io as fork_preparer_io;
+pub(crate) mod bounded_io;
 #[doc(hidden)]
-pub use fork_preparer::bounded_io::PreparationRecord;
+pub use bounded_io::PreparationRecord;
+pub(crate) use bounded_io::PreparationScope;
 #[doc(hidden)]
-pub use fork_preparer::bounded_io::UploadRecord;
+pub use bounded_io::UploadRecord;
+use bounded_io::decode_record;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use fork_preparer::bounded_io::native_decoded;
-pub(crate) use fork_preparer::bounded_io::{DecodeReservation, retain_decoded};
-pub use fork_preparer::bounded_io::{PreparationCustody, PreparationIo};
-pub(crate) use fork_preparer_io::PreparationScope;
-use fork_preparer_io::decode_record;
-mod summary_fork;
-pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
+pub(crate) use bounded_io::native_decoded;
+pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
+pub use bounded_io::{PreparationCustody, PreparationIo};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
-mod project_workspaces;
-pub use project_workspaces::FilesystemProjectWorkspaces;
-mod workflow_journal;
-pub use workflow_journal::FilesystemWorkflowJournal;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use workflow_journal::WorkflowReleaseWitness;
 mod memory;
 pub use memory::MemoryHarnessStorage;
 mod text_tools;
-#[cfg(not(target_arch = "wasm32"))]
-pub use host::{
-    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
-};
 pub use text_tools::ExactTextReplacement;
-mod root_source;
-pub use root_source::FsRootProjectSourceProvider;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-mod native_execution;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_execution::NativePreparationCompletionTemplate;
-#[cfg(all(
-    any(fuzzing, feature = "test-support"),
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
-pub use native_execution::{
-    fuzz_native_preparation_intent, fuzz_native_preparation_journal,
-    verify_native_preparation_journal,
-};
+mod native_access;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_process;
@@ -113,6 +76,19 @@ mod native_contract;
     not(target_arch = "wasm32")
 ))]
 mod native_directory;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_access::{
+    NativeMountAuthority, WorkspaceAccess, require_unrestricted_volume_access,
+    require_unrestricted_workspace_read,
+};
+#[cfg(all(
+    feature = "native-execution",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
+pub use native_access::{
+    local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
+};
 pub use native_contract::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
@@ -124,63 +100,6 @@ pub use native_contract::{
     not(target_arch = "wasm32")
 ))]
 pub(crate) use native_directory::NativeDirectory;
-mod configured_recursive_tools;
-mod default_tools;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
-#[doc(hidden)]
-pub use default_tools::InvocationCancellation;
-mod mailbox_machine;
-mod recursive;
-mod task_commands;
-mod task_runtime;
-pub use configured_recursive_tools::{
-    ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-    ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
-};
-pub use default_tools::{MergeToolArguments, MergeToolSelection, MergeToolSide, recursive_tools};
-pub(in crate::filesystem) use default_tools::{
-    RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
-    RecursiveMergeToolBinding, RecursiveMergeToolPlan,
-};
-pub use mailbox_machine::MailboxModelMachine;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_execution::journal::preparation_owner;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountAuthority, NativeMountedVolume,
-    NativePreparationRoot, NativeViewPublicationError, NativeVolumeView, WorkspaceAccess,
-    authenticated_mount_options, owner_mount_options, require_unrestricted_volume_access,
-    require_unrestricted_workspace_read,
-};
-#[cfg(all(
-    feature = "native-execution",
-    feature = "filesystem-local",
-    not(target_arch = "wasm32")
-))]
-pub use native_execution::{
-    local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
-};
-pub use recursive::{
-    ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
-    RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
-    recursive_fork_source, restore_recursive_fork_source,
-};
-pub use task_commands::{
-    EFFECT_TASK_COMMAND_KIND, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemTaskCommands,
-    MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
-    MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, PreparedTaskAdmitCommand,
-    TASK_ADMIT_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, TASK_CANCEL_COMMAND_KIND,
-    TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
-    TaskCancelCommand, TaskObserveCommand, TimerTaskCommand, ToolTaskCommand,
-};
-pub use task_runtime::{
-    FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
-    TaskSourceInspection, TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome,
-};
 mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
@@ -195,14 +114,6 @@ pub use access::INITIAL_POLICY as INITIAL_ACCESS_POLICY;
 pub use access::check_access_record;
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
-#[cfg(not(target_arch = "wasm32"))]
-use content_verifier::require_file_read;
-mod fork_verifier;
-pub use fork_verifier::FilesystemForkVerifier;
-mod project_verifier;
-pub use project_verifier::FilesystemProjectMergeVerifier;
-mod parent;
-pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
 /// Pins a generation that a published file version names, under the one
 /// label every unmeasured publication uses, so the version stays readable.
 #[doc(hidden)]
@@ -242,7 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a fork_preparer_io::PreparationIo>,
+        io: Option<&'a bounded_io::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>
     where
         A: 'static,
@@ -306,12 +217,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let descriptor = crate::executor::with_history_io(io, |work| {
                 FileDescriptor::from_bytes(bytes, media_type, work)
             })?;
-            let operation = fork_preparer_io::operation_key(idempotency_key, io)?;
+            let operation = bounded_io::operation_key(idempotency_key, io)?;
             let provisional = crate::executor::with_history_io(io, |work| {
                 FileRef::new(
                     volume.copy(work)?,
                     stock_string_copy(path, io)?,
-                    fork_preparer_io::hex_key(&operation.into_bytes(), io)?,
+                    bounded_io::hex_key(&operation.into_bytes(), io)?,
                     FileDescriptor::new(
                         *descriptor.sha256(),
                         descriptor.byte_length(),
@@ -321,7 +232,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     work,
                 )
             })?;
-            let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
+            let workspace = bounded_io::content_workspace(&self.provider, volume, io)?;
             let receipt_identity = if internal_class.is_some() {
                 provisional.path()
             } else {
@@ -373,8 +284,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let authorized_generation = (authorized_generation, generation_hold);
             if let Some(prior) = prior {
                 let generation = (self).generation_ref_id(prior.id(), io)?;
-                fork_preparer_io::retain(&prior, io).await?;
-                let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
+                bounded_io::retain(&prior, io).await?;
+                let version = bounded_io::hex_key(generation.as_resource().key(), io)?;
                 let receipt_path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
                 })?;
@@ -495,14 +406,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     io,
-                    None,
                 )?
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
-            let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
+            let version = bounded_io::hex_key(generation_reference.as_resource().key(), io)?;
             {
                 match io {
-                    Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
+                    Some(io) => bounded_io::retain(&generation, Some(io)).await?,
                     None => retain_published_generation(&generation).await?,
                 }
             }
@@ -592,7 +502,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         reference: &FileRef,
         maximum_bytes: u64,
-        io: Option<&fork_preparer_io::PreparationIo>,
+        io: Option<&bounded_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
@@ -611,7 +521,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         reference: &FileRef,
         maximum_bytes: u64,
-        io: Option<&fork_preparer_io::PreparationIo>,
+        io: Option<&bounded_io::PreparationIo>,
     ) -> Result<PinnedRead<A, O>> {
         if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || {
@@ -648,7 +558,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let generation = self.file_generation(reference, None)?;
             let workspace =
-                fork_preparer_io::content_workspace(&self.provider, reference.volume(), None)?;
+                bounded_io::content_workspace(&self.provider, reference.volume(), None)?;
             let path = format!("/{}", reference.path());
             // Keep the authenticated immutable handle from the read. A
             // retaining caller can pin it without opening the workspace
@@ -673,7 +583,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
-        io: Option<&'a fork_preparer_io::PreparationIo>,
+        io: Option<&'a bounded_io::PreparationIo>,
     ) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
     + acyclic_stream::ProviderTask
     + 'a {
@@ -692,11 +602,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     });
                 }
                 let generation = self.file_generation(reference, Some(io))?;
-                let workspace = fork_preparer_io::content_workspace(
-                    &self.provider,
-                    reference.volume(),
-                    Some(io),
-                )?;
+                let workspace =
+                    bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
                 let rendered = original
                     .display(&format_args!("/{}", reference.path()))
                     .map_err(|cause| Error::NativeWork {
@@ -716,7 +623,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         source: Box::new(source),
                         custody: None,
                     })?;
-                fork_preparer_io::retain(&pinned, Some(io)).await?;
+                bounded_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
                 })?;
@@ -741,8 +648,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let generation_hold = io
                 .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
                 .transpose()?;
-            let workspace =
-                fork_preparer_io::content_workspace(&self.provider, reference.volume(), io)?;
+            let workspace = bounded_io::content_workspace(&self.provider, reference.volume(), io)?;
             let _workspace_hold = io
                 .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
                 .transpose()?;
@@ -766,7 +672,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })?;
                     io.retain_owned(capacity as u64)?;
-                    fork_preparer_io::retain(&pinned, Some(io)).await?;
+                    bounded_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {
@@ -793,12 +699,6 @@ mod tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod pinned_read_tests;
-
-mod stock_turn;
-pub use stock_turn::StockTurnMachine;
-#[doc(hidden)]
-pub mod child_agent;
-pub use child_agent::ChildAgentMachine;
 
 use crate::executor::{stock_boundary, stock_string_copy};
 

@@ -143,28 +143,14 @@ where
         let head_condition = condition(&self.stream, &head, head_tail, &mut work).await?;
         let execution_condition =
             condition(&self.stream, &execution, summary.tail - 1, &mut work).await?;
-        let owner = match self.owner.as_ref() {
-            Some((owner, _)) => Some(
-                owner
-                    .execution_condition(operation, event, &mut work)
-                    .await?,
-            ),
-            None => None,
-        };
-        let digest = publication_digest(&checkpoint, retry, &owner, io)?;
+        let digest = publication_digest(&checkpoint, retry, io)?;
         let cut = pages::Cut {
-            // Recovery belongs to the admitted task, just as the original
-            // owner-fenced journal append did. The execution ID names storage.
-            operation: self
-                .owner
-                .as_ref()
-                .map_or(operation, |(owner, _)| owner.operation_id()),
+            operation,
             execution: &execution,
             head: &head,
             pages: &pages,
             execution_condition,
             head_condition,
-            owner,
             execution_tail: summary.tail - 1,
             head_tail,
             base,
@@ -208,22 +194,11 @@ fn invalid(io: Option<&PreparationIo>) -> Error {
 fn publication_digest(
     checkpoint: &OwnedBytes,
     retry: [u8; 32],
-    owner: &Option<CommitCondition>,
     io: Option<&PreparationIo>,
 ) -> Result<[u8; 32]> {
-    let owner = match owner {
-        Some(CommitCondition::Tail { path, expected }) => Some((path.as_str(), *expected)),
-        None => None,
-        _ => return Err(invalid(io)),
-    };
     let checkpoint = crate::model::hash_bytes(checkpoint, io)?;
     let domain = b"harness/v1/indexed-execution\0";
-    let length = crate::core::owned_sum([
-        domain.len() as u64,
-        64,
-        1,
-        owner.map_or(0, |(path, _)| 16 + path.len() as u64),
-    ])?;
+    let length = crate::core::owned_sum([domain.len() as u64, 64, 1])?;
     if let Some(io) = io {
         io.charge(acyclic_fs::WorkCounters {
             bytes_hashed: length,
@@ -234,11 +209,7 @@ fn publication_digest(
     hasher.update(domain);
     hasher.update(&checkpoint);
     hasher.update(&retry);
-    hasher.update(&[u8::from(owner.is_some())]);
-    if let Some((path, expected)) = owner {
-        hasher.update(&(path.len() as u64).to_le_bytes());
-        hasher.update(path.as_bytes());
-        hasher.update(&expected.to_le_bytes());
-    }
+    // The former owner-presence flag; kept so existing digests still match.
+    hasher.update(&[0]);
     Ok(*hasher.finalize().as_bytes())
 }

@@ -62,8 +62,6 @@ mod accounting_trace {
     include!("memory_store/retention_scan_capture.rs");
 }
 pub mod agent;
-pub mod agent_loop;
-pub mod bundle;
 #[doc(hidden)]
 pub mod command_request;
 pub mod context;
@@ -72,8 +70,6 @@ pub mod contract;
 pub mod conversation;
 pub mod core;
 pub mod distributed;
-pub mod durable_host;
-pub mod durable_tool;
 pub mod effect_host;
 pub mod effects;
 pub mod executor;
@@ -113,13 +109,10 @@ pub mod objects;
 mod obs;
 pub mod projection;
 pub mod registry;
-pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
-pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
-pub mod task_volume;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool;
@@ -134,7 +127,6 @@ pub use wire_codec::encode_error;
 mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
-pub mod workflow;
 
 /// Optional original native work; `None` selects unbounded work.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -169,7 +161,6 @@ pub use crate::executor::json::{
     json_typed_diagnostic_owned_bytes, json_value_bounded, json_value_decode_owned_bytes,
     preparation_serde_diagnostic_label_bytes, sdk_json_diagnostic_bytes,
 };
-pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
 pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
     COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities,
@@ -186,8 +177,6 @@ pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]
-pub use resource_preparation::ChildScratchCreationProof;
-
 mod process_error;
 pub use process_error::ProcessError;
 

@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
+use completion::AcceptedCompletionIo;
 
 fn control_budget() -> WorkBudget {
     WorkBudget {

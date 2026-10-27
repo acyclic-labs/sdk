@@ -1,3 +1,0 @@
-{"writes":[{"path":"plans/main.md","text":"first"},{"path":"plans/main.md","text":""},{"path":"plans/main.md","text":
-  "last"}],"expect":{"files":{"plans/main.md":"last"},"changes":[{"path":"plans/main.md","text":"first"},{"path":
-  "plans/main.md","text":""},{"path":"plans/main.md","text":"last"}]},"folder":"plans"}

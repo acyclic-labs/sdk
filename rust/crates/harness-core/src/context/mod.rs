@@ -61,8 +61,6 @@ pub use manifest::DEFAULT_CONVENTIONS_JSON;
 mod checkpoint;
 pub use checkpoint::*;
 #[doc(hidden)]
-pub mod summary_source;
-pub use summary_source::*;
 mod durable;
 pub use durable::*;
 mod validation;

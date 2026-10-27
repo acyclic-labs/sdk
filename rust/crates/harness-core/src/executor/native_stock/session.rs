@@ -4,8 +4,6 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) stock: &'a StockExecutor,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
@@ -35,8 +33,6 @@ impl<'a> StockExecution<'a> {
                 .task_context
                 .as_ref()
                 .map(|(context, operation)| (context, *operation)),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            interactions: None,
             io: None,
             summary: None,
             compaction: once_cell::sync::OnceCell::new(),
@@ -134,103 +130,6 @@ impl<'a> StockExecution<'a> {
             self.stock.inherited_prefix.as_ref()
         }
     }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::executor) fn native_execution_supported(
-    stock: &StockExecutor,
-    context: &Arc<crate::runtime::TaskContext>,
-    journal: &dyn ExecutionJournal,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    work.remaining()?;
-    let io = PreparationIo::from_native_work(work)?;
-    let operation = stock
-        .task_context
-        .as_ref()
-        .map_or(context.id(), |(_, operation)| *operation);
-    let session = StockExecution {
-        context: Some((context, operation)),
-        io: Some(&io),
-        ..StockExecution::ordinary(stock)
-    };
-    if !context.native_metadata_matches(work) {
-        return Err(stock_boundary(
-            Some(&io),
-            crate::wire::ErrorCode::Unauthorized,
-            "stock context lacks its original native custody",
-        ));
-    }
-    session.verify_task_context_binding(operation)?;
-    if !journal.supports_native_execution(work)? || !stock.provider.supports_native_model(work)? {
-        return Err(stock_boundary(
-            Some(&io),
-            crate::wire::ErrorCode::Unsupported,
-            "native stock producer is unavailable",
-        ));
-    }
-    if let Some((host, _, _)) = &stock.task
-        && !host.supports_native_execution(work)?
-    {
-        return Err(stock_boundary(
-            Some(&io),
-            crate::wire::ErrorCode::Unsupported,
-            "native stock task owner is unavailable",
-        ));
-    }
-    stock.context.validate(Some(&io))?;
-    for (_, policy) in context
-        .stock_tool_policy_binding()
-        .into_iter()
-        .chain(context.as_ref().stock_tool_policy_overrides())
-    {
-        policy.identity_with_native_work(work)?;
-    }
-    if let Some(policy) = &stock.policy {
-        let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "stock policy is not the original context policy",
-            });
-        };
-        if !Arc::ptr_eq(policy, original) {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "stock policy is not the original context policy",
-            });
-        }
-    }
-    context.as_ref().validate_stock_scope_with_native_work(
-        &stock.tool_scope,
-        stock.limits,
-        work,
-    )?;
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::executor) async fn native_result<T>(
-    io: &PreparationIo,
-    operation: impl std::future::Future<Output = Result<T>>,
-    owned_bytes: impl FnOnce(&T) -> Result<u64>,
-) -> Result<(T, acyclic_fs::NativeAllocation)> {
-    io.retain_owned(std::mem::size_of::<T>() as u64)?;
-    let output = operation.await?;
-    let retained = owned_bytes(&output)?;
-    io.original_native_work()
-        .ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Storage,
-                "native result has no ledger",
-            )
-        })?
-        .remaining()?;
-    let owned = io.owned_bytes()?;
-    if retained > owned {
-        io.retain_owned(retained - owned)?;
-    }
-    Ok((output, io.take_native_custody(retained)?))
 }
 
 impl StockExecutor {
@@ -331,11 +230,6 @@ impl StockExecutor {
         }
         self.context
             .validate(Some(&PreparationIo::from_native_work(work)?))?;
-        if let Some((host, _, _)) = &self.task
-            && !host.supports_native_execution(work)?
-        {
-            return Ok(false);
-        }
         if let Some(policy) = &self.policy {
             policy.identity_with_native_work(work)?;
         }

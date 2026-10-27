@@ -91,20 +91,15 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .executor
             .execute(
                 read_invocation.clone(),
-                Some(ToolContext::new(
-                    task.clone(),
-                    read_operation,
-                    "read",
-                    None
-                )?)
+                Some(ToolContext::new(task.clone(), read_operation, "read")?)
             )
             .await?
             .value,
         json!("one two")
     );
     for wrong_context in [
-        ToolContext::new(task.clone(), OperationId::new(), "read", None)?,
-        ToolContext::new(task.clone(), read_operation, "another-call", None)?,
+        ToolContext::new(task.clone(), OperationId::new(), "read")?,
+        ToolContext::new(task.clone(), read_operation, "another-call")?,
     ] {
         assert!(matches!(
             read_tool
@@ -126,7 +121,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: tool.definition.name.clone(),
         arguments: json!({"file":source,"old_text":"two","new_text":"three"}),
     };
-    let context = ToolContext::new(task.clone(), operation, "edit", None)?;
+    let context = ToolContext::new(task.clone(), operation, "edit")?;
     let first = tool
         .executor
         .execute(invocation.clone(), Some(context.clone()))
@@ -177,7 +172,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         arguments: json!({"path":"second.txt","text":"exact \u{e9}\r\n",
             "media_type":"text/plain","display_name":"second.txt"}),
     };
-    let write_context = ToolContext::new(task.clone(), write_operation, "write", None)?;
+    let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
     let written = write_tool
         .executor
         .execute(write_invocation.clone(), Some(write_context.clone()))
@@ -213,7 +208,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: patch_tool.definition.name.clone(),
         arguments: json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+patched\n"}),
     };
-    let patch_context = ToolContext::new(task.clone(), patch_operation, "patch", None)?;
+    let patch_context = ToolContext::new(task.clone(), patch_operation, "patch")?;
     let patched = patch_tool
         .executor
         .execute(patch_invocation.clone(), Some(patch_context.clone()))
@@ -273,8 +268,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
                 Some(ToolContext::new(
                     task.clone(),
                     stale_patch_operation,
-                    "patch",
-                    None
+                    "patch"
                 )?)
             )
             .await,
@@ -293,12 +287,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .executor
             .reconcile(
                 read_invocation,
-                Some(ToolContext::new(
-                    task.clone(),
-                    read_operation,
-                    "read",
-                    None
-                )?)
+                Some(ToolContext::new(task.clone(), read_operation, "read")?)
             )
             .await?
             .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
@@ -312,10 +301,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     };
     assert!(matches!(
         tool.executor
-            .execute(
-                stale,
-                Some(ToolContext::new(task.clone(), fresh, "edit", None)?)
-            )
+            .execute(stale, Some(ToolContext::new(task.clone(), fresh, "edit")?))
             .await,
         Err(Error::Conflict(_))
     ));
@@ -337,7 +323,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             tool.executor
                 .execute(
                     invocation.clone(),
-                    Some(ToolContext::new(restricted, operation, "edit", None)?)
+                    Some(ToolContext::new(restricted, operation, "edit")?)
                 )
                 .await,
             Err(Error::Unauthorized(_))
@@ -371,12 +357,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
                 .executor
                 .execute(
                     invalid,
-                    Some(ToolContext::new(
-                        write_context.clone(),
-                        op,
-                        "invalid-path",
-                        None
-                    )?)
+                    Some(ToolContext::new(write_context.clone(), op, "invalid-path")?)
                 )
                 .await,
             Err(Error::Invalid(_)) | Err(Error::Unauthorized(_))
@@ -407,7 +388,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         tool.executor
             .execute(
                 invocation.clone(),
-                Some(ToolContext::new(foreign_context, operation, "edit", None)?)
+                Some(ToolContext::new(foreign_context, operation, "edit")?)
             )
             .await,
         Err(Error::Unauthorized(_))
@@ -425,10 +406,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         json!("different");
     assert!(matches!(
         tool.executor
-            .reconcile(
-                changed,
-                Some(ToolContext::new(task, operation, "edit", None)?)
-            )
+            .reconcile(changed, Some(ToolContext::new(task, operation, "edit")?))
             .await,
         Err(Error::Conflict(_))
     ));

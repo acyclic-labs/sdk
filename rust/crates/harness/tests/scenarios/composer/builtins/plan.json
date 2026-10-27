@@ -1,4 +1,0 @@
-{
-  "prompt": "/plan",
-  "expect": {"result":{"kind":"select","query":"plan"}}
-}

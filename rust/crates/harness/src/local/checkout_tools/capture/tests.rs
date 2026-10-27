@@ -107,7 +107,7 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
     assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
     drop(cursor);
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
@@ -197,7 +197,7 @@ async fn recovers(stage: &'static str) -> Result<()> {
     assert_eq!(contents(&tools).await?, b"after");
     drop(slot);
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 #[tokio::test]
@@ -280,7 +280,7 @@ async fn repeated_invalidation_is_bounded_and_never_publishes_a_candidate() -> R
     assert_eq!(contents(&tools).await?, b"after");
     drop(slot);
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 #[tokio::test]
@@ -299,7 +299,7 @@ async fn overflow_and_unconfirmed_initial_batches_rebaseline() -> Result<()> {
         assert_eq!(contents(&tools).await?, b"after");
     }
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 #[tokio::test]
@@ -317,7 +317,7 @@ async fn root_invalidation_is_never_retried_as_overflow() -> Result<()> {
     ));
     assert!(slot.is_none());
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 #[tokio::test]
@@ -377,7 +377,7 @@ async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
     run(&tools, &mut slot).await?;
     drop(slot);
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 #[tokio::test]
@@ -456,7 +456,7 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     assert_eq!(contents(&tools).await?, b"other");
     drop((cursor, other, checkout));
     drop(tools);
-    harness.close().await
+    harness.disconnect().await
 }
 
 proptest::proptest! {
@@ -487,7 +487,7 @@ proptest::proptest! {
             assert!(empty.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
             drop(slot);
             drop(tools);
-            harness.close().await
+            harness.disconnect().await
         }).unwrap();
     }
 }

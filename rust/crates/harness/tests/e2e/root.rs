@@ -1,6 +1,5 @@
 // Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod case_workers;
-mod composer;
 mod deadline_tests;
 mod discovery;
 mod drivers;
@@ -8,28 +7,18 @@ mod execution;
 mod expectations;
 #[path = "../support/expected_outcome.rs"]
 mod expected_outcome;
-mod goal_execution;
-mod goal_workers;
-mod goals;
-mod goals_tests;
 mod limits_tests;
-mod local_admission;
 mod local_case;
 mod local_cloud;
 mod local_tests;
 mod local_workspace;
 mod matchers;
-mod notification_history;
-mod notifications;
-mod notifications_tests;
 #[path = "../support/ordered_matcher.rs"]
 mod ordered_matcher;
-mod plans;
 #[path = "../support/progress_guard_tests.rs"]
 mod progress_guard_tests;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
-mod remote_swarm;
 mod resume;
 mod runtime_tests;
 mod scenario;
@@ -37,20 +26,6 @@ mod scenario;
 mod scenario_data;
 #[path = "../support/scenario_matchers.rs"]
 mod scenario_matchers;
-mod subagents;
-mod swarm;
-mod swarm_case;
-mod swarm_provider;
-mod swarm_publish;
-#[path = "../support/swarm_session.rs"]
-mod swarm_runtime;
-mod swarm_scaling;
-mod swarm_tests;
-mod swarm_views;
-mod swarm_wire;
-mod task_queries;
-mod task_query_case;
-mod task_query_tests;
 use acyclic_harness::context::CompactionPolicy;
 use drivers::run;
 use futures::{StreamExt as _, stream};

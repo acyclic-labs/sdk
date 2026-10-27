@@ -69,12 +69,9 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
         .await
         .unwrap();
     let host = if matches!(fault, Fault::ForeignWorkspace) {
-        let reference = super::super::fork_preparer_io::content_workspace(
-            &right.host.provider,
-            &right.volume,
-            None,
-        )
-        .unwrap();
+        let reference =
+            super::super::bounded_io::content_workspace(&right.host.provider, &right.volume, None)
+                .unwrap();
         let foreign = right.host.open(&reference, None).await.unwrap();
         left.host.for_workspace(&left.volume, foreign).unwrap()
     } else {

@@ -17,13 +17,6 @@ libfuzzer-sys = "0.4"
 serde = "1"
 serde_json = "1"
 
-[[bin]]
-name = "native_intent"
-path = "fuzz_targets/native_intent.rs"
-test = false
-doc = false
-bench = false
-
 # Match the canonical native debug build instead of recompiling dependencies
 # with this standalone workspace's default optimization profile.
 [profile.dev]
@@ -39,13 +32,6 @@ opt-level = 3
 [[bin]]
 name = "bounded_json"
 path = "fuzz_targets/bounded_json.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "native_journal"
-path = "fuzz_targets/native_journal.rs"
 test = false
 doc = false
 bench = false

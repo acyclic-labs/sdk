@@ -124,24 +124,6 @@ pub(crate) fn copy<T: Clone + Serialize>(
     Ok(source.clone())
 }
 
-#[cfg(any(test, feature = "filesystem"))]
-impl crate::resource_preparation::ResourceCreationProofRef {
-    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        CodecQuota::produce(work, |quota| {
-            copy(self, quota, |proof, work| {
-                proof.provider.validate(work)?;
-                proof.resource.validate(work)?;
-                proof.evidence.validate(work)?;
-                owned_sum([
-                    proof.provider.logical_owned_bytes()?,
-                    proof.resource.logical_owned_bytes()?,
-                    proof.evidence.logical_owned_bytes()?,
-                ])
-            })
-        })
-    }
-}
-
 impl<'a, 'w> CodecQuota<'a, 'w> {
     /// Formats one component into this assembly's existing custody.
     #[cfg(feature = "filesystem")]

@@ -1,3 +1,0 @@
-{"writes":[{"path":".tasks/t/status.json","text":"bad","channel":"Text"},{"path":".tasks/t/status.json","text":"ok"}],
-  "expect":{"files":{".tasks/t/status.json":"ok"},"changes":[{"path":".tasks/t/status.json","text":"ok"}],"errors":
-  ["invalid_segment"]}}

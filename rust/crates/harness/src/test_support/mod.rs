@@ -3,8 +3,6 @@
 pub use acyclic_harness_core::test_support::*;
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
-mod client_views;
-pub use client_views::empty_client_views;
 #[cfg(feature = "test-support")]
 pub(crate) mod model_view_work;
 #[cfg(feature = "test-support")]
@@ -135,14 +133,6 @@ pub async fn prompt_settled(
     Err(crate::Error::NotFound(format!(
         "settled turn of prompt {id}"
     )))
-}
-
-/// The composition's actual task provider, for scenario wire-frame assertions.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub fn local_task_stream(
-    harness: &crate::LocalHarness,
-) -> std::sync::Arc<acyclic_stream::LocalStream> {
-    harness.task_stream()
 }
 
 #[cfg(all(

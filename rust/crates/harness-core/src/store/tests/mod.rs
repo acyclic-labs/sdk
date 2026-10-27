@@ -3,9 +3,6 @@ mod extensions;
 mod history_tests;
 mod interactions;
 #[cfg(feature = "filesystem")]
-#[path = "../measured_fork/mod.rs"]
-mod measured_fork_tests;
-#[cfg(feature = "filesystem")]
 #[path = "../measured_open/mod.rs"]
 mod measured_open_tests;
 mod messages;

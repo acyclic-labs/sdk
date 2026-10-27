@@ -61,7 +61,7 @@ impl McpRuntimeCallbacks {
     }
 }
 impl McpRuntimeCallbacks {
-    /// Admits and replays a callback through its recorded model or interaction owner.
+    /// Admits and replays a callback through its recorded model owner.
     pub async fn admit(
         &self,
         context: ToolContext,
@@ -83,57 +83,6 @@ impl McpRuntimeCallbacks {
             rmcp::model::ServerRequest::CreateMessageRequest(sampling) => {
                 self.admit_sampling(&context, request, operation, sampling.params)
                     .await?
-            }
-            rmcp::model::ServerRequest::ElicitRequest(elicitation) => {
-                if !context.scope().grants().contains("interaction:route") {
-                    return Err(Error::Unauthorized(
-                        "MCP elicitation lacks interaction:route".into(),
-                    ));
-                }
-                let rmcp::model::ElicitRequestParams::FormElicitationParams { message, .. } =
-                    elicitation.params
-                else {
-                    return Err(Error::Unsupported(
-                        "MCP URL elicitation requires a separately installed host interaction"
-                            .into(),
-                    ));
-                };
-                let interaction = Interaction::Form {
-                    title: message,
-                    schema: request
-                        .message
-                        .pointer("/params/requestedSchema")
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("MCP form schema absent".into()))?,
-                };
-                interaction.validate(&mut None)?;
-                self.pin(operation, request).await?;
-                match context.interact(operation, interaction.clone()).await? {
-                    InteractionOutcome::Answered { answer } => {
-                        let bytes = self.journal.load(&answer, None)?.await?;
-                        answer.descriptor().verify(&bytes, &mut None)?;
-                        let response: InteractionResponse =
-                            crate::contract::json_from_slice(&bytes)
-                                .map_err(|error| Error::Invalid(error.to_string()))?;
-                        interaction.validate_response(&response, &mut None)?;
-                        let InteractionResponse::Form { value } = response else {
-                            return Err(Error::Invalid("MCP form answer kind differs".into()));
-                        };
-                        json!({"action":"accept","content":value})
-                    }
-                    InteractionOutcome::Declined {} | InteractionOutcome::Denied {} => {
-                        json!({"action":"decline"})
-                    }
-                    InteractionOutcome::Cancelled {} | InteractionOutcome::Expired {} => {
-                        json!({"action":"cancel"})
-                    }
-                    InteractionOutcome::Indeterminate { .. } => {
-                        return Err(Error::Indeterminate(operation));
-                    }
-                    InteractionOutcome::Approved {} => {
-                        return Err(Error::Invalid("MCP form received approval".into()));
-                    }
-                }
             }
             _ => {
                 return Err(Error::Unsupported(

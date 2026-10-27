@@ -33,10 +33,7 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        let pinned = self.stock.summary_source.as_deref();
-        if pinned.is_none() {
-            stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
-        }
+        stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
         stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let summary_output = self.output_budget()?;
         if summary_output.is_none() {
@@ -47,7 +44,7 @@ impl StockExecution<'_> {
             ));
         }
         let (source_bytes, source_digest, source_messages) =
-            self.summary_source_identity(&source, pinned)?;
+            self.summary_source_identity(&source)?;
         let revision = with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!("{}", blake3::Hash::from(source_digest).to_hex()),
@@ -57,8 +54,6 @@ impl StockExecution<'_> {
         let executor = StockExecution {
             stock: self.stock,
             context: self.context,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            interactions: self.interactions,
             io: self.io,
             summary: Some((
                 ContextPipeline::summary_source(source, revision, self.io)?,
@@ -80,7 +75,6 @@ impl StockExecution<'_> {
         self.validate_summary_capacity(&executor, journal, &input, step)
             .await?;
         executor.validate_turn_input(journal, &input).await?;
-        self.verify_execution_owner().await?;
         if let Some(parent) = parent {
             // Public in-turn summaries validate at entry; automatic compaction
             // is already inside the validated parent's execution.
@@ -124,21 +118,14 @@ impl StockExecution<'_> {
     fn summary_source_identity(
         &self,
         source: &crate::context::Context,
-        pinned: Option<&FileRef>,
     ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
-        let source_bytes: Option<acyclic_stream::OwnedBytes> = if pinned.is_some() {
-            None
-        } else {
-            Some(match self.io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-                _ => crate::contract::canonical_json_bytes(&source)?.into(),
-            })
+        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            _ => crate::contract::canonical_json_bytes(&source)?.into(),
         };
-        let source_digest = match pinned {
-            Some(file) => *file.descriptor().sha256(),
-            None => crate::model::hash_bytes(source_bytes.as_deref().unwrap(), self.io)?,
-        };
+        let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
+        let source_bytes = Some(source_bytes);
         let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
             stock_boundary(
                 self.io,
@@ -226,11 +213,9 @@ impl StockExecution<'_> {
             // A turn may compact more than once. Its file receipt must not alias
             // another step or any of the task's tool publications.
             let publication = summary_publication(operation_id, step, self.io)?;
-            self.verify_execution_owner().await?;
             let output = context
                 .stage_private_file_once(summaries, publication, &path, text.as_bytes(), self.io)
                 .await?;
-            self.verify_execution_owner().await?;
             output
         } else {
             let output_key = with_history_io(self.io, |work| {

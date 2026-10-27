@@ -2,46 +2,6 @@ use super::run;
 use crate::TestResult;
 use serde_json::json;
 
-#[tokio::test(start_paused = true)]
-async fn direct_swarm_dispatch_rejects_a_permanently_pending_reopen() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    let mut value =
-        crate::scenario::load_value(&root, &root.join("swarm/prefetch-promotion.json"))?;
-    run(value.clone()).await?;
-    value.as_object_mut().ok_or("scenario")?.remove("driver");
-    let case = serde_json::from_value(value)?;
-    let error = run(super::Case::SwarmFault(
-        Box::new(case),
-        crate::swarm_wire::Fault::StalledReopen,
-    ))
-    .await
-    .expect_err("an async driver owner hid a permanent reopen stall");
-    assert!(
-        error
-            .to_string()
-            .contains("stalled: driver at swarm index reopen"),
-        "{error}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    for name in ["lifecycle", "multiple-files", "malformed-raw"] {
-        let mut baseline =
-            crate::scenario::load_value(&root, &root.join(format!("plans/{name}.json")))?;
-        baseline
-            .as_object_mut()
-            .ok_or("missing scenario")?
-            .remove("driver");
-        super::super::plans::Plans::parse(baseline)?
-            .negative_oracles()
-            .await?;
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn unbound_tool_oracles_reject_corrupted_names_and_arguments() -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
@@ -98,78 +58,6 @@ async fn unbound_tool_oracles_reject_inserted_arguments() -> TestResult {
             run(case).await.is_err(),
             "accepted inserted arguments in {path}"
         );
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn driver_schemas_reject_unknown_and_inapplicable_fields() {
-    let base = json!({"driver":"composer","prompt":"/plan",
-        "expect":{"result":{"kind":"select","query":"plan"}}});
-    assert!(run(base.clone()).await.is_ok());
-    for (field, value) in [
-        ("driver", json!("unknown")),
-        ("driver", json!(null)),
-        ("turns", json!([])),
-        ("kind", json!("summary")),
-        ("maximum_bytes", json!(-1)),
-        ("commands", json!([{"scope":"project","typo":true}])),
-        ("expect", json!({})),
-        ("expect", json!({"result":{}})),
-        ("expect", json!({"error":""})),
-        ("expect", json!({"result":{"kind":"select"},"error":"x"})),
-        ("expect", json!({"text":"wrong driver"})),
-        (
-            "expect",
-            json!({"result":{"kind":"select"},"completions":[]}),
-        ),
-        ("expect", json!({"error":"x","mention_files":[]})),
-    ] {
-        let mut case = base.clone();
-        case[field] = value;
-        assert!(run(case).await.is_err(), "accepted invalid {field}");
-    }
-}
-
-#[tokio::test]
-async fn composer_oracles_reject_changed_results_completions_bytes_and_snapshots() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    let path = root.join("composer/mentions/pinned.json");
-    run(crate::scenario::load_value(&root, &path)?).await?;
-    let baseline = crate::scenario::load_value(&root, &path)?;
-    for field in [
-        "result",
-        "mention_files",
-        "files",
-        "snapshot",
-        "workspace",
-        "error",
-    ] {
-        let mut case = baseline.clone();
-        match field {
-            "result" => case["expect"]["result"]["text"] = json!("wrong"),
-            "mention_files" => case["expect"]["mention_files"] = json!(["after"]),
-            "files" => case["expect"]["files"]["project/a.txt"] = json!("before"),
-            "snapshot" => {
-                case["after_capture"] = json!({});
-            }
-            "workspace" => case["workspace"] = json!("other"),
-            "error" => {
-                case["expect"] = json!({"error":"wrong expected failure"});
-            }
-            _ => return Err("unknown mutation".into()),
-        }
-        assert!(run(case).await.is_err(), "accepted wrong {field}");
-    }
-    for path in [
-        "composer/builtins/completion-all.json",
-        "composer/builtins/completion-empty.json",
-    ] {
-        let path = root.join(path);
-        run(crate::scenario::load_value(&root, &path)?).await?;
-        let mut case = crate::scenario::load_value(&root, &path)?;
-        case["expect"]["completions"] = json!(["wrong"]);
-        assert!(run(case).await.is_err(), "accepted wrong completion");
     }
     Ok(())
 }
@@ -251,35 +139,6 @@ async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> 
             }
             assert!(run(case).await.is_err(), "accepted {name}: {mutation}");
         }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn composer_byte_boundary_oracles_reject_character_counts_and_expansion_overflow()
--> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    for (name, maximum) in [
-        ("ascii-exact", 4),
-        ("ascii-over", 5),
-        ("unicode-exact", 2),
-        ("unicode-over", 6),
-        ("builtin-exact", 4),
-        ("builtin-over", 5),
-        ("templates/appended-arguments-exact", 14),
-        ("templates/appended-arguments-over", 15),
-        ("templates/unicode-body-exact", 15),
-        ("templates/unicode-body-over", 16),
-    ] {
-        let baseline =
-            crate::scenario::load_value(&root, &root.join(format!("composer/limits/{name}.json")))?;
-        run(baseline.clone()).await?;
-        let mut changed = baseline;
-        changed["maximum_bytes"] = json!(maximum);
-        assert!(
-            run(changed).await.is_err(),
-            "accepted wrong bound for {name}"
-        );
     }
     Ok(())
 }

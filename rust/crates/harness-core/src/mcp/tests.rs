@@ -1,9 +1,9 @@
 use super::remote::RemoteTool;
 use super::*;
 use crate::{
-    Capabilities, Outcome,
+    Capabilities,
     conversation::Limits,
-    runtime::{Bindings, RuntimeScope, TaskContext, TaskDefinition},
+    runtime::{RuntimeScope, TaskContext},
 };
 use crate::{
     Error, InteractionId, OperationId, Result,
@@ -279,24 +279,22 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
 
 fn context_result(context: &ToolContext, structured_content: &Value) -> Value {
     json!({"content":[], "structuredContent":structured_content, "isError":false,
-        "_meta":{"task":context.task().id(), "operation":context.operation_id(),
-            "call":context.call_id(), "serverGrant":context.task().scope().grants().contains("mcp:call:fixture"),
-            "durableTask":context.task().durable_task_id()}})
+        "_meta":{"operation":context.operation_id(), "call":context.call_id(),
+            "serverGrant":context.task().scope().grants().contains("mcp:call:fixture")}})
 }
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let operation = OperationId::from_bytes([17; 16]);
     let denied = Arc::new(task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?);
     let task = Arc::new(task);
-    let context = ToolContext::new(Arc::clone(&task), operation, "provider-call", None)?;
+    let context = ToolContext::new(Arc::clone(&task), operation, "provider-call")?;
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "provider-call".into(),
         name: tool.definition.name.clone(),
         arguments: json!({"value":1}),
     };
-    let expected = json!({"task":task.id(), "operation":operation,
-        "call":"provider-call", "serverGrant":true, "durableTask":null});
+    let expected = json!({"operation":operation, "call":"provider-call", "serverGrant":true});
     let result = tool
         .executor
         .execute(invocation.clone(), Some(context.clone()))
@@ -313,10 +311,9 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
             Arc::clone(&task),
             OperationId::from_bytes([18; 16]),
             "provider-call",
-            None,
         )?,
-        ToolContext::new(task, operation, "different-call", None)?,
-        ToolContext::new(denied, operation, "provider-call", None)?,
+        ToolContext::new(task, operation, "different-call")?,
+        ToolContext::new(denied, operation, "provider-call")?,
     ] {
         assert!(matches!(
             tool.executor
@@ -351,26 +348,11 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
         .get("mcp.fixture.a", None, None)?
         .cloned()
         .ok_or_else(|| Error::NotFound("context fixture".into()))?;
-    let definition = TaskDefinition::live("mcp.context", "1", move |task, (): ()| {
-        let tool = tool.clone();
-        async move {
-            check_context_dispatch(task, &tool).await?;
-            Ok(1_u32)
-        }
-    })?;
-    let mut bindings = Bindings::local();
-    bindings.tasks.register(definition)?;
-    bindings.scope = RuntimeScope::new(
-        Capabilities::new(["task:spawn:mcp.context@1", "mcp:call:fixture"]),
-        Limits::default(),
+    let task = crate::runtime::test_context::agent_context(
+        RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?,
+        None,
     )?;
-    let harness = bindings.build(None)?;
-    let definition = harness.task::<(), u32>("mcp.context")?;
-    assert_eq!(
-        harness.spawn(&definition, ()).await?.result().await?,
-        Outcome::Succeeded(1)
-    );
-    Ok(())
+    check_context_dispatch(task, &tool).await
 }
 #[tokio::test]
 async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Result<()> {

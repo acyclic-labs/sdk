@@ -13,7 +13,7 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = std::env::args().skip(1);
-    let mut selected = "in-process".to_owned();
+    let mut selected = "local".to_owned();
     let mut filter = None;
     let mut report = None;
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/scenarios");
@@ -29,21 +29,12 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ => return Err(format!("unknown option {flag}").into()),
         }
     }
-    let report = report.ok_or(
-        "usage: scenarios --substrate <in-process|local|URL> [--filter TEXT] --report FILE",
-    )?;
-    let substrate: Arc<dyn Substrate> = match selected.as_str() {
-        "in-process" => Arc::new(substrate::InProcess),
-        "local" => Arc::new(substrate::Local),
-        _ => {
-            let http = substrate::remote::Http::new(selected)?;
-            Arc::new(substrate::Actors {
-                runtime: http.clone(),
-                volume: http,
-                bindings: substrate::fixture_bindings(),
-            })
-        }
-    };
+    let report =
+        report.ok_or("usage: scenarios [--substrate local] [--filter TEXT] --report FILE")?;
+    if selected != "local" {
+        return Err(format!("unknown substrate {selected}").into());
+    }
+    let substrate: Arc<dyn Substrate> = Arc::new(substrate::Local);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

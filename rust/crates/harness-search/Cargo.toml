@@ -12,7 +12,7 @@ documentation = "https://docs.rs/acyclic-harness-search"
 
 [features]
 test-support = ["acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support"]
-filesystem = ["acyclic-harness-core/filesystem", "dep:hex"]
+filesystem = ["acyclic-harness-core/filesystem"]
 search-http = ["acyclic-harness-core/search-http", "dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util"]
 
 [dependencies]
@@ -22,7 +22,6 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
-hex = { workspace = true, optional = true }
 http.workspace = true
 schemars = "=1.2.2"
 serde = { workspace = true, features = ["rc"] }
@@ -42,13 +41,10 @@ keyring = { version = "3.6.3", optional = true, features = ["apple-native", "win
 [dev-dependencies]
 proptest.workspace = true
 jsonschema.workspace = true
-uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support", "filesystem-local"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
-hex.workspace = true
-loom = "0.7.2"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util", "process"] }
 

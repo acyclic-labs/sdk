@@ -42,7 +42,7 @@ fn rejected(
     let started = std::time::Instant::now();
     let allocations = acyclic_test_support::measure(|| {
         result = Some(runtime.block_on(async {
-            host.apply_generation(reference, None, &mutations, key, io, None)?
+            host.apply_generation(reference, None, &mutations, key, io)?
                 .await
         }));
     });
@@ -192,14 +192,7 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
         }];
         let key = IdempotencyKey::new(if accounted { "accounted" } else { "ordinary" })?;
         let generation = host
-            .apply_generation(
-                &reference,
-                None,
-                &mutations,
-                key,
-                accounted.then_some(&io),
-                None,
-            )?
+            .apply_generation(&reference, None, &mutations, key, accounted.then_some(&io))?
             .await?;
         drop(mutations);
         let generation = host.generation_ref_id(generation.id(), None)?;
@@ -287,28 +280,6 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
         "publication embeds a concrete child operation in its caller"
     );
 }
-
-#[test]
-fn workflow_commit_retains_only_its_owned_polling_handle() {
-    type Journal = crate::filesystem::FilesystemWorkflowJournal<
-        acyclic_stream::MemoryStream,
-        MemoryAuthorityBackend,
-        MemoryObjectBackend,
-    >;
-    let bytes = retained_operation_bytes(
-        |(journal, record, key): (
-            &'static Journal,
-            &'static crate::workflow::WorkflowRecord,
-            IdempotencyKey,
-        )| journal.commit_borrowed_with_io(0, key, record, None),
-    );
-    eprintln!("workflow commit retained bytes={bytes}");
-    assert!(
-        bytes <= 512,
-        "workflow embeds a concrete child operation in its caller"
-    );
-}
-
 #[test]
 fn transaction_operations_retain_only_owned_polling_handles() {
     type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;

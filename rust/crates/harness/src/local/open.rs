@@ -1,7 +1,6 @@
 use super::*;
 
 struct Opening {
-    code: crate::package::harness::HarnessCode,
     config: LocalHarnessConfig,
     state_location: config::StateLocation,
     tools: ToolRegistry,
@@ -18,32 +17,24 @@ struct Opening {
 
 struct Storage {
     issuer: AuthorityRoot,
-    directory: PathBuf,
     owner: owner::Owner,
     files: Arc<LocalFilesystem>,
     /// The Stream provider holding the filesystem's volume authority.
     volume_stream: Arc<LocalStream>,
     scratch: VolumeRef,
     journal: VolumeRef,
-    task_volume: VolumeRef,
     #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
-pub(crate) async fn open(
-    code: crate::package::harness::HarnessCode,
-    config: LocalHarnessConfig,
-) -> Result<LocalHarness> {
-    let opening = Opening::configure(code, config).await?;
+pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
+    let opening = Opening::configure(config).await?;
     let storage = opening.storage().await?;
     opening.finish(storage).await
 }
 
 impl Opening {
-    async fn configure(
-        code: crate::package::harness::HarnessCode,
-        config: LocalHarnessConfig,
-    ) -> Result<Self> {
+    async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
         if config.approval_issuer.is_some() {
             return Err(Error::Invalid(
@@ -66,11 +57,6 @@ impl Opening {
         let mut config = config.prepare_state()?;
         let state_location = config.state_location()?;
         let passive = config.model.is_none();
-        let code = if passive {
-            crate::package::harness::HarnessCode::native_host()?
-        } else {
-            code
-        };
         if passive && (config.default_tools || !config.tools.is_empty()) {
             return Err(Error::Invalid(
                 "native host coordination cannot register tools".into(),
@@ -129,7 +115,6 @@ impl Opening {
             checkout_tools::shell::executable()?;
         }
         Ok(Self {
-            code,
             config,
             state_location,
             tools,
@@ -228,11 +213,7 @@ impl Opening {
                 id: owner.task.to_string(),
             },
         )?;
-        let PrivateVolumes {
-            scratch,
-            journal,
-            task_volume,
-        } = PrivateVolumes::open(&files, &owner).await?;
+        let PrivateVolumes { scratch, journal } = PrivateVolumes::open(&files, &owner).await?;
         #[cfg(any(test, feature = "native-execution"))]
         let workspace = self
             .workspace(&filesystem, &directory, &owner, &issuer, &scratch, checkout)
@@ -263,13 +244,11 @@ impl Opening {
         )?;
         Ok(Storage {
             issuer,
-            directory,
             owner,
             files,
             volume_stream,
             scratch,
             journal,
-            task_volume,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
         })
@@ -341,74 +320,70 @@ impl Opening {
     async fn finish(self, opened: Storage) -> Result<LocalHarness> {
         let Storage {
             issuer,
-            directory,
             owner,
             files,
             volume_stream,
             scratch,
             journal,
-            task_volume,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
         } = opened;
-        let stream = Arc::new(
-            LocalStream::open_with_clock_and_anchor(
-                directory.join("stream"),
-                Default::default(),
-                self.config.clock.clone(),
-                self.config.test_state,
-            )
-            .await
-            .map_err(storage)?,
-        );
         let verifier = issuer.verifier(&mut None)?;
-        let approval_issuer = AuthorityRoot::bootstrap(
-            "acyclic.local.approvals",
-            owner
-                .key_ref
-                .as_ref()
-                .ok_or_else(|| Error::Unauthorized("local owner has no signing custody".into()))?,
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: owner.task.to_string(),
-            },
+        let volumes = (&owner.project, &scratch, &journal);
+        let (scope, signed) = scopes(&self, &issuer, owner.agent, volumes)?;
+        let reader = crate::filesystem::FilesystemContentVerifier::new(
+            files.clone(),
+            &verifier,
+            &signed,
+            self.config.limits.file_bytes,
+            None,
         )?;
-        let (runtime, signed, task_files) = runtime::open(
-            &self.code,
-            runtime::Configuration {
-                passive: self.config.model.is_none(),
-                files: files.clone(),
-                #[cfg(any(test, feature = "native-execution"))]
-                workspace: workspace.as_ref().map(Arc::clone),
-                stream,
-                task_volume: &task_volume,
-                issuer: &issuer,
-                approval_issuer: &approval_issuer,
-                verifier: &verifier,
-                agent: owner.agent,
-                project: &owner.project,
-                scratch: &scratch,
-                journal: &journal,
-                tools: &self.tools,
-                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-                capabilities: &self.capabilities,
-                limits: self.config.limits,
-                run_limits: self.config.run_limits,
-                session_limits: self.config.session_limits,
-                concurrency: self.config.concurrency,
-                clock: Arc::clone(&self.config.clock),
-                approval_policy: &self.config.approval_policy,
-            },
-        )
-        .await?;
-        let local = LocalHarness {
+        // A checkout's writes go through its checkout tools; only a configured
+        // volume takes ordinary project content writes.
+        let writer: Option<Arc<dyn crate::conversation::ContentPublisher>> =
+            match self.config.project {
+                LocalProject::Volume { .. } => Some(FilesystemContentPublisher::new(
+                    files.clone(),
+                    &owner.project,
+                    &verifier,
+                    &signed,
+                    self.config.limits.file_bytes,
+                    None,
+                )?),
+                LocalProject::Workspace(_) => None,
+            };
+        // A checkout binds its shell and filesystem tools to the workspace.
+        #[cfg(any(test, feature = "native-execution"))]
+        let workspace_tools = match &workspace {
+            Some(workspace) => Some(
+                workspace
+                    .executor(
+                        &owner.project,
+                        self.config.clock.clone(),
+                        &signed,
+                        &verifier,
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let workspace_tools = None;
+        let harness = crate::runtime::Bindings {
+            scope,
+            content: Some(crate::runtime::ContentBindings { reader, writer }),
+            workspace_tools,
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?;
+        Ok(LocalHarness {
             files,
-            runtime,
+            harness,
+            tools: self.tools,
             root: owner.agent,
-            root_authority: Some(issuer.clone()),
+            root_authority: Some(issuer),
             agent_stream: Some(volume_stream),
             agents: tokio::sync::OnceCell::new(),
-            task_files,
             project: owner.project.clone(),
             scratch,
             journal,
@@ -431,9 +406,6 @@ impl Opening {
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: self.diagnostics,
             goal_continuations: self.config.goal_continuations,
-            admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
-            publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
-            drivers: orphans::Drivers::new(),
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
             #[cfg(test)]
@@ -442,19 +414,63 @@ impl Opening {
             clock: self.config.clock,
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: self.config.environment_platform,
-        };
-        Ok(local)
+        })
     }
+}
+
+/// The agent turns' runtime scope, and the owner's signed scope over it and
+/// its private journal: the project, scratch and journal volumes, in order.
+fn scopes(
+    opening: &Opening,
+    issuer: &AuthorityRoot,
+    agent: AgentId,
+    volumes: (&VolumeRef, &VolumeRef, &VolumeRef),
+) -> Result<(RuntimeScope, Scope)> {
+    let (project, scratch, journal) = volumes;
+    let mut grants = Vec::new();
+    if opening.config.model.is_some() {
+        grants.extend([
+            "model:generate".to_owned(),
+            crate::contract::capability::INTERACTION_ROUTE.to_owned(),
+            "interaction:open".to_owned(),
+        ]);
+    }
+    for volume in [project, scratch] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            grants.push(volume.capability(operation, &mut None)?);
+        }
+        grants.push(volume.directory_read_capability("", &mut None)?);
+    }
+    for definition in opening.tools.definitions(None)? {
+        grants.push(format!("tool:call:{}", definition.name));
+    }
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    grants.extend(
+        opening
+            .capabilities
+            .iter()
+            // Registry definitions above already supply every tool-call grant.
+            .filter(|grant| !grant.starts_with("tool:call:"))
+            .map(str::to_owned),
+    );
+    grants.push(journal.directory_read_capability("inputs", &mut None)?);
+    let scope = RuntimeScope::new(
+        Capabilities::new(grants.iter().map(String::as_str)),
+        opening.config.limits,
+    )?
+    .with_run_limits(opening.config.run_limits, &mut None)?;
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        grants.push(journal.capability(operation, &mut None)?);
+    }
+    let signed =
+        issuer.bootstrap_scope("owner", &Capabilities::new(grants), Some(agent), &mut None)?;
+    Ok((scope, signed))
 }
 
 fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
     config.limits.validate(&mut None)?;
     if !config.active_directory.is_empty() {
         crate::conversation::validate_content_path(&config.active_directory, &mut None)?;
-    }
-    config.session_limits.validate(&mut None)?;
-    if config.concurrency == 0 {
-        return Err(Error::Invalid("local concurrency is zero".into()));
     }
     Ok(())
 }
@@ -484,7 +500,6 @@ pub(super) fn retain_skills(
 struct PrivateVolumes {
     scratch: VolumeRef,
     journal: VolumeRef,
-    task_volume: VolumeRef,
 }
 impl PrivateVolumes {
     async fn open(files: &LocalFilesystem, owner: &owner::Owner) -> Result<Self> {
@@ -502,21 +517,9 @@ impl PrivateVolumes {
             VolumeOwner::Agent(owner.agent),
             &mut None,
         )?;
-        let task_volume = VolumeRef::new(
-            owner.project.provider().clone(),
-            format!("tasks-{}", owner.agent),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(owner.agent),
-            &mut None,
-        )?;
-        files.create_volume(&task_volume).await?;
         files.create_volume(&scratch).await?;
         files.create_volume(&journal).await?;
-        Ok(Self {
-            scratch,
-            journal,
-            task_volume,
-        })
+        Ok(Self { scratch, journal })
     }
 }
 

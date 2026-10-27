@@ -78,9 +78,6 @@ pub struct RuntimeScope {
     pub(super) extensions_sealed: bool,
     pub(super) extension_runtime: Option<Arc<ExtensionRuntime>>,
     pub(super) extension_schemas: Option<SchemaRegistry>,
-    pub(crate) resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
-    #[doc(hidden)]
-    pub created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -95,8 +92,6 @@ impl Clone for RuntimeScope {
             extensions_sealed: self.extensions_sealed,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
-            resource_proofs: self.resource_proofs.clone(),
-            created_access: self.created_access.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_grants_custody: None,
         }
@@ -159,8 +154,6 @@ impl RuntimeScope {
             extensions_sealed: true,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
-            resource_proofs: self.resource_proofs.clone(),
-            created_access: self.created_access.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_grants_custody: None,
         })
@@ -219,28 +212,6 @@ impl RuntimeScope {
         self.clone_native_metadata(grants, limits, true, work)
     }
 
-    /// Extends the caller's existing quota with the same physical proof copy.
-    #[cfg(any(test, feature = "filesystem"))]
-    pub(crate) fn copy_resource_proofs(
-        proofs: &[crate::resource_preparation::ResourceCreationProofRef],
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
-        if quota.work().is_none() {
-            return Ok(proofs.to_vec());
-        }
-        crate::core::copy_vector(proofs, quota, |proof, quota| {
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                    bytes: 0,
-                    items: 1,
-                })?;
-            }
-            let (copied, retained) = proof.copy(quota.work())?;
-            quota.adopt(retained)?;
-            Ok(copied)
-        })
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn clone_native_metadata(
         &self,
@@ -262,13 +233,6 @@ impl RuntimeScope {
             Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?.0),
             None => None,
         };
-        let resource_proofs = {
-            let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-            let mut quota = crate::wire_codec::CodecQuota::from_retained(&mut observer, 0);
-            let copied = Self::copy_resource_proofs(&self.resource_proofs, &mut quota)?;
-            quota.transfer();
-            copied
-        };
         let scope = Self {
             grants: grants.0,
             limits,
@@ -277,8 +241,6 @@ impl RuntimeScope {
             extensions_sealed: sealed,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas,
-            resource_proofs,
-            created_access: self.created_access.clone(),
             _native_grants_custody: Some(grants.1),
         };
         Ok((scope, io.into_custody()?))
@@ -315,12 +277,6 @@ impl RuntimeScope {
     #[must_use]
     pub const fn run_limits(&self) -> TaskRunLimits {
         self.run_limits
-    }
-
-    pub(super) fn concurrency_bound(&self, configured: usize) -> usize {
-        self.run_limits
-            .concurrency
-            .map_or(configured, |bound| configured.min(bound))
     }
 
     /// Pins one committed agent selection for this scope and all descendants.
@@ -422,162 +378,6 @@ impl RuntimeScope {
         }
         self.extensions_sealed = true;
         Ok(self)
-    }
-
-    /// Exact durable proof references retained for descendant scope attenuation.
-    #[must_use]
-    pub fn resource_proofs(&self) -> &[crate::resource_preparation::ResourceCreationProofRef] {
-        &self.resource_proofs
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn validate_resumed_scope(
-        &self,
-        admitted: &Self,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        crate::executor::with_history_io(io, |work| {
-            crate::core::inspect_metadata(&admitted.grants, work)?;
-            let created = admitted.created_access.as_ref();
-            if admitted.grants.iter().any(|grant| {
-                !self.grants.contains(grant)
-                    && !created.is_some_and(|access| access.grants.contains(grant))
-            }) || !self.allows_authority(&self.grants, &admitted.limits)
-                || !self.run_limits.allows(&admitted.run_limits)
-                || self.extensions != admitted.extensions
-            {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "resumed scope widens authority or changes its admission seal",
-                ));
-            }
-            Ok(())
-        })
-    }
-
-    pub(super) fn resume_sealed(&self, admitted: Self, operation: OperationId) -> Result<Self> {
-        let mut permitted = self.clone();
-        if let Some(access) = &admitted.created_access {
-            if access.operation != operation || access.proofs != admitted.resource_proofs {
-                return Err(Error::Unauthorized(
-                    "created resource seal belongs to another task".into(),
-                ));
-            }
-            permitted.grants = Capabilities::new(self.grants.iter().chain(access.grants.iter()));
-            permitted.resource_proofs = admitted.resource_proofs.clone();
-            permitted.created_access = admitted.created_access.clone();
-        } else if !admitted.resource_proofs.is_empty() {
-            return Err(Error::Unauthorized(
-                "unsealed created resource scope".into(),
-            ));
-        }
-        permitted
-            .narrow(admitted.grants, admitted.limits)?
-            .with_run_limits(admitted.run_limits, &mut None)?
-            .with_replayed_extensions(admitted.extensions)
-    }
-
-    pub(crate) async fn current_creation_parent_fence(
-        &self,
-        parent: TaskId,
-    ) -> Result<crate::scheduler::LeaseFence> {
-        let access = self.created_access.as_ref().ok_or_else(|| {
-            Error::Unauthorized("created child has no inherited parent seal".into())
-        })?;
-        if access.operation.into_bytes() != parent.into_bytes() {
-            return Err(Error::Unauthorized(
-                "created child seal belongs to another parent".into(),
-            ));
-        }
-        let lease = access
-            .publication_lease
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("created child parent lease is not bound".into()))?;
-        lease.verify(None)?.await?;
-        lease.fence()
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn current_created_content(
-        &self,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<Option<&crate::resource_preparation::CreatedContentBinding>> {
-        if let Some(io) = work.as_deref() {
-            io.check_cancellation()?;
-        }
-        self.created_access
-            .as_ref()
-            .map(|access| access.current_content(work))
-            .transpose()
-            .map(Option::flatten)
-    }
-
-    pub(super) async fn verify_created_write(
-        &self,
-        volume: &VolumeRef,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        if self.created_content(Some(volume)).is_some() {
-            let lease = self
-                .created_access
-                .as_ref()
-                .and_then(|access| access.publication_lease.as_ref())
-                .ok_or_else(|| {
-                    Error::Unauthorized("created resource publication lease is not bound".into())
-                })?;
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                return lease.verify(Some(io))?.await;
-            }
-            lease.verify(None)?.await?;
-        }
-        let _ = io;
-        Ok(())
-    }
-
-    /// Borrows the authenticated binding for a created volume or its default writer.
-    pub fn created_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
-        self.created_access
-            .as_ref()?
-            .content
-            .iter()
-            .find(|binding| {
-                volume.map_or(binding.default_writer, |volume| &binding.volume == volume)
-            })
-            .map(|binding| &binding.binding)
-    }
-
-    pub(super) fn created_private_content(&self) -> Option<&ContentBindings> {
-        self.created_access
-            .as_ref()?
-            .content
-            .iter()
-            .find_map(|binding| {
-                (binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate)
-                    .then_some(&binding.binding)
-            })
-    }
-
-    /// Finds only an exact provider-authenticated, owner-consumed reference.
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn created_reference(
-        &self,
-        file: &FileRef,
-    ) -> Option<&Arc<dyn crate::conversation::ContentResidencyVerifier>> {
-        self.created_access
-            .as_ref()?
-            .references
-            .iter()
-            .find(|(reference, _)| reference == file)
-            .map(|(_, reader)| reader)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn created_access(
-        &self,
-    ) -> Option<Arc<crate::resource_preparation::CreatedResourceAccess>> {
-        self.created_access.clone()
     }
 
     /// Returns the exact effective grants.

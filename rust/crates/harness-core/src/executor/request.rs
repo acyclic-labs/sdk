@@ -1,17 +1,6 @@
 use super::*;
 
 impl StockExecution<'_> {
-    pub(super) async fn verify_execution_owner(&self) -> Result<()> {
-        if let Some((host, task_id, fence)) = &self.stock.task {
-            #[cfg(feature = "filesystem")]
-            let io = self.io;
-            #[cfg(not(feature = "filesystem"))]
-            let io = None;
-            host.verify_execution_owner(*task_id, fence, io)?.await?;
-        }
-        Ok(())
-    }
-
     /// Runs one admitted model step independently of the stock control loop.
     pub async fn model_step(
         &self,

@@ -114,7 +114,7 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
     );
     eprintln!("WRITE_REBIND_NEGATIVE old_read_refused={failure}");
 
-    harness.close().await?;
+    harness.disconnect().await?;
     Ok(())
 }
 
@@ -232,7 +232,7 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
         staged
     );
     drop(state);
-    harness.close().await?;
+    harness.disconnect().await?;
     Ok(())
 }
 
@@ -329,7 +329,7 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
             elapsed.as_micros()
         );
         counts.push(count);
-        harness.close().await?;
+        harness.disconnect().await?;
     }
     assert_eq!(
         counts,

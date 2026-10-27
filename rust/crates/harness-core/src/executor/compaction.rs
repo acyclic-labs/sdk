@@ -307,7 +307,6 @@ impl StockExecution<'_> {
         let (tail, _) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
             .await?;
-        self.verify_execution_owner().await?;
         if !journal
             .append_if_tail(
                 input.operation_id,

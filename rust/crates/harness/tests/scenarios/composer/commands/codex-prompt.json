@@ -1,5 +1,0 @@
-{
-  "prompt": "/test suite",
-  "expect":{"result":{"kind":"prompt","text":"Run tests\nsuite","mentions":[],"source":{"path":
-    "project/.codex/prompts/test.md"}}}
-}

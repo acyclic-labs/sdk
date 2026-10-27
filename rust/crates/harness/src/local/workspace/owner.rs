@@ -1,7 +1,7 @@
-//! Who acts on a checkout view: a live task admission, or an agent hosted by
-//! this process. Views, mounts and the git facade take this one boundary.
+//! Who acts on a checkout view: an agent hosted by this process. Views,
+//! mounts and the git facade take this one boundary.
 use super::*;
-use crate::runtime::{OwnedTaskMailbox, TaskContext};
+use crate::runtime::TaskContext;
 use acyclic_stream::BoxProviderFuture;
 
 /// The authority a view's mounts, captures and git commands act under.
@@ -17,34 +17,6 @@ fn identity(domain: &str, fields: &[&[u8]]) -> acyclic_fs::OperationLeaseId {
     for field in fields {
         hash.update(&(field.len() as u64).to_le_bytes());
         hash.update(field);
-    }
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationLeaseId::from_bytes(identity)
-}
-
-impl ViewOwner for Arc<dyn OwnedTaskMailbox> {
-    fn verify(&self) -> BoxProviderFuture<'_, Result<()>> {
-        Box::pin(async move { self.verify_owner(None)?.await })
-    }
-
-    fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
-        let (task, fence) = self.task_binding();
-        lease_identity(task, operation, fence)
-    }
-}
-
-pub(super) fn lease_identity(
-    task: TaskId,
-    operation: OperationId,
-    fence: &crate::scheduler::LeaseFence,
-) -> acyclic_fs::OperationLeaseId {
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.git-task-fence/v1");
-    hash.update(&task.into_bytes());
-    hash.update(&operation.into_bytes());
-    for field in [&fence.placement, &fence.reservation_id] {
-        hash.update(&(field.len() as u64).to_le_bytes());
-        hash.update(field.as_bytes());
     }
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);

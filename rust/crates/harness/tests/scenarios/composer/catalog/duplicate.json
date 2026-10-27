@@ -1,5 +1,0 @@
-{
-  "prompt": "/plan",
-  "seed": {".claude/commands/a.md":"one",".codex/prompts/a.md":"two"},
-  "expect": {"error":"duplicate command"}
-}

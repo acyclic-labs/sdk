@@ -34,9 +34,3 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "summary_authorization"
-path = "fuzz_targets/summary_authorization.rs"
-test = false
-doc = false
-bench = false

@@ -43,10 +43,6 @@ name = "custom_executor"
 required-features = ["test-support"]
 
 [[example]]
-name = "runtime-turn-cost"
-required-features = ["filesystem-local", "native-execution", "test-support"]
-
-[[example]]
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
@@ -195,9 +191,4 @@ required-features = ["filesystem-local", "native-execution", "test-support"]
 [[test]]
 name = "client-mailbox-model"
 path = "tests/client_mailbox_model.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "query-model"
-path = "tests/query_model.rs"
 required-features = ["model-checking"]

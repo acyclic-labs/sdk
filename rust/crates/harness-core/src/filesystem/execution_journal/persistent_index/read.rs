@@ -9,7 +9,7 @@ enum Storage {
 pub(in crate::filesystem::execution_journal) struct ReadNode<'a> {
     storage: Storage,
     // The committed SDK value owns native custody intrinsically.
-    _hold: Option<crate::filesystem::fork_preparer_io::DecodeReservation<'a>>,
+    _hold: Option<crate::filesystem::bounded_io::DecodeReservation<'a>>,
     sequence: u64,
     reference: NodeRef,
 }

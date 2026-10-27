@@ -1,6 +1,6 @@
 //! Stream-backed execution observations with private Filesystem payloads.
 
-use super::fork_preparer_io::{PreparationIo, PreparationRecord};
+use super::bounded_io::{PreparationIo, PreparationRecord};
 use super::interaction_host::interaction_boundary as canonical_boundary;
 use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
 use crate::obs::{obs_span, traced};
@@ -11,7 +11,6 @@ use crate::{
         VolumeRef,
     },
     core::{AuthorityVerifier, SchemaRegistry, Scope},
-    durable_host::TaskJournalOwner,
     executor::{
         EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
         ModelEventAdmission, decode_json,
@@ -30,24 +29,16 @@ use acyclic_stream::{StreamError, StreamProvider};
 #[cfg(test)]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
-
-mod conversation;
+use std::sync::Arc;
 
 mod approvals;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod approvals_tests;
 mod cancellation;
 mod canonical;
 mod checkpoint;
 mod checkpoint_maps;
-mod chunks;
 mod configuration;
 mod content;
 mod durability;
-#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod durability_tests;
 mod indexed_publication;
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod inline_tests;
@@ -64,13 +55,10 @@ mod replay;
 mod replay_capacity_tests;
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod request_segments_tests;
-mod router;
 mod selected;
 mod step_index;
 mod summary;
 mod summary_authorization;
-#[cfg(test)]
-mod summary_authorization_tests;
 mod summary_cache;
 mod summary_map;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -101,14 +89,10 @@ pub struct FilesystemExecutionJournal<P, A: 'static, O: 'static> {
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
-    owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
-    /// Passive approver projection; never grants execution or a lease.
-    approval_task: Option<crate::TaskId>,
     verified: tokio::sync::Mutex<SummaryCache>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
-    task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }

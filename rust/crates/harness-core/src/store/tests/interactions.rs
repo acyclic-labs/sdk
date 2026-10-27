@@ -4,31 +4,22 @@ use futures::TryStreamExt as _;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn admission_content_keeps_original_published_bytes_until_last_alias() -> Result<()> {
-    use crate::conversation::ContentPublisher as _;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-    let fixture = crate::durable_host::tests::fixture::Fixture::new(
-        Arc::new(MemoryStream::default()),
-        acyclic_fs::Fs::memory(),
-        json!({"type":"integer"}),
-        None,
-        &[],
-    )
-    .await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::from_bytes([94; 16]), 65_536)
+            .await?;
     let request =
         Interaction::question("original published prompt".into(), json!({"type":"string"}))?;
     let published = crate::contract::canonical_json_bytes(&request)?;
-    let reference = fixture
-        .publisher
+    let reference = storage
         .stage(
             OperationId::from_bytes([95; 16]),
             "interactions/request.json",
             &published,
             "application/json",
             "request.json",
-            crate::conversation::ContentAccess::default(),
-        )?
-        .await?
-        .0;
+        )
+        .await?;
     let ticket = InteractionTicket {
         id: uuid::Uuid::from_bytes([96; 16]),
         kind: InteractionKind::Question,
@@ -58,7 +49,7 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
         budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
     let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
     let (bytes, _) = StreamAggregate::<MemoryStream>::read_admission_content_with_work(
-        fixture.reader.as_ref(),
+        storage.content_reader(),
         &reference,
         &mut Some(&mut io),
     )
@@ -70,9 +61,9 @@ async fn admission_content_keeps_original_published_bytes_until_last_alias() -> 
     assert!(native.admit_retained(available).is_err());
     drop(empty_alias);
     assert!(native.admit_retained(available).is_ok());
-    let aggregate = with_content(&fixture.stream)
+    let aggregate = with_content(storage.stream())
         .await?
-        .with_content_verifier(fixture.reader.clone());
+        .with_content_verifier(storage.content_verifier());
     aggregate
         .validate_task_admission_content_with_work(
             &Action::OpenInteraction {

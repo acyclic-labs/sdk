@@ -9,7 +9,8 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
-    publication_pause: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
+    publication_pause:
+        Option<Arc<dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()> + Send + Sync>>,
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
@@ -175,9 +176,7 @@ pub use import::VolumeImportPlan;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;
-pub(in crate::filesystem) use keys::{
-    content_metadata_path_io, content_receipt_path_io, project_join_key,
-};
+pub(in crate::filesystem) use keys::{content_metadata_path_io, content_receipt_path_io};
 pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use publication::{
     content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
@@ -186,10 +185,6 @@ pub(crate) use reads::file_publication;
 pub(in crate::filesystem) use reads::read_generation;
 
 use crate::executor::stock_boundary;
-#[cfg(not(target_arch = "wasm32"))]
-pub use volumes::{
-    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
-};
 
 pub use directory::DirectoryOptions;
 

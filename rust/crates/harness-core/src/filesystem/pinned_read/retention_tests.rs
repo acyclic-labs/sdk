@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::core::{AggregateKind, AuthorityRoot};
+use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -39,7 +40,7 @@ impl Fixture {
         )?;
         let host = FilesystemHost::new(filesystem, &provider, None)?;
         host.create_volume(&volume).await?;
-        let reference = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+        let reference = bounded_io::content_workspace(&provider, &volume, None)?;
         let workspace = host.open(&reference, None).await?;
         let generation = if published {
             host.apply(

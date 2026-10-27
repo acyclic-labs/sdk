@@ -104,10 +104,10 @@ pub fn tool_approval_request(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    paid: (String, Option<NativeCustody>),
+    paid: (String, NativeCustody),
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
-) -> Result<((OperationId, Interaction), Option<NativeCustody>)> {
+) -> Result<((OperationId, Interaction), NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         if !paid.1.as_ref().is_some_and(|custody| {
@@ -167,7 +167,7 @@ fn copy_approval_subject(
     invocation: &ToolInvocation,
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
-) -> Result<(ApprovalSubject, Option<NativeCustody>)> {
+) -> Result<(ApprovalSubject, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         use crate::store::history::HistoryIo as _;
@@ -219,25 +219,6 @@ pub(super) type NativeWork = acyclic_fs::NativeMaterializationWork;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub(super) type NativeWork = ();
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn check_policy_metadata(
-    identity: &ComponentIdentity,
-    custody: &acyclic_fs::NativeAllocation,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let bytes = (std::mem::size_of::<ComponentIdentity>() as u64)
-        .checked_add(identity.name.capacity() as u64)
-        .and_then(|bytes| bytes.checked_add(identity.version.capacity() as u64));
-    if !custody.work().shares_ledger(work) || bytes.is_none_or(|bytes| custody.bytes() < bytes) {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict,
-            reason: "policy identity does not retain its original ledger",
-        });
-    }
-    work.remaining()?;
-    Ok(())
-}
-
 // Negative-control seam for `hooks::mcp_identity_tests`: substitutes the
 // approval subject. It lives beside its only use so it exists in every build
 // that compiles this function, whatever features gate the tests reading it.
@@ -245,30 +226,6 @@ pub(super) fn check_policy_metadata(
 thread_local! {
     #[doc(hidden)]
     pub static SUBSTITUTE_APPROVAL_NAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn validate_native_policy_decision(
-    paid: &(ToolPolicyDecision, Option<NativeCustody>),
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let bytes = match &paid.0 {
-        ToolPolicyDecision::Allow => 0,
-        ToolPolicyDecision::Deny { reason } => reason.capacity() as u64,
-        ToolPolicyDecision::RequireApproval { prompt } => prompt.capacity() as u64,
-    };
-    if !paid
-        .1
-        .as_ref()
-        .is_some_and(|custody| custody.work().shares_ledger(work) && custody.bytes() >= bytes)
-    {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict,
-            reason: "policy decision does not retain its original ledger",
-        });
-    }
-    work.remaining()?;
-    Ok(())
 }
 
 pub(crate) fn tool_approval_binding(
@@ -318,157 +275,42 @@ pub(crate) fn tool_approval_binding(
     Ok((OperationId::from_bytes(id_bytes), digest))
 }
 
-/// A task context bound to one exact tool call identity.
+/// An agent turn context bound to one exact tool call identity.
+#[derive(Clone)]
 pub struct ToolContext {
     pub(super) task: Arc<TaskContext>,
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
     #[doc(hidden)]
     pub model_turn: (OperationId, u32),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_interactions: Option<Arc<dyn InteractionRouter>>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) effective_scope: Option<(RuntimeScope, Option<acyclic_fs::NativeAllocation>)>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl Clone for ToolContext {
-    fn clone(&self) -> Self {
-        Self {
-            task: self.task.clone(),
-            operation_id: self.operation_id,
-            call_id: self.call_id.clone(),
-            model_turn: self.model_turn,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_interactions: self.native_interactions.clone(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            effective_scope: self
-                .effective_scope
-                .as_ref()
-                .map(|(scope, _)| (scope.clone(), None)),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
-        }
-    }
 }
 
 impl ToolContext {
     /// Creates a tool context with separate runtime and provider call identities.
-    pub fn new(
-        task: Arc<TaskContext>,
-        operation_id: OperationId,
-        call_id: &str,
-        io: Option<&crate::conversation::ContentIo>,
-    ) -> Result<Self> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        if io.is_some() {
-            return Err(Error::Unsupported(
-                "native tool context is unavailable".into(),
-            ));
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let (call_id, native_custody) = if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "tool context requires original native work",
-            })?;
-            if !task.native_metadata_matches(work) {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "tool context differs from its original native metadata ledger",
-                });
-            }
-            io.check_cancellation()?;
-            crate::executor::with_history_io(Some(io), |work| {
-                ToolInvocation::validate_identity(call_id, None, work)
-            })?;
-            let mut slot = work
-                .claim(
-                    std::mem::size_of::<Self>() as u64,
-                    0,
-                    acyclic_fs::WorkCounters::UNCHARGED,
-                )
-                .map_err(Error::from)?;
-            let (call_id, mut custody) = work.display(call_id).map_err(Error::from)?;
-            custody
-                .absorb(&mut slot)
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
-            (call_id, Some(custody))
-        } else {
-            if task.native_custody.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native tool context requires its original work",
-                });
-            }
-            (call_id.to_owned(), None)
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let call_id = call_id.to_owned();
+    pub fn new(task: Arc<TaskContext>, operation_id: OperationId, call_id: &str) -> Result<Self> {
         if call_id.trim().is_empty() {
             return Err(Error::Invalid("tool call ID is empty".into()));
         }
         Ok(Self {
             task,
             operation_id,
-            call_id,
+            call_id: call_id.to_owned(),
             // A directly issued call owns a standalone turn. The stock executor
             // binds model-issued calls to their enclosing execution and step.
             model_turn: (operation_id, 0),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_interactions: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            effective_scope: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody,
         })
     }
 
-    /// Returns the enclosing scoped task context.
+    /// Returns the enclosing scoped turn context.
     #[must_use]
     pub fn task(&self) -> &TaskContext {
         self.task.as_ref()
     }
 
-    /// Borrows this tool's attenuated authority without replacing its task.
+    /// Borrows this tool's authority.
     #[must_use]
     pub fn effective_scope(&self) -> &RuntimeScope {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some((scope, _)) = &self.effective_scope {
-            return scope;
-        }
         self.task().scope()
-    }
-
-    /// Returns pending approval through this command's protected route.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn authorize_tool(
-        &self,
-        definition: &ToolDefinition,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<OperationId>> {
-        let task = self.task();
-        task.require_original_native_work(work)?;
-        task.require_native_scope_restriction(self.effective_scope(), work)?;
-        if invocation.operation_id != self.operation_id() || invocation.call_id != self.call_id() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "native policy invocation differs from its original command",
-            });
-        }
-        task.authorize_tool_policies(
-            definition,
-            invocation,
-            Some(work),
-            self.stock_native_interactions(),
-            self.effective_scope(),
-        )
-        .await
     }
 
     /// The operation of the model turn this call belongs to; outside a
@@ -527,76 +369,6 @@ impl ToolContext {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         task.authorize_content_publication(path, source, self.effective_scope(), Some(&io))
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl ToolContext {
-    /// Observes this issued tool's original task admission on the supplied ledger.
-    pub async fn admission(
-        &self,
-        work: &NativeWork,
-    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        self.validate_native_mcp_context(work)?;
-        let context = self.task();
-        let host = context.harness.host.as_ref().ok_or_else(|| {
-            native_context::boundary(
-                crate::wire::ErrorCode::Unsupported,
-                "original admission has no durable host",
-            )
-        })?;
-        context.verify_original_execution_owner(work).await?;
-        let observed = host
-            .observe_admission_with_native_work(
-                context.durable_task_id().ok_or_else(|| {
-                    native_context::boundary(
-                        crate::wire::ErrorCode::Unauthorized,
-                        "durable tool context has no task identity",
-                    )
-                })?,
-                work,
-            )?
-            .await?;
-        if observed.0.operation_id != context.task_id {
-            return Err(native_context::boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "observed input differs from the original issued task",
-            ));
-        }
-        context.verify_original_execution_owner(work).await?;
-        Ok(observed)
-    }
-
-    /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
-    pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
-        let context = self.validate_native_bound_context(work)?;
-        if context.native_purpose != Some(IssuedContextPurpose::Dispatch) {
-            return Err(native_context::boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "native context purpose does not permit MCP dispatch",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Checks a genuine owner-bound native reconciliation context.
-    pub fn validate_native_mcp_reconciliation_context(&self, work: &NativeWork) -> Result<()> {
-        self.validate_native_bound_context(work).map(|_| ())
-    }
-
-    pub(super) fn validate_native_bound_context(&self, work: &NativeWork) -> Result<&TaskContext> {
-        work.charge(acyclic_fs::WorkCounters::default())?;
-        if !self.native_metadata_matches(work) {
-            return Err(native_context::boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "MCP context has no original native tool metadata source",
-            ));
-        }
-        let context = self.task();
-        context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
-            work,
-        )?))?;
-        Ok(context)
     }
 }
 

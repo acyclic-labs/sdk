@@ -298,10 +298,7 @@ where
                     .flatten();
                 let bytes = owned_bytes.as_ref();
                 if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
-                    let limits = self
-                        .owner
-                        .as_ref()
-                        .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+                    let limits = Limits::default();
                     let before = io.map(PreparationIo::owned_bytes).transpose()?;
                     if reference.descriptor().media_type()
                         == crate::executor::transcript::REQUEST_MEDIA
@@ -397,11 +394,6 @@ where
                 crate::wire::ErrorCode::Invalid,
                 "turn input file exceeds journal limit",
             ));
-        }
-        if let Some((owner, _)) = &self.owner
-            && owner.verify_created_input_with_io(reference, io).await?
-        {
-            return Ok(());
         }
         if reference.volume().provider() != &self.host.provider {
             let verifier = self.input_verifier.as_ref().ok_or_else(|| {
@@ -530,15 +522,6 @@ where
         }
         let mut references = Vec::with_capacity(count);
         for (file, binding) in content.file_bindings() {
-            if let Some((owner, _)) = &self.owner {
-                if binding.is_none() && summary_files.contains(&file) {
-                    crate::executor::with_history_io(io, |work| {
-                        owner.input_limits().validate_file(file, work)
-                    })?;
-                } else {
-                    owner.validate_input_file(file, io)?;
-                }
-            }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(stock_boundary(
                     io,
@@ -548,8 +531,7 @@ where
             }
             references.push((file, binding));
         }
-        if self.owner.is_none()
-            && io.is_none()
+        if io.is_none()
             && references.iter().any(|(_, binding)| binding.is_some())
             && let Some(context) = context
         {
@@ -561,53 +543,26 @@ where
             }
             return Ok(());
         }
-        for (_, binding) in &references {
-            if let Some(binding) = binding {
-                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
-                    canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Unsupported,
-                        "native options require an original task owner",
-                    )
-                })?;
-                owner.validate_native_configuration(binding, io)?;
-            }
-        }
-        for (_, binding) in &references {
-            if let Some(binding) = binding {
-                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
-                    canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Unsupported,
-                        "native options require an original task owner",
-                    )
-                })?;
-                owner.verify_native_configuration(binding, io).await?;
-            }
+        if references.iter().any(|(_, binding)| binding.is_some()) {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "native options require their turn context",
+            ));
         }
         for (file, _) in &references {
-            let mut configuration = false;
-            for (_, binding) in &references {
-                crate::model::charge_items(io, 1)?;
-                if binding.is_some_and(|binding| &binding.configuration.content == *file) {
-                    configuration = true;
-                    break;
-                }
-            }
-            if !configuration {
-                if summary_files.contains(file) {
-                    let _bytes_hold;
-                    let bytes = self.load_content(file, io).await?;
-                    // Only the accounting test instantiates the omitted-release control.
-                    _bytes_hold = if RELEASE {
-                        io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten()
-                    } else {
-                        None
-                    };
-                    drop(bytes);
+            if summary_files.contains(file) {
+                let _bytes_hold;
+                let bytes = self.load_content(file, io).await?;
+                // Only the accounting test instantiates the omitted-release control.
+                _bytes_hold = if RELEASE {
+                    io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten()
                 } else {
-                    self.verify_input_file_with_io(file, io).await?;
-                }
+                    None
+                };
+                drop(bytes);
+            } else {
+                self.verify_input_file_with_io(file, io).await?;
             }
         }
         drop(references);
@@ -622,14 +577,6 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         self.require_operation(operation, io)?;
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-        if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(&mut work)?;
-            owner.verify(true, &mut work).await?;
-        }
         if !self
             .published_decision_for(id, Some((operation, digest)), io)
             .await?
@@ -640,9 +587,6 @@ where
                 crate::wire::ErrorCode::Unauthorized,
                 "tool installation lacks a resolved approval",
             ));
-        }
-        if let Some((owner, _)) = &self.owner {
-            owner.verify(true, &mut work).await?;
         }
         Ok(())
     }

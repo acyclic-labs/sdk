@@ -1,81 +1,5 @@
 use super::*;
 
-#[cfg(feature = "filesystem")]
-impl AgentHarness {
-    pub(crate) fn bind_private_output(
-        &mut self,
-        writer: Arc<dyn ContentPublisher>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        let reader = self
-            .content
-            .as_ref()
-            .ok_or_else(|| {
-                content_error(
-                    io,
-                    ErrorCode::Unsupported,
-                    "root content reader is not bound",
-                )
-            })?
-            .reader
-            .clone();
-        let binding = ContentBindings {
-            reader,
-            writer: Some(writer),
-        };
-        let volume = bound_content_writer(Some(&binding), &self.scope, io)?.volume();
-        crate::executor::with_history_io(io, |work| {
-            if contains_content_grant_with_work(
-                self.scope.grants(),
-                volume,
-                VolumeOperation::Read.capability_prefix(),
-                work,
-            )? {
-                Ok(())
-            } else {
-                Err(content_error(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "task scope cannot read private content",
-                ))
-            }
-        })?;
-        self.artifacts = Some(binding);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    #[doc(hidden)]
-    pub fn output_destination<'a>(
-        &'a self,
-        path: &'a str,
-    ) -> Option<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        self.content
-            .as_ref()
-            .and_then(|binding| binding.writer.as_ref())
-            .and_then(|writer| writer.destination(None, path, None).ok())
-    }
-
-    pub(crate) fn bind_output(
-        &mut self,
-        writer: Arc<dyn crate::conversation::ContentPublisher>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        let binding = self.content.as_mut().ok_or_else(|| {
-            content_error(
-                io,
-                ErrorCode::Unsupported,
-                "root content reader is not bound",
-            )
-        })?;
-        let previous = binding.writer.replace(writer);
-        if let Err(error) = bound_content_writer(Some(binding), &self.scope, io) {
-            binding.writer = previous;
-            return Err(error);
-        }
-        Ok(())
-    }
-}
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
@@ -114,7 +38,7 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
-    /// The task's validated summary writer: its created private content, the
+    /// The turn's validated summary writer: the
     /// runtime's private volume, or an output volume that is itself agent
     /// private. Compaction is armed only when this resolves, so a due summary
     /// never discovers a missing writer.
@@ -128,9 +52,9 @@ impl TaskContext {
     ) -> Result<SummaryDestination<'_>> {
         use SummaryDestination::{Unavailable, Writer};
         let binding = self
-            .scope
-            .created_private_content()
-            .or(self.harness.artifacts.as_ref())
+            .harness
+            .artifacts
+            .as_ref()
             .or_else(|| self.content_binding(None));
         let Some(binding) = binding else {
             return Ok(Unavailable("summaries require the task's private volume"));
@@ -275,10 +199,6 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(ContentIo::original_native_work) {
-            self.require_original_native_dispatch(work)?;
-        }
         if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
             return Err(content_error(
                 io,
@@ -303,7 +223,6 @@ impl TaskContext {
             ));
         }
         writer.supports_stage(io)?;
-        self.scope.verify_created_write(volume, io).await?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
                 self.authorize_file_read(source, scope, scope.grants(), io)?;
@@ -353,7 +272,6 @@ impl TaskContext {
                     .await?
             }
         };
-        self.scope.verify_created_write(volume, io).await?;
         finish_publication(
             content,
             output,

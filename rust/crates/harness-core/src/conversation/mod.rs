@@ -517,8 +517,6 @@ pub fn validate_content_path(
 
 mod identity;
 pub use identity::assistant_message_id;
-#[cfg(feature = "filesystem")]
-pub(crate) use identity::derived_operation_id;
 
 crate::core::ownership::owned_struct!(Limits {
     file_bytes,

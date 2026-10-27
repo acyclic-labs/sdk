@@ -48,11 +48,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::conversation::validate_content_path(path, &mut Some(&mut io.history_io()))?;
             InternalContentClass::require_path(internal_class, path, Some(io))?;
         }
-        let workspace_ref = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
+        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace_ref = (workspace_ref, hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
-        let operation = fork_preparer_io::operation_key(key, Some(io))?;
+        let operation = bounded_io::operation_key(key, Some(io))?;
         let Some(original) = io.sdk(
             workspace
                 .operation_generation(operation, io, io.cancellation())
@@ -86,7 +86,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::wire::ErrorCode::Storage,
         )?;
         recorded.0.0.validate(&mut Some(&mut io.history_io()))?;
-        let version = fork_preparer_io::hex_key(&operation.into_bytes(), Some(io))?;
+        let version = bounded_io::hex_key(&operation.into_bytes(), Some(io))?;
         let _version_hold = io.guard_owned(version.capacity() as u64)?;
         if recorded.0.0.volume() != volume
             || recorded.0.0.version() != version
@@ -322,7 +322,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: &PublicationLookup<'_>,
         io: &'a PreparationIo,
     ) -> Result<(FileRef, Option<acyclic_stream::OwnedBytes>)> {
-        let version = fork_preparer_io::hex_key(&original.id().digest().into_bytes(), Some(io))?;
+        let version = bounded_io::hex_key(&original.id().digest().into_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         recorded
             .0
@@ -333,7 +333,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         let hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, hold);
-        fork_preparer_io::retain(original, Some(io)).await?;
+        bounded_io::retain(original, Some(io)).await?;
         let version_bytes = version_hold.bytes();
         version_hold.into_retained()?;
         recorded.1.adopt(version_bytes)?;

@@ -30,8 +30,6 @@ use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub mod files;
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
 pub(crate) mod http;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -41,9 +39,6 @@ pub(crate) mod native;
 pub mod test_support;
 #[cfg(test)]
 mod tests;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[path = "tool.rs"]
-pub mod tools;
 #[cfg(all(
     feature = "search-http",
     feature = "test-support",
@@ -123,7 +118,7 @@ pub struct SearchResponse {
 
 /// Replaceable search capability. Dropping its future cancels the request.
 pub trait SearchProvider: acyclic_stream::ProviderPlatform {
-    /// Searches once. Durable replay belongs to the task request/result files.
+    /// Searches once. Durable replay belongs to the stock execution journal.
     fn search<'a>(
         &'a self,
         request: &'a SearchRequest,

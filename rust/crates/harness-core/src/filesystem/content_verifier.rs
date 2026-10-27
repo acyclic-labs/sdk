@@ -4,7 +4,6 @@ use super::*;
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
-    pub(in crate::filesystem) creation: Option<Arc<fork_preparer::CreatedProvenance>>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
     pub(in crate::filesystem) maximum_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -77,7 +76,6 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             Ok(Arc::new(Self {
                 host,
                 authority: Arc::new(authority),
-                creation: None,
                 exact_file: None,
                 maximum_bytes,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -97,11 +95,6 @@ where
             .exact_file
             .as_ref()
             .is_some_and(|file| file.volume() != volume)
-            || self.exact_file.is_none()
-                && self
-                    .creation
-                    .as_ref()
-                    .is_some_and(|creation| creation.volume() != volume)
         {
             return Ok(false);
         }
@@ -137,8 +130,7 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_creation(reference.volume(), Some(reference), io)
-                .await?;
+            self.verify_exact_file(Some(reference), io)?;
             if reference.descriptor().byte_length() > self.maximum_bytes
                 || range
                     .offset
@@ -211,8 +203,7 @@ where
                 owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                 &owned
             };
-            self.verify_creation(reference.volume(), Some(reference), Some(io))
-                .await?;
+            self.verify_exact_file(Some(reference), Some(io))?;
             self.authority.recheck(&mut Some(&mut io.history_io()))?;
             self.host
                 .read_selection_with_access(
@@ -244,7 +235,7 @@ where
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_creation(volume, None, io).await?;
+            self.verify_exact_file(None, io)?;
             if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
                 return Err(stock_boundary(
                     io,
@@ -378,7 +369,7 @@ where
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_creation(volume, None, io).await?;
+            self.verify_exact_file(None, io)?;
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -418,9 +409,8 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(in crate::filesystem) async fn verify_creation(
+    pub(in crate::filesystem) fn verify_exact_file(
         &self,
-        volume: &VolumeRef,
         file: Option<&FileRef>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -434,17 +424,6 @@ where
                 crate::wire::ErrorCode::Unauthorized,
                 "created reference handle names another immutable file",
             ));
-        }
-        if let Some(creation) = &self.creation {
-            creation
-                .verify(
-                    &self.host,
-                    self.authority.verifier().audience(),
-                    volume,
-                    self.exact_file.as_ref(),
-                    io,
-                )?
-                .await?;
         }
         Ok(())
     }
@@ -460,7 +439,6 @@ where
             host: self.host.clone(),
             authority: self.authority.clone(),
             maximum_bytes: self.maximum_bytes,
-            creation: self.creation.clone(),
             exact_file: Some(file.copy(&mut Some(&mut io.history_io()))?),
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata: self._native_metadata.clone(),
@@ -476,8 +454,7 @@ where
     ) -> Result<acyclic_stream::OwnedBytes> {
         let temporary = PreparationIo::temporary(io)?;
         let io = temporary.as_ref().or(io);
-        self.verify_creation(reference.volume(), Some(reference), io)
-            .await?;
+        self.verify_exact_file(Some(reference), io)?;
         let unmeasured;
         let authority_io = if let Some(io) = io {
             io
@@ -518,7 +495,7 @@ where
             ceiling,
         } = options;
 
-        self.verify_creation(volume, None, None).await?;
+        self.verify_exact_file(None, None)?;
         let grant = ContentGrant::verify_directory_read(
             self.authority.verifier(),
             self.authority.scope(),
@@ -585,9 +562,7 @@ where
     > {
         self.supports_native_directory_list(volume, work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            self.verify_creation(volume, None, Some(&PreparationIo::from_native_work(work)?))
-                .await?;
-            context.task().verify_original_execution_owner(work).await?;
+            self.verify_exact_file(None, Some(&PreparationIo::from_native_work(work)?))?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
             );
@@ -668,7 +643,7 @@ where
                                 reason: "issued task scope does not retain this directory read",
                             });
                         }
-                        context.task().verify_original_execution_owner(work).await
+                        Ok(())
                     },
                 )
                 .await;

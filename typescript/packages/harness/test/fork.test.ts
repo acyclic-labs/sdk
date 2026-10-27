@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { validateContract, type ForkRequest as NativeForkRequest } from "../generated/wasm/acyclic_harness_wasm.js";
-import { DEFAULT_LIMITS, ExecutionScope, Harness, MAX_FORK_INHERITED_BYTES,
-  MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCES,
-  NativeContracts, forkReadableReferences,
-  type AgentId, type ForkReport, type ForkRequest, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
+import { DEFAULT_LIMITS, MAX_FORK_INHERITED_BYTES, MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCES, NativeContracts, forkReadableReferences, type AgentId, type ForkReport, type ForkRequest, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
 
 const contracts = await NativeContracts.create();
 
@@ -137,45 +134,6 @@ function report(): ForkReport {
     attachment_manifests: [],
   };
 }
-
-test("parent publication reconciles one exact child after a lost acknowledgement", async () => {
-  const prepared = report();
-  const seed = contracts.forkSeed(prepared);
-  let publications = 0;
-  let committed: ForkSeed | null = null;
-  const snapshot = { parent: prepared.request.parent, revision: prepared.request.parent_revision };
-  const publisher = {
-    parent: () => prepared.request.parent,
-    async spawnFromReport(_report: ForkReport): Promise<ForkSeed> {
-      publications++;
-      committed = seed;
-      throw new Error("publication acknowledgement lost");
-    },
-    async reconcileSpawn(operationId: OperationId): Promise<ForkSeed | null> {
-      expect(operationId).toBe(prepared.request.operation_id);
-      return committed;
-    },
-  };
-  const runtime = await Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher(publisher)
-    .grant("fork:publish").build();
-  await expect(runtime.spawnFromReport(prepared)).rejects.toThrow();
-  expect(await runtime.reconcileSpawn(prepared)).toEqual(seed);
-  const advanced = await Harness.builder(contracts).parentSnapshot({ ...snapshot, parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }).forkPublisher(publisher).grant("fork:publish").build();
-  expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
-  expect(publications).toBe(1);
-  const narrowed = await runtime.scoped(new ExecutionScope().onlyGrants("fork:publish"));
-  expect(narrowed.components.forkPublisher).toBeUndefined();
-  await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow();
-  await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,
-    parent: { kind: "conversation", id: "wrong-parent" } } })).rejects.toThrow();
-  await expect(Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher({ ...publisher,
-    parent: () => ({ kind: "conversation" as const, id: "wrong-parent" }) }).grant("fork:publish").build())
-    .rejects.toThrow();
-  const mismatched = await Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher({ ...publisher,
-    spawnFromReport: async () => ({ ...seed, child: { kind: "conversation" as const, id: "different-child" } }),
-  }).grant("fork:publish").build();
-  await expect(mismatched.spawnFromReport(prepared)).rejects.toThrow();
-});
 
 test("parent-controlled fork seed pins exact history and isolates project/private volumes", () => {
   const seed = contracts.forkSeed(report());

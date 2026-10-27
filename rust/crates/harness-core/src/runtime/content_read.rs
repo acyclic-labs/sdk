@@ -79,169 +79,17 @@ impl ContentResidencyVerifier for TaskContext {
     }
 }
 
-#[cfg(feature = "filesystem")]
-struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
-    context: Arc<TaskContext>,
-    owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-/// Retains an issued context's content reader under its exact original owner.
-#[cfg(feature = "filesystem")]
-pub fn content_residency_verifier<P>(
-    context: Arc<TaskContext>,
-    owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-    io: Option<&ContentIo>,
-) -> Result<Arc<dyn ContentResidencyVerifier>>
-where
-    P: acyclic_stream::StreamProvider + 'static,
-{
-    let original = if io.is_none() {
-        context.preparation_io()?
-    } else {
-        None
-    };
-    let io = io.or(original.as_ref());
-    owner.require_task_context_binding(&context, io)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = io.and_then(ContentIo::original_native_work);
-    #[cfg(not(target_arch = "wasm32"))]
-    let custody = native
-        .map(|work| {
-            work.claim(
-                (std::mem::size_of::<ContextContentVerifier<P>>()
-                    + 2 * std::mem::size_of::<usize>()) as u64,
-                1,
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(Error::from)
-        })
-        .transpose()?;
-    Ok(Arc::new(ContextContentVerifier {
-        context,
-        owner,
-        #[cfg(not(target_arch = "wasm32"))]
-        _custody: custody,
-    }))
-}
-
-#[cfg(feature = "filesystem")]
-impl<P> ContentResidencyVerifier for ContextContentVerifier<P>
-where
-    P: acyclic_stream::StreamProvider + 'static,
-{
-    fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
-        if let Some(io) = io {
-            #[cfg(not(target_arch = "wasm32"))]
-            self.context
-                .require_original_native_work(io.original_native_work().ok_or(content_error(
-                    Some(io),
-                    ErrorCode::Unsupported,
-                    "content reader requires original native work",
-                ))?)?;
-            #[cfg(target_arch = "wasm32")]
-            return Err(content_error(
-                Some(io),
-                ErrorCode::Unsupported,
-                "content reader requires original native work",
-            ));
-        }
-        Ok(true)
-    }
-
-    fn read<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        maximum_bytes: u64,
-        ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
-        BoundedContentFuture::new(io, || async move {
-            if reference.descriptor().byte_length() > maximum_bytes {
-                return Err(content_error(
-                    io,
-                    ErrorCode::Invalid,
-                    "content exceeds the callback byte bound",
-                ));
-            }
-            self.supports_read(reference.volume(), io)?;
-            let mut history = io.map(ContentIo::history_io);
-            let mut history = history
-                .as_mut()
-                .map(|history| history as &mut dyn crate::store::HistoryIo);
-            self.owner.validate_input_file(reference, io)?;
-            self.owner.verify_read_access(&mut history).await?;
-            let bytes = self
-                .context
-                .read_bound_file(
-                    self.context.content_binding(Some(reference.volume())),
-                    reference,
-                    &self.context.scope,
-                    ceiling,
-                    io,
-                )
-                .await?;
-            self.owner.validate_input_file(reference, io)?;
-            self.owner.verify_read_access(&mut history).await?;
-            Ok(bytes)
-        })
-    }
-    fn read_range<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        range: acyclic_fs::ByteRange,
-        ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
-        BoundedContentFuture::new(io, || async move {
-            self.supports_read(reference.volume(), io)?;
-            self.owner.validate_input_file(reference, io)?;
-            let mut history = io.map(ContentIo::history_io);
-            let mut history = history
-                .as_mut()
-                .map(|history| history as &mut dyn crate::store::HistoryIo);
-            self.owner.verify_read_access(&mut history).await?;
-            let bytes = self
-                .context
-                .read_bound_range(
-                    reference,
-                    range,
-                    self.context.scope(),
-                    ceiling.unwrap_or(self.context.scope().grants()),
-                    io,
-                )
-                .await?;
-            self.owner.validate_input_file(reference, io)?;
-            self.owner.verify_read_access(&mut history).await?;
-            Ok(bytes)
-        })
-    }
-}
-
 impl TaskContext {
     pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
-        self.output_content
-            .as_ref()
-            .filter(|binding| {
-                volume.is_none_or(|volume| {
-                    binding
-                        .writer
-                        .as_ref()
-                        .is_some_and(|writer| writer.volume() == volume)
-                })
-            })
-            .or_else(|| self.scope.created_content(volume))
-            .or_else(|| {
-                self.harness.artifacts.as_ref().filter(|binding| {
-                    volume.is_some_and(|volume| {
-                        binding
-                            .writer
-                            .as_ref()
-                            .is_some_and(|writer| writer.volume() == volume)
-                    })
-                })
-            })
+        let writes = |binding: &&ContentBindings| {
+            binding
+                .writer
+                .as_ref()
+                .is_some_and(|writer| volume.is_none_or(|volume| writer.volume() == volume))
+        };
+        Some(&self.output_content)
+            .filter(writes)
+            .or_else(|| volume.and(self.harness.artifacts.as_ref()).filter(writes))
             .or(self.harness.content.as_ref())
     }
 
@@ -273,14 +121,6 @@ impl TaskContext {
         grants: &crate::Capabilities,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        #[cfg(feature = "filesystem")]
-        let original = if io.is_none() {
-            self.preparation_io()?
-        } else {
-            None
-        };
-        #[cfg(feature = "filesystem")]
-        let io = io.or(original.as_ref());
         let grants = self.authorize_file_read(file, scope, grants, io)?;
         if range
             .offset
@@ -293,16 +133,9 @@ impl TaskContext {
                 "range exceeds the source file",
             ));
         }
-        #[cfg(feature = "filesystem")]
-        let created = self.scope.created_reference(file);
-        #[cfg(not(feature = "filesystem"))]
-        let created: Option<&Arc<dyn ContentResidencyVerifier>> = None;
-        let reader = created
-            .map(AsRef::as_ref)
-            .or_else(|| {
-                self.content_binding(Some(file.volume()))
-                    .map(|content| content.reader.as_ref())
-            })
+        let reader = self
+            .content_binding(Some(file.volume()))
+            .map(|content| content.reader.as_ref())
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
@@ -471,23 +304,10 @@ impl TaskContext {
         ceiling: Option<&crate::Capabilities>,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        #[cfg(feature = "filesystem")]
-        let original = if io.is_none() {
-            self.preparation_io()?
-        } else {
-            None
-        };
-        #[cfg(feature = "filesystem")]
-        let io = io.or(original.as_ref());
         let grants =
             self.authorize_file_read(file, scope, ceiling.unwrap_or(scope.grants()), io)?;
-        #[cfg(feature = "filesystem")]
-        let created = self.scope.created_reference(file);
-        #[cfg(not(feature = "filesystem"))]
-        let created: Option<&Arc<dyn ContentResidencyVerifier>> = None;
-        let reader = created
-            .map(|reader| reader.as_ref())
-            .or_else(|| binding.map(|content| content.reader.as_ref()))
+        let reader = binding
+            .map(|content| content.reader.as_ref())
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
@@ -526,9 +346,6 @@ impl TaskContext {
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
         let writer = super::content_write::content_writer(self.content_binding(None), io)?;
-        if io.is_some() {
-            self.scope.verify_created_write(writer.volume(), io).await?;
-        }
         let (file, hold) = writer
             .observe_staged_once(
                 operation_id,
@@ -539,9 +356,6 @@ impl TaskContext {
                 },
             )?
             .await?;
-        if io.is_some() {
-            self.scope.verify_created_write(writer.volume(), io).await?;
-        }
         #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
         #[cfg(not(feature = "filesystem"))]

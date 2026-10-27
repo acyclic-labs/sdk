@@ -50,7 +50,16 @@ impl ToolPolicy for FixedToolPolicy {
     ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
     {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = crate::runtime::task_original_work(_native_io)? {
+        if let Some(work) = _native_io
+            .map(|io| {
+                io.original_native_work()
+                    .ok_or(crate::Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native policy requires original work",
+                    })
+            })
+            .transpose()?
+        {
             return crate::NativeFutureBundle::new(work, || async move {
                 use crate::store::history::HistoryIo;
                 let mut io = crate::store::HistoryWork::new(

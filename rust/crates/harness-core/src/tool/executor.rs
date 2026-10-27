@@ -64,22 +64,6 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         context: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>>;
 
-    /// Borrows the pinned resumable identity on the supplied original ledger.
-    fn resumable_machine_identity(
-        &self,
-        work: crate::NativeWork<'_>,
-    ) -> Result<Option<&crate::workflow::MachineIdentity>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "tool executor has no native resumable identity producer",
-            });
-        }
-        let _ = work;
-        Ok(None)
-    }
-
     /// Rejects an unaudited implementation before the caller constructs native invocation metadata or a future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
