@@ -97,7 +97,13 @@ impl Opening {
                     crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings)).await?;
                 let root =
                     std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
-                mcp.install(tools, &root, config.mcp_limits).await?
+                mcp.install(
+                    tools,
+                    &root,
+                    config.mcp_limits,
+                    Arc::new(crate::secrets::EnvSecrets),
+                )
+                .await?
             }
             None => crate::mcp::McpInstallation {
                 tools,
