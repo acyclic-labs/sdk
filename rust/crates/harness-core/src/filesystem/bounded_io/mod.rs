@@ -401,16 +401,7 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-            crate::accounting_trace::before(crate::accounting_trace::Phase::Preflight, &next);
-            let result = accounting.admit(next);
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-            crate::accounting_trace::after(
-                crate::accounting_trace::Phase::Preflight,
-                &next,
-                &result,
-            );
-            result
+            accounting.admit(next)
         })
     }
     pub(crate) fn spent(
@@ -456,36 +447,16 @@ impl PreparationIo {
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
-                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-                crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
                 // Keep the existing ledger locked and borrow its budget and
                 // counters. Encoding tiny JSON chunks needs no temporary
                 // KernelAccounting enum or copies of the complete budget.
-                let result = cancellation
+                cancellation
                     .check()
                     .map_err(acyclic_fs::FsError::from)
-                    .and_then(|()| spent.charge(&next, budget).map_err(Into::into));
-                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-                crate::accounting_trace::after(
-                    crate::accounting_trace::Phase::Charge,
-                    &next,
-                    &result,
-                );
-                result
+                    .and_then(|()| spent.charge(&next, budget).map_err(Into::into))
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { .. } => self.account(|accounting| {
-                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-                crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
-                let result = accounting.charge(next);
-                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-                crate::accounting_trace::after(
-                    crate::accounting_trace::Phase::Charge,
-                    &next,
-                    &result,
-                );
-                result
-            }),
+            Self::Native { .. } => self.account(|accounting| accounting.charge(next)),
         }
     }
     #[doc(hidden)]

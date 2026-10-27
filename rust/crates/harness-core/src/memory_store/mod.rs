@@ -1,39 +1,27 @@
-//! Bounded in-memory content shared by native and WASM hosts.
+//! Bounded owner-private content for the browser host.
 
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::conversation::FileDescriptor;
 use crate::conversation::{FileRef, VolumeRef, is_internal_path};
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::executor::json::canonical_json_digest;
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 
 struct StoredFile {
     reference: FileRef,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct StoredBlob {
     bytes: Box<[u8]>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct PathRevision {
     generation: u64,
     file: FileRef,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Default)]
 struct PathHistory {
     revisions: Vec<PathRevision>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    capacity_custody: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _key_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// Bounded owner-private immutable content state.
@@ -49,7 +37,6 @@ pub struct MemoryStore {
     files: HashMap<String, StoredFile>,
     blobs: HashMap<(u64, [u8; 32]), StoredBlob>,
     paths: BTreeMap<String, PathHistory>,
-    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     directory_index: directory::DirectoryIndex,
 }
 
@@ -79,12 +66,10 @@ impl MemoryStore {
             files: HashMap::new(),
             blobs: HashMap::new(),
             paths: BTreeMap::new(),
-            #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
             directory_index: directory::DirectoryIndex::default(),
         })
     }
 
-    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     #[doc(hidden)]
     pub fn stage(
         &mut self,
@@ -123,17 +108,14 @@ impl MemoryStore {
             display_name.to_owned(),
             &mut None,
         )?;
-        self.retain_reference(&reference, bytes, update_path, None)?;
+        self.retain_reference(&reference, bytes, update_path)?;
         Ok(reference)
     }
 }
 
 mod directory;
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use directory::MemoryStorePage;
 mod retention;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use retention::native_cache_custody;
 #[cfg(test)]
 mod tests;

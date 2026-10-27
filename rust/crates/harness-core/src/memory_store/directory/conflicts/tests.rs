@@ -6,6 +6,16 @@ use std::{
     rc::Rc,
 };
 
+fn paths_conflict(existing: &str, path: &str) -> bool {
+    existing != path
+        && (existing
+            .strip_prefix(path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+            || path
+                .strip_prefix(existing)
+                .is_some_and(|suffix| suffix.starts_with('/')))
+}
+
 fn reference<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
     paths
         .keys()

@@ -1,15 +1,5 @@
 use std::{borrow::Borrow, cmp::Ordering, collections::BTreeMap};
 
-pub(crate) fn paths_conflict(existing: &str, path: &str) -> bool {
-    existing != path
-        && (existing
-            .strip_prefix(path)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-            || path
-                .strip_prefix(existing)
-                .is_some_and(|suffix| suffix.starts_with('/')))
-}
-
 // Visit a prefix of the original scan, so every query reads each key at most
 // once and cannot pass the original first conflict. After the slash-prefixed
 // descendant interval, later keys cannot be an ancestor or a descendant.

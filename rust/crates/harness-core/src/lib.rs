@@ -51,16 +51,6 @@ pub use heap_layout::HeapLayout;
 pub mod native_environment;
 #[doc(hidden)]
 pub mod sync;
-#[cfg(all(
-    test,
-    debug_assertions,
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
-mod accounting_trace {
-    include!("memory_store/retention_scan_trace.rs");
-    include!("memory_store/retention_scan_capture.rs");
-}
 pub mod agent;
 #[doc(hidden)]
 pub mod command_request;
@@ -87,11 +77,7 @@ pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
-#[cfg(any(
-    test,
-    feature = "filesystem",
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod memory_store;
 pub mod merge;
