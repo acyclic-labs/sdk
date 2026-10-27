@@ -31,7 +31,8 @@ impl Builder {
         let path = match &condition {
             CommitCondition::Head { path, .. }
             | CommitCondition::Tail { path, .. }
-            | CommitCondition::Absent { path } => path.clone(),
+            | CommitCondition::Absent { path }
+            | CommitCondition::Present { path } => path.clone(),
         };
         self.conditions.entry(path).or_insert(condition);
     }
