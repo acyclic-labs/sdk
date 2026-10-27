@@ -202,7 +202,6 @@ cargo bench -p acyclic-objects --features local --bench objects
 cargo bench -p acyclic-fs --bench filesystem
 cargo bench -p acyclic-fs --bench filesystem_alloc
 cargo bench -p acyclic-conformance --features local-runner --bench harness
-cargo bench -p acyclic-conformance --features local-runner --bench client_demand
 cargo bench -p acyclic-conformance --features local-runner --bench write_validation
 ```
 

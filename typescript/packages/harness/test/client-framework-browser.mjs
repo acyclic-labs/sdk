@@ -36,4 +36,3 @@ process.exitCode = await new Promise((resolve, reject) => {
   driver.once("error", reject);
   driver.once("exit", code => resolve(code ?? 1));
 });
-if (process.exitCode === 0) await import("./client-demand-browser.mjs");

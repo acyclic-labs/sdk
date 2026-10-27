@@ -1,11 +1,6 @@
 /** The public frontend shares one Rust client across local and hosted backends. */
 export * from "./client.js";
-export * from "./cache.js";
-export * from "./client-demand.js";
-export { RequestScheduler, RequestCapacityError, type RequestLimits } from "./client-requests.js";
 export { SnapshotStore, type ClientSnapshot } from "./client-snapshot.js";
-export * from "./pagination.js";
-export * from "./hypotheses.js";
 export * from "./providers.js";
 export * from "./model-content.js";
 export * from "./context-discovery.js";

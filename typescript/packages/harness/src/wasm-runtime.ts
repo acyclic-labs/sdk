@@ -56,11 +56,11 @@ export function assertClientWasmExports(value: unknown): void {
   ]);
   const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
   const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
-  const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
-    "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
+  const explorer = hasClass(exports, "WasmExplorer", "wasmexplorer", [
+    "frame", "history", "health", "setViewport", "scroll", "hover", "focus", "expand", "collapse",
+    "open", "close", "seek", "jumpEnd", "networkChanged", "snapshot", "restore", "free",
   ], true);
-  const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
-  if (typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest) {
+  if (typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !explorer) {
     throw new Error("harness WASM does not provide the required client exports");
   }
 }
@@ -158,12 +158,3 @@ export async function ensureContextWasm(): Promise<void> {
   }
 }
 
-/** The hypothesis kernel has its own export contract on the same module. */
-export async function ensureHypothesisWasm(): Promise<void> {
-  const exports = await loadHarnessWasm();
-  if (!hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", [
-    "advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free",
-  ], true)) {
-    throw new Error("harness WASM does not provide the required hypothesis exports");
-  }
-}

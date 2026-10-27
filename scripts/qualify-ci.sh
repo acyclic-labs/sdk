@@ -193,9 +193,6 @@ case "$lane" in
     # cannot cross a feature gate the all-features suites never close.
     cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      harness_tests -p acyclic-harness --features model-checking \
-        --test client-mailbox-model
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       harness_tests -p acyclic-harness-core --features model-checking --test mcp-loom
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       harness_tests -p acyclic-harness-core --features model-checking \

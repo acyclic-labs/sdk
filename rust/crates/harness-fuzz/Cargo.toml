@@ -162,14 +162,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "client_offline"
-path = "fuzz_targets/client_offline.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "recorded_invocation"
 path = "fuzz_targets/recorded_invocation.rs"
 required-features = ["runtime"]

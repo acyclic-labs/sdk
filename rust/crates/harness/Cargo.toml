@@ -72,7 +72,7 @@ conformance = ["hosting", "oidc", "acyclic-fs/conformance", "dep:acyclic-objects
 oidc = ["filesystem", "acyclic-harness-core/oidc"]
 oidc-http = ["oidc", "acyclic-harness-core/oidc-http"]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
-test-support = ["acyclic-harness-tui?/test-support", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
+test-support = ["acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "hosting", "dep:acyclic-objects", "acyclic-fs/browser", "acyclic-fs/wasm-object-store", "acyclic-harness-core/browser"]
 hosting = ["filesystem", "acyclic-harness-client/agents"]
@@ -112,7 +112,6 @@ acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
-acyclic-markdown = { version = "=0.2.0", path = "../markdown", optional = true }
 ratatui = { version = "=0.30.2", default-features = false, optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
@@ -219,8 +218,3 @@ required-features = ["filesystem-local", "native-execution"]
 name = "skills-context"
 path = "tests/skills_context.rs"
 required-features = ["filesystem-local", "native-execution", "test-support"]
-
-[[test]]
-name = "client-mailbox-model"
-path = "tests/client_mailbox_model.rs"
-required-features = ["model-checking"]

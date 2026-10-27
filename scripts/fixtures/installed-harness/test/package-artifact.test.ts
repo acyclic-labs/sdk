@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { initializeClientQueries, PreparedAgentCommand, PageWindow,
+import { initializeClientQueries, PreparedAgentCommand,
   encodeCanonicalJson, type AgentCommand } from "@acyclic-labs/harness";
 
 test("installed package resolves the public client and default WASM artifacts", async () => {
@@ -12,10 +12,6 @@ test("installed package resolves the public client and default WASM artifacts", 
   const original = prepared.bytes();
   encoded.fill(0);
   expect(prepared.bytes()).toEqual(original);
-  using pages = new PageWindow(1, 4, 4096);
-  expect(pages.items()).toEqual([]);
-  expect(pages.pageCount()).toBe(0);
-  expect(pages.retainedBytes()).toBe(0n);
 });
 
 test("installed command admission refuses asserted identity and oversized input", async () => {

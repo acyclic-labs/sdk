@@ -32,9 +32,8 @@ agent and does not apply configuration to a remote host.
 
 Call `initializeClientQueries()` before constructing client objects. `AgentClient`
 folds the selected conversation, status and filesystem streams through one bounded
-`WireSession`. `PageWindow` retains complete provider pages and their opaque
-cursors. Expand child nodes with bounded child pages; select full streams only for
-agents the interface needs.
+`WireSession`. History and child pages are read through the shared Rust reader;
+select full streams only for agents the interface needs.
 
 For a scrolling UI, use `client.setViewport(agents, conversationCursors,
 statusCursors, outputSubscriptions)`: the first agent is focused, the rest are
@@ -46,10 +45,9 @@ their cursors. The combined cap is 16 interests (two per agent, one per pane);
 over-capacity input leaves the previous viewport intact. `setView` remains the
 agent-only operation for callers managing output lifetimes separately.
 
-Keep child and historical pages in `PageWindow`, using the server's exclusive
-cursors for backfill; read individual displayed records rather than copying a
-whole conversation. Closing the client releases all interests. No idle agent
-needs its own client, timer, or subscription.
+Read individual displayed records rather than copying a whole conversation.
+Closing the client releases all interests. No idle agent needs its own client,
+timer, or subscription.
 
 `AgentClient.controls(binding)` binds controls to that client's existing session
 pool and credential slot. Prepare a command once and retain its
@@ -87,7 +85,7 @@ state to the next call. Inventory describes immutable references and original
 option claims. It grants no file access or authority to admit those claims.
 
 `./react`, `./svelte` and `./worker` expose view adapters. Framework subscriptions
-and demand hydration use the same bounded client state. File hydration requires
+use the same bounded client state. File hydration requires
 an authorized, verified host reader; a filesystem follow record is metadata, not
 the file's contents.
 
