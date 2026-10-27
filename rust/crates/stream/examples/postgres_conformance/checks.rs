@@ -1,4 +1,5 @@
 //! Runs the unchanged suite and cross-session durability/CAS/notification checks.
+use futures::TryFutureExt as _;
 use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
 use std::time::{Duration, Instant};
@@ -27,7 +28,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let receipt = provider.append(first.clone()).await?;
     assert_eq!(peer.append(first).await?, receipt);
     let mut follow = peer
-        .follow(path.clone(), 1, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
         .await?;
     let request = AppendRequest {
         path: path.clone(),
@@ -52,7 +53,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(record.sequence, 1);
     let observer = PostgresStream::connect(database, &namespace).await?;
     let mut remote = observer
-        .follow(path.clone(), 2, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 2, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
         .await?;
     provider
         .append(AppendRequest {
@@ -109,23 +110,18 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
         };
         let mut subscription: FollowStream = match kind {
             "follow" => provider
-                .follow(path.clone(), 1, FollowFilter::default())
+                .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
                 .await?
                 .map(|record| record.map(FollowUpdate::Record))
                 .boxed(),
             "follow_checked" => provider
-                .follow_checked(path.clone(), 1, receipt.commit_id, FollowFilter::default())
+                .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: Some(receipt.commit_id), filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
                 .await?
                 .map(|record| record.map(FollowUpdate::Record))
                 .boxed(),
             _ => {
                 provider
-                    .follow_updates(
-                        path.clone(),
-                        1,
-                        Some(receipt.commit_id),
-                        FollowFilter::default(),
-                    )
+                    .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: Some(receipt.commit_id), filter: FollowFilter::default(), progress: true })
                     .await?
             }
         };
@@ -165,10 +161,10 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
         })
         .await?;
     let mut records = provider
-        .follow(path.clone(), 1, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
         .await?;
     let mut updates = provider
-        .follow_updates(path, 1, None, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest { path: path, from: 1, preceding: None, filter: FollowFilter::default(), progress: true })
         .await?;
     let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);

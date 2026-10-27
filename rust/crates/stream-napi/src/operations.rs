@@ -197,7 +197,9 @@ pub(super) async fn open_follow(
     })
 }
 
-pub(super) fn record_frames(records: acyclic_stream::RecordStream) -> FollowFrames {
+pub(super) fn record_frames(
+    records: impl futures::Stream<Item = std::result::Result<acyclic_stream::Record, acyclic_stream::StreamError>> + Send + 'static,
+) -> FollowFrames {
     records
         .map(|record| {
             record.map(|record| {

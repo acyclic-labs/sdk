@@ -10,7 +10,7 @@
 use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, FollowFilter, ForkReceipt,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds,
 };
 use bytes::Bytes;
@@ -45,13 +45,8 @@ macro_rules! delegate {
             $(async fn $name(&self, $arg: $input) -> Result<$output, StreamError> {
                 self.inner.$name($arg).await
             })*
-            async fn follow(
-                &self,
-                path: StreamPath,
-                from: u64,
-                filter: FollowFilter,
-            ) -> Result<RecordStream, StreamError> {
-                self.inner.follow(path, from, filter).await
+            async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+                self.inner.follow(request).await
             }
             async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);

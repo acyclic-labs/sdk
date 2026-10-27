@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::MAX_COMMAND_BYTES;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -334,7 +335,7 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                 .await?;
         }
         let mut follow = provider
-            .follow(stream, 0, crate::FollowFilter::default())
+            .follow(crate::FollowRequest { path: stream, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await?;
         for expected in 0..count {
             let record = follow.next().await.ok_or(StreamError::Unavailable)??;

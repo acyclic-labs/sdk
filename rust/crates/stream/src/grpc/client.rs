@@ -197,45 +197,10 @@ impl StreamProvider for Client {
             .await
     }
 
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session()?
-            .follow_with_ack(path, from, self.acknowledge_deliveries, filter)
-            .await
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+        self.session()?.follow_with_ack(request, self.acknowledge_deliveries).await
     }
 
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        self.session()?
-            .follow_updates_with_ack(path, from, preceding, self.acknowledge_deliveries, filter)
-            .await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session()?
-            .follow_records(
-                path,
-                from,
-                Some(preceding),
-                self.acknowledge_deliveries,
-                filter,
-            )
-            .await
-    }
 
     async fn children_page(
         &self,

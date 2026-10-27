@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::{MemoryStream, OwnedBytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -117,49 +118,14 @@ impl StreamProvider for EndingFollow {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
         let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
         if self.finite {
             return if attempt == 0 {
                 self.inner
                     .read(ReadRequest {
-                        path,
-                        from,
-                        limit: u32::try_from(crate::MAX_ITEMS)
-                            .map_err(|_| StreamError::LimitExceeded)?,
-                    })
-                    .await
-            } else {
-                Ok(stream::empty().boxed())
-            };
-        }
-        if attempt == 0 {
-            return Ok(stream::empty().boxed());
-        }
-        if self.deny {
-            return Err(StreamError::AccessDenied);
-        }
-        self.inner.follow(path, from, filter).await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
-        if self.finite {
-            return if attempt == 0 {
-                self.inner
-                    .read(ReadRequest {
-                        path,
-                        from,
+                        path: request.path,
+                        from: request.from,
                         limit: u32::try_from(crate::MAX_ITEMS)
                             .map_err(|_| StreamError::LimitExceeded)?,
                     })
@@ -180,7 +146,7 @@ impl StreamProvider for EndingFollow {
             return Err(StreamError::AccessDenied);
         }
         self.inner
-            .follow_updates(path, from, preceding, filter)
+            .follow(request)
             .await
     }
 
@@ -299,7 +265,7 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         .await?;
     let transport = client(provider)?;
     let mut records = transport
-        .follow(path, 0, crate::FollowFilter::default())
+        .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await?;
     let record = tokio::time::timeout(Duration::from_secs(1), records.next())
         .await?
@@ -319,11 +285,7 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
     let items = tokio::time::timeout(
         Duration::from_secs(1),
         transport
-            .follow(
-                StreamPath::new("accounts/events")?,
-                0,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest { path: StreamPath::new("accounts/events")?, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await?
             .collect::<Vec<_>>(),
     )
@@ -525,7 +487,7 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
     let result = tokio::time::timeout(
         Duration::from_secs(1),
         client
-            .follow(path, 0, crate::FollowFilter::default())
+            .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await?
             .collect::<Vec<_>>(),
     )

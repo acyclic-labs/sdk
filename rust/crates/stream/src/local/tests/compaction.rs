@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::{CommitMutation, Record};
 use std::time::{Duration, Instant};
@@ -50,7 +51,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
             if_tail: None, idempotency_key: None,
         }).await? else { return Err("seed conflict".into()) };
         assert_eq!(provider.watermarks(path.clone()).await?.durable, 1);
-        let mut records = provider.follow(path.clone(), 1, crate::FollowFilter::default()).await?;
+        let mut records = provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only).await?;
         assert!(futures::poll!(records.next()).is_pending());
         let (started, waiting) = std::sync::mpsc::sync_channel(0);
         let (release, released) = std::sync::mpsc::sync_channel(0);
@@ -80,7 +81,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         // One poll at a known held device cut establishes progress without a
         // timer or guessed number of idle polls. Drain/release before failing.
         let record = futures::poll!(records.next());
-        let opened = futures::poll!(provider.follow_checked(path.clone(), 1, seed.commit_id, crate::FollowFilter::default()));
+        let opened = futures::poll!(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only));
         let ready = [record.is_ready(), opened.is_ready()].into_iter().filter(|ready| *ready).count();
         eprintln!("accepted_compaction_probes ready_before_device_release={ready}/2");
         if ready != 2 {
@@ -107,7 +108,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 {
                     let relay = crate::grpc::tests::client(provider.clone())?;
                     assert_eq!(relay.watermarks(path.clone()).await?, marks);
-                    let mut followed = relay.follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default()).await?;
+                    let mut followed = relay.follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only).await?;
                     assert_eq!(followed.next().await.ok_or("relay ended")??, record);
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())
@@ -147,7 +148,7 @@ fn append_to_follow_latency_with_frequent_compaction() -> Result {
             let reader: Box<dyn StreamProvider> = if transport == "grpc" {
                 Box::new(crate::grpc::tests::client(provider.clone())?)
             } else { Box::new(provider.clone()) };
-            let mut records = reader.follow(path.clone(), 1, crate::FollowFilter::default()).await?;
+            let mut records = reader.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only).await?;
             let mut samples = Vec::new();
             for sequence in 1..=64 {
                 let started = Instant::now();

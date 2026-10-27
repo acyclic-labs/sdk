@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::verification::block_on;
@@ -48,7 +49,7 @@ pub(crate) fn registration(omit_wake: bool) {
         });
         block_on(async {
             let mut follow = provider
-                .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+                .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                 .await
                 .unwrap();
             let record = follow.next().await.unwrap().unwrap();
@@ -73,9 +74,9 @@ pub(crate) fn cancellation(retain: bool) {
         }))
         .unwrap();
         let mut cancelled =
-            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
+            block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)).unwrap();
         let mut kept =
-            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
+            block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)).unwrap();
         let (_, wake) = crate::verification::probe();
         assert!(
             cancelled
@@ -170,7 +171,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
         } else {
             block_on(async {
                 match provider
-                    .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+                    .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                     .await
                 {
                     Err(error) => assert_eq!(error, StreamError::Unavailable),

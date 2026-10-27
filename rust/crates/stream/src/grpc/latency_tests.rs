@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::tests::TestResult;
 use super::*;
 
@@ -55,7 +56,7 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
         })
         .await?;
     let mut follow = reader
-        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {

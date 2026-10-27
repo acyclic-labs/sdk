@@ -3,6 +3,7 @@ use crate::{
     AppendOutcome, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, StreamBounds,
 };
+use futures::TryFutureExt as _;
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {
     wire::SessionFollow {
@@ -91,36 +92,13 @@ impl StreamProvider for Arc<Counted> {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        let status = path.as_str() == "status";
-        let counted = Arc::clone(self);
-        Ok(self
-            .memory
-            .follow(path, from, filter)
-            .await?
-            .inspect(move |_| {
-                if status {
-                    counted.pulled.fetch_add(1, Ordering::Relaxed);
-                    counted.changed.notify_one();
-                }
-            })
-            .boxed())
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        let status = path.as_str() == "status";
+        let status = request.path.as_str() == "status";
         let counted = Arc::clone(self);
         Ok(self
             .memory
-            .follow_updates(path, from, preceding, filter)
+            .follow(request)
             .await?
             .inspect(move |_| {
                 if status {
@@ -152,11 +130,14 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
         )
         .await?;
     let mut full = client
-        .follow(
-            StreamPath::new("events")?,
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest {
+            path: StreamPath::new("events")?,
+            from: 1,
+            preceding: None,
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     for (sent, sequence) in (1..=2).enumerate() {
         status(&memory, sequence, false).await?;

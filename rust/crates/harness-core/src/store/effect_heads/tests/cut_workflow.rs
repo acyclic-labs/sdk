@@ -115,14 +115,9 @@ impl StreamProvider for Observed {
         ));
         self.0.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
-        record(("follow", normalized_path(&path), from));
-        self.0.follow(path, from, filter).await
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        record(("follow", normalized_path(&request.path), request.from));
+        self.0.follow(request).await
     }
     async fn commit(
         &self,

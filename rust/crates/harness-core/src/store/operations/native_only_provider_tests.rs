@@ -51,12 +51,7 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
         Err(self.ordinary_error())
     }
-    async fn follow(
-        &self,
-        _: StreamPath,
-        _: u64,
-        _filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
+    async fn follow(&self, _request: acyclic_stream::FollowRequest) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         Err(self.ordinary_error())
     }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {

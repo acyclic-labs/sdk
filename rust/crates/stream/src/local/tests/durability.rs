@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 
 #[tokio::test]
@@ -79,7 +80,7 @@ async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
             assert_eq!(watermarks.accepted, ordinal + 1);
             assert_eq!(watermarks.durable, if defer { 0 } else { ordinal + 1 });
             let mut follow = provider
-                .follow(path.clone(), ordinal, crate::FollowFilter::default())
+                .follow(crate::FollowRequest { path: path.clone(), from: ordinal, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                 .await?;
             assert_eq!(
                 follow

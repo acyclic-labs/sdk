@@ -138,6 +138,7 @@ message FollowRequest {
   string path = 1;
   uint64 from = 2;
   SessionFilter filter = 3;
+  bool progress = 4;
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.

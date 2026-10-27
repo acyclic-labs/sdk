@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use futures::{StreamExt, stream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -166,7 +167,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         let mut follows = futures::future::try_join_all(
             clones
                 .iter()
-                .map(|clone| clone.follow(path.clone(), 1, crate::FollowFilter::default())),
+                .map(|clone| clone.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)),
         )
         .await?;
         let anchor = provider
@@ -182,17 +183,12 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             .commit_id;
         assert!(matches!(
             client
-                .follow_checked(
-                    path.clone(),
-                    1,
-                    CommitId::from_bytes([42; 32]),
-                    crate::FollowFilter::default()
-                )
+                .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(CommitId::from_bytes([42; 32])), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                 .await,
             Err(StreamError::PrefixNotRetained)
         ));
         let mut checked = client
-            .follow_checked(path.clone(), 1, anchor, crate::FollowFilter::default())
+            .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(anchor), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await?;
         append(&provider, "events").await?;
         assert_eq!(
@@ -262,11 +258,7 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
             .session_client()?
             .register_credential(0, crate::session::testing::credential())?;
         let mut records = client
-            .follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest { path: StreamPath::new("events")?, from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await?;
         append(&provider, "events").await?;
         append(&provider, "agents/one").await?;

@@ -221,35 +221,8 @@ impl StreamProvider for Remote {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.sessions.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.sessions.follow(path, from, filter).await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        self.sessions
-            .follow_updates(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.sessions
-            .follow_checked(path, from, preceding, filter)
-            .await
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+        self.sessions.follow(request).await
     }
 
     async fn children_page(

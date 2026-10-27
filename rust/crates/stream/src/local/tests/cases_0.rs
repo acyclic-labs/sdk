@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 
 #[test]
@@ -865,7 +866,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(async {
                     provider
-                        .follow(path, 1, crate::FollowFilter::default())
+                        .follow(crate::FollowRequest { path: path, from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                         .await
                 })
             },
@@ -932,7 +933,7 @@ async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn
         .await?;
     assert!(matches!(
         provider
-            .follow(path, 2, crate::FollowFilter::default())
+            .follow(crate::FollowRequest { path: path, from: 2, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await,
         Err(StreamError::OutOfRange)
     ));

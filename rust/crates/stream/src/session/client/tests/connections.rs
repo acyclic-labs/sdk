@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 
 struct ReplacedNode {
     provider: Arc<MemoryStream>,
@@ -74,22 +75,28 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let mut first = client
-            .follow(
-                StreamPath::new("events")?,
-                0,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest {
+                path: StreamPath::new("events")?,
+                from: 0,
+                preceding: None,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         assert_eq!(next(&mut first).await?.sequence, 0);
         endpoint.replacement.store(1, Ordering::Release);
         drop(first);
         endpoint.closed.notified().await;
         let mut second = client
-            .follow(
-                StreamPath::new("events")?,
-                0,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest {
+                path: StreamPath::new("events")?,
+                from: 0,
+                preceding: None,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         assert_eq!(next(&mut second).await?.sequence, 0);
         assert_eq!(*endpoint.destinations.lock().unwrap(), ["", ""]);
@@ -263,11 +270,14 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     .await?;
     let client = fixture.client()?;
     let mut records = client
-        .follow(
-            StreamPath::new("events")?,
-            0,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest {
+            path: StreamPath::new("events")?,
+            from: 0,
+            preceding: None,
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     for _ in 0..2 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
@@ -292,11 +302,14 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
     let mut later = client
-        .follow(
-            StreamPath::new("events")?,
-            6,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest {
+            path: StreamPath::new("events")?,
+            from: 6,
+            preceding: None,
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "events", 1).await?;
     let mut tail = provider
@@ -345,7 +358,14 @@ async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
     client.register_credential(0, crate::session::testing::credential())?;
     let connections = client.connections();
     let _idle = client
-        .follow(StreamPath::new("idle")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest {
+            path: StreamPath::new("idle")?,
+            from: 1,
+            preceding: None,
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     let first = connections.changed(0).await?;
     fixture.reset()?;

@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 
 struct RotatingHost {
     service: crate::session::Service<MemoryStream>,
@@ -123,11 +124,14 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             .session_client()?
             .register_credential(0, crate::session::testing::credential())?;
         let mut records = client
-            .follow(
-                StreamPath::new("events")?,
-                0,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest {
+                path: StreamPath::new("events")?,
+                from: 0,
+                preceding: None,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         assert_eq!(next(&mut records).await?.sequence, 0);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -169,11 +173,14 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
         }));
         assert!(matches!(
             denied
-                .follow(
-                    StreamPath::new("events")?,
-                    0,
-                    crate::FollowFilter::default()
-                )
+                .follow(crate::FollowRequest {
+                    path: StreamPath::new("events")?,
+                    from: 0,
+                    preceding: None,
+                    filter: crate::FollowFilter::default(),
+                    progress: false
+                })
+                .map_ok(crate::records_only)
                 .await,
             Err(StreamError::AccessDenied)
         ));

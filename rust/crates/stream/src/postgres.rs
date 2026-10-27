@@ -462,43 +462,8 @@ impl StreamProvider for PostgresStream {
         self.refresh().await?;
         self.inner.core.children_page(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
         self.refresh().await?;
-        Ok(self.guarded(self.inner.core.follow(path, from, filter).await?))
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.refresh().await?;
-        Ok(self.guarded(
-            self.inner
-                .core
-                .follow_checked(path, from, preceding, filter)
-                .await?,
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
-        self.refresh().await?;
-        Ok(self.guarded(
-            self.inner
-                .core
-                .follow_updates(path, from, preceding, filter)
-                .await?,
-        ))
+        Ok(self.guarded(self.inner.core.follow(request).await?))
     }
 }

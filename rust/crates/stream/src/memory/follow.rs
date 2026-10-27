@@ -53,7 +53,7 @@ impl MemoryStream {
         from: u64,
         anchor: Option<CommitId>,
         filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    ) -> Result<crate::FollowStream, StreamError> {
         let (interest, cursor) = self
             .prepare_follow(&path, from, anchor, filter.clone())
             .await?;
@@ -81,7 +81,7 @@ impl MemoryStream {
                 .await;
                 state = next;
                 match record {
-                    Ok(Some(record)) => break Ok(record),
+                    Ok(Some(record)) => break Ok(crate::FollowUpdate::Record(record)),
                     Err(error) => break Err(error),
                     Ok(None) => {
                         if state.interest.changed.changed().await.is_err() {

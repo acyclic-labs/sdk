@@ -367,12 +367,13 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                 }
                 self.records = Some(
                     self.provider
-                        .follow_updates(
-                            self.path.clone(),
-                            self.next,
-                            self.preceding,
-                            self.filter.clone(),
-                        )
+                        .follow(crate::FollowRequest {
+                            path: self.path.clone(),
+                            from: self.next,
+                            preceding: self.preceding,
+                            filter: self.filter.clone(),
+                            progress: true,
+                        })
                         .await?,
                 );
                 if !self.opened {

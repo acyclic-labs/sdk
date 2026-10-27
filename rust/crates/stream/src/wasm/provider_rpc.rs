@@ -170,17 +170,6 @@ impl InjectedStream {
         wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
     }
 }
-fn records(updates: FollowStream) -> RecordStream {
-    updates
-        .filter_map(|update| async {
-            match update {
-                Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
-                Err(error) => Some(Err(error)),
-                Ok(FollowUpdate::Progress { .. }) => None,
-            }
-        })
-        .boxed_local()
-}
 #[async_trait::async_trait(?Send)]
 impl StreamProvider for InjectedStream {
     fn operation_claims(&self) -> &OperationClaims {
@@ -303,7 +292,7 @@ impl StreamProvider for InjectedStream {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
         let from = request.from;
-        Ok(records(
+        Ok(Box::pin(crate::records_only(
             self.cursor(
                 "read",
                 wire::ReadRequest {
@@ -315,7 +304,7 @@ impl StreamProvider for InjectedStream {
                 from,
             )
             .await?,
-        ))
+        )))
     }
     async fn children_page(
         &self,
@@ -358,46 +347,18 @@ impl StreamProvider for InjectedStream {
             .await?,
         )
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        Ok(records(
-            self.follow_updates(path, from, None, filter).await?,
-        ))
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        Ok(records(
-            self.follow_updates(path, from, Some(preceding), filter)
-                .await?,
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
         self.cursor(
             "follow",
             wire::FollowRequest {
-                path: path.to_string(),
-                from,
-                filter: Some(filter.transport_filter()?),
+                path: request.path.to_string(),
+                from: request.from,
+                filter: Some(request.filter.transport_filter()?),
+                progress: request.progress,
             },
-            preceding,
-            from,
-        )
-        .await
+            request.preceding,
+            request.from,
+        ).await
     }
 }
 
@@ -423,16 +384,17 @@ impl super::WasmStream {
                     .boxed_local()
             }
             "follow" => {
-                let (path, from, filter) =
-                    wire_codec::follow_from_wire(super::decode::<wire::FollowRequest>(input)?)
-                        .map_err(super::js_error)?;
+                let input = super::decode::<wire::FollowRequest>(input)?;
+                let progress = input.progress;
+                let (path, from, filter) = wire_codec::follow_from_wire(input)
+                    .map_err(super::js_error)?;
                 let anchor = if preceding.is_empty() {
                     None
                 } else {
                     Some(wire_codec::commit_id(preceding).map_err(super::js_error)?)
                 };
                 provider
-                    .follow_updates(path, from, anchor, filter)
+                    .follow(crate::FollowRequest { path, from, preceding: anchor, filter, progress })
                     .await
                     .map_err(super::js_error)?
             }

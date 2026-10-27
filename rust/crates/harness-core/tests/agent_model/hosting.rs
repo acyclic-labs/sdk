@@ -342,13 +342,8 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(
-        &self,
-        path: acyclic_stream::StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
     async fn commit(
         &self,

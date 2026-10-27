@@ -1,4 +1,5 @@
 //! Scripted durability around the real memory provider; no extra records on save.
+use futures::TryFutureExt as _;
 use acyclic_stream::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -62,24 +63,8 @@ impl StreamProvider for Provider {
         }
         self.memory.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.memory.follow(path, from, filter).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.memory
-            .follow_checked(path, from, preceding, filter)
-            .await
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
+        self.memory.follow(request).await
     }
 
     async fn children_page(

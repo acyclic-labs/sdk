@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use std::task::{Context, Waker};
 
@@ -21,17 +22,12 @@ async fn unpolled_streams_do_not_block_appends() {
         let mut follow = {
             let follow = if checked {
                 provider
-                    .follow_checked(
-                        path.clone(),
-                        1,
-                        seed.commit_id,
-                        crate::FollowFilter::default(),
-                    )
+                    .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                     .await
                     .unwrap()
             } else {
                 provider
-                    .follow(path.clone(), 0, crate::FollowFilter::default())
+                    .follow(crate::FollowRequest { path: path.clone(), from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                     .await
                     .unwrap()
             };
@@ -81,7 +77,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
             .unwrap();
         let mut follow = {
             provider
-                .follow(path, 0, crate::FollowFilter::default())
+                .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))

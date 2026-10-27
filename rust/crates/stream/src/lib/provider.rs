@@ -109,39 +109,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
     /// Opens a bounded finite read pinned to one immutable history snapshot.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
-    /// Replays and then remains live without a handoff gap.
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError>;
-    /// Atomically checks the record at `from - 1` and subscribes after it. A missing
-    /// or changed anchor fails immediately; it must never wait for a future record.
-    /// History replacement during delivery must fail instead of joining histories.
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        let _ = (path, from, preceding, filter);
-        Err(StreamError::Unsupported)
-    }
-    /// Atomically opens a filtered follow with ordered skipped-prefix progress.
-    /// Progress must never pass an earlier matching record. Metadata-only wakes
-    /// belong to this stream; ordinary record-only follows remain indexed.
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        let _ = (path, from, preceding, filter);
-        Err(StreamError::Unsupported)
-    }
+    /// Replays and remains live without a handoff gap. The history fence is checked
+    /// atomically before subscription and on replacement. Ordered progress never
+    /// passes an earlier matching record; record-only follows retain indexed wakes.
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError>;
 
     /// Traverses arbitrarily large direct-child sets without silently
     async fn children_page(

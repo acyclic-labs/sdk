@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::super::*;
 use super::TestClock;
 use crate::journal::{Command, Outcome};
@@ -92,7 +93,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
     core.append(initial).await?;
     let append = request(1)?;
     let mut follow = core
-        .follow(append.path.clone(), 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest { path: append.path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await?;
     let refused = core
         .apply_durable(Command::Append(append.clone()), None, async {

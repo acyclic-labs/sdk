@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::verification::{block_on, park};
 use std::{
@@ -24,15 +25,10 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
         };
         let follow = {
             let follow = if checked {
-                block_on(provider.follow_checked(
-                    path.clone(),
-                    1,
-                    seed.commit_id,
-                    crate::FollowFilter::default(),
-                ))
+                block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
                 .unwrap()
             } else {
-                block_on(provider.follow(path.clone(), 0, crate::FollowFilter::default())).unwrap()
+                block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)).unwrap()
             };
             follow
                 .map(move |record| {
@@ -87,14 +83,9 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
         };
         let follow = {
             let follow = if checked {
-                block_on(provider.follow_checked(
-                    path.clone(),
-                    1,
-                    seed.commit_id,
-                    crate::FollowFilter::default(),
-                ))
+                block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
             } else {
-                block_on(provider.follow(path.clone(), 0, crate::FollowFilter::default()))
+                block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
             }
             .unwrap();
             follow
@@ -181,7 +172,7 @@ pub(crate) fn abandon(
         }))
         .unwrap();
         let follow = {
-            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
+            block_on(provider.follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()

@@ -44,7 +44,7 @@ impl BrowserStream {
         from: u64,
         anchor: Option<CommitId>,
         filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    ) -> Result<crate::FollowStream, StreamError> {
         // The publication index survives replay-cache replacement. Registration
         // and the initial cursor are captured under the same cache lock as writes.
         let (changed, cursor) = self
@@ -69,7 +69,7 @@ impl BrowserStream {
                         .await?
                     {
                         return Ok(Some((
-                            record,
+                            crate::FollowUpdate::Record(record),
                             (provider, path, cursor, anchor, changed, filter),
                         )));
                     }

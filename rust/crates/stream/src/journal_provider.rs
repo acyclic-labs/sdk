@@ -492,39 +492,7 @@ impl StreamProvider for JournalStream {
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.query(async move |p| p.read_commit(id).await).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        Ok(self.retain(
-            self.query(async move |p| p.follow(path, from, filter).await)
-                .await?,
-        ))
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        Ok(self.retain(
-            self.query(async move |p| p.follow_checked(path, from, preceding, filter).await)
-                .await?,
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
-        Ok(self.retain(
-            self.query(async move |p| p.follow_updates(path, from, preceding, filter).await)
-                .await?,
-        ))
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+        Ok(self.retain(self.query(async move |p| p.follow(request).await).await?))
     }
 }

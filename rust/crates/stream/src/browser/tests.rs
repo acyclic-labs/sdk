@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
@@ -30,17 +31,12 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
     let path = StreamPath::new("events").expect("path");
     assert!(matches!(
         reader
-            .follow_checked(
-                path.clone(),
-                1,
-                CommitId::from_bytes([42; 32]),
-                crate::FollowFilter::default()
-            )
+            .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(CommitId::from_bytes([42; 32])), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
             .await,
         Err(StreamError::PrefixNotRetained)
     ));
     let mut records = reader
-        .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+        .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await
         .expect("checked follow");
     assert!(futures::poll!(records.next()).is_pending());
@@ -83,11 +79,7 @@ async fn publications_refresh_once_and_wake_only_affected_follows() {
     for id in 0..128 {
         records.push(
             reader
-                .follow(
-                    StreamPath::new(format!("agents/{id}/events")).expect("path"),
-                    1,
-                    crate::FollowFilter::default(),
-                )
+                .follow(crate::FollowRequest { path: StreamPath::new(format!("agents/{id}/events")).expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
                 .await
                 .expect("follow")
                 .map(move |record| Observed::Record(id, record))
@@ -129,11 +121,7 @@ async fn follow_pushes_every_record_after_its_initial_snapshot() {
         .expect("open");
     append(&provider, "events").await.expect("seed");
     let mut records = provider
-        .follow(
-            StreamPath::new("events").expect("path"),
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest { path: StreamPath::new("events").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await
         .expect("follow");
     let receive = async {
@@ -164,11 +152,7 @@ async fn follow_wakes_for_another_database_opener() {
         .await
         .expect("reader");
     let mut records = reader
-        .follow(
-            StreamPath::new("events").expect("path"),
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest { path: StreamPath::new("events").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await
         .expect("follow");
     let (record, written) = futures::join!(records.next(), append(&writer, "events"));
@@ -189,11 +173,7 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
     .expect("open");
     append(&provider, "events").await.expect("seed");
     let mut records = provider
-        .follow(
-            StreamPath::new("events").expect("path"),
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest { path: StreamPath::new("events").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await
         .expect("follow");
     assert_eq!(
@@ -233,11 +213,7 @@ async fn browser_append_follow_latency() {
         .expect("open");
     append(&provider, "latency").await.expect("seed");
     let mut records = provider
-        .follow(
-            StreamPath::new("latency").expect("path"),
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest { path: StreamPath::new("latency").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
         .await
         .expect("follow");
     let performance = web_sys::window()
@@ -302,7 +278,7 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
     })
     .unwrap();
     let mut follow = reader
-        .follow(StreamPath::new("events").unwrap(), 1, filter)
+        .follow(crate::FollowRequest { path: StreamPath::new("events").unwrap(), from: 1, preceding: None, filter: filter, progress: false }).map_ok(crate::records_only)
         .await
         .unwrap();
     let count = Arc::new(Count(AtomicUsize::new(0)));

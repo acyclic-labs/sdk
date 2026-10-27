@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 
 struct PausedPeer {
     counts: Arc<Counts>,
@@ -161,11 +162,14 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         client.register_credential(0, crate::session::testing::credential())?;
         phase.set("opening redirected healthy follow");
         let mut records = client
-            .follow(
-                StreamPath::new("healthy")?,
-                1,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest {
+                path: StreamPath::new("healthy")?,
+                from: 1,
+                preceding: None,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         let rejected = Arc::new(tokio::sync::Notify::new());
         let rejection = Arc::clone(&rejected);
@@ -173,7 +177,17 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         let storm = tokio::spawn(async move {
             let path = StreamPath::new("x".repeat(4096)).expect("bounded stream path");
             let mut opens: FuturesUnordered<_> = (0..1400)
-                .map(|_| opening.follow(path.clone(), 0, crate::FollowFilter::default()))
+                .map(|_| {
+                    opening
+                        .follow(crate::FollowRequest {
+                            path: path.clone(),
+                            from: 0,
+                            preceding: None,
+                            filter: crate::FollowFilter::default(),
+                            progress: false,
+                        })
+                        .map_ok(crate::records_only)
+                })
                 .collect();
             while let Some(result) = opens.next().await {
                 if matches!(result, Err(StreamError::Capacity)) {

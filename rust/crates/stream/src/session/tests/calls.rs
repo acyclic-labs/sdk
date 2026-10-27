@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -41,7 +42,7 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
     );
     client.register_credential(0, testing::credential())?;
     let mut records = client
-        .follow(StreamPath::new("healthy")?, 0, Default::default())
+        .follow(crate::FollowRequest { path: StreamPath::new("healthy")?, from: 0, preceding: None, filter: Default::default(), progress: false }).map_ok(crate::records_only)
         .await?;
     assert_eq!(
         client

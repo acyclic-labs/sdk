@@ -126,13 +126,8 @@ mod replay_tests {
                 std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
             })))
         }
-        async fn follow(
-            &self,
-            path: StreamPath,
-            from: u64,
-            filter: crate::FollowFilter,
-        ) -> Result<RecordStream, StreamError> {
-            self.inner.follow(path, from, filter).await
+        async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
+            self.inner.follow(request).await
         }
 
         async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

@@ -126,8 +126,14 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self,
         from: u64,
         filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.provider.follow(self.path.clone(), from, filter).await
+    ) -> Result<impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask + use<P>, StreamError> {
+        Ok(records_only(self.provider.follow(FollowRequest {
+            path: self.path.clone(),
+            from,
+            preceding: None,
+            filter,
+            progress: false,
+        }).await?))
     }
 }
 

@@ -392,35 +392,8 @@ impl StreamProvider for HttpStream {
         // Reads and pages share the follow session; no JSON round trips.
         self.session_client()?.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session_client()?.follow(path, from, filter).await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        self.session_client()?
-            .follow_updates(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session_client()?
-            .follow_checked(path, from, preceding, filter)
-            .await
+    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+        self.session_client()?.follow(request).await
     }
 
     async fn children_page(

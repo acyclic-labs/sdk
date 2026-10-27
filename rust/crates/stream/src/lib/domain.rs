@@ -194,6 +194,21 @@ pub struct ReadRequest {
     pub limit: u32,
 }
 
+/// One atomic replay-to-live subscription, including its history fence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowRequest {
+    /// Stream path.
+    pub path: StreamPath,
+    /// First sequence, inclusive.
+    pub from: u64,
+    /// Required commit at `from - 1`; missing or changed history refuses immediately.
+    pub preceding: Option<CommitId>,
+    /// Projection intersected with the authenticated authority ceiling.
+    pub filter: crate::FollowFilter,
+    /// Emit contiguous skipped-prefix progress. False retains indexed record-only wakes.
+    pub progress: bool,
+}
+
 /// One atomic replay boundary. `tail` is the next sequence and may advance
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamBounds {
@@ -544,3 +559,15 @@ pub enum FollowUpdate {
 
 /// Ordered records and skipped-prefix observations from one atomic follow.
 pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
+
+/// Projects records from an existing follow without allocating or subscribing again.
+pub fn records_only(
+    updates: FollowStream,
+) -> impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask {
+    use futures::StreamExt as _;
+    updates.filter_map(|update| futures::future::ready(match update {
+        Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
+        Ok(FollowUpdate::Progress { .. }) => None,
+        Err(error) => Some(Err(error)),
+    }))
+}

@@ -1,3 +1,4 @@
+use futures::TryFutureExt as _;
 use super::*;
 use crate::verification::block_on;
 use std::{mem::ManuallyDrop, task::Context};
@@ -22,7 +23,7 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
         }))
         .unwrap();
         let follow: futures::stream::BoxStream<'static, _> = {
-            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
+            block_on(provider.follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()
@@ -73,7 +74,7 @@ pub(crate) fn abandon(
         }))
         .unwrap();
         let follow: futures::stream::BoxStream<'static, _> = {
-            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
+            block_on(provider.follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()

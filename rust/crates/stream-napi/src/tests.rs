@@ -275,10 +275,8 @@ impl StreamProvider for TcpDropProbe {
 
     async fn follow(
         &self,
-        _path: StreamPath,
-        _from: u64,
-        _filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
+        _request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.started.notify_one();
         let dropped = Arc::clone(&self.dropped);
         let sentinel = TcpDropped(dropped);
@@ -289,18 +287,6 @@ impl StreamProvider for TcpDropProbe {
         .boxed())
     }
 
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        _preceding: Option<acyclic_stream::CommitId>,
-        filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
-        let records = self.follow(path, from, filter).await?;
-        Ok(Box::pin(records.map(|item| {
-            item.map(acyclic_stream::FollowUpdate::Record)
-        })))
-    }
 
     async fn children_page(
         &self,

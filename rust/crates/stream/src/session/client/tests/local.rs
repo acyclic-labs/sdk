@@ -1,5 +1,6 @@
 //! In-process I/O uses the public pool, including checked admission and credit.
 use super::*;
+use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult {
@@ -14,23 +15,39 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         client.register_credential(0, crate::session::testing::credential())?;
         let path = StreamPath::new("events")?;
         let mut ordinary = client
-            .follow(path.clone(), 0, crate::FollowFilter::default())
+            .follow(crate::FollowRequest {
+                path: path.clone(),
+                from: 0,
+                preceding: None,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         let first = next(&mut ordinary).await?;
         assert_eq!(first.sequence, 0);
         assert!(matches!(
             client
-                .follow_checked(
-                    path.clone(),
-                    1,
-                    crate::CommitId::from_bytes([42; 32]),
-                    crate::FollowFilter::default()
-                )
+                .follow(crate::FollowRequest {
+                    path: path.clone(),
+                    from: 1,
+                    preceding: Some(crate::CommitId::from_bytes([42; 32])),
+                    filter: crate::FollowFilter::default(),
+                    progress: false
+                })
+                .map_ok(crate::records_only)
                 .await,
             Err(StreamError::PrefixNotRetained)
         ));
         let mut checked = client
-            .follow_checked(path, 1, first.commit_id, crate::FollowFilter::default())
+            .follow(crate::FollowRequest {
+                path: path,
+                from: 1,
+                preceding: Some(first.commit_id),
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         append(&provider, "events", 1).await?;
         for sequence in 1..=records as u64 {

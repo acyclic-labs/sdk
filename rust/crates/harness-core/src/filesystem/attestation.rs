@@ -24,7 +24,7 @@ use super::TurnAdmission;
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
-    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowFilter, FollowStream,
+    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream,
     ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims,
     ProviderPlatform, ReadRequest, RecordStream, StreamBounds, StreamError, StreamPath,
     StreamProvider, StreamWatermarks,
@@ -201,35 +201,8 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner
-            .follow_checked(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
-        self.inner
-            .follow_updates(path, from, preceding, filter)
-            .await
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
     async fn children_page(
         &self,
@@ -468,13 +441,8 @@ mod tests {
         ) -> Result<super::RecordStream, super::StreamError> {
             self.inner.read(request).await
         }
-        async fn follow(
-            &self,
-            path: super::StreamPath,
-            from: u64,
-            filter: super::FollowFilter,
-        ) -> Result<super::RecordStream, super::StreamError> {
-            self.inner.follow(path, from, filter).await
+        async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, super::StreamError> {
+            self.inner.follow(request).await
         }
         async fn commit(
             &self,
