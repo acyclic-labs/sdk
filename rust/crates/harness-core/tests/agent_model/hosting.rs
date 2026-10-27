@@ -61,7 +61,8 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     acyclic_native_runtime::initialize_native_io_services()?;
     acyclic_fs::initialize_native_mount_services()?;
     let stream = Arc::new(Refusing::default());
-    let (agents, volumes, reference, bucket) = stores(&stream)?;
+    let (placed, bucket) = placed(&stream)?;
+    let reference = placed.provider.clone();
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "guest".into(),
@@ -71,10 +72,10 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     let hosted = Bound::admitted(
         issuer.clone(),
         VerifiedCaller { audience, scope },
-        agents.clone(),
-        volumes.clone(),
-    );
-    let local = Bound::local_root(issuer, agents, volumes);
+        placed,
+        turns()?,
+    )?;
+    let local = Bound::local_root(issuer, placement(&stream)?, turns()?)?;
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),
@@ -82,7 +83,13 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     .map_err(|(cause, _)| cause)?;
     let enrollment = |provider: &ProviderRef| -> Result<LocalGuestEnrollment> {
         Ok(LocalGuestEnrollment {
-            volume: volume(provider, "guest", id(7))?.volume,
+            volume: VolumeRef::new(
+                provider.clone(),
+                "agent-guest".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(id(7)),
+                &mut None,
+            )?,
             posix: GuestPosixPolicy {
                 identities: vec![(0, 0)],
                 metadata: true,
@@ -131,20 +138,22 @@ impl Bucket {
 }
 
 /// The one placement over `stream`.
-fn placement<P>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
+fn placement<P: 'static>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
     Ok(placed(stream)?.0)
 }
 
 /// The one placement over `stream`, and its object bucket.
-fn placed<P>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)> {
+fn placed<P: 'static>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)> {
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     let objects = Arc::new(objects);
     let observed = Bucket(objects.clone(), bucket.clone());
     Ok((
         Placement {
-            stream: stream.clone(),
-            objects: LogicalObjectStore::new(objects, bucket),
-            capabilities: EmbeddedCapabilities::MEMORY,
+            filesystem: acyclic_fs::Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+                LogicalObjectStore::new(objects, bucket),
+                EmbeddedCapabilities::MEMORY,
+            ),
             provider: provider()?,
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },

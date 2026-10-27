@@ -63,6 +63,8 @@ pub type LocalFilesystem<A = LocalAuthorityBackend, O = LocalObjectBackend> = Fi
 /// A checkout or volume, durable authority, and the agents hosted on it.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
+    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    volume_filesystem: acyclic_fs::LocalFs,
     /// Tools, scope and content bindings every agent turn's context starts from.
     harness: Arc<AgentHarness>,
     tools: ToolRegistry,

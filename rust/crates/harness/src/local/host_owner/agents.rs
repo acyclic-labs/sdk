@@ -581,17 +581,6 @@ impl NativeAgents {
         })
     }
 
-    #[cfg(target_os = "linux")]
-    pub(super) fn bound(
-        &self,
-    ) -> crate::filesystem::hosting::Bound<LocalStream, LocalObjectBackend> {
-        crate::filesystem::hosting::Bound::local_root(
-            self.issuer.clone(),
-            Arc::clone(&self.host),
-            Arc::clone(&self.files),
-        )
-    }
-
     /// Creates, or replays, root session `(host, session)` on the checkout's
     /// own project and scratch volumes, with a private volume of its own.
     pub(super) async fn open(&self, host: &str, session: &str) -> Result<AgentPath> {

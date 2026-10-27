@@ -116,7 +116,7 @@ impl HostWorkspaceOwner {
         enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_fs::native_mount::GuestSessionAdmission> {
-        self.native.bound().guest_session(enrollment, work).await
+        self.local.guest_session(enrollment, work).await
     }
 
     /// Uses an already-running harness, with no provider or agent executor.

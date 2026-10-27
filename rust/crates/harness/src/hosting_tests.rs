@@ -128,9 +128,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             },
         ),
         Placement {
-            stream: stream.clone(),
-            objects: LogicalObjectStore::new(Arc::new(objects), bucket),
-            capabilities: EmbeddedCapabilities::MEMORY,
+            filesystem: acyclic_fs::Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+                LogicalObjectStore::new(Arc::new(objects), bucket),
+                EmbeddedCapabilities::MEMORY,
+            ),
             provider: provider()?,
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
