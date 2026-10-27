@@ -319,16 +319,48 @@ def canary():
         # Exactly bs.ps1's entry: the WSL remote client with forwarded job env names.
         result = subprocess.run(['/home/var/bin/build-slot', '--remote', *argv], cwd=SDK, capture_output=True, timeout=900,
                                 env={**os.environ, 'BUILD_SLOT_NO_NPM': '1', 'BUILD_SLOT_LABEL': 'bb2-relaunch-canary',
+                                     'BUILD_SLOT_TENANT': 'graphcoder',
                                      'BUILD_SLOT_REMOTE_ENV': 'BUILD_SLOT_NO_NPM BUILD_SLOT_LABEL'})
         if result.returncode or (argv[0] == 'bash' and b'BB_RELAUNCH_SCRIPT_OK' not in result.stdout):
             raise RuntimeError('canary failed: '+' '.join(argv)+' rc='+str(result.returncode))
+
+
+RETIRE = CONFIG_DIR/'relaunch-retire.list'
+
+
+def retirements():
+    return [tuple(l.split()) for l in (RETIRE.read_text().splitlines() if RETIRE.exists() else []) if len(l.split()) == 2]
+
+
+def schedule_retirement(region, instance):
+    """Durable before any later step: an instance listed here is never live and is retired on every run until gone."""
+    rows = retirements()
+    if (region, instance) not in rows:
+        atomic_write(RETIRE, ''.join(f'{r} {i}\n' for r, i in [*rows, (region, instance)]).encode())
+
+
+def retire_pending(keep=()):
+    """Cancel and terminate every listed instance except KEEP; failed attempts stay listed."""
+    left = []
+    for region, instance in retirements():
+        if instance in keep: left.append((region, instance)); continue
+        try:
+            _, _, request = instance_state(region, instance)
+            if request: ec2(region, 'CancelSpotInstanceRequests', {'SpotInstanceRequestId.1': request})
+            ec2(region, 'TerminateInstances', {'InstanceId.1': instance})
+        except AwsError as error:
+            if error.code != 'InvalidInstanceID.NotFound':
+                alert('BUILDBOX_RELAUNCH_BLOCKED', f'retire {instance}: {error}'); left.append((region, instance))
+    atomic_write(RETIRE, ''.join(f'{r} {i}\n' for r, i in left).encode())
 
 
 def relaunch(dry_run=False):
     cfg = json.loads((HERE/'relaunch.json').read_text())
     snapshot = CONFIG_DIR/'tools-snapshot.tar'
     if not dry_run and not snapshot.exists(): raise RuntimeError('no tool snapshot; run `relaunch.py snapshot` while bb2 is up')
-    old = settings(); my_ip = urllib.request.urlopen('https://api.ipify.org', timeout=10).read().decode().strip()
+    old = settings()
+    if not dry_run: retire_pending(keep={old.get('BB2_INSTANCE_ID')})  # Earlier failed replacements and predecessors.
+    my_ip = urllib.request.urlopen('https://api.ipify.org', timeout=10).read().decode().strip()
     host_key, public = host_identity()
     authorized = (SSH_DIR/'bb2_ed25519.pub').read_text().strip()
     data = user_data(host_key, authorized)
@@ -341,26 +373,38 @@ def relaunch(dry_run=False):
             if error.code in CAPACITY: alert('BUILDBOX_RELAUNCH', f'{region}: {error}; next region'); continue
             alert('BUILDBOX_RELAUNCH_BLOCKED', f'{region}: {error}'); raise
         alert('BUILDBOX_RELAUNCH', f'launched {instance} in {region}')
+        commit(region, instance, group, public, snapshot, old)
+        alert('BUILDBOX_RELAUNCH', f'bb2 restored on {instance} ({region})'); return instance
+    alert('BUILDBOX_RELAUNCH_BLOCKED', 'no candidate region had capacity'); raise SystemExit(1)
+
+
+def commit(region, instance, group, public, snapshot, old):
+    """The replacement stays pending until both canaries pass: until then it is
+    listed for retirement and the old coordinates are restored on any failure,
+    so ordinary jobs never reach an unfinished box and nothing keeps billing."""
+    schedule_retirement(region, instance)
+    saved = {path: path.read_bytes() for path in [SSH_DIR/'known_hosts', SSH_DIR/'config'] if path.exists()}
+    try:
         state = {}
         if not wait(lambda: state.update(zip(['name', 'ip', 'spot'], instance_state(region, instance))) or
                     (state['name'] == 'running' and state['ip']), 300, 5):
             raise RuntimeError(f'{instance} not running with a public IP after 300 s')
-        atomic_write(CONFIG_DIR/'instance.env', (f'AWS_DEFAULT_REGION={region}\nBB2_INSTANCE_ID={instance}\n'
-                     f'BB2_SECURITY_GROUP_ID={group}\nBB2_PREVIOUS_REGION={old.get("AWS_DEFAULT_REGION", "")}\n'
-                     f'BB2_PREVIOUS_INSTANCE_ID={old.get("BB2_INSTANCE_ID", "")}\n').encode())
         pin_host(state['ip'], public)
         if not wait(lambda: ssh('test -e /var/lib/buildbox/bootstrap.done', timeout=60).returncode == 0, 2700, 30):
             raise RuntimeError('phase 1 bootstrap did not finish in 45 min; see /var/log/bb-bootstrap.log')
         provision(snapshot); canary()
-        previous, previous_region = old.get('BB2_INSTANCE_ID'), old.get('AWS_DEFAULT_REGION')
-        if previous and previous != instance:
-            try:
-                _, _, request = instance_state(previous_region, previous)
-                if request: ec2(previous_region, 'CancelSpotInstanceRequests', {'SpotInstanceRequestId.1': request})
-                ec2(previous_region, 'TerminateInstances', {'InstanceId.1': previous})
-            except AwsError as error: alert('BUILDBOX_RELAUNCH_BLOCKED', f'retire {previous}: {error}')
-        alert('BUILDBOX_RELAUNCH', f'bb2 restored on {instance} ({region}, {state["ip"]})'); return instance
-    alert('BUILDBOX_RELAUNCH_BLOCKED', 'no candidate region had capacity'); raise SystemExit(1)
+    except BaseException:
+        for path, data in saved.items(): atomic_write(path, data, 0o644)
+        retire_pending(keep={old.get('BB2_INSTANCE_ID')})
+        raise
+    # Commit point: the predecessor joins the retirement list before the switch.
+    if old.get('BB2_INSTANCE_ID') and old['BB2_INSTANCE_ID'] != instance:
+        schedule_retirement(old.get('AWS_DEFAULT_REGION', region), old['BB2_INSTANCE_ID'])
+    atomic_write(CONFIG_DIR/'instance.env', (f'AWS_DEFAULT_REGION={region}\nBB2_INSTANCE_ID={instance}\n'
+                 f'BB2_SECURITY_GROUP_ID={group}\n').encode())
+    # Live now: off the list (a later run's keep= guards it too), then retire the rest.
+    atomic_write(RETIRE, ''.join(f'{r} {i}\n' for r, i in retirements() if i != instance).encode())
+    retire_pending(keep={instance})
 
 
 def snapshot():

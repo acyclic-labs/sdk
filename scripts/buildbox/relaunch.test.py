@@ -112,5 +112,39 @@ class RelaunchTests(unittest.TestCase):
             self.assertIn('HostName 9.9.9.9', (d/'config').read_text())
 
 
+class CommitTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp()); ssh = self.dir/'ssh'; ssh.mkdir()
+        (ssh/'config').write_text('Host bb2\n  HostName 198.51.100.1\n'); (ssh/'known_hosts').write_text('bb2 ssh-ed25519 OLD\n')
+        (self.dir/'instance.env').write_text('AWS_DEFAULT_REGION=us-west-2\nBB2_INSTANCE_ID=i-old\nBB2_SECURITY_GROUP_ID=sg-1\n')
+        self.terminated = []
+        def ec2(region, action, params):
+            if action == 'TerminateInstances': self.terminated.append(params['InstanceId.1'])
+        for name, value in {'CONFIG_DIR': self.dir, 'SSH_DIR': ssh, 'RETIRE': self.dir/'retire.list', 'ec2': ec2,
+                            'instance_state': lambda r, i: ('running', '203.0.113.7', None), 'wait': lambda f, s, t: f(),
+                            'ssh': lambda *a, **k: subprocess.CompletedProcess([], 0), 'provision': lambda s: None,
+                            'alert': lambda k, t: None}.items():
+            patcher = patch.object(relaunch, name, value); patcher.start(); self.addCleanup(patcher.stop)
+        self.old = relaunch.env_file(self.dir/'instance.env')
+
+    def test_failed_canary_restores_old_coordinates_and_retires_the_replacement(self):
+        before = {p: p.read_bytes() for p in [self.dir/'instance.env', self.dir/'ssh/config', self.dir/'ssh/known_hosts']}
+        with patch.object(relaunch, 'canary', side_effect=RuntimeError('canary failed')), self.assertRaises(RuntimeError):
+            relaunch.commit('us-east-2', 'i-new', 'sg-2', ['ssh-ed25519', 'NEW'], None, self.old)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+        self.assertEqual((self.terminated, relaunch.retirements()), (['i-new'], []))
+
+    def test_success_switches_then_retires_predecessor_and_failed_retirement_persists(self):
+        def refuse(region, action, params):
+            if action == 'TerminateInstances': raise relaunch.AwsError('UnauthorizedOperation', 'no')
+        with patch.object(relaunch, 'canary', lambda: None), patch.object(relaunch, 'ec2', refuse):
+            relaunch.commit('us-east-2', 'i-new', 'sg-2', ['ssh-ed25519', 'NEW'], None, self.old)
+        self.assertEqual(relaunch.env_file(self.dir/'instance.env')['BB2_INSTANCE_ID'], 'i-new')
+        self.assertIn('203.0.113.7', (self.dir/'ssh/config').read_text())
+        self.assertEqual(relaunch.retirements(), [('us-west-2', 'i-old')])  # Retried by every later run.
+        relaunch.retire_pending(keep={'i-new'})
+        self.assertEqual((self.terminated, relaunch.retirements()), (['i-old'], []))
+
+
 if __name__ == '__main__':
     unittest.main()

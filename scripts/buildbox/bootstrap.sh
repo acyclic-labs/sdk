@@ -30,7 +30,18 @@ TCPKeepAlive yes
 EOF
 
 # Job account (uid 1000, as on every earlier box) with passwordless sudo.
-id var >/dev/null 2>&1 || useradd -m -u 1000 -s /bin/bash var
+# Stock Ubuntu images already hold uid 1000 (`ubuntu`): that account becomes var.
+if ! id var >/dev/null 2>&1; then
+  holder=$(getent passwd 1000 | cut -d: -f1)
+  if [ -n "$holder" ]; then
+    pkill -KILL -u "$holder" || true
+    usermod -l var -d /home/var -m -s /bin/bash "$holder"
+    group=$(id -gn var); [ "$group" = var ] || groupmod -n var "$group"
+  else
+    useradd -m -u 1000 -s /bin/bash var
+  fi
+fi
+[ "$(id -u var)" = 1000 ] && [ "$(id -g var)" = 1000 ] || { echo "bb-bootstrap: var must be uid/gid 1000"; exit 1; }
 install -d -m 700 -o var -g var /home/var/.ssh
 printf '%s\n' '@AUTHORIZED_KEY@' > /home/var/.ssh/authorized_keys
 chown var:var /home/var/.ssh/authorized_keys; chmod 600 /home/var/.ssh/authorized_keys
