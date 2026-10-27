@@ -73,109 +73,6 @@ impl Modal {
         }
         Ok(control)
     }
-
-    async fn raw_start(
-        guest: &Guest,
-        argv: Vec<String>,
-        timeout: Duration,
-        input: Option<Vec<u8>>,
-    ) -> Result<ExecStream, ProviderError> {
-        let exec = format!("ex-{}", uuid::Uuid::new_v4().simple());
-        let _: wire::Empty = guest
-            .router
-            .unary(
-                ROUTER,
-                "TaskExecStart",
-                wire::TaskExecStartRequest {
-                    task_id: guest.task.clone(),
-                    exec_id: exec.clone(),
-                    command_args: argv,
-                    stdout_config: 1,
-                    stderr_config: 1,
-                    timeout_secs: Some(
-                        u32::try_from(
-                            timeout
-                                .as_secs()
-                                .saturating_add(u64::from(timeout.subsec_nanos() != 0)),
-                        )
-                        .unwrap_or(u32::MAX),
-                    ),
-                },
-                Duration::from_secs(15),
-            )
-            .await?;
-        // Attach both streams while pumping stdin. Some routers delay response
-        // headers until the process emits bytes; awaiting those headers first
-        // would deadlock a command which needs input before producing output.
-        let attach = |fd| {
-            let guest = guest.clone();
-            let exec = exec.clone();
-            async move {
-                guest
-                    .router
-                    .streaming::<_, wire::TaskExecStdioReadResponse>(
-                        ROUTER,
-                        "TaskExecStdioRead",
-                        wire::TaskExecStdioReadRequest {
-                            task_id: guest.task,
-                            exec_id: exec,
-                            offset: 0,
-                            file_descriptor: fd,
-                        },
-                        timeout + Duration::from_secs(10),
-                    )
-                    .await
-                    .map(|frames| frames.map_ok(|frame| frame.data))
-            }
-        };
-        let stdout = attach(0);
-        let stderr = attach(1);
-        let router = guest.router.clone();
-        let wait = wire::TaskExecWaitRequest {
-            task_id: guest.task.clone(),
-            exec_id: exec.clone(),
-        };
-        let exit = async move {
-            let result: wire::TaskExecWaitResponse = router
-                .unary(
-                    ROUTER,
-                    "TaskExecWait",
-                    wait,
-                    timeout + Duration::from_secs(10),
-                )
-                .await?;
-            match result.exit_status {
-                Some(wire::ExitStatus::Code(code)) => Ok(code),
-                Some(wire::ExitStatus::Signal(signal)) => Ok(128 + signal),
-                None => Err(ProviderError::Unavailable),
-            }
-        };
-        let input_guest = guest.clone();
-        let input_exec = exec.clone();
-        let input = pump_stdin(input, move |offset, data, eof| {
-            let guest = input_guest.clone();
-            let exec = input_exec.clone();
-            Box::pin(async move {
-                let _: wire::Empty = guest
-                    .router
-                    .unary(
-                        ROUTER,
-                        "TaskExecStdinWrite",
-                        wire::TaskExecStdinWriteRequest {
-                            task_id: guest.task,
-                            exec_id: exec,
-                            offset,
-                            data,
-                            eof,
-                        },
-                        Duration::from_secs(10),
-                    )
-                    .await?;
-                Ok(())
-            })
-        });
-        Ok(duplex_exec(stdout, stderr, input, exit))
-    }
 }
 
 #[async_trait]
@@ -357,35 +254,95 @@ impl SandboxDriver for Modal {
         timeout_ms: u32,
         input: Option<Vec<u8>>,
     ) -> Result<ExecStream, ProviderError> {
-        Self::raw_start(
-            &self.guests.get(instance)?,
-            argv,
-            Duration::from_millis(u64::from(timeout_ms)),
-            input,
-        )
-        .await
-    }
-
-    async fn read_file(
-        &self,
-        instance: &SandboxInstance,
-        path: &str,
-    ) -> Result<Vec<u8>, ProviderError> {
-        super::exec_read_file(instance, path, |command, input| {
-            self.start(instance, command, input)
-        })
-        .await
-    }
-
-    async fn write_file(
-        &self,
-        instance: &SandboxInstance,
-        path: &str,
-        data: &[u8],
-    ) -> Result<(), ProviderError> {
-        super::exec_write_file(instance, path, data, |command, input| {
-            self.start(instance, command, input)
-        })
-        .await
+        let guest = self.guests.get(instance)?;
+        let timeout = Duration::from_millis(u64::from(timeout_ms));
+        let exec = format!("ex-{}", uuid::Uuid::new_v4().simple());
+        let _: wire::Empty = guest
+            .router
+            .unary(
+                ROUTER,
+                "TaskExecStart",
+                wire::TaskExecStartRequest {
+                    task_id: guest.task.clone(),
+                    exec_id: exec.clone(),
+                    command_args: argv,
+                    stdout_config: 1,
+                    stderr_config: 1,
+                    timeout_secs: Some(timeout_ms.div_ceil(1000)),
+                },
+                Duration::from_secs(15),
+            )
+            .await?;
+        // Attach both streams while pumping stdin. Some routers delay response
+        // headers until the process emits bytes; awaiting those headers first
+        // would deadlock a command which needs input before producing output.
+        let attach = |fd| {
+            let guest = guest.clone();
+            let exec = exec.clone();
+            async move {
+                guest
+                    .router
+                    .streaming::<_, wire::TaskExecStdioReadResponse>(
+                        ROUTER,
+                        "TaskExecStdioRead",
+                        wire::TaskExecStdioReadRequest {
+                            task_id: guest.task,
+                            exec_id: exec,
+                            offset: 0,
+                            file_descriptor: fd,
+                        },
+                        timeout + Duration::from_secs(10),
+                    )
+                    .await
+                    .map(|frames| frames.map_ok(|frame| frame.data))
+            }
+        };
+        let stdout = attach(0);
+        let stderr = attach(1);
+        let router = guest.router.clone();
+        let wait = wire::TaskExecWaitRequest {
+            task_id: guest.task.clone(),
+            exec_id: exec.clone(),
+        };
+        let exit = async move {
+            let result: wire::TaskExecWaitResponse = router
+                .unary(
+                    ROUTER,
+                    "TaskExecWait",
+                    wait,
+                    timeout + Duration::from_secs(10),
+                )
+                .await?;
+            match result.exit_status {
+                Some(wire::ExitStatus::Code(code)) => Ok(code),
+                Some(wire::ExitStatus::Signal(signal)) => Ok(128 + signal),
+                None => Err(ProviderError::Unavailable),
+            }
+        };
+        let input_guest = guest.clone();
+        let input_exec = exec.clone();
+        let input = pump_stdin(input, move |offset, data, eof| {
+            let guest = input_guest.clone();
+            let exec = input_exec.clone();
+            Box::pin(async move {
+                let _: wire::Empty = guest
+                    .router
+                    .unary(
+                        ROUTER,
+                        "TaskExecStdinWrite",
+                        wire::TaskExecStdinWriteRequest {
+                            task_id: guest.task,
+                            exec_id: exec,
+                            offset,
+                            data,
+                            eof,
+                        },
+                        Duration::from_secs(10),
+                    )
+                    .await?;
+                Ok(())
+            })
+        });
+        Ok(duplex_exec(stdout, stderr, input, exit))
     }
 }

@@ -224,7 +224,12 @@ pub trait SandboxDriver: Clone + Send + Sync + 'static {
         &self,
         instance: &SandboxInstance,
         path: &str,
-    ) -> Result<Vec<u8>, ProviderError>;
+    ) -> Result<Vec<u8>, ProviderError> {
+        super::exec_read_file(instance, path, |command, input| {
+            self.start(instance, command, input)
+        })
+        .await
+    }
 
     /// Uploads an exact file as bytes, without text conversion.
     async fn write_file(
@@ -232,5 +237,10 @@ pub trait SandboxDriver: Clone + Send + Sync + 'static {
         instance: &SandboxInstance,
         path: &str,
         data: &[u8],
-    ) -> Result<(), ProviderError>;
+    ) -> Result<(), ProviderError> {
+        super::exec_write_file(instance, path, data, |command, input| {
+            self.start(instance, command, input)
+        })
+        .await
+    }
 }
