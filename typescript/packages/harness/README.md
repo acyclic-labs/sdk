@@ -66,9 +66,9 @@ Command delivery acknowledges inbox admission, while conversation/status records
 establish settlement. Approval answers use the observed immutable approval binding.
 
 The `./browser` entry exports the Rust browser host, authority and model registry.
-Call `initializeBrowserRuntime()` before host composition. `configurePiModel` in
-`@acyclic-labs/pi` registers a provider at that host callback boundary: Rust supplies
-the admitted request bytes and verified file slices. Frontends should not rebuild
+Call `initializeBrowserRuntime()` before host composition. A model provider
+registers at that host callback boundary: Rust supplies the admitted request
+bytes and verified file slices. Frontends should not rebuild
 file authorization, request projection or execution in JavaScript.
 
 Custom model providers can use the exported `ModelRequest`, `ModelContextCapacity`,

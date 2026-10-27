@@ -10,7 +10,6 @@
     { "path": "./typescript/packages/objects" },
     { "path": "./typescript/packages/machines" },
     { "path": "./typescript/packages/inference" },
-    { "path": "./typescript/packages/pi" },
     { "path": "./typescript/packages/sdk" }
   ]
 }
