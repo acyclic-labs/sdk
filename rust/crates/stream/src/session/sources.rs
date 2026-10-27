@@ -335,7 +335,7 @@ impl Channel {
                     && self
                         .binding
                         .as_ref()
-                        .is_some_and(|binding| !binding.is_call()));
+                        .is_some_and(|binding| !binding.is_reply()));
             match (all, latest) {
                 (true, true) => Some(EITHER),
                 (true, false) => Some(ALL),

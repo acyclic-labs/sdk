@@ -133,10 +133,10 @@ impl Delivery {
                         .try_into()
                         .map_err(|_| StreamError::Unavailable)?,
                 ),
-                Some(Item::LatestValue(_)) => {
+                // Each LATEST value and one-shot reply fragment is its own position.
+                Some(Item::LatestValue(_) | Item::ActorCall(_) | Item::ChildrenPage(_)) => {
                     progress.consume_latest(self.generation, self.sequence)
                 }
-                Some(Item::ActorCall(_)) => progress.consume_latest(self.generation, self.sequence),
                 _ => Err(StreamError::Unavailable),
             },
             Received::Frame(wire::SessionFrame {
@@ -239,6 +239,16 @@ struct Pool {
 impl Route {
     fn live(&self) -> bool {
         !self.progress.cancelled() && !self.records.is_closed()
+    }
+    /// Follows resume from their cursor. A children page is a pure read, so it
+    /// is reissued until its first fragment arrives, never spliced afterwards.
+    /// An Actors call is never replayed.
+    fn resumable(&self) -> bool {
+        match self.kind {
+            Kind::Follow(_) => true,
+            Kind::ChildrenPage(_) => self.received == 0,
+            _ => false,
+        }
     }
 }
 impl Drop for Link {
@@ -376,6 +386,44 @@ impl Client {
         self.follow_records(path, from, Some(preceding), true, filter)
             .await
     }
+    /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
+    /// on the shared session, with the semantics of [`crate::StreamProvider::read`].
+    pub async fn read(&self, request: crate::ReadRequest) -> Result<RecordStream, StreamError> {
+        self.read_with_ack(request, true).await
+    }
+    pub(crate) async fn read_with_ack(
+        &self,
+        request: crate::ReadRequest,
+        acknowledge: bool,
+    ) -> Result<RecordStream, StreamError> {
+        crate::memory::validate_limit(request.limit)?;
+        let follow = wire::SessionFollow {
+            resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
+            delivery: wire::SessionDelivery::All as i32,
+            preceding_commit_id: Bytes::new(),
+            until: request.from.saturating_add(u64::from(request.limit)),
+        };
+        let mut records = super::runtime::boxed(
+            self.follow_data_with_ack(
+                follow,
+                request.from,
+                acknowledge,
+                crate::FollowFilter::default(),
+            )
+            .await?
+            .map(|data| match data?.item {
+                Some(Item::Record(record)) => wire_codec::record(record),
+                _ => Err(StreamError::Unavailable),
+            }),
+        );
+        // The open resolves the stream as every provider read does: an absent
+        // path or a start beyond the tail fails here, not in the stream.
+        let first = records.next().await;
+        if let Some(Err(error)) = first {
+            return Err(error);
+        }
+        Ok(super::runtime::boxed(futures::stream::iter(first).chain(records)))
+    }
     pub(crate) async fn follow_records(
         &self,
         path: StreamPath,
@@ -389,6 +437,7 @@ impl Client {
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
+            until: 0,
         };
         Ok(super::runtime::boxed(
             self.follow_data_with_ack(follow, from, acknowledge, filter)
@@ -423,6 +472,7 @@ impl Client {
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
+            until: 0,
         });
         let source = self
             .open_subscription(
@@ -635,11 +685,15 @@ impl Client {
                 loop {
                     let received = match cursor.pending.take() {
                         Some(delivery) => Ok(delivery),
-                        None => cursor
-                            .receiver
-                            .recv()
-                            .await
-                            .unwrap_or(Err(StreamError::Unavailable)),
+                        None => match cursor.receiver.recv().await {
+                            Some(received) => received,
+                            // The route ended a finite channel after its last frame.
+                            None if cursor.progress.ended() => {
+                                cursor.observation.finish(None);
+                                return Ok(None);
+                            }
+                            None => Err(StreamError::Unavailable),
+                        },
                     };
                     let mut delivery = match received {
                         Ok(delivery) => delivery,

@@ -35,6 +35,7 @@ fn contract_inputs() -> impl Strategy<Value = Vec<u8>> {
                             ),
                             delivery: wire::SessionDelivery::All as i32,
                             preceding_commit_id: guard.into(),
+                            until: 0,
                         },
                     )),
                     ..Default::default()
@@ -61,7 +62,7 @@ proptest! {
     // only an exact server confirmation can authorize granting data credit.
     #[test]
     fn checked_anchor_round_trip_and_confirmation(anchor in any::<[u8;32]>(), other in any::<[u8;32]>(), next in 1_u64..=u64::MAX) {
-        let follow = wire::SessionFollow { resource: acyclic_stream::wire_codec::session::stream_resource("events"), delivery: wire::SessionDelivery::All as i32, preceding_commit_id: anchor.to_vec().into() };
+        let follow = wire::SessionFollow { resource: acyclic_stream::wire_codec::session::stream_resource("events"), delivery: wire::SessionDelivery::All as i32, preceding_commit_id: anchor.to_vec().into(), until: 0 };
         let decoded = wire::SessionFollow::decode(follow.encode_to_vec().as_slice())?;
         prop_assert_eq!(&decoded, &follow);
         let resume = wire::SessionCursor { next, ..Default::default() };
@@ -112,7 +113,7 @@ proptest! {
     // delivery cannot silently become an unchecked subscription.
     #[test]
     fn malformed_guards_are_rejected(length in 0_usize..65, next in 0_u64..3, latest in any::<bool>(), opaque in any::<bool>()) {
-        let follow = wire::SessionFollow { resource: acyclic_stream::wire_codec::session::stream_resource("events"), delivery: if latest { wire::SessionDelivery::Latest } else { wire::SessionDelivery::All } as i32, preceding_commit_id: vec![7;length].into() };
+        let follow = wire::SessionFollow { resource: acyclic_stream::wire_codec::session::stream_resource("events"), delivery: if latest { wire::SessionDelivery::Latest } else { wire::SessionDelivery::All } as i32, preceding_commit_id: vec![7;length].into(), until: 0 };
         let resume = wire::SessionCursor { next, opaque: if opaque { vec![1].into() } else { Default::default() } };
         let expected = if length == 0 {
             Ok(None)

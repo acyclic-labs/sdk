@@ -294,7 +294,7 @@ impl Pool {
         let calls = self
             .routes
             .iter()
-            .filter(|(_, route)| route.node == node && matches!(route.kind, Kind::ActorCall(_)))
+            .filter(|(_, route)| route.node == node && !route.resumable())
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in calls {

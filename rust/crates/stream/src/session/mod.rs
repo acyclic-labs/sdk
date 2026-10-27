@@ -25,6 +25,7 @@ mod sources;
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 
 mod calls;
+mod pages;
 mod resources;
 pub use calls::{CallAuthorization, CallProvider};
 pub use resources::{
@@ -100,7 +101,8 @@ struct Channel {
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
-    ending: Option<StreamError>,
+    /// The `SessionClosed` code sent once every queued frame has drained.
+    ending: Option<&'static str>,
 }
 struct Pending {
     frame: wire::SessionFrame,
@@ -110,11 +112,15 @@ enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Progress(wire::SessionWatermark),
+    /// One fragment of a finite one-shot reply, carried in `item`.
     CallChunk {
         index: u64,
         total: u64,
         bytes: Bytes,
+        item: fn(Bytes) -> Item,
     },
+    /// A bounded follow delivered its whole range.
+    End,
 }
 type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
 type Source = crate::BoxProviderStream<'static, SourceItem>;

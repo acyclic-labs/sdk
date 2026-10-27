@@ -16,6 +16,9 @@ pub(super) struct Progress {
     // preceding commit form one cut. Received-but-unconsumed records never enter it.
     state: Mutex<State>,
     cancelled: AtomicU64,
+    // Set before a finite channel's route drops its sender: the cursor's
+    // channel EOF is then the channel's clean end, not transport loss.
+    ended: AtomicU64,
 }
 impl Progress {
     #[cfg(any(test, loom))]
@@ -46,7 +49,14 @@ impl Progress {
                 generation: 1,
             }),
             cancelled: AtomicU64::new(0),
+            ended: AtomicU64::new(0),
         }
+    }
+    pub(super) fn end(&self) {
+        self.ended.store(1, Ordering::Release);
+    }
+    pub(super) fn ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire) != 0
     }
     pub(super) fn cancel(&self) {
         self.cancelled.store(1, Ordering::Release);

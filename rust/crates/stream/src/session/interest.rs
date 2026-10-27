@@ -110,7 +110,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let mut terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
-                let (preceding, latest) = follow_parameters(&follow, &resume)?;
+                let (preceding, latest, until) = follow_parameters(&follow, &resume)?;
                 if follow.resource.starts_with("fs:/") {
                     // Filesystem changes are typed records, never latest-value
                     // application payloads. Missing owner routing fails closed.
@@ -161,13 +161,20 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     };
                     binding = Some(authorization);
                     let source = follow_source(
-                        Arc::clone(&self.provider),
-                        path,
-                        resume.next,
-                        preceding,
-                        filter,
+                        Follow {
+                            provider: Arc::clone(&self.provider),
+                            executor: self.executor.clone(),
+                            path,
+                            next: resume.next,
+                            preceding,
+                            until,
+                            end: None,
+                            filter,
+                            records: None,
+                            opened: false,
+                            ended: 0,
+                        },
                         identity,
-                        self.executor.clone(),
                     );
                     (latest, source, None)
                 }
@@ -205,6 +212,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     None,
                 )
             }
+            Some(Kind::ChildrenPage(request)) => {
+                if resume.next != 0 || !resume.opaque.is_empty() || subscription.filter.is_some() {
+                    return Err(StreamError::InvalidArgument);
+                }
+                let (authorization, source) =
+                    match self.page(request, subscription.credential, channels, identity)? {
+                        Ok(page) => page,
+                        Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                    };
+                binding = Some(authorization);
+                opaque_cursor = true;
+                (false, source, None)
+            }
             _ => return Err(StreamError::Unsupported),
         };
         Ok(Admission::Open(Box::new(Opened {
@@ -233,11 +253,33 @@ impl<P: StreamProvider + ?Sized> Session<P> {
     }
 }
 
+impl<P: StreamProvider + ?Sized> Session<P> {
+    /// Admits one children page under `streams/list` on its parent.
+    fn page(
+        &self,
+        request: wire::ChildrenPageRequest,
+        credential: u32,
+        channels: usize,
+        identity: wire::SessionChannel,
+    ) -> Result<Result<(authority::Binding, Source), authority::Rejection>, StreamError> {
+        let request = wire_codec::children_page_from_wire(request)?;
+        Ok(self
+            .authority
+            .bind_list(&self.slots, credential, request.parent.as_ref(), channels)
+            .map(|(binding, visibility)| {
+                let source =
+                    pages::source(Arc::clone(&self.provider), request, visibility, identity);
+                (binding, source)
+            }))
+    }
+}
+
 fn follow_parameters(
     follow: &wire::SessionFollow,
     resume: &wire::SessionCursor,
-) -> Result<(Option<crate::CommitId>, bool), StreamError> {
+) -> Result<(Option<crate::CommitId>, bool, Option<u64>), StreamError> {
     let preceding = wire_codec::session::preceding_follow(follow, resume)?;
+    let until = wire_codec::session::follow_bound(follow)?;
     if !resume.opaque.is_empty() {
         return Err(StreamError::InvalidArgument);
     }
@@ -246,7 +288,7 @@ fn follow_parameters(
         Ok(wire::SessionDelivery::Latest) => true,
         _ => return Err(StreamError::InvalidArgument),
     };
-    Ok((preceding, latest))
+    Ok((preceding, latest, until))
 }
 impl Channel {
     fn opened(
@@ -275,113 +317,117 @@ impl Channel {
 }
 
 // Provider opens run independently so a remote owner never stalls other follows.
-fn follow_source<P: StreamProvider + ?Sized>(
+struct Follow<P: ?Sized> {
     provider: Arc<P>,
-    path: StreamPath,
-    from: u64,
-    preceding: Option<crate::CommitId>,
-    filter: crate::FollowFilter,
-    identity: wire::SessionChannel,
     executor: Arc<dyn crate::runtime::Executor>,
+    path: StreamPath,
+    next: u64,
+    preceding: Option<crate::CommitId>,
+    /// Requested exclusive end; resolved against the tail at open into `end`.
+    until: Option<u64>,
+    end: Option<u64>,
+    filter: crate::FollowFilter,
+    records: Option<crate::FollowStream>,
+    opened: bool,
+    ended: u8,
+}
+
+/// One ALL/LATEST follow. A bounded follow (`until`) is the session read: it
+/// resolves the stream as `read` does, ends at `min(until, tail at open)` and
+/// never waits for appends. Delivery, anchor checks and credit are shared.
+fn follow_source<P: StreamProvider + ?Sized>(
+    state: Follow<P>,
+    identity: wire::SessionChannel,
 ) -> Source {
-    let state = (
-        provider,
-        executor,
-        path,
-        from,
-        preceding,
-        filter,
-        None::<crate::FollowStream>,
-        false,
-        0_u8,
-    );
     Box::pin(
-        stream::try_unfold(
-            state,
-            |(
-                provider,
-                executor,
-                path,
-                mut next,
-                mut preceding,
-                filter,
-                mut records,
-                mut opened,
-                mut ended,
-            )| async move {
-                loop {
-                    if records.is_none() {
-                        records = Some(
-                            provider
-                                .follow_updates(path.clone(), next, preceding, filter.clone())
-                                .await?,
-                        );
-                        if !opened {
-                            opened = true;
-                            return Ok(Some((
-                                Event::Opened(preceding),
-                                (
-                                    provider, executor, path, next, preceding, filter, records,
-                                    opened, ended,
-                                ),
-                            )));
-                        }
-                    }
-                    if let Some(update) = records
-                        .as_mut()
-                        .ok_or(StreamError::Unavailable)?
-                        .next()
-                        .await
-                        .transpose()?
-                    {
-                        let event = match update {
-                            crate::FollowUpdate::Record(record) => {
-                                next = record
-                                    .sequence
-                                    .checked_add(1)
-                                    .ok_or(StreamError::OutOfRange)?;
-                                preceding = preceding.map(|_| record.commit_id);
-                                Event::Record(record)
-                            }
-                            crate::FollowUpdate::Progress {
-                                next: cut,
-                                preceding: anchor,
-                            } => {
-                                next = cut;
-                                preceding = preceding.map(|_| anchor);
-                                Event::Progress(wire::SessionWatermark {
-                                    accepted: cut,
-                                    durable: 0,
-                                    after: Some(cursor(cut)),
-                                    preceding_commit_id: Bytes::copy_from_slice(anchor.as_bytes()),
-                                })
-                            }
-                        };
-                        ended = 0;
-                        return Ok(Some((
-                            event,
-                            (
-                                provider, executor, path, next, preceding, filter, records, opened,
-                                ended,
-                            ),
-                        )));
-                    } else {
-                        // EOF is transport recovery, never an idle record wakeup.
-                        // Keep already queued records on this generation intact.
-                        records = None;
-                        ended += 1;
-                        if ended >= 3 {
-                            return Err(StreamError::Unavailable);
-                        }
-                        if ended > 1 {
-                            executor.sleep(10).await;
-                        }
-                    }
-                }
-            },
-        )
+        stream::try_unfold(Some(state), |state| async move {
+            let Some(mut state) = state else {
+                return Ok(None);
+            };
+            let event = state.event().await?;
+            let state = (!matches!(event, Event::End)).then_some(state);
+            Ok(Some((event, state)))
+        })
         .map(move |event| (identity, event)),
     )
+}
+
+impl<P: StreamProvider + ?Sized> Follow<P> {
+    async fn event(&mut self) -> Result<Event, StreamError> {
+        loop {
+            if self.records.is_none() {
+                if let (Some(until), None) = (self.until, self.end) {
+                    // Pin the range like a read: an absent stream or a start
+                    // beyond the tail fails, and appends after open never count.
+                    let tail = self.provider.tail(self.path.clone()).await?;
+                    if self.next > tail {
+                        return Err(StreamError::OutOfRange);
+                    }
+                    self.end = Some(until.min(tail));
+                }
+                self.records = Some(
+                    self.provider
+                        .follow_updates(
+                            self.path.clone(),
+                            self.next,
+                            self.preceding,
+                            self.filter.clone(),
+                        )
+                        .await?,
+                );
+                if !self.opened {
+                    self.opened = true;
+                    return Ok(Event::Opened(self.preceding));
+                }
+            }
+            if self.end.is_some_and(|end| self.next >= end) {
+                return Ok(Event::End);
+            }
+            if let Some(update) = self
+                .records
+                .as_mut()
+                .ok_or(StreamError::Unavailable)?
+                .next()
+                .await
+                .transpose()?
+            {
+                self.ended = 0;
+                return match update {
+                    crate::FollowUpdate::Record(record) => {
+                        self.next = record
+                            .sequence
+                            .checked_add(1)
+                            .ok_or(StreamError::OutOfRange)?;
+                        self.preceding = self.preceding.map(|_| record.commit_id);
+                        Ok(Event::Record(record))
+                    }
+                    crate::FollowUpdate::Progress {
+                        next: cut,
+                        preceding: anchor,
+                    } => {
+                        self.next = cut;
+                        self.preceding = self.preceding.map(|_| anchor);
+                        Ok(Event::Progress(wire::SessionWatermark {
+                            accepted: cut,
+                            durable: 0,
+                            after: Some(cursor(cut)),
+                            preceding_commit_id: Bytes::copy_from_slice(anchor.as_bytes()),
+                        }))
+                    }
+                };
+            }
+            // EOF is transport recovery, never an idle record wakeup.
+            // Keep already queued records on this generation intact.
+            self.records = None;
+            self.ended += 1;
+            if self.ended >= 3 {
+                return Err(StreamError::Unavailable);
+            }
+            if self.ended > 1 {
+                self.executor.sleep(10).await;
+            }
+        }
+    }
 }
 
 fn unique(ids: &mut BTreeSet<u64>, channel: wire::SessionChannel) -> Result<(), StreamError> {

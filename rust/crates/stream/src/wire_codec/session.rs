@@ -6,8 +6,24 @@ use prost::Message as _;
 mod resource;
 pub use resource::{stream_path, stream_resource, validate_resource};
 
-/// Finite canonical Actors response plus its enclosing product result.
+/// Finite canonical Actors response plus its enclosing product result. The
+/// same bound applies to every finite one-shot reply, including a children page.
 pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
+
+/// `SessionClosed.code` of a finite channel that delivered its whole range.
+/// It is the only non-error close code; any other code is a [`StreamError`].
+pub const END_CODE: &str = "end";
+
+/// One fragment of a finite one-shot reply: an Actors call or a children page.
+pub fn reply_chunk(item: Option<&wire::session_data::Item>) -> Option<&bytes::Bytes> {
+    match item {
+        Some(
+            wire::session_data::Item::ActorCall(chunk)
+            | wire::session_data::Item::ChildrenPage(chunk),
+        ) => Some(chunk),
+        _ => None,
+    }
+}
 
 /// Actor-call chunks carry the immutable total byte length as an eight-byte
 /// little-endian opaque cursor. The record cursor counts consecutive chunks.
@@ -36,9 +52,7 @@ pub fn actor_call_sequence(
 ) -> Result<u64, StreamError> {
     let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
     let total = actor_call_total(data)?;
-    let Some(wire::session_data::Item::ActorCall(chunk)) = &data.item else {
-        return Err(StreamError::InvalidResponse);
-    };
+    let chunk = reply_chunk(data.item.as_ref()).ok_or(StreamError::InvalidResponse)?;
     let start = usize::try_from(next)
         .ok()
         .and_then(|index| index.checked_mul(crate::MAX_RECORD_BYTES))
@@ -81,7 +95,23 @@ pub fn validate_follow(
         return Err(StreamError::InvalidArgument);
     }
     preceding_follow(follow, resume)?;
+    follow_bound(follow)?;
     Ok(())
+}
+
+/// Decodes the optional exclusive end of a bounded follow (the session read).
+/// Only an ALL follow of a `streams:/` resource can be bounded: LATEST conflates
+/// away the positions a bound counts, and product resources own their cursors.
+pub fn follow_bound(follow: &wire::SessionFollow) -> Result<Option<u64>, StreamError> {
+    if follow.until == 0 {
+        return Ok(None);
+    }
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || !follow.resource.starts_with("streams:/")
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(Some(follow.until))
 }
 
 /// Decodes the optional atomic history guard of a full-fidelity follow.

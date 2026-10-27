@@ -189,6 +189,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
                 preceding_commit_id: Bytes::copy_from_slice(
                     ledger.first().ok_or("empty ledger")?.as_bytes(),
                 ),
+                until: 0,
             },
             1,
             crate::FollowFilter::default(),

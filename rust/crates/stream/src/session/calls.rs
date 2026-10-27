@@ -51,19 +51,32 @@ pub(super) fn source(
     authorization: CallAuthorization,
     identity: wire::SessionChannel,
 ) -> Source {
+    reply(
+        identity,
+        Item::ActorCall,
+        Box::pin(async move { provider.call(invocation, authorization).await }),
+    )
+}
+
+/// One finite one-shot reply (an Actors call or a children page) on a channel.
+pub(super) fn reply(
+    identity: wire::SessionChannel,
+    item: fn(Bytes) -> Item,
+    reply: crate::BoxProviderFuture<'static, Result<Bytes, StreamError>>,
+) -> Source {
     // Opening acknowledges admission, not completion. Dispatch itself starts
     // only when the shared scheduler admits the next source poll under credit.
     let opened = stream::once(future::ready(Ok(Event::Opened(None))));
     // One result allocation is retained while chunks are exposed. Fragmentation
     // allocates no payload copies and the common session queue enforces credit.
     let result = stream::once(async move {
-        let reply = provider.call(invocation, authorization).await?;
+        let reply = reply.await?;
         if reply.is_empty() || reply.len() > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         Ok::<_, StreamError>(reply)
     })
-    .map_ok(|reply| {
+    .map_ok(move |reply| {
         let total = reply.len();
         stream::iter(
             (0..reply.len())
@@ -75,6 +88,7 @@ pub(super) fn source(
                         index: index as u64,
                         total: total as u64,
                         bytes: reply.slice(start..end),
+                        item,
                     })
                 }),
         )

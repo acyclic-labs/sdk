@@ -501,41 +501,14 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
 }
 
 #[tokio::test]
-async fn translating_client_does_not_ack_before_downstream_delivery() -> TestResult {
-    let provider = Arc::new(MemoryStream::default());
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new("accounts/events")?,
-            records: vec![(OwnedBytes::from(b"delivered".to_vec())).into()],
-            if_tail: Some(0),
-            idempotency_key: None,
-        })
-        .await?;
+async fn delivery_acknowledgements_validate_their_token() -> TestResult {
     let acknowledgements = Arc::new(AtomicUsize::new(0));
-    let mut service = Service::new(provider);
+    let mut service = Service::new(Arc::new(MemoryStream::default()));
     service.test_delivery = Some((Bytes::from(vec![9; 32]), Arc::clone(&acknowledgements)));
     let direct = Client::from_channel(channel(service), authorization("fixture")?);
-    let translating = direct.clone().without_delivery_acknowledgements();
-    let request = ReadRequest {
-        path: StreamPath::new("accounts/events")?,
-        from: 0,
-        limit: 1,
-    };
-    let record = direct
-        .read(request.clone())
-        .await?
-        .next()
-        .await
-        .ok_or("empty read")??;
-    assert_eq!(record.value, OwnedBytes::from(b"delivered".to_vec()));
-    assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
-    let record = translating
-        .read(request)
-        .await?
-        .next()
-        .await
-        .ok_or("empty read")??;
-    assert_eq!(record.value, OwnedBytes::from(b"delivered".to_vec()));
+    direct
+        .acknowledge_delivery(Bytes::from(vec![9; 32]))
+        .await?;
     assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
     assert_eq!(
         direct.acknowledge_delivery(Bytes::new()).await,

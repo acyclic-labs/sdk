@@ -44,6 +44,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
             resource: crate::wire_codec::session::stream_resource("events"),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: value.commit_id,
+            until: 0,
         })),
         channel: None,
     };

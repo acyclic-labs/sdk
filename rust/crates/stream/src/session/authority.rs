@@ -113,14 +113,16 @@ pub(super) struct Binding {
 }
 
 impl Binding {
-    pub(super) fn is_call(&self) -> bool {
+    /// Finite one-shot replies (Actors calls and children pages) carry no
+    /// record filter and get no credit-free lookahead.
+    pub(super) fn is_reply(&self) -> bool {
         self.resource_authorization
             .as_ref()
-            .is_some_and(|value| value.action == "actors/invoke")
+            .is_some_and(|value| matches!(value.action, "actors/invoke" | "streams/list"))
     }
 }
 
-fn stream_resource(path: Option<&StreamPath>) -> String {
+pub(super) fn stream_resource(path: Option<&StreamPath>) -> String {
     path.map_or_else(
         || String::from("streams:/"),
         |path| wire_codec::session::stream_resource(path.as_str()),
@@ -264,6 +266,33 @@ impl Authority {
             .2
             .as_ref()
             .map_err(|error| *error)?;
+        let action = binding
+            .resource_authorization
+            .as_ref()
+            .map_or("streams/follow", |authorization| authorization.action);
+        let scoped = binding.resource_authorization.is_some();
+        self.check(capability, action, &binding.resource, scoped, channels)
+    }
+    /// Admits `action` on one stream resource for an already admitted credential.
+    pub(super) fn permits(
+        &self,
+        capability: &VerifiedCapability,
+        action: &'static str,
+        resource: &str,
+        channels: usize,
+    ) -> Result<(), Rejection> {
+        self.check(capability, action, resource, false, channels)
+    }
+    /// The one admission check for every session action on one resource.
+    /// `scoped` follows a product resource through its owner's authorization.
+    fn check(
+        &self,
+        capability: &VerifiedCapability,
+        action: &'static str,
+        resource: &str,
+        scoped: bool,
+        channels: usize,
+    ) -> Result<(), Rejection> {
         let snapshot = self.snapshot()?;
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
             .map_err(|_| Rejection::Forbidden)?;
@@ -278,13 +307,7 @@ impl Authority {
             tokens: None,
         };
         let request = Request {
-            target: Target::Resource {
-                action: binding
-                    .resource_authorization
-                    .as_ref()
-                    .map_or("streams/follow", |authorization| authorization.action),
-                resource: &binding.resource,
-            },
+            target: Target::Resource { action, resource },
             audience: &self.audience,
             holder: self.holder.as_deref(),
             now_unix_seconds: snapshot.now_unix_seconds,
@@ -294,16 +317,11 @@ impl Authority {
             cpu_millis: 0,
             memory_bytes: 0,
         };
-        let scope = if binding
-            .resource_authorization
-            .as_ref()
-            .is_some_and(|value| value.action == "actors/invoke")
-        {
-            Scope::Exact
-        } else if binding.resource_authorization.is_some() {
-            Scope::ResourceFollow
-        } else {
-            Scope::Follow
+        let scope = match (action, scoped) {
+            ("actors/invoke", _) => Scope::Exact,
+            ("streams/list", _) => Scope::Children,
+            (_, true) => Scope::ResourceFollow,
+            (_, false) => Scope::Follow,
         };
         capability
             .authorize(
@@ -312,8 +330,7 @@ impl Authority {
                 PolicyDecision::Allow,
                 scope,
             )
-            .map_err(Rejection::from)?;
-        Ok(())
+            .map_err(Rejection::from)
     }
     fn filter(
         &self,
@@ -395,11 +412,7 @@ impl Authority {
         if revision == binding.credential_revision {
             return self.authorize(slots, binding, channels);
         }
-        let call = binding
-            .resource_authorization
-            .as_ref()
-            .is_some_and(|value| value.action == "actors/invoke");
-        if call {
+        if binding.is_reply() {
             self.authorize(slots, binding, channels)?;
         } else if self.filter(slots, binding, channels)?.digest() != binding.filter_digest {
             return Err(Rejection::Forbidden);
@@ -442,6 +455,40 @@ impl Authority {
         };
         self.authorize(slots, &binding, channels)?;
         Ok((binding, CallAuthorization(authorization)))
+    }
+    /// Admits one children page: `streams/list` on the parent, as
+    /// StreamService.ChildrenPage requires. Each returned child and tail
+    /// record is then checked through the returned visibility.
+    pub(super) fn bind_list(
+        self: &Arc<Self>,
+        slots: &Slots,
+        slot: u32,
+        parent: Option<&StreamPath>,
+        channels: usize,
+    ) -> Result<(Binding, super::pages::Visibility), Rejection> {
+        let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let capability = credential.as_ref().map_err(|error| *error)?;
+        let resource = stream_resource(parent);
+        let mut authorization =
+            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+        authorization.action = "streams/list";
+        let binding = Binding {
+            credential_revision: *revision,
+            slot,
+            resource,
+            requested: wire::SessionFilter::default(),
+            filter_digest: [0; 32],
+            resource_authorization: Some(authorization),
+        };
+        self.authorize(slots, &binding, channels)?;
+        Ok((
+            binding,
+            super::pages::Visibility {
+                authority: Arc::clone(self),
+                capability: Arc::clone(capability),
+                channels,
+            },
+        ))
     }
     pub(super) fn deadline(&self, slots: &mut Slots) -> Option<u64> {
         let now = self.snapshot().ok()?.now_unix_seconds;
