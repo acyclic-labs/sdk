@@ -1,14 +1,12 @@
 //! Bounded live sparse-file and reflink checks on the destination volume.
 
 use super::{
-    NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
-    NativeStorageAccelerationError, NativeStorageAccelerationEvidence,
-    probe_directory::ProbeDirectory,
+    NativeBlockCloneAccelerationEvidence, NativeStorageAccelerationError,
+    NativeStorageAccelerationEvidence, probe_directory::ProbeDirectory, sparse_probe,
 };
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub(super) fn probe(
@@ -33,43 +31,6 @@ pub(super) fn probe(
     Ok(NativeStorageAccelerationEvidence {
         sparse,
         block_clone,
-    })
-}
-
-fn sparse_probe(
-    directory: &Path,
-    logical_bytes: u64,
-) -> Result<NativeSparseAccelerationEvidence, NativeStorageAccelerationError> {
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(directory.join("sparse.bin"))?;
-    file.set_len(logical_bytes)?;
-    let edge = [0xa5_u8; 4096];
-    file.write_all(&edge)?;
-    file.seek(SeekFrom::Start(logical_bytes - edge.len() as u64))?;
-    file.write_all(&edge)?;
-    file.sync_all()?;
-    let allocated_bytes = file.metadata()?.blocks().checked_mul(512).ok_or(
-        NativeStorageAccelerationError::Invalid("allocated byte count overflow"),
-    )?;
-    if allocated_bytes == 0 || allocated_bytes >= logical_bytes {
-        return Err(NativeStorageAccelerationError::Invalid(
-            "sparse file did not retain a physical hole",
-        ));
-    }
-    file.seek(SeekFrom::Start(logical_bytes / 2))?;
-    let mut hole = [1_u8; 4096];
-    file.read_exact(&mut hole)?;
-    if hole.iter().any(|byte| *byte != 0) {
-        return Err(NativeStorageAccelerationError::Invalid(
-            "sparse hole did not read as logical zero bytes",
-        ));
-    }
-    Ok(NativeSparseAccelerationEvidence::Available {
-        logical_bytes,
-        allocated_bytes,
     })
 }
 
@@ -167,6 +128,7 @@ fn block_clone_probe(
 
 #[cfg(test)]
 mod tests {
+    use super::super::NativeSparseAccelerationEvidence;
     use super::*;
 
     #[test]
