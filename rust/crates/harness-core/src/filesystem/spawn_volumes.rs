@@ -467,6 +467,7 @@ where
                         .map_err(guest)?,
                     None => None,
                 };
+                let at_head = cut.is_none();
                 let generation = match cut {
                     Some(cut) => {
                         workspace
@@ -483,7 +484,7 @@ where
                             .value
                     }
                 };
-                heads.push(generation);
+                heads.push((generation, at_head));
             }
         }
         let mut forks = Vec::with_capacity(heads.len());
@@ -508,9 +509,10 @@ where
             match &planned.source {
                 Some(_) => forks.push(ForkSpec {
                     destination,
-                    source: sources
+                    source: &sources
                         .next()
-                        .ok_or_else(|| guest("spawn source missing"))?,
+                        .ok_or_else(|| guest("spawn source missing"))?
+                        .0,
                     paths: None,
                     idempotency_key: IdempotencyKey::from_bytes(planned.key),
                 }),
@@ -530,6 +532,23 @@ where
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| guest(failure.error))?;
+        // Sources read one after another are one consistent cut only if none
+        // advanced before the commit applies: each source forked at its head
+        // must still be at that head, or the whole spawn is refused. A
+        // retained cut is fixed by its creation operation, so it is not
+        // conditioned, and a single source is trivially consistent.
+        if heads.len() > 1 {
+            for (generation, _) in heads.iter().filter(|(_, at_head)| *at_head) {
+                fs.require_head(
+                    generation,
+                    &mut commit,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| guest(failure.error))?;
+            }
+        }
         fs.prepare_create_many(
             &creations,
             &mut commit,

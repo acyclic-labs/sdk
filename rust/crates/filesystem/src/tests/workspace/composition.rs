@@ -45,16 +45,19 @@ fn record(bytes: &'static [u8]) -> AppendRecord {
 /// parent's log into the child's subtree, and two volume forks, under one key.
 fn spawn_request(stream_fork_at: u64, state_absent: bool) -> Result<CommitRequest, Box<dyn Error>> {
     let state = StreamPath::new("harness/agents/child/state")?;
-    let conditions = if state_absent {
-        vec![CommitCondition::Absent {
+    let log = StreamPath::new("harness/agents/child/log")?;
+    // A Streams fork proves its destination absent.
+    let mut conditions = vec![CommitCondition::Absent { path: log.clone() }];
+    conditions.push(if state_absent {
+        CommitCondition::Absent {
             path: state.clone(),
-        }]
+        }
     } else {
-        vec![CommitCondition::Tail {
+        CommitCondition::Tail {
             path: state.clone(),
             expected: 7,
-        }]
-    };
+        }
+    });
     Ok(CommitRequest {
         conditions,
         mutations: vec![
@@ -65,7 +68,7 @@ fn spawn_request(stream_fork_at: u64, state_absent: bool) -> Result<CommitReques
             CommitMutation::Fork {
                 exclude: Vec::new(),
                 source: StreamPath::new("harness/agents/root/log")?,
-                destination: StreamPath::new("harness/agents/child/log")?,
+                destination: log,
                 at_tail: stream_fork_at,
                 records: vec![record(b"adopted")],
             },
@@ -203,6 +206,63 @@ async fn a_rejected_caller_condition_leaves_no_forked_volume() -> Result<(), Box
     Ok(())
 }
 
+/// A head-conditioned spawn of an unchanged source commits.
+#[tokio::test]
+async fn a_head_conditioned_fork_of_an_unchanged_source_commits() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let fs = placed(&stream)?;
+    let source = parent(&fs, &stream).await?;
+    let mut commit = compose(&fs, &source, true).await?;
+    unbounded!(fs, require_head(&source, &mut commit))?;
+    match unbounded!(fs, submit_commit(commit))? {
+        FilesystemCommitOutcome::Committed(_) => {}
+        FilesystemCommitOutcome::Rejected(conflicts) => {
+            return Err(format!("head-conditioned fork rejected: {conflicts:?}").into());
+        }
+        FilesystemCommitOutcome::Unknown { error, .. } => return Err(error.into()),
+    }
+    let project = unbounded!(fs, open_workspace("child-project"))?;
+    assert_eq!(
+        unbounded!(project, read("/plan.md", 16))?.as_ref(),
+        b"ship it"
+    );
+    Ok(())
+}
+
+/// Negative vector: the source publishes past the read generation before the
+/// spawn commits, so the head condition rejects the whole commit and nothing
+/// is published: no forked volume, no caller mutation, no new authority.
+#[tokio::test]
+async fn a_source_advancing_before_commit_refuses_the_spawn() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let fs = placed(&stream)?;
+    let source = parent(&fs, &stream).await?;
+    let placed_store = StreamAuthorityStore::with_placement(
+        Arc::clone(&stream),
+        AuthorityPlacement::new(VOLUMES)?,
+    );
+    let mut commit = compose(&fs, &source, true).await?;
+    unbounded!(fs, require_head(&source, &mut commit))?;
+    let before = placed_store.authorities(64).await?.len();
+    let parent = unbounded!(fs, open_workspace("root-project"))?;
+    parent.write_text("/plan.md", "changed").await?;
+    let FilesystemCommitOutcome::Rejected(conflicts) = unbounded!(fs, submit_commit(commit))?
+    else {
+        return Err("a spawn of an advanced source committed".into());
+    };
+    assert!(!conflicts.is_empty());
+    assert!(unbounded!(fs, open_workspace("child-project")).is_err());
+    assert!(unbounded!(fs, open_workspace("child-private")).is_err());
+    assert!(
+        stream
+            .tail(StreamPath::new("harness/agents/child/state")?)
+            .await
+            .is_err()
+    );
+    assert_eq!(placed_store.authorities(64).await?.len(), before);
+    Ok(())
+}
+
 /// A lost acknowledgement, then a crash that rebuilds the composition from
 /// the same inputs: both retries replay the one original receipt.
 #[tokio::test]
@@ -278,7 +338,7 @@ async fn one_composition_cannot_create_a_volume_twice() -> Result<(), Box<dyn Er
     // Negative control for partial preparation: the first fork's two
     // creations were already in the commit when the second failed. They are
     // gone, so the caller's commit is exactly its own again and still usable.
-    assert_eq!(commit.request().conditions.len(), 1);
+    assert_eq!(commit.request().conditions.len(), 2);
     assert_eq!(commit.request().mutations.len(), 2);
     assert!(commit.authorities().is_empty());
     unbounded!(fs, prepare_fork_many(&forks(&source)?, &mut commit))?;
@@ -498,7 +558,7 @@ async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Err
         // Dropped armed, as the outer batch future is when it times out
         // after its first part.
     }
-    assert_eq!(commit.request().conditions.len(), 1);
+    assert_eq!(commit.request().conditions.len(), 2);
     assert_eq!(commit.request().mutations.len(), 2);
     assert!(commit.authorities().is_empty());
     {

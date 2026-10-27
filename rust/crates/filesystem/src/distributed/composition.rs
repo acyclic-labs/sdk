@@ -284,6 +284,34 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .await
     }
 
+    /// Conditions `commit` on `authority`'s head still being `generation`
+    /// when it applies: its lineage holds exactly the records up to and
+    /// including `generation`. A source that published past `generation`
+    /// between the caller's read and the commit makes the whole commit fail,
+    /// with nothing published.
+    pub(crate) async fn contribute_head(
+        &self,
+        commit: &mut FilesystemCommit,
+        authority: AuthorityId,
+        generation: GenerationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        if commit.sealed {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "a sealed filesystem commit cannot accept contributions",
+            ));
+        }
+        let (path, expected) = self
+            .resolve_source_fork_point(authority, generation, work)
+            .await?;
+        grow(&mut commit.request.conditions, 1, work)?;
+        commit
+            .request
+            .conditions
+            .push(CommitCondition::Tail { path, expected });
+        Ok(())
+    }
+
     /// Fences the active access-policy cut once and freezes the request.
     ///
     /// External submitters must call this before sending [`FilesystemCommit::request`].
