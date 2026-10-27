@@ -104,6 +104,23 @@ export async function ensureModelWasm(): Promise<void> {
   }
 }
 
+/** MCP uses its Rust contracts and transport on the same physical module. */
+export async function ensureMcpWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  const functions = ["validateMcpCatalog", "mcpModelDefinitions", "searchMcpCatalog",
+    "validateMcpStdioRequest", "validateMcpCallbackRequest", "mcpCallbackOperation",
+    "jsonToolProjectionSchema"];
+  const transport = hasClass(exports, "WasmMcpHttpTransport", "wasmmcphttptransport", [
+    "initializationRequest", "acceptInitialization", "listToolsJson", "serviceJson", "callJson", "reconcileJson", "free",
+  ], true);
+  const initialization = hasClass(exports, "WasmMcpHttpInitialization", "wasmmcphttpinitialization", [
+    "resultJson", "initializedRequest", "intoTransport", "free",
+  ]);
+  if (!functions.every(name => typeof exports[name] === "function") || !transport || !initialization) {
+    throw new Error("harness WASM does not provide the required MCP exports");
+  }
+}
+
 /** The hypothesis kernel has its own export contract on the same module. */
 export async function ensureHypothesisWasm(): Promise<void> {
   const exports = await loadHarnessWasm();

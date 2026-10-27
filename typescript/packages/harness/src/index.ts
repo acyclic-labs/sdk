@@ -8,4 +8,11 @@ export * from "./pagination.js";
 export * from "./hypotheses.js";
 export * from "./providers.js";
 export { createBrowserMcpHttpProvider } from "./mcp-http.js";
-export { WasmMcpHttpTransport, WasmMcpHttpInitialization } from "../generated/wasm/acyclic_harness_wasm.js";
+export {
+  WasmMcpHttpTransport, WasmMcpHttpInitialization,
+  validateMcpCatalog, mcpModelDefinitions, searchMcpCatalog,
+  validateMcpStdioRequest, validateMcpCallbackRequest, mcpCallbackOperation,
+  jsonToolProjectionSchema,
+  type McpCatalog, type McpCallbackRequest,
+} from "../generated/wasm/acyclic_harness_wasm.js";
+export { ensureMcpWasm as initializeMcp } from "./wasm-runtime.js";
