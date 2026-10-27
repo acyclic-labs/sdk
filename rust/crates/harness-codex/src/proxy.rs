@@ -60,6 +60,8 @@ pub enum ProxyCall {
         step: u32,
         /// Metered usage.
         usage: ResponsesUsage,
+        /// The provider's id for the response, when it gave one.
+        response_id: Option<String>,
     },
 }
 
@@ -359,12 +361,7 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
     let metered = shared.clone();
     let stream = upstream.bytes_stream().map(move |chunk| {
         if let Ok(bytes) = &chunk {
-            for usage in scanner.push(bytes) {
-                metered.report(ProxyCall::Completed { step, usage });
-                if let MeterVerdict::Stop { reason } = metered.meter.record(&model, &usage) {
-                    metered.stop(ProxyStop::Budget(reason));
-                }
-            }
+            meter_completions(&metered, &mut scanner, &model, step, bytes);
         }
         chunk
     });
@@ -374,6 +371,30 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+/// Reports and meters every `response.completed` in `bytes`, stopping the turn when the meter
+/// says so.
+fn meter_completions(
+    shared: &Shared,
+    scanner: &mut SseScanner,
+    model: &str,
+    step: u32,
+    bytes: &[u8],
+) {
+    for (usage, response_id) in scanner.push(bytes) {
+        shared.report(ProxyCall::Completed {
+            step,
+            usage,
+            response_id: response_id.clone(),
+        });
+        let verdict = shared
+            .meter
+            .record_response(model, &usage, response_id.as_deref());
+        if let MeterVerdict::Stop { reason } = verdict {
+            shared.stop(ProxyStop::Budget(reason));
+        }
+    }
 }
 
 /// Deep-merges `extra` into `target`: objects merge, anything else replaces.
@@ -396,14 +417,14 @@ fn merge(target: &mut Value, extra: &Value) {
     }
 }
 
-/// Finds `response.completed` usage in an SSE byte stream split anywhere.
+/// Finds `response.completed` usage, and the response's id, in an SSE byte stream split anywhere.
 #[derive(Default)]
 struct SseScanner {
     pending: Vec<u8>,
 }
 
 impl SseScanner {
-    fn push(&mut self, bytes: &[u8]) -> Vec<ResponsesUsage> {
+    fn push(&mut self, bytes: &[u8]) -> Vec<(ResponsesUsage, Option<String>)> {
         self.pending.extend_from_slice(bytes);
         let mut found = Vec::new();
         while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
@@ -417,7 +438,8 @@ impl SseScanner {
             if event.get("type").and_then(Value::as_str) == Some("response.completed")
                 && let Some(usage) = event.pointer("/response/usage")
             {
-                found.push(usage_of(usage));
+                let id = event.pointer("/response/id").and_then(Value::as_str);
+                found.push((usage_of(usage), id.map(str::to_owned)));
             }
         }
         found
@@ -456,7 +478,7 @@ mod tests {
     fn usage_is_found_across_arbitrary_chunk_boundaries() {
         let stream = concat!(
             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_9\",\"usage\":",
             "{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":40},\"output_tokens\":7}}}\n\n"
         )
         .as_bytes();
@@ -467,11 +489,14 @@ mod tests {
             found.extend(scanner.push(tail));
             assert_eq!(
                 found,
-                vec![ResponsesUsage {
-                    input_tokens: 100,
-                    cached_input_tokens: 40,
-                    output_tokens: 7
-                }],
+                vec![(
+                    ResponsesUsage {
+                        input_tokens: 100,
+                        cached_input_tokens: 40,
+                        output_tokens: 7
+                    },
+                    Some("resp_9".to_owned())
+                )],
                 "split at {split}"
             );
         }

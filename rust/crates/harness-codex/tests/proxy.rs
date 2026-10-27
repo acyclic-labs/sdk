@@ -13,7 +13,7 @@ mod support;
 
 use acyclic_harness_codex::{
     Upstream,
-    proxy::{ProxyStop, ResponsesProxy},
+    proxy::{ProxyCall, ProxyStop, ResponsesProxy},
 };
 use serde_json::{Value, json};
 use std::{
@@ -114,6 +114,30 @@ async fn forwards_with_the_real_key_and_merges_extra_body() {
         "usage read from response.completed"
     );
     assert_eq!(proxy.steps(), 1);
+}
+
+/// Each completed call names the provider's response id, to the meter and on the reported
+/// call, so a trace span and a transcript reply can be joined to the call that produced them.
+#[tokio::test]
+async fn completed_calls_carry_the_response_id() {
+    let fake = FakeUpstream::message("hello").await;
+    let meter = Arc::new(RecordingMeter::default());
+    let (proxy, mut calls) = ResponsesProxy::start_reporting(upstream(&fake), meter.clone(), 8)
+        .await
+        .expect(PENDING);
+    let response = post(&proxy, &codex_request()).await;
+    response.text().await.expect("body");
+    let ids = meter.response_ids.lock().expect("meter").clone();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let id = ids[0].clone().expect("the meter is told the response id");
+    assert!(id.starts_with("resp_"), "{id}");
+    let mut completed = None;
+    while let Ok(call) = calls.try_recv() {
+        if let ProxyCall::Completed { response_id, .. } = call {
+            completed = Some(response_id);
+        }
+    }
+    assert_eq!(completed, Some(Some(id)), "the reported call names it too");
 }
 
 #[tokio::test]

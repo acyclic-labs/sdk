@@ -249,6 +249,8 @@ pub fn has_tool_output(request: &Recorded) -> bool {
 #[derive(Default)]
 pub struct RecordingMeter {
     pub recorded: Mutex<Vec<ResponsesUsage>>,
+    /// The provider's id of each recorded response.
+    pub response_ids: Mutex<Vec<Option<String>>>,
     pub stop_after: Option<usize>,
 }
 
@@ -282,6 +284,19 @@ impl UsageMeter for RecordingMeter {
     fn record(&self, _: &str, usage: &ResponsesUsage) -> MeterVerdict {
         self.recorded.lock().expect("meter").push(*usage);
         self.verdict()
+    }
+
+    fn record_response(
+        &self,
+        model: &str,
+        usage: &ResponsesUsage,
+        response_id: Option<&str>,
+    ) -> MeterVerdict {
+        self.response_ids
+            .lock()
+            .expect("meter")
+            .push(response_id.map(str::to_owned));
+        self.record(model, usage)
     }
 }
 

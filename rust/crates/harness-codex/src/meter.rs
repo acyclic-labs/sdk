@@ -32,6 +32,17 @@ pub trait UsageMeter: Send + Sync {
     fn admit(&self, model: &str) -> MeterVerdict;
     /// Told the usage of each call that completed upstream.
     fn record(&self, model: &str, usage: &ResponsesUsage) -> MeterVerdict;
+    /// [`Self::record`], with the provider's id for the response when it gave one. The proxy calls
+    /// this; a meter that traces calls overrides it to name each one.
+    fn record_response(
+        &self,
+        model: &str,
+        usage: &ResponsesUsage,
+        response_id: Option<&str>,
+    ) -> MeterVerdict {
+        let _ = response_id;
+        self.record(model, usage)
+    }
 }
 
 /// A meter that never stops a turn. For tests and unmetered local use.

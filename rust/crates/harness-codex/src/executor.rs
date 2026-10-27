@@ -721,14 +721,19 @@ impl TurnJournal<'_> {
                     )
                     .await?;
                 }
-                ProxyCall::Completed { step, usage } => {
+                ProxyCall::Completed {
+                    step,
+                    usage,
+                    response_id,
+                } => {
                     self.metered = add_usage(self.metered, usage);
                     let step = self.offset.saturating_add(step);
+                    // `id` as the recursive loop's completions spell it, so a transcript reads both.
                     self.model_event(
                         step,
                         &format!("model:{step}:usage"),
                         &ModelEvent::Completed {
-                            metadata: json!({"usage": usage}),
+                            metadata: json!({"usage": usage, "id": response_id}),
                         },
                     )
                     .await?;
