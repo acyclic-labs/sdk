@@ -1,9 +1,10 @@
 //! The native host's agents: one A4 actor per native session, on the
 //! harness's agent stream. A host process runs each session; its agent never
-//! executes a model or a tool. Each brief or message opens a turn that waits
-//! for this owner's hooks (claim, completion, control), taken ahead of the
-//! input queued behind it, and settles as the shared conversation entry at
-//! the input's own inbox sequence, so every host's committed reply reads it.
+//! executes a model or a tool. A brief only names a spawned session; each
+//! message (its first prompt included) opens a turn that waits for this
+//! owner's hooks (claim, completion, control), taken ahead of the input queued
+//! behind it, and settles as the shared conversation entry at the input's own
+//! inbox sequence, so every host's committed reply reads it.
 use super::*;
 use crate::{
     agent::{
@@ -132,7 +133,8 @@ pub(super) struct Rejected {
     pub(super) reason: String,
 }
 
-/// A spawned session's brief: its name in its parent and its first input.
+/// A spawned session's brief: its name in its parent and its first prompt,
+/// which a replayed spawn must repeat exactly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Brief {
@@ -293,7 +295,7 @@ impl HostDriver {
                 let bytes = self.read(agent, brief).await?;
                 let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
                 session.reference = Some(brief.reference);
-                return start(session, inbox, input);
+                None
             }
             TurnInput::Message { .. } => return start(session, inbox, input),
             TurnInput::ChildDone { done } => {
@@ -567,33 +569,66 @@ impl NativeAgents {
         Ok(())
     }
 
-    /// Queues `prompt` as message `operation` to `agent`.
+    /// Queues `prompt` as message `id` to `agent`, returning its inbox
+    /// sequence. Its body is staged under `id`, so a replay commits nothing new
+    /// and returns the same sequence.
     pub(super) async fn message(
         &self,
         agent: &AgentPath,
-        operation: OperationId,
+        id: &IntentId,
         prompt: &str,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let state = self.state(agent).await?;
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.message.v1");
+        hasher.update(agent.as_str().as_bytes());
+        hasher.update(&[0]);
+        hasher.update(id.as_str().as_bytes());
+        let mut bytes = [0; 16];
+        hasher.finalize_xof().fill(&mut bytes);
         let body = self
             .driver
-            .stage(&state, operation, prompt.as_bytes())
+            .stage(&state, OperationId::from_bytes(bytes), prompt.as_bytes())
             .await?;
         self.deliver(
             agent,
             InboxRecord::Message(Message {
                 from: Sender::Host { host: HOST.into() },
-                id: IntentId::try_from(format!("native:{operation}")).map_err(storage)?,
+                id: id.clone(),
                 body: Box::new(body),
             }),
         )
         .await
     }
 
-    /// Delivers `record` and runs `agent`'s turn on it; a turn that rejects
-    /// the request (a stale claim or completion) fails it.
-    async fn deliver(&self, agent: &AgentPath, record: InboxRecord) -> Result<()> {
-        match self
+    /// Where `agent`'s message `id` at inbox sequence `inbox` stands, through
+    /// the shared committed reply; an answer carries the outcome its entry
+    /// settled.
+    pub(super) async fn reply(
+        &self,
+        agent: &AgentPath,
+        id: &IntentId,
+        inbox: u64,
+    ) -> Result<Value> {
+        Ok(
+            match self.host.reply(agent, id, inbox).await.map_err(storage)? {
+                crate::agent::Reply::Answered { sequence, entry } => {
+                    let state = self.state(agent).await?;
+                    let settled: Session =
+                        serde_json::from_slice(&self.driver.read(&state, &entry.output).await?)
+                            .map_err(storage)?;
+                    json!({"kind": "answered", "sequence": sequence, "outcome": settled.result})
+                }
+                crate::agent::Reply::Pending => json!({ "kind": "pending" }),
+                crate::agent::Reply::Dropped => json!({ "kind": "dropped" }),
+            },
+        )
+    }
+
+    /// Delivers `record` and runs `agent`'s turn on it, returning its inbox
+    /// sequence; a turn that rejects the request (a stale claim or
+    /// completion) fails it.
+    async fn deliver(&self, agent: &AgentPath, record: InboxRecord) -> Result<u64> {
+        let inbox = match self
             .host
             .send(agent, &Sender::Host { host: HOST.into() }, &record)
             .await
@@ -602,15 +637,15 @@ impl NativeAgents {
             crate::agent::Delivered::Closed => {
                 return Err(Error::Conflict("native session is archived".into()));
             }
-            crate::agent::Delivered::Committed { .. } => {}
-        }
+            crate::agent::Delivered::Committed { inbox } => inbox,
+        };
         self.resume(agent).await?;
         let InboxRecord::Hook(Hook { id, .. }) = &record else {
-            return Ok(());
+            return Ok(inbox);
         };
         match self.session(agent).await?.1.rejected {
             Some(rejected) if rejected.id == *id => Err(Error::Conflict(rejected.reason)),
-            _ => Ok(()),
+            _ => Ok(inbox),
         }
     }
 

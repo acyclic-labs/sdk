@@ -120,7 +120,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         let child = PathBuf::from(spawned["cwd"].as_str().unwrap());
         assert_eq!(workspace_root(&child)?, cwd);
         assert!(!child.join(DIRECTORY).join("owner.json").exists());
-        assert_eq!(spawned["pending"], 1, "the brief is the first input");
+        assert_eq!(spawned["pending"], 1, "the first prompt is pending");
         // Spawning the same reference again names the same child.
         assert_eq!(
             session(SessionAction::Spawn {
@@ -132,7 +132,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             &cwd,
             HostAction::Sessions {
                 parent: parent.clone(),
-                after: None,
             },
         )?;
         assert_eq!(page["references"], serde_json::json!(["endpoint-boundary"]));

@@ -9,12 +9,7 @@ use acyclic_harness::{
     },
 };
 use acyclic_native_runtime::{FileLock, FileLockMode};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io::Write as _,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, io::Write as _, sync::mpsc, time::Duration};
 
 struct Running {
     process: HostSessionProcess,
@@ -55,13 +50,19 @@ struct Sessions {
     cwd: PathBuf,
     parent: AgentPath,
     flags: Vec<String>,
+    /// Native processes this shim runs, by parent-local reference.
     children: BTreeMap<String, Running>,
-    after: Option<u64>,
+    /// The last prompt accepted per reference, as its committed `id` and
+    /// `inbox`: what `wait` awaits through the shared reply.
+    prompts: BTreeMap<String, Value>,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
 }
 
 impl Sessions {
+    /// Takes exclusive ownership of the parent's children. Every input reaches
+    /// them through this owner, so it settles their orphaned turns once and
+    /// runs their queued inputs; it never polls the harness afterwards.
     fn open(host: &str) -> Result<Self> {
         let flags: Vec<String> = serde_json::from_str(&env::var("ACYCLIC_HOST_ARGS").map_err(
             |_| "launch the native parent with acyclic host HOST -- POLICY_ARGS before spawning",
@@ -79,16 +80,29 @@ impl Sessions {
             root.open_file(Path::new("manager.lock"), true)?,
             FileLockMode::Exclusive,
         )?;
-        Ok(Self {
+        let mut sessions = Self {
             host: host.into(),
             cwd,
             parent,
             flags,
             children: BTreeMap::new(),
-            after: None,
+            prompts: BTreeMap::new(),
             _ownership: ownership,
             _root: root,
-        })
+        };
+        let open = host_files::request(
+            &sessions.cwd,
+            HostAction::Sessions {
+                parent: sessions.parent.clone(),
+            },
+        )?;
+        for reference in serde_json::from_value::<Vec<String>>(
+            open.get("references").cloned().unwrap_or_default(),
+        )? {
+            sessions.request(&reference, SessionAction::Recover)?;
+            sessions.start(&reference)?;
+        }
+        Ok(sessions)
     }
     fn request(&self, reference: &str, action: SessionAction) -> Result<Value> {
         Ok(host_files::request(
@@ -100,17 +114,21 @@ impl Sessions {
             },
         )?)
     }
-    fn start(&mut self, reference: &str, observed: &Value) -> Result<()> {
+    /// Records the prompt a Spawn or Send accepted, then runs its input.
+    fn accept(&mut self, reference: &str, action: SessionAction) -> Result<Value> {
+        let accepted = self.request(reference, action)?;
+        self.prompts.insert(
+            reference.into(),
+            json!({"id": accepted.get("id").ok_or("accepted prompt has no id")?,
+                "inbox": accepted.get("inbox").ok_or("accepted prompt has no inbox")?}),
+        );
+        self.start(reference)?;
+        Ok(accepted)
+    }
+    /// Claims and launches the child's next input, unless one already runs.
+    fn start(&mut self, reference: &str) -> Result<()> {
         if self.children.contains_key(reference) {
             return Ok(());
-        }
-        // Retained references include completed sessions. Observing an empty,
-        // settled mailbox must not publish recovery or execution commands.
-        if settled(observed) {
-            return Ok(());
-        }
-        if observed.pointer("/status/settled").and_then(Value::as_bool) == Some(false) {
-            self.recover(reference)?;
         }
         let Some((lease, turn)) =
             HostProcessLease::claim_child(&self.cwd, &self.parent, reference)?
@@ -164,12 +182,6 @@ impl Sessions {
             .and_then(|()| running.process.queue_stdin(prompt))
         {
             running.failure = Some(error.to_string());
-        }
-        Ok(())
-    }
-    fn recover(&mut self, reference: &str) -> Result<()> {
-        if !self.children.contains_key(reference) {
-            self.request(reference, SessionAction::Recover)?;
         }
         Ok(())
     }
@@ -237,69 +249,62 @@ impl Sessions {
         }
         Ok(())
     }
-    fn refresh(&mut self, waiting: &mut Vec<(Value, String)>) -> Result<bool> {
+    /// Advances every running process by one bounded pass. A settled turn
+    /// starts the child's next input and answers the waits it resolves.
+    fn pump(&mut self, waiting: &mut Vec<(Value, String)>) -> Result<bool> {
         let mut progressed = false;
-        let page = host_files::request(
-            &self.cwd,
-            HostAction::Sessions {
-                parent: self.parent.clone(),
-                after: self.after,
-            },
-        )?;
-        let mut references: BTreeSet<String> = self.children.keys().cloned().collect();
-        references.extend(waiting.iter().map(|(_, reference)| reference.clone()));
-        self.after = serde_json::from_value(page.get("after").cloned().unwrap_or_default())?;
-        references.extend(serde_json::from_value::<Vec<String>>(
-            page.get("references").cloned().unwrap_or_default(),
-        )?);
-        for reference in references {
-            let observed = self.request(&reference, SessionAction::Observe)?;
-            let observed = if let Some(mut running) = self.children.remove(&reference) {
-                let refreshed = self.refresh_running(&reference, &observed, &mut running);
-                progressed |= running.process.take_output_progress();
-                match refreshed {
-                    Ok(Some(observed)) => {
-                        self.start(&reference, &observed)?;
-                        observed
-                    }
-                    Ok(None) => {
-                        self.children.insert(reference.clone(), running);
-                        observed
-                    }
-                    Err(error) => {
-                        self.children.insert(reference, running);
-                        return Err(error);
-                    }
-                }
-            } else {
-                self.start(&reference, &observed)?;
-                observed
+        for reference in self.children.keys().cloned().collect::<Vec<_>>() {
+            let Some(mut running) = self.children.remove(&reference) else {
+                continue;
             };
-            if settled(&observed) {
-                for (id, _) in waiting.extract_if(.., |(_, pending)| pending == &reference) {
-                    reply(&id, Ok(observed.clone()))?;
+            let refreshed = self.refresh_running(&reference, &mut running);
+            progressed |= running.process.take_output_progress();
+            match refreshed {
+                Ok(true) => {
+                    self.start(&reference)?;
+                    self.resolve(&reference, waiting)?;
+                }
+                Ok(false) => {
+                    self.children.insert(reference, running);
+                }
+                Err(error) => {
+                    self.children.insert(reference, running);
+                    return Err(error);
                 }
             }
         }
         Ok(progressed)
     }
-    fn refresh_running(
-        &self,
-        reference: &str,
-        observed: &Value,
-        running: &mut Running,
-    ) -> Result<Option<Value>> {
-        if observed
-            .get("control")
-            .and_then(Value::as_str)
-            .is_some_and(|state| state != "resume")
-        {
-            running.process.terminate_descendants()?;
-            let _ = self.output(reference, running);
-            return self
-                .complete(reference, running, acyclic_harness::Outcome::Cancelled)
-                .map(Some);
+    /// The reply to `reference`'s last accepted prompt, once nothing running
+    /// can still settle it: answered, dropped, or pending behind a stop.
+    fn wait(&self, reference: &str) -> Result<Option<Value>> {
+        let Some(prompt) = self.prompts.get(reference) else {
+            // This owner accepted no prompt for it: nothing is awaited.
+            return self.request(reference, SessionAction::Observe).map(Some);
+        };
+        let value = self.request(
+            reference,
+            SessionAction::Reply {
+                id: serde_json::from_value(prompt["id"].clone())?,
+                inbox: prompt["inbox"].as_u64().ok_or("prompt inbox absent")?,
+            },
+        )?;
+        let pending = value.pointer("/reply/kind").and_then(Value::as_str) == Some("pending");
+        Ok((!pending || !self.children.contains_key(reference)).then_some(value))
+    }
+    fn resolve(&self, reference: &str, waiting: &mut Vec<(Value, String)>) -> Result<()> {
+        if !waiting.iter().any(|(_, pending)| pending == reference) {
+            return Ok(());
         }
+        if let Some(value) = self.wait(reference)? {
+            for (id, _) in waiting.extract_if(.., |(_, pending)| pending == reference) {
+                reply(&id, Ok(value.clone()))?;
+            }
+        }
+        Ok(())
+    }
+    /// Whether the process exited and its turn settled.
+    fn refresh_running(&self, reference: &str, running: &mut Running) -> Result<bool> {
         let mut exited = if let Some(error) = &running.failure {
             Err(error.clone().into())
         } else {
@@ -311,7 +316,7 @@ impl Sessions {
         if matches!(&exited, Ok(Some(_))) {
             running.process.terminate_descendants()?;
             match running.process.pump_stdin() {
-                Ok(false) => return Ok(None),
+                Ok(false) => return Ok(false),
                 Ok(true) => {}
                 Err(error) => exited = Err(error.into()),
             }
@@ -336,9 +341,9 @@ impl Sessions {
             Ok(Some(status)) => acyclic_harness::Outcome::Failed {
                 message: format!("native host exited {status}"),
             },
-            Ok(None) => return Ok(None),
+            Ok(None) => return Ok(false),
         };
-        self.complete(reference, running, outcome).map(Some)
+        self.complete(reference, running, outcome).map(|_| true)
     }
     fn complete(
         &self,
@@ -365,7 +370,12 @@ impl Sessions {
             },
         )
     }
-    fn stop(&mut self, reference: &str, control: Control) -> Result<Value> {
+    fn stop(
+        &mut self,
+        reference: &str,
+        control: Control,
+        waiting: &mut Vec<(Value, String)>,
+    ) -> Result<Value> {
         self.request(reference, SessionAction::Control { control })?;
         if let Some(mut running) = self.children.remove(reference) {
             let result = (|| -> Result<()> {
@@ -378,12 +388,20 @@ impl Sessions {
                 self.children.insert(reference.into(), running);
                 return Err(error);
             }
-        } else {
-            self.recover(reference)?;
+        }
+        self.resolve(reference, waiting)?;
+        if control == Control::Archive {
+            self.prompts.remove(reference);
         }
         self.request(reference, SessionAction::Observe)
     }
-    fn call(&mut self, name: &str, args: &Value) -> Result<Value> {
+    /// One coordination tool call; `None` parks a wait until its reply.
+    fn call(
+        &mut self,
+        name: &str,
+        args: &Value,
+        waiting: &mut Vec<(Value, String)>,
+    ) -> Result<Option<Value>> {
         let object = args.as_object().ok_or("tool arguments must be an object")?;
         if object
             .keys()
@@ -403,37 +421,30 @@ impl Sessions {
                 .ok_or("prompt is required")
         };
         match name {
-            "spawn" => {
-                let observed =
-                    self.request(reference, SessionAction::Spawn { prompt: prompt()? })?;
-                self.start(reference, &observed)?;
-            }
-            "send" => {
-                let observed =
-                    self.request(reference, SessionAction::Send { prompt: prompt()? })?;
-                self.start(reference, &observed)?;
-            }
+            "spawn" => self
+                .accept(reference, SessionAction::Spawn { prompt: prompt()? })
+                .map(Some),
+            "send" => self
+                .accept(reference, SessionAction::Send { prompt: prompt()? })
+                .map(Some),
             "resume" => {
                 if self.children.contains_key(reference) {
                     return Err("native session is still running".into());
                 }
-                self.recover(reference)?;
                 self.request(
                     reference,
                     SessionAction::Control {
                         control: Control::Resume,
                     },
                 )?;
-                let observed =
-                    self.request(reference, SessionAction::Send { prompt: prompt()? })?;
-                self.start(reference, &observed)?;
+                self.accept(reference, SessionAction::Send { prompt: prompt()? })
+                    .map(Some)
             }
-            "archive" => return self.stop(reference, Control::Archive),
-            "cancel" => return self.stop(reference, Control::Interrupt),
-            "wait" => {}
-            _ => return Err("unknown coordination tool".into()),
+            "archive" => self.stop(reference, Control::Archive, waiting).map(Some),
+            "cancel" => self.stop(reference, Control::Interrupt, waiting).map(Some),
+            "wait" => self.wait(reference),
+            _ => Err("unknown coordination tool".into()),
         }
-        self.request(reference, SessionAction::Observe)
     }
 }
 
@@ -444,17 +455,6 @@ fn bounded_text(text: &str) -> String {
             (*bytes <= 4096).then_some(ch)
         })
         .collect()
-}
-fn settled(value: &Value) -> bool {
-    let stopped = value
-        .get("control")
-        .and_then(Value::as_str)
-        .is_some_and(|state| state != "resume");
-    value
-        .pointer("/status/settled")
-        .and_then(Value::as_bool)
-        .unwrap_or(stopped)
-        && (stopped || value.get("pending").and_then(Value::as_u64) == Some(0))
 }
 fn reply(id: &Value, result: Result<Value>) -> Result<()> {
     let result = match result {
@@ -488,28 +488,28 @@ pub(super) fn serve(host: &str) -> Result<()> {
     let receive = input_messages();
     let mut sessions: Option<Sessions> = None;
     let mut waiting: Vec<(Value, String)> = Vec::new();
-    let mut next_refresh = Instant::now();
     let serving = (|| -> Result<()> {
         loop {
-            let mut progressed = false;
-            if Instant::now() >= next_refresh {
-                if let Some(state) = sessions.as_mut() {
-                    progressed = state.refresh(&mut waiting)?;
-                }
-                next_refresh = Instant::now()
-                    + if progressed {
-                        Duration::ZERO
-                    } else {
-                        Duration::from_millis(100)
-                    };
+            let (mut running, mut progressed) = (false, false);
+            if let Some(state) = sessions.as_mut() {
+                progressed = state.pump(&mut waiting)?;
+                running = !state.children.is_empty();
             }
-            // Ready output schedules another bounded turn. Only a quiescent
-            // pass may park; idle waiting cannot throttle a backpressured pipe.
-            let message = match receive.recv_timeout(if progressed {
-                Duration::ZERO
+            // Only this owner's own processes can settle a wait, so with none
+            // running it blocks on its host. Ready output schedules another
+            // bounded pass; idle waiting cannot throttle a backpressured pipe.
+            let message = if running {
+                receive.recv_timeout(if progressed {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(20)
+                })
             } else {
-                Duration::from_millis(20)
-            }) {
+                receive
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+            };
+            let message = match message {
                 Ok(Ok(value)) => value,
                 Ok(Err(_)) => {
                     emit(
@@ -540,16 +540,17 @@ pub(super) fn serve(host: &str) -> Result<()> {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     let args = params.get("arguments").unwrap_or(&Value::Null);
-                    let result = (|| -> Result<Value> {
+                    let result = (|| -> Result<Option<Value>> {
                         if sessions.is_none() {
                             sessions = Some(Sessions::open(host)?);
                         }
-                        sessions
-                            .as_mut()
-                            .ok_or("session owner absent")?
-                            .call(name, args)
+                        sessions.as_mut().ok_or("session owner absent")?.call(
+                            name,
+                            args,
+                            &mut waiting,
+                        )
                     })();
-                    if name == "wait" && result.as_ref().is_ok_and(|value| !settled(value)) {
+                    if let Ok(None) = result {
                         if waiting.len() >= 16 {
                             reply(id, Err("native wait concurrency bound reached".into()))?;
                             continue;
@@ -562,7 +563,10 @@ pub(super) fn serve(host: &str) -> Result<()> {
                                 .into(),
                         ));
                     } else {
-                        reply(id, result)?;
+                        reply(
+                            id,
+                            result.and_then(|value| value.ok_or("wait parked".into())),
+                        )?;
                     }
                 }
                 _ => emit(
@@ -575,7 +579,7 @@ pub(super) fn serve(host: &str) -> Result<()> {
     if let Some(mut sessions) = sessions {
         let mut failure = None;
         for reference in sessions.children.keys().cloned().collect::<Vec<_>>() {
-            if let Err(error) = sessions.stop(&reference, Control::Interrupt) {
+            if let Err(error) = sessions.stop(&reference, Control::Interrupt, &mut waiting) {
                 failure = Some(error);
             }
         }
@@ -622,13 +626,7 @@ mod tests {
         );
     }
     #[test]
-    fn waits_for_quiescence_and_all_accepted_inputs_without_a_tool_ledger() {
-        assert!(!settled(&json!({"status":{"settled":false},"pending":0})));
-        assert!(!settled(&json!({"status":{"settled":true},"pending":1})));
-        assert!(settled(&json!({"status":{"settled":true},"pending":0})));
-        assert!(settled(
-            &json!({"status":{"settled":true},"pending":1,"control":"interrupt"})
-        ));
+    fn native_answers_are_bounded_on_character_boundaries() {
         assert!(bounded_text(&"😀".repeat(4096)).len() <= 4096);
     }
 }

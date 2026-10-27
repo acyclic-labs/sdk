@@ -1,8 +1,13 @@
 //! Native session lifecycle: each request is one inbox record of the session's
-//! agent, and every reply observes that agent's session after it.
-use super::agents::{Brief, Control, Event, Running, TurnClaim};
+//! agent, and every reply observes that agent's session after it. A prompt is
+//! a message; its sender awaits it through the shared committed reply.
+use super::agents::{Control, Event, Running, TurnClaim};
 use super::*;
-use crate::{Outcome, agent::TurnInput, executor::TurnOutput};
+use crate::{
+    Outcome,
+    agent::{IntentId, TurnInput},
+    executor::TurnOutput,
+};
 
 /// Bound of one native prompt.
 const MAXIMUM_PROMPT: usize = 32_768;
@@ -11,12 +16,12 @@ const MAXIMUM_PROMPT: usize = 32_768;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionAction {
-    /// Spawn the child with its initial input.
+    /// Spawn the child with its initial input; the reply names the prompt.
     Spawn {
         /// Initial prompt.
         prompt: String,
     },
-    /// Queue a follow-up input.
+    /// Queue a follow-up input; the reply names the prompt.
     Send {
         /// Message body.
         prompt: String,
@@ -42,6 +47,14 @@ pub enum SessionAction {
     },
     /// Read the session and its native resume reference.
     Observe,
+    /// Where prompt `id`, accepted at inbox sequence `inbox`, stands: the
+    /// shared committed reply, with the outcome its settled turn recorded.
+    Reply {
+        /// The prompt's message identity, returned by Spawn or Send.
+        id: IntentId,
+        /// The prompt's inbox sequence, returned by Spawn or Send.
+        inbox: u64,
+    },
     /// After fencing the old process custody, settle an orphaned turn.
     Recover,
 }
@@ -90,11 +103,24 @@ impl HostWorkspaceOwner {
             }
         }
         self.attach(&child).await?;
+        let mut accepted = None;
         match action {
-            SessionAction::Spawn { .. } | SessionAction::Observe => {}
+            SessionAction::Observe => {}
+            // The first prompt is a message with the spawn's own identity, so
+            // a replayed spawn names the same prompt at the same sequence.
+            SessionAction::Spawn { prompt } => {
+                let id = IntentId::try_from("native:spawn").map_err(storage)?;
+                let inbox = self.native.message(&child, &id, &prompt).await?;
+                accepted = Some(json!({"id": id, "inbox": inbox}));
+            }
             SessionAction::Send { prompt } => {
                 prompt_bound(&prompt)?;
-                self.native.message(&child, operation, &prompt).await?;
+                let id = IntentId::try_from(format!("native:{operation}")).map_err(storage)?;
+                let inbox = self.native.message(&child, &id, &prompt).await?;
+                accepted = Some(json!({"id": id, "inbox": inbox}));
+            }
+            SessionAction::Reply { id, inbox } => {
+                accepted = Some(json!({"reply": self.native.reply(&child, &id, inbox).await?}));
             }
             SessionAction::Next => return self.next_session(operation, &child).await,
             SessionAction::Complete { claim, outcome } => {
@@ -147,7 +173,11 @@ impl HostWorkspaceOwner {
                 }
             }
         }
-        self.session_value(&child).await
+        let mut value = self.session_value(&child).await?;
+        if let (Some(object), Some(Value::Object(accepted))) = (value.as_object_mut(), accepted) {
+            object.extend(accepted);
+        }
+        Ok(value)
     }
 
     async fn next_session(&self, operation: OperationId, child: &AgentPath) -> Result<Value> {
@@ -168,17 +198,10 @@ impl HostWorkspaceOwner {
         else {
             return Err(Error::Conflict("native claim was not recorded".into()));
         };
-        let prompt = match input {
-            TurnInput::Brief { brief } => {
-                serde_json::from_slice::<Brief>(&self.native.read(&state, brief).await?)
-                    .map_err(storage)?
-                    .prompt
-            }
-            TurnInput::Message { body, .. } => {
-                String::from_utf8(self.native.read(&state, body).await?).map_err(storage)?
-            }
-            _ => return Err(Error::Conflict("native turn runs no prompt".into())),
+        let TurnInput::Message { body, .. } = input else {
+            return Err(Error::Conflict("native turn runs no prompt".into()));
         };
+        let prompt = String::from_utf8(self.native.read(&state, body).await?).map_err(storage)?;
         let claim = TurnClaim {
             agent: child.clone(),
             operation: *claimed,
@@ -245,9 +268,9 @@ impl HostWorkspaceOwner {
             "pending":pending}))
     }
 
-    /// The open children `parent` spawned, by parent-local name. `after` is
-    /// returned unchanged: the list is the whole bounded set.
-    pub(super) async fn sessions(&self, parent: &AgentPath, after: Option<u64>) -> Result<Value> {
+    /// The open children `parent` spawned, by parent-local name: the whole
+    /// bounded set.
+    pub(super) async fn sessions(&self, parent: &AgentPath) -> Result<Value> {
         let (state, session) = self.native.session(parent).await?;
         // A child whose report a stop dropped is closed all the same.
         let open = |reference: &&String| {
@@ -255,6 +278,6 @@ impl HostWorkspaceOwner {
                 .is_ok_and(|path| state.open_children.contains(&path))
         };
         let references = session.spawned.iter().filter(open).collect::<Vec<_>>();
-        Ok(json!({"after":after,"references":references}))
+        Ok(json!({ "references": references }))
     }
 }
