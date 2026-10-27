@@ -20,7 +20,7 @@
 //! admission, credit and fragmentation; no backend-specific route exists.
 
 pub use acyclic_harness_core::filesystem::hosting::{
-    Bound, Placement, Prepared, RootRequest, Turns, VerifiedCaller,
+    Bound, Placement, Prepared, RootRequest, RootSubmission, Turns, VerifiedCaller,
 };
 
 use crate::agent::{
