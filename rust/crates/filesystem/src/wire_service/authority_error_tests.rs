@@ -3,7 +3,7 @@
 use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, FollowFilter, ForkReceipt, ForkRequest,
+    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
     IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
     StreamPath, StreamProvider,
 };
@@ -85,13 +85,8 @@ impl StreamProvider for FaultStream {
         self.inner.fork(request).await
     }
 
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
 
     async fn children_page(

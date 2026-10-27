@@ -93,7 +93,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error::Error>> {
-    for kind in ["follow", "follow_checked", "follow_updates"] {
+    for (anchored, progress) in [(false, false), (true, false), (true, true)] {
         let namespace = uuid::Uuid::new_v4().to_string();
         let provider = PostgresStream::connect(database, &namespace).await?;
         let path = StreamPath::new("subscription-owner")?;
@@ -108,23 +108,13 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
         else {
             return Err("initial append unexpectedly conflicted".into());
         };
-        let mut subscription: FollowStream = match kind {
-            "follow" => provider
-                .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
-                .await?
-                .map(|record| record.map(FollowUpdate::Record))
-                .boxed(),
-            "follow_checked" => provider
-                .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: Some(receipt.commit_id), filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
-                .await?
-                .map(|record| record.map(FollowUpdate::Record))
-                .boxed(),
-            _ => {
-                provider
-                    .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: Some(receipt.commit_id), filter: FollowFilter::default(), progress: true })
-                    .await?
-            }
-        };
+        let mut subscription = provider.follow(acyclic_stream::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: anchored.then_some(receipt.commit_id),
+            filter: FollowFilter::default(),
+            progress,
+        }).await?;
         drop(provider);
         // A distinct provider must wake this subscription through LISTEN after
         // its creator's last handle is gone, including after a previous yield.
@@ -143,7 +133,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 .ok_or("subscription closed after dropping provider")??;
             assert!(matches!(update, FollowUpdate::Record(record) if record.sequence == sequence));
         }
-        println!("{kind} retains shared connections after its provider handle is dropped");
+        println!("follow anchored={anchored} progress={progress} retains shared connections after its provider handle is dropped");
     }
     Ok(())
 }

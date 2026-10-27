@@ -132,14 +132,9 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.inner.read(request).await
     }
 
-    async fn follow(
-        &self,
-        path: acyclic_stream::StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
         self.pause().await;
-        self.inner.follow(path, from, filter).await
+        self.inner.follow(request).await
     }
 
     async fn commit(

@@ -842,13 +842,8 @@ impl StreamProvider for ReleaseSpy {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         self.inner.fork(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await

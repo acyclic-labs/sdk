@@ -80,13 +80,8 @@ impl StreamProvider for PausingStream {
         self.inner.read(request).await
     }
 
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
 
     async fn children_page(
