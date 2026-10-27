@@ -147,6 +147,9 @@ fn policy_cache_literal_binding_counts_only_reachable_pairs() -> Result<(), Inva
         (1 << Action::ALL.len()) - 1
     );
     assert!(!view.allows_every_path(&Action::ALL, 10));
+    // Only the literal is granted, so no subtree is wholly readable.
+    assert!(!view.allows_subtree("", &[Action::Read], 10));
+    assert!(!view.allows_subtree("b", &[Action::Read], 10));
     Ok(())
 }
 

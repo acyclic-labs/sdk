@@ -57,7 +57,7 @@ pub(crate) use bounded_io::native_decoded;
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
 pub use bounded_io::{PreparationCustody, PreparationIo};
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use tool_output::{TOOL_OUTPUT, ToolOutputFollow};
+pub use tool_output::{AgentObservation, TOOL_OUTPUT};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod memory;

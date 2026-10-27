@@ -1,20 +1,19 @@
 //! A typed client for the local harness's root agent conversation, which fans
 //! out through its spawn, send and archive tools. Prompts, cancels and
-//! approval decisions are inbox commits; observation follows the agent's
-//! status stream and reads its settled conversation entries. Frontends render
+//! approval decisions are inbox commits; observation is one [`super::Observer`]
+//! of its status, its settled conversation entries and its tool output. Frontends render
 //! its events; it holds no frontend state.
 use crate::{
     Error, LocalHarness, Result,
     agent::{
-        AgentPath, AgentRecord as _, Control, ConversationEntry, Delivered, InboxRecord, IntentId,
-        Phase, Sender, StatusRecord, TurnInput,
+        AgentPath, Control, ConversationEntry, Delivered, InboxRecord, IntentId, Phase, Sender,
+        StatusRecord, TurnInput,
     },
     approvals::{ApprovalPolicy, ApprovalResponder, Approver},
     conversation::{ContentResidencyVerifier, FileRef},
     executor::TurnOutput,
 };
-use acyclic_stream::{FollowFilter, StreamError, StreamProvider as _};
-use futures::{StreamExt as _, TryStreamExt as _, stream::LocalBoxStream};
+use acyclic_stream::{StreamError, StreamProvider as _};
 use std::sync::Arc;
 
 /// Bytes read back from one staged prompt or turn output.
@@ -28,22 +27,6 @@ fn failed(error: impl std::fmt::Display) -> Error {
 
 fn intent(id: &str) -> Result<IntentId> {
     IntentId::try_from(id).map_err(failed)
-}
-
-/// What a follower observes, in commit order.
-pub enum Event {
-    /// The agent's phase after a transition, with its consumed inbox cursor.
-    Status(StatusRecord),
-    /// One settled turn: its message's inbox sequence, if a message started it.
-    Turn {
-        /// Inbox sequence of the message that started the turn.
-        inbox: Option<u64>,
-        /// The settled conversation entry.
-        entry: ConversationEntry,
-    },
-    /// The runtime failed the agent's delivery; it stays queued for a retry
-    /// that may fail the same way.
-    Failed(String),
 }
 
 /// One local agent's conversation, observed and driven as its local user.
@@ -105,14 +88,6 @@ impl Conversation {
             }
             Delivered::Closed => Err(Error::Conflict("conversation is archived".into())),
         }
-    }
-
-    /// The live output of the agent's newest tool call.
-    ///
-    /// # Errors
-    /// See [`LocalHarness::tool_output`].
-    pub async fn tool_output(&self) -> Result<super::OutputTail> {
-        self.local.tool_output(&self.agent).await?.tail()
     }
 
     /// Stop the running turn; the conversation stays open.
@@ -226,98 +201,15 @@ impl Conversation {
         }
     }
 
-    /// Every settled turn from conversation sequence `from`, and the agent's
-    /// phase from its latest status on. A status records only a phase change;
-    /// a settled turn is its conversation entry.
+    /// Every settled turn from conversation sequence `from`, the agent's
+    /// phase from its latest status on, and its newest tool call's output. A
+    /// status records only a phase change; a settled turn is its conversation
+    /// entry.
     ///
     /// # Errors
-    /// Harness, storage or decoding failures.
-    pub async fn events(
-        self: &Arc<Self>,
-        from: u64,
-    ) -> Result<LocalBoxStream<'static, Result<Event>>> {
-        let (agents, _) = self.local.agents().await?;
-        let provider = Arc::clone(agents.provider());
-        let actor = agents.actor(&self.agent).map_err(failed)?;
-        let receiver = self
-            .local
-            .agent_failures()
-            .ok_or_else(|| Error::Conflict("agents are not hosted".into()))?;
-        // Failures of this agent's deliveries, from now on.
-        let failures = futures::stream::unfold(receiver, move |mut receiver| {
-            let actor = actor.clone();
-            async move {
-                loop {
-                    match receiver.recv().await {
-                        Ok(failure) if failure.actor == actor => {
-                            return Some((Ok(Event::Failed(failure.error)), receiver));
-                        }
-                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
-                    }
-                }
-            }
-        });
-        // Register, then check: the status follow is open before the first
-        // conversation follow, and the step that creates the conversation
-        // stream also appends a status, so a missing stream is retried only
-        // after the agent's next status.
-        let status = self.agent.status().map_err(failed)?;
-        let latest = provider.tail(status.clone()).await.map_err(failed)?;
-        let statuses = provider
-            .follow(status, latest.saturating_sub(1), FollowFilter::default())
-            .await
-            .map_err(failed)?;
-        let path = self.agent.conversation().map_err(failed)?;
-        let observed = futures::stream::try_unfold(
-            (provider, path, statuses, from, None, true),
-            |(provider, path, mut statuses, next, mut turns, mut retry)| async move {
-                if turns.is_none() && retry {
-                    retry = false;
-                    match provider
-                        .follow(path.clone(), next, FollowFilter::default())
-                        .await
-                    {
-                        Ok(records) => turns = Some(records),
-                        Err(StreamError::NotFound) => {}
-                        Err(error) => return Err(failed(error)),
-                    }
-                }
-                let ended = || Error::Conflict("agent follow ended".into());
-                let event = match turns.as_mut() {
-                    Some(records) => tokio::select! {
-                        record = statuses.try_next() => Err(record.map_err(failed)?.ok_or_else(ended)?),
-                        record = records.try_next() => Ok(record.map_err(failed)?.ok_or_else(ended)?),
-                    },
-                    None => Err(statuses
-                        .try_next()
-                        .await
-                        .map_err(failed)?
-                        .ok_or_else(ended)?),
-                };
-                let (event, next) = match event {
-                    Err(record) => {
-                        let status = StatusRecord::decode(&record.value).map_err(failed)?;
-                        tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
-                        retry = true;
-                        (Event::Status(status), next)
-                    }
-                    Ok(record) => {
-                        let entry = ConversationEntry::decode(&record.value).map_err(failed)?;
-                        let inbox = match &entry.input {
-                            TurnInput::Message { inbox, .. } => Some(*inbox),
-                            _ => None,
-                        };
-                        (Event::Turn { inbox, entry }, record.sequence + 1)
-                    }
-                };
-                Ok(Some((
-                    event,
-                    (provider, path, statuses, next, turns, retry),
-                )))
-            },
-        );
-        Ok(futures::stream::select(observed.boxed_local(), failures.boxed_local()).boxed_local())
+    /// See [`LocalHarness::observe`].
+    pub async fn observe(&self, from: u64) -> Result<super::Observer> {
+        self.local.observe(&self.agent, from).await
     }
 }
 

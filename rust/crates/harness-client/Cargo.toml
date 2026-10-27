@@ -9,7 +9,8 @@ publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
 [features]
-grpc = ["session", "acyclic-stream/grpc", "dep:acyclic-actors", "dep:acyclic-harness-core", "dep:serde", "dep:serde_json", "dep:thiserror"]
+agents = ["session", "dep:acyclic-harness-core", "dep:serde", "dep:thiserror"]
+grpc = ["agents", "acyclic-stream/grpc", "dep:acyclic-actors", "dep:serde_json"]
 session = ["acyclic-stream/session", "dep:prost"]
 wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
 

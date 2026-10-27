@@ -394,6 +394,24 @@ impl AuthorityRoot {
             .map_err(|_| Error::Storage("runtime trust poisoned".into()))
     }
 
+    /// The public trust with its revision, read together: a revocation
+    /// publishes its revision while it holds the trust exclusively.
+    pub fn public_trust_revision(&self) -> Result<(acyclic_auth::trust::Snapshot, u64)> {
+        let trust = self
+            .runtime
+            .public
+            .trust
+            .read()
+            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
+        Ok((trust.clone(), *self.runtime.public.revision.borrow()))
+    }
+
+    /// Announces each change of the public trust, such as a revocation.
+    #[must_use]
+    pub fn trust_revisions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.runtime.public.revision.subscribe()
+    }
+
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
     pub fn revoke_workload(&self, scope: &Scope) -> Result<()> {
         self.verifier(&mut None)?.verify(scope, &mut None)?;
@@ -477,23 +495,24 @@ impl AuthorityRoot {
         workload::resource(&self.audience)
     }
 
-    /// A credential to list and read the `fs:/` prefix `resource` under this
-    /// root's audience, derived from `parent`: it lives no longer than
-    /// `parent` and is revoked with it. Callers first check that `parent`
-    /// grants reading what `resource` names.
-    pub(crate) fn resource_read_credential(
+    /// A credential for exactly `grants`, each `(resource, prefix, actions)`,
+    /// under this root's audience, derived from `parent` at `now`: it lives
+    /// no longer than `parent` and is revoked with it. Callers first check
+    /// that `parent` may reach everything `grants` names.
+    pub(crate) fn resource_credential(
         &self,
         parent: &Scope,
-        resource: &str,
+        grants: &[(&str, bool, &[&str])],
+        now: u64,
     ) -> Result<Vec<u8>> {
         let capability = workload::verify(
             &self.verifier(&mut None)?,
             &self.audience,
             parent,
-            workload::now(),
+            now,
             &mut None,
         )?;
-        workload::resource_credential(self, &capability, resource, &["fs/list", "fs/read"])
+        workload::resource_credential(self, &capability, grants, now)
     }
 
     pub(in crate::core) fn issue_bound(

@@ -36,6 +36,7 @@ pub mod host_owner;
 pub mod host_process;
 #[cfg(feature = "native-execution")]
 pub mod host_workspace;
+mod observer;
 pub(crate) mod open;
 mod owner;
 mod owner_record;
@@ -52,7 +53,7 @@ mod workspace;
 pub use agents::{AgentFailure, LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
-pub use tool_output::{OutputTail, ToolOutput};
+pub use observer::{Event, Observer};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
 

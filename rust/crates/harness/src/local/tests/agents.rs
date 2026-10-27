@@ -197,35 +197,78 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     follow_tool_output(&harness, &state.path, &turn_id).await
 }
 
-/// The agent's own scope yields a live follow of its turn's tool output, and
-/// nothing over a volume it cannot read.
+async fn observation(
+    harness: &LocalHarness,
+    authority: &crate::filesystem::AgentAuthority<'_>,
+    path: &AgentPath,
+) -> Result<()> {
+    harness
+        .files
+        .agent_observation(
+            authority,
+            path,
+            &authority.private.volume,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+        )
+        .await
+        .map(drop)
+}
+
+/// The agent's own scope yields a live observation of its tool output, and
+/// none from a scope that cannot list and read all of `tools/`; revoking the
+/// scope ends an open observation.
 async fn follow_tool_output(
     harness: &Arc<LocalHarness>,
     root: &AgentPath,
     turn: &str,
 ) -> Result<()> {
-    use acyclic_stream::wire;
+    use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
     let (agents, _) = harness.agents().await?;
     let state = agents.state(root).await.map_err(agent)?;
     let issuer = harness
         .root_authority
         .as_ref()
         .ok_or_else(|| Error::NotFound("issuer".into()))?;
-    let authority = crate::filesystem::agent_authority(
-        issuer,
-        &crate::filesystem::TurnAdmission::LocalRoot,
-        &state.path,
-        &state.volumes,
-        &[],
-    )?;
+    let (path, volumes) = (&state.path, &state.volumes);
+    let authority = move || {
+        crate::filesystem::agent_authority(
+            issuer,
+            &crate::filesystem::TurnAdmission::LocalRoot,
+            path,
+            volumes,
+            &[],
+        )
+    };
+    // A structured scope of `actions` on `paths`, for the same agent.
+    let structured = |actions: &[Action], paths: &[&str]| -> Result<_> {
+        let mut scoped = authority()?;
+        let capability = Capability {
+            layers: vec![
+                paths
+                    .iter()
+                    .map(|path| Grant {
+                        actions: actions.iter().copied().collect(),
+                        resource: ResourcePattern {
+                            lineage_root: None,
+                            volume: None,
+                            generations: Generations::All,
+                            path: (*path).into(),
+                        },
+                    })
+                    .collect(),
+            ],
+            expires_at: None,
+        };
+        scoped.scope = scoped.issuer.bootstrap_scope(
+            "observer",
+            &crate::Capabilities::new([capability.to_scope_label().map_err(agent)?]),
+            scoped.scope.agent(),
+            &mut None,
+        )?;
+        Ok(scoped)
+    };
     // Negative control: the same agent, attenuated to no grants, gets none.
-    let mut denied = crate::filesystem::agent_authority(
-        issuer,
-        &crate::filesystem::TurnAdmission::LocalRoot,
-        &state.path,
-        &state.volumes,
-        &[],
-    )?;
+    let mut denied = authority()?;
     denied.scope = denied.scope.attenuate_workload(
         "denied",
         &crate::Capabilities::new(Vec::<String>::new()),
@@ -238,67 +281,42 @@ async fn follow_tool_output(
             / 1000,
     )?;
     assert!(
-        harness
-            .files
-            .tool_output_follow(&denied, &authority.private.volume)
-            .await
-            .is_err(),
+        observation(harness, &denied, path).await.is_err(),
         "a scope without read on tools/ yields no credential"
     );
-    let output = harness.tool_output(root).await?;
-    let mut session =
-        acyclic_harness_client::WireSession::new(output.client.clone(), Default::default());
-    session
-        .register_credential(0, output.credential.clone().into())
-        .map_err(agent)?;
-    let resource = format!("{}/{turn}", output.resource);
-    session
-        .begin_resource(wire::SessionSubscription {
-            credential: 0,
-            // Only this turn's calls: `[tools/{turn}/, tools/{turn}0)`.
-            filter: Some(wire::SessionFilter {
-                keys: vec![wire::KeyRange {
-                    start: format!("tools/{turn}/").into_bytes().into(),
-                    end: format!("tools/{turn}0").into_bytes().into(),
-                }],
-                ..Default::default()
-            }),
-            channel: None,
-            resume: Some(wire::SessionCursor {
-                next: 0,
-                opaque: Default::default(),
-            }),
-            kind: Some(wire::session_subscription::Kind::Follow(
-                wire::SessionFollow {
-                    resource: resource.clone(),
-                    delivery: wire::SessionDelivery::All as i32,
-                    ..Default::default()
-                },
-            )),
-        })
-        .map_err(agent)?;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    // A structured scope is held to its compiled view: writing everywhere
+    // reads nothing, and reading only `tools/` is enough.
+    let writer = structured(&[Action::Create, Action::Write], &["**"])?;
+    assert!(
+        observation(harness, &writer, path).await.is_err(),
+        "a write-only structured scope yields no credential"
+    );
+    let reader = structured(&[Action::List, Action::Read], &["tools", "tools/**"])?;
+    observation(harness, &reader, path).await?;
+    // From after the settled turn: its output stays the newest call's.
+    let mut observer = harness.observe(root, 1).await?;
+    let wait = std::time::Duration::from_secs(10);
+    tokio::time::timeout(wait, async {
         loop {
-            futures::future::poll_fn(|context| session.poll_resource(&resource, context))
-                .await
-                .map_err(agent)?
-                .ok_or_else(|| Error::Conflict("tool output follow ended".into()))?;
-            // Filesystem change records carry their paths in the compact
-            // change list, not as wire keys.
-            let stdout = session.resource_view(&resource).and_then(|view| {
-                view.records()
-                    .filter_map(|record| acyclic_stream::decode_changes(&record.value).ok())
-                    .flat_map(|changes| changes.entries)
-                    .filter_map(|entry| String::from_utf8(entry.key.to_vec()).ok())
-                    .find(|key| key.contains("/stdout/"))
-            });
-            if let Some(path) = stdout {
-                let bytes = output.read(&path, 1 << 16).await?;
-                assert!(String::from_utf8_lossy(&bytes).contains("staged"));
-                return Ok(());
+            if matches!(observer.next().await?, super::super::Event::Output) {
+                observer.absorb().await?;
+                if observer.output().contains("staged") {
+                    return Ok::<_, Error>(());
+                }
             }
         }
     })
     .await
-    .map_err(|_| Error::Conflict("no tool output change arrived".into()))?
+    .map_err(|_| Error::Conflict(format!("no output of turn {turn} arrived")))??;
+    // Revoking the scope the observation derives from ends it.
+    authority()?.issuer.revoke_workload(&observer.scope)?;
+    tokio::time::timeout(wait, async {
+        loop {
+            if observer.next().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await
+    .map_err(|_| Error::Conflict("a revoked observation stayed open".into()))
 }
