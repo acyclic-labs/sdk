@@ -7,3 +7,5 @@ Run `cargo test -p acyclic-agent-host-conformance --features local` on bb2. Both
 The suite uses a deterministic turn driver rather than a model account. Admission vectors use the real filesystem turn host and signed workload scopes, with separate counters for scheduler and admitted-turn IO. See [the suite](../../rust/crates/conformance/agent-host/README.md) for the exact assertions and guest facade boundary.
 
 On bb2 (2026-10-26), both native adapters passed together in 1.49 seconds. The new crate also passed targeted Clippy with warnings denied.
+
+The hosted protocol vectors additionally compose `Preset::executors(..)` -> `Bound::admitted` -> `hosting::serve` over this backend's storage and handler boundary. They share their model/tool script and every assertion with the real Durable Objects endpoint: approval binding and decision replay, correlated reply replay and conflicts, immutable outputs, exact spawn cuts and replay, conflicting prompts, lazy children and typed refusals. The fixtures are public in `acyclic_agent_host_conformance::protocol` for client-protocol consumers.

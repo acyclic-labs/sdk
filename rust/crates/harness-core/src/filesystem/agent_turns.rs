@@ -84,6 +84,43 @@ pub enum TurnAdmission {
     },
 }
 
+impl TurnAdmission {
+    /// Checks identity, audience, lifetime and attenuation before storage IO.
+    /// File authority is checked separately against the committed bindings.
+    pub(super) fn derive(
+        &self,
+        issuer: &AuthorityRoot,
+        path: &AgentPath,
+    ) -> Result<(AuthorityRoot, Option<Scope>)> {
+        let owner = crate::AgentId::from_bytes(path.id().to_bytes());
+        match self {
+            Self::LocalRoot => Ok((
+                issuer.with_audience(Authority {
+                    kind: AggregateKind::Conversation,
+                    id: path.id().as_str().to_owned(),
+                }),
+                None,
+            )),
+            Self::Admitted { audience, scope } => {
+                if scope.agent().is_some_and(|agent| agent != owner) {
+                    return Err(Error::Unauthorized(
+                        "admitted scope belongs to another agent".into(),
+                    ));
+                }
+                let issuer = issuer.with_audience(audience.clone());
+                let delegated = issuer.issue_derived(
+                    scope,
+                    "agent",
+                    scope.capabilities(),
+                    Some(owner),
+                    &mut None,
+                )?;
+                Ok((issuer, Some(delegated)))
+            }
+        }
+    }
+}
+
 /// An agent's admission, verified before any of its IO: its private volume
 /// is its own, and under [`TurnAdmission::Admitted`] the admitted scope is
 /// authentic, live, bound to this audience and agent, and grants the private
@@ -119,48 +156,19 @@ impl<'v> AdmittedAgent<'v> {
                 "private volume belongs to another agent".into(),
             ));
         }
-        let (issuer, delegated) = match admission {
-            TurnAdmission::LocalRoot => (
-                issuer.with_audience(Authority {
-                    kind: AggregateKind::Conversation,
-                    id: path.id().as_str().to_owned(),
-                }),
-                None,
-            ),
-            TurnAdmission::Admitted { audience, scope } => {
-                if scope.agent().is_some_and(|agent| agent != owner) {
-                    return Err(Error::Unauthorized(
-                        "admitted scope belongs to another agent".into(),
-                    ));
-                }
-                let issuer = issuer.with_audience(audience.clone());
-                // The agent holds exactly its admission's grants, so it can
-                // never widen them, and whatever volume, directory or file the
-                // admission grants stays readable.
-                let delegated = issuer.issue_derived(
-                    scope,
-                    "agent",
-                    scope.capabilities(),
-                    Some(owner),
-                    &mut None,
-                )?;
-                // The same check the turn's private writer makes: its exact or
-                // structured grants admit writing the private volume.
-                crate::conversation::ContentGrant::verify(
-                    &issuer.verifier(&mut None)?,
-                    &delegated,
-                    &private.volume,
-                    VolumeOperation::Write,
-                    u64::MAX,
-                    &mut None,
-                )?;
-                // That check admits a structured `filesystem:` grant by its
-                // label alone, so the filesystem's own decision over the
-                // grant's ceiling must also admit writing the private volume.
-                require_structured_write(&delegated, owner, &private.volume)?;
-                (issuer, Some(delegated))
-            }
-        };
+        let (issuer, delegated) = admission.derive(issuer, path)?;
+        if let Some(scope) = &delegated {
+            // File authority always names the committed private binding.
+            crate::conversation::ContentGrant::verify(
+                &issuer.verifier(&mut None)?,
+                scope,
+                &private.volume,
+                VolumeOperation::Write,
+                u64::MAX,
+                &mut None,
+            )?;
+            require_structured_write(scope, owner, &private.volume)?;
+        }
         Ok(Self {
             issuer,
             owner,

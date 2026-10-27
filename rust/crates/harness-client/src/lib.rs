@@ -7,82 +7,73 @@ pub use connection::{
 };
 
 /// The same preset and defaults applied by local and hosted harnesses.
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::preset::Preset;
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod control;
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use control::{
     AgentBinding, AgentCall, AgentControls, AgentExchangeError, PreparedAgentInvocation,
 };
 
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod command;
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
     PreparedCommand,
 };
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod reply;
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use reply::{
     AgentControlFailure, AgentReply, ChildAgent, MAX_AGENT_REPLY_BYTES, PendingApproval,
     decode_agent_reply, encode_agent_reply,
 };
 
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod agents;
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::agent::{
     AgentId, AgentPath, AgentRecord, ConversationEntry, Delivered, Error as AgentError, IntentId,
     Phase, Reply, StatusRecord,
 };
-#[cfg(any(feature = "grpc", feature = "wasm"))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
-#[cfg(any(
-    all(feature = "agents", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 mod demand;
 pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
+// Agent controls include Actors' wasm runtime. Session-only clients retain
+// their native transport boundary without implicitly selecting browser I/O.
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
 ))]
 mod session;
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
 ))]
 pub use session::{WireSession, WireSessionError};
 
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
 ))]
 mod stream_view;
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
 ))]
 pub use stream_view::{StreamView, StreamViewPolicy};
 

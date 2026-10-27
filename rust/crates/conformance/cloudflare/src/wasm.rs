@@ -74,18 +74,6 @@ pub async fn qualify_journal_deadline(
     })
 }
 
-/// Provision the same lazy spawn fixture for the real event-owned host.
-#[wasm_bindgen(js_name = spawnAdoptionFixture)]
-pub async fn spawn_adoption_fixture(port: JsValue) -> std::result::Result<String, JsValue> {
-    let provider = acyclic_stream::WasmStream::connect_provider(port)?.provider();
-    let within = acyclic_actors::addressing::ActorReference::new(b"browser", b"agents", b"host")
-        .map_err(|error| JsValue::from_str(&format!("STEP adoption-fixture identity failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))?;
-    acyclic_agent_host_conformance::fixtures::spawned(provider, within)
-        .await
-        .map(|path| path.to_string())
-        .map_err(|error| JsValue::from_str(&format!("STEP adoption-fixture spawn failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
-}
-
 /// Produce a real canonical append through the supplied SQLite ledger port.
 #[wasm_bindgen(js_name = appendWakeRecord)]
 pub async fn append_wake_record(port: JsValue, path: String) -> std::result::Result<(), JsValue> {
@@ -109,9 +97,9 @@ pub async fn append_wake_record(port: JsValue, path: String) -> std::result::Res
     })
 }
 
-struct Sqlite(js_sys::Function);
+struct Sqlite(js_sys::Function, js_sys::Function);
 struct Domain(JsValue);
-struct Rpc(js_sys::Function);
+struct Rpc(js_sys::Function, js_sys::Function);
 struct Port(JsValue);
 
 impl Storage for Port {
@@ -125,6 +113,13 @@ impl Storage for Port {
 }
 
 impl Backend for Rpc {
+    fn serving(
+        &self,
+        policy: acyclic_harness_core::approvals::ApprovalPolicy,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_agent_host_conformance::protocol::Endpoint>>>
+    {
+        Box::pin(crate::hosting::open(&self.1, policy))
+    }
     fn fresh(&self) -> BoxProviderFuture<'_, Result<Box<dyn Storage>>> {
         Box::pin(async move {
             let port = self
@@ -151,6 +146,13 @@ impl Storage for Domain {
 }
 
 impl Backend for Sqlite {
+    fn serving(
+        &self,
+        policy: acyclic_harness_core::approvals::ApprovalPolicy,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_agent_host_conformance::protocol::Endpoint>>>
+    {
+        Box::pin(crate::hosting::open(&self.1, policy))
+    }
     fn fresh(&self) -> BoxProviderFuture<'_, Result<Box<dyn Storage>>> {
         Box::pin(async move {
             let journal = self
@@ -169,14 +171,20 @@ impl Backend for Sqlite {
 /// Runs both suites without selecting or replacing vectors. `fresh` returns a
 /// new SDK SqliteJournal on the calling Durable Object's real SQLite storage.
 #[wasm_bindgen(js_name = qualifyCloudflare)]
-pub async fn qualify(fresh: js_sys::Function) -> std::result::Result<(), JsValue> {
-    verify(&Sqlite(fresh)).await
+pub async fn qualify(
+    fresh: js_sys::Function,
+    hosted: js_sys::Function,
+) -> std::result::Result<(), JsValue> {
+    verify(&Sqlite(fresh, hosted)).await
 }
 
 /// The same suites over actual cross-DO canonical RPC, including pull cursors.
 #[wasm_bindgen(js_name = qualifyCloudflareRpc)]
-pub async fn qualify_rpc(fresh: js_sys::Function) -> std::result::Result<(), JsValue> {
-    verify(&Rpc(fresh)).await
+pub async fn qualify_rpc(
+    fresh: js_sys::Function,
+    hosted: js_sys::Function,
+) -> std::result::Result<(), JsValue> {
+    verify(&Rpc(fresh, hosted)).await
 }
 
 async fn verify(backend: &dyn Backend) -> std::result::Result<(), JsValue> {

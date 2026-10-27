@@ -39,6 +39,7 @@ use wasm_bindgen::prelude::*;
 mod guest;
 mod host;
 mod providers;
+mod serving;
 use host::{HostModel, HostTool};
 pub use providers::WasmAgentProviders;
 use providers::{Objects, Providers};
@@ -111,10 +112,9 @@ struct WasmBrowserAgentOptions {
     limits: Limits,
     /// Principal recorded as the sender of every browser control.
     principal: String,
-    /// The approval policy of every agent with no policy file of its own:
-    /// the host's preset choice, such as `graphcoderPreset().approval_policy`.
-    /// It has no default, so accepting every action is always explicit.
-    approval_policy: crate::approvals::ApprovalPolicy,
+    /// The same executor, spawn and approval defaults as every hosted agent.
+    /// It has no default: the opener chooses its complete preset explicitly.
+    preset: crate::preset::Preset,
     /// Optional delivery backstop for event-owned hosting.
     #[serde(default)]
     #[tsify(optional)]
@@ -369,30 +369,6 @@ impl WasmAgents {
         )
     }
 
-    /// Event-owned host. No dispatcher escapes the caller's event; call
-    /// `drain` for the one actor owned by this host and persist its next alarm.
-    #[wasm_bindgen(js_name = openHostingEvent)]
-    pub fn open_hosting_event(
-        providers: &WasmAgentProviders,
-        #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
-        owner: &WasmReducer,
-        manifest: &[u8],
-        on_record: Function,
-    ) -> std::result::Result<WasmAgents, JsValue> {
-        let options: WasmBrowserAgentOptions = from_js(options)?;
-        let manifest = acyclic_actors::guest::wire::decode_manifest(manifest)
-            .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
-        let handler = acyclic_actors::guest::wire::Remote::new(manifest, guest::call(on_record));
-        Self::host(
-            options,
-            owner,
-            providers.providers.clone(),
-            Arc::new(handler),
-            None,
-            false,
-        )
-    }
-
     /// Runs the explicitly hosted agent to quiescence and returns its committed
     /// undelivered alarm. A failed delivery retains its input and exact retry.
     /// Releasing the idle registration closes event-owned follow cursors.
@@ -403,25 +379,7 @@ impl WasmAgents {
             )));
         }
         let agent = AgentPath::try_from(agent).map_err(agent_error)?;
-        self.agents.drain(&agent).await.map_err(agent_error)?;
-        let actor = self.agents.actor(&agent).map_err(agent_error)?;
-        let snapshot = self
-            .agents
-            .runtime()
-            .store()
-            .load(&actor)
-            .await
-            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
-        let alarm = snapshot
-            .state()
-            .filter(|state| !state.paused())
-            .and_then(|state| state.alarm().pending());
-        if !self.agents.runtime().release(&actor) {
-            return Err(js_error(Error::Storage(
-                "actor still owns an unsettled publication".into(),
-            )));
-        }
-        Ok(alarm)
+        self.agents.drain_event(&agent).await.map_err(agent_error)
     }
 
     /// Durable wake subscriptions for one event-owned agent: its control state
@@ -458,7 +416,9 @@ impl WasmAgents {
         // The host of this profile's own tree spawns as its root; its turns
         // run in the guest under the admission the guest was opened with.
         let composer = providers.spawn_volumes(&options, owner, &TurnAdmission::LocalRoot);
-        let Providers { stream, filesystem } = providers;
+        let Providers {
+            stream, filesystem, ..
+        } = providers;
         let agents = Arc::new(
             AgentHost::hosting(
                 stream,

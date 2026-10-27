@@ -94,11 +94,12 @@ impl Pending {
         } else {
             self.heads.get(&key(step), io)?.copied()
         };
+        let before = entries.values.len();
         while let Some(position) = next {
             crate::model::charge_items(io, 1)?;
             let value = self.entries.get(position).ok_or_else(|| invalid(io))?;
             if value.entry.step != step
-                || entries.values.len() >= maximum
+                || entries.values.len() - before >= maximum
                 || value.previous.is_some_and(|previous| previous >= position)
             {
                 return Err(invalid(io));
@@ -354,14 +355,15 @@ where
                 &mut entries,
             )
             .await?;
-            // The pending chain contains exactly the validated suffix beyond
-            // the signed root. Apply the same total per-step bound to both.
-            summary.pending_steps.collect(
-                step,
-                before.checked_add(maximum).ok_or_else(|| invalid(io))?,
-                &mut entries,
-                io,
-            )?;
+            // Both chains share this step's allowance. Subtract records already
+            // selected for this step instead of adding unrelated prior steps
+            // to a possibly saturated usize allowance (notably on wasm32).
+            let remaining = maximum
+                .checked_sub(entries.values.len() - before)
+                .ok_or_else(|| invalid(io))?;
+            summary
+                .pending_steps
+                .collect(step, remaining, &mut entries, io)?;
         }
         Ok(Some(Entries {
             tail: summary.tail,

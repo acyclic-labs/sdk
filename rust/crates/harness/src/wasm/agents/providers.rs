@@ -173,6 +173,7 @@ impl AsyncObjectStore for Objects {
 pub(super) struct Providers {
     pub(super) stream: Arc<dyn StreamProvider>,
     pub(super) filesystem: Arc<FilesystemHost<Authorities, Objects>>,
+    pub(super) placement: Fs<Authorities, Objects>,
 }
 
 impl Providers {
@@ -183,13 +184,14 @@ impl Providers {
         durable: bool,
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
-        let filesystem = FilesystemHost::new(
-            Fs::new(authority, objects, EmbeddedCapabilities { durable }),
-            &options.filesystem_provider,
-            None,
-        )
-        .map_err(js_error)?;
-        Ok(Self { stream, filesystem })
+        let placement = Fs::new(authority, objects, EmbeddedCapabilities { durable });
+        let filesystem = FilesystemHost::new(placement.clone(), &options.filesystem_provider, None)
+            .map_err(js_error)?;
+        Ok(Self {
+            stream,
+            filesystem,
+            placement,
+        })
     }
 
     fn memory_limits(options: &WasmBrowserAgentOptions) -> MemoryLimits {
@@ -282,10 +284,6 @@ impl Providers {
     ) -> Result<BrowserHandler, JsValue> {
         // The options a handler runs under are its own, not its providers'.
         options.limits.validate(&mut None).map_err(js_error)?;
-        let (model, provider, compaction) = registry
-            .model
-            .clone()
-            .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
         let turn_limits = TurnLimits {
             maximum_bytes: options.limits.file_bytes,
             max_steps: u32::try_from(options.limits.model_steps)
@@ -297,14 +295,9 @@ impl Providers {
             Arc::clone(&self.filesystem),
             owner.issuer.clone(),
             admission.clone(),
-            Arc::new(StockExecutors::new(
-                (model, Arc::new(provider)),
-                registry.tools.clone(),
-                (options.limits, compaction),
-                Arc::new(Grants(registry.grants.clone())),
-            )),
+            Arc::new(Self::executors(options, registry)?),
             turn_limits,
-            options.approval_policy.clone(),
+            options.preset.approval_policy.clone(),
         ));
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
@@ -318,6 +311,23 @@ impl Providers {
         )
         .map(|handler| handler.with_spawn_volumes(self.spawn_volumes(options, owner, admission)))
         .map_err(|error| js_error(Error::Invalid(error.to_string())))
+    }
+
+    pub(super) fn executors(
+        options: &WasmBrowserAgentOptions,
+        registry: &WasmAgentRegistry,
+    ) -> Result<StockExecutors, JsValue> {
+        options.limits.validate(&mut None).map_err(js_error)?;
+        let (model, provider, compaction) = registry
+            .model
+            .clone()
+            .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
+        Ok(options.preset.executors(
+            (model, Arc::new(provider)),
+            registry.tools.clone(),
+            (options.limits, compaction),
+            Arc::new(Grants(registry.grants.clone())),
+        ))
     }
 
     pub(super) fn spawn_volumes(

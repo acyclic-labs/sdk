@@ -90,7 +90,10 @@ name = "acyclic-agent-host-conformance"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-fs",
+ "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -102,6 +105,7 @@ dependencies = [
  "futures",
  "hex",
  "jsonwebtoken",
+ "prost",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
@@ -156,8 +160,17 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-agent-host-conformance",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
  "acyclic-stream",
+ "bytes",
+ "futures",
  "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

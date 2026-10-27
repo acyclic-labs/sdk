@@ -19,6 +19,15 @@ impl Storage for Directory {
     }
 }
 impl Backend for Local {
+    fn serving(
+        &self,
+        policy: acyclic_harness_core::approvals::ApprovalPolicy,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_agent_host_conformance::protocol::Endpoint>>>
+    {
+        Box::pin(acyclic_agent_host_conformance::protocol::embedded::open(
+            self, policy,
+        ))
+    }
     fn fresh(&self) -> BoxProviderFuture<'_, Result<Box<dyn Storage>>> {
         Box::pin(async { Ok(Box::new(Directory(tempfile::tempdir()?)) as Box<dyn Storage>) })
     }
