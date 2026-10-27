@@ -248,7 +248,9 @@ fn admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> 
 }
 
 /// The agent's private volume survives context scoping and process restart.
-fn context_identity(context: &crate::runtime::TaskContext) -> Option<&crate::conversation::VolumeRef> {
+fn context_identity(
+    context: &crate::runtime::TaskContext,
+) -> Option<&crate::conversation::VolumeRef> {
     context
         .content_binding(None)
         .and_then(|binding| binding.writer.as_ref())
