@@ -19,15 +19,16 @@ use std::{
 
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CreateMachine, ExecCommand, IdempotencyKey,
-    Image, ImageQualification, MachineContract, MachineId, MachineObservation, MachineOutput,
-    MachineState, ProviderAssurance, ProviderError, SuspensionPolicy,
+    Image, ImageQualification, MachineContract, MachineId, MachineObservation, MachineState,
+    ProviderAssurance, ProviderError, SuspensionPolicy,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
-    Backend, BackendCore, Dispatch, ExecSession, NativeBinding, NativeResource, NativeResources,
-    OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage, now_unix_ms,
+    Backend, BackendCore, Dispatch, ExecSession, ForkSlot, NativeBinding, NativeResource,
+    NativeResources, OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage,
+    metadata, now_unix_ms,
 };
 #[cfg(test)]
 use acyclic_machines::{
@@ -330,7 +331,7 @@ impl DaytonaProvider {
     ) -> Result<MachineObservation, ProviderError> {
         // A sandbox of another tenant (or not managed by this provider at all) is reported as
         // absent, so no read path can expose it.
-        if !map::owned_by(sandbox, self.tenant()) {
+        if !metadata::owned_by(&sandbox.labels, self.tenant()) {
             return Err(ProviderError::NotFound(sandbox.id.clone()));
         }
         let known = match map::machine_id(&sandbox.id) {
@@ -386,7 +387,9 @@ impl DaytonaProvider {
                     .get(name)
                     .await
                     .map_err(|_| ProviderError::Conflict(detail.clone()))?;
-                if map::provider_labels(&existing.labels) == map::provider_labels(&body.labels) {
+                if metadata::provider_labels(&existing.labels)
+                    == metadata::provider_labels(&body.labels)
+                {
                     Ok((existing, true))
                 } else {
                     Err(ProviderError::Conflict(format!(
@@ -430,8 +433,10 @@ impl DaytonaProvider {
         {
             return Err(conflict("not a fork of this parent"));
         }
-        let labels = map::provider_labels(&child.labels);
-        if labels == map::provider_labels(ours) || labels == map::provider_labels(&parent.labels) {
+        let labels = metadata::provider_labels(&child.labels);
+        if labels == metadata::provider_labels(ours)
+            || labels == metadata::provider_labels(&parent.labels)
+        {
             Ok(child)
         } else {
             Err(conflict("labelled for another request"))
@@ -441,15 +446,18 @@ impl DaytonaProvider {
     fn live_fork_labels(
         &self,
         key: IdempotencyKey,
-        slot: map::ForkSlot,
+        slot: ForkSlot,
         parent: &MachineObservation,
         source: &str,
     ) -> BTreeMap<String, String> {
-        let mut labels = map::labels(key, Some(slot), self.tenant(), &parent.contract);
-        labels.insert(map::LABEL_KIND.to_owned(), map::KIND_LIVE_FORK.to_owned());
-        labels.insert(map::LABEL_PARENT.to_owned(), parent.id.to_string());
-        labels.insert(map::LABEL_FORK_SOURCE.to_owned(), source.to_owned());
-        labels.insert(map::LABEL_READY.to_owned(), "true".to_owned());
+        let mut labels = metadata::labels(key, Some(slot), self.tenant(), &parent.contract);
+        labels.insert(
+            metadata::LABEL_KIND.to_owned(),
+            metadata::KIND_LIVE_FORK.to_owned(),
+        );
+        labels.insert(metadata::LABEL_PARENT.to_owned(), parent.id.to_string());
+        labels.insert(metadata::LABEL_FORK_SOURCE.to_owned(), source.to_owned());
+        labels.insert(metadata::LABEL_READY.to_owned(), "true".to_owned());
         labels
     }
 }
@@ -511,7 +519,7 @@ impl RawMachines for DaytonaProvider {
             .map(|value| value.handle.clone())
             .unwrap_or_else(|| machine.to_string());
         let sandbox = self.api.get(&handle).await?;
-        if !map::owned_by(&sandbox, self.tenant()) {
+        if !metadata::owned_by(&sandbox.labels, self.tenant()) {
             return Err(ProviderError::NotFound(machine.to_string()));
         }
         Ok(RawObservation {
@@ -565,7 +573,7 @@ impl RawMachines for DaytonaProvider {
         let handle = native
             .map(|value| value.handle.clone())
             .unwrap_or_else(|| source.id.to_string());
-        let name = map::checkpoint_name(key);
+        let name = metadata::checkpoint_name(key);
         self.api
             .snapshot(
                 &handle,
@@ -612,7 +620,7 @@ impl RawMachines for DaytonaProvider {
         checkpoint: CheckpointId,
         native: Option<&NativeBinding>,
         contract: &MachineContract,
-        slot: map::ForkSlot,
+        slot: ForkSlot,
         key: IdempotencyKey,
     ) -> Result<RawCreated, ProviderError> {
         let handle = native.map_or_else(|| checkpoint.to_string(), |native| native.handle.clone());
@@ -631,11 +639,11 @@ impl RawMachines for DaytonaProvider {
         parent: &MachineObservation,
         source: MachineId,
         native: Option<&NativeBinding>,
-        slot: map::ForkSlot,
+        slot: ForkSlot,
         key: IdempotencyKey,
     ) -> Result<Dispatch<RawCreated>, ProviderError> {
         let handle = native.map_or_else(|| source.to_string(), |native| native.handle.clone());
-        let name = map::sandbox_name(key, Some(slot.index));
+        let name = metadata::sandbox_name(key, Some(slot.index));
         let request = ForkRequest {
             name: Some(name.clone()),
         };
@@ -670,7 +678,7 @@ impl RawMachines for DaytonaProvider {
         native: Option<&NativeBinding>,
         parent: &MachineObservation,
         source: &str,
-        slot: map::ForkSlot,
+        slot: ForkSlot,
         key: IdempotencyKey,
     ) -> Result<(), ProviderError> {
         let handle = native.map_or_else(|| child.to_string(), |native| native.handle.clone());
@@ -678,7 +686,7 @@ impl RawMachines for DaytonaProvider {
         self.api
             .replace_labels(
                 &handle,
-                map::relabel(
+                metadata::relabel(
                     &child.labels,
                     self.live_fork_labels(key, slot, parent, source),
                 ),
@@ -721,16 +729,6 @@ impl Backend for DaytonaProvider {
             .api
             .prepare_exec(&native.handle, &command, &self.config.workspace_dir))
     }
-    async fn raw_read_output(
-        &self,
-        machine: MachineId,
-        native: Option<&NativeBinding>,
-        offset: u64,
-        limit: u32,
-    ) -> Result<MachineOutput, ProviderError> {
-        native.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
-        self.core.console().read(machine, offset, limit)
-    }
     async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         let snapshot = self.resolve_snapshot(&image)?;
         let capabilities = self.snapshot_capabilities(&snapshot).await?;
@@ -742,11 +740,14 @@ impl Backend for DaytonaProvider {
     }
     async fn raw_list(&self) -> Result<Vec<MachineObservation>, ProviderError> {
         let tenant = self.tenant();
-        let listed = self.api.list(Some(&map::managed_filter(tenant))).await?;
+        let listed = self
+            .api
+            .list(Some(&metadata::managed_filter(tenant)))
+            .await?;
         let mut observations = Vec::new();
         for sandbox in listed
             .iter()
-            .filter(|sandbox| map::owned_by(sandbox, tenant))
+            .filter(|sandbox| metadata::owned_by(&sandbox.labels, tenant))
         {
             match self.map_observation(sandbox, None, None).await {
                 Ok(value) => observations.push(value),
@@ -850,10 +851,7 @@ mod tests {
         assert!(mock.requests().is_empty());
         drop(session);
         assert!(mock.requests().is_empty());
-        let output = provider
-            .raw_read_output(machine, Some(&native), 7, 1)
-            .await
-            .unwrap();
+        let output = provider.core.console().read(machine, 7, 1).unwrap();
         assert_eq!(output.machine, machine);
         assert_eq!(output.offset, 7);
         assert!(output.data.is_empty());
@@ -1127,7 +1125,7 @@ mod tests {
     }
 
     fn owned_labels(key: IdempotencyKey, tenant: Option<&str>) -> BTreeMap<String, String> {
-        map::labels(key, None, tenant, &contract())
+        metadata::labels(key, None, tenant, &contract())
     }
 
     fn gate() -> Arc<tokio::sync::Semaphore> {
@@ -1351,12 +1349,12 @@ mod tests {
     #[tokio::test]
     async fn native_fork_never_adopts_another_request_or_parent_child() {
         let key = test_key(5);
-        let child_name = map::sandbox_name(key, Some(0));
+        let child_name = metadata::sandbox_name(key, Some(0));
         // Child of another parent (not in this parent's forks), and a child of this parent
         // already relabelled for a different request under the same name.
-        let foreign = map::labels(
+        let foreign = metadata::labels(
             key,
-            Some(map::ForkSlot { index: 0, count: 2 }),
+            Some(ForkSlot { index: 0, count: 2 }),
             None,
             &contract(),
         );
@@ -1729,12 +1727,12 @@ mod tests {
             .flatten()
         {
             let child = &fake.boxes[&children[index as usize].id.to_string()];
-            assert_eq!(child.name, map::sandbox_name(key, Some(index)));
-            assert_eq!(child.labels[map::LABEL_PARENT], MACHINE);
-            assert_eq!(child.labels[map::LABEL_FORK_SOURCE], nodes[source]);
+            assert_eq!(child.name, metadata::sandbox_name(key, Some(index)));
+            assert_eq!(child.labels[metadata::LABEL_PARENT], MACHINE);
+            assert_eq!(child.labels[metadata::LABEL_FORK_SOURCE], nodes[source]);
             assert_eq!(child.source.as_deref(), Some(nodes[source].as_str()));
-            assert_eq!(child.labels[map::LABEL_READY], "true");
-            assert_eq!(child.labels[map::LABEL_COUNT], "16");
+            assert_eq!(child.labels[metadata::LABEL_READY], "true");
+            assert_eq!(child.labels[metadata::LABEL_COUNT], "16");
         }
         drop(fake);
         let requests = mock.requests().len();

@@ -37,6 +37,7 @@ mod custody;
 pub mod http;
 mod journal;
 mod limits;
+pub mod metadata;
 mod pages;
 mod resources;
 pub use bindings::NativeBinding;

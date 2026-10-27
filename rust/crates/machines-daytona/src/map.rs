@@ -4,6 +4,10 @@
 //! provider stores the serialized [`MachineContract`] in a sandbox label at creation and reads
 //! it back on every observation. Everything here is a pure function over wire structs.
 
+use acyclic_machines::core::{
+    ForkSlot,
+    metadata::{LABEL_CONTRACT, contract_from_labels, labels, sandbox_name},
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
@@ -19,33 +23,6 @@ use crate::{
     api::{CreateSandboxRequest, Sandbox, Snapshot},
 };
 
-/// Label marking sandboxes owned by this provider.
-pub const LABEL_MANAGED: &str = "acyclic.managed";
-/// Label holding the idempotency key of the mutation that created the sandbox.
-pub const LABEL_KEY: &str = "acyclic.key";
-/// Label holding the mutation kind (`create` or `fork`) behind [`LABEL_KEY`].
-pub const LABEL_KIND: &str = "acyclic.kind";
-/// Label holding the child index within a fork.
-pub const LABEL_INDEX: &str = "acyclic.index";
-/// Label holding the number of children in the admitted native request.
-pub const LABEL_COUNT: &str = "acyclic.count";
-/// Label holding the tenant the sandbox was created for.
-pub const LABEL_TENANT: &str = "acyclic.tenant";
-/// Label holding the serialized [`MachineContract`].
-pub const LABEL_CONTRACT: &str = "acyclic.contract";
-/// Value of [`LABEL_KIND`] for `create`.
-pub const KIND_CREATE: &str = "create";
-/// Value of [`LABEL_KIND`] for `fork`.
-pub const KIND_FORK: &str = "fork";
-/// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
-pub const KIND_LIVE_FORK: &str = "live-fork";
-/// Native live-fork metadata marker. It is not an operation settlement.
-pub const LABEL_READY: &str = "acyclic.ready";
-/// Label holding the sandbox a live-fork child was actually forked from: the requested machine
-/// or, in a doubling fan-out, an earlier child of the same fork.
-pub const LABEL_FORK_SOURCE: &str = "acyclic.fork_source";
-/// Label holding the source machine of a live-fork child.
-pub const LABEL_PARENT: &str = "acyclic.parent";
 /// Name of the single stable endpoint exposed per machine.
 pub const ENDPOINT_NAME: &str = "toolbox";
 /// Sandbox classes with pause/resume, memory snapshots, and native fork.
@@ -238,108 +215,12 @@ pub fn suspension_from_autopause(minutes: Option<i64>) -> Option<SuspensionPolic
     }
 }
 
-/// Deterministic sandbox name for the sandbox a create under `key` makes, or for child `index`
-/// of a fork under `key`. Names are organization-unique in Daytona, so a replay collides with
-/// the first attempt instead of duplicating it.
-#[must_use]
-pub fn sandbox_name(key: IdempotencyKey, index: Option<u32>) -> String {
-    match index {
-        None => format!("acyclic-{key}"),
-        Some(index) => format!("acyclic-{key}-{index}"),
-    }
-}
-
-/// Deterministic name of the memory snapshot a checkpoint under `key` takes.
-#[must_use]
-pub fn checkpoint_name(key: IdempotencyKey) -> String {
-    format!("acyclic-ckpt-{key}")
-}
-
-pub use acyclic_machines::core::ForkSlot;
-
-/// Builds the labels attached to a sandbox created (`slot` `None`) or forked under `key`.
-#[must_use]
-pub fn labels(
-    key: IdempotencyKey,
-    slot: Option<ForkSlot>,
-    tenant: Option<&str>,
-    contract: &MachineContract,
-) -> BTreeMap<String, String> {
-    let mut labels = BTreeMap::new();
-    labels.insert(LABEL_MANAGED.to_owned(), "true".to_owned());
-    labels.insert(LABEL_KEY.to_owned(), key.to_string());
-    let kind = if slot.is_some() {
-        KIND_FORK
-    } else {
-        KIND_CREATE
-    };
-    labels.insert(LABEL_KIND.to_owned(), kind.to_owned());
-    if let Some(slot) = slot {
-        labels.insert(LABEL_INDEX.to_owned(), slot.index.to_string());
-        labels.insert(LABEL_COUNT.to_owned(), slot.count.to_string());
-    }
-    if let Some(tenant) = tenant {
-        labels.insert(LABEL_TENANT.to_owned(), tenant.to_owned());
-    }
-    if let Ok(encoded) = serde_json::to_string(contract) {
-        labels.insert(LABEL_CONTRACT.to_owned(), encoded);
-    }
-    labels
-}
-
-/// Labels for a native fork child: whatever it inherited from its parent minus the parent's
-/// provider labels, plus `ours`.
-#[must_use]
-pub fn relabel(
-    inherited: &BTreeMap<String, String>,
-    ours: BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut labels: BTreeMap<String, String> = inherited
-        .iter()
-        .filter(|(name, _)| !name.starts_with("acyclic."))
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect();
-    labels.extend(ours);
-    labels
-}
-
-/// The provider-owned (`acyclic.*`) subset of a label map that identifies which request made
-/// a sandbox; the [`LABEL_READY`] progress marker is left out.
-#[must_use]
-pub fn provider_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
-    labels
-        .iter()
-        .filter(|(name, _)| name.starts_with("acyclic.") && name.as_str() != LABEL_READY)
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect()
-}
-
-/// Whether a sandbox is managed by this provider *for `tenant`*: it carries the managed label
-/// and exactly the configured tenant label (none when no tenant is configured). Sandboxes of
-/// other tenants in a shared organization are invisible to this provider.
-#[must_use]
-pub fn owned_by(sandbox: &Sandbox, tenant: Option<&str>) -> bool {
-    sandbox
-        .labels
-        .get(LABEL_MANAGED)
-        .is_some_and(|value| value == "true")
-        && sandbox.labels.get(LABEL_TENANT).map(String::as_str) == tenant
-}
-
 /// Whether a failed Daytona fork was refused only because its source is not `started` yet
 /// (typically still `forking`), which a later attempt can succeed at.
 #[must_use]
 pub fn fork_refused_for_state(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     detail.contains("state") && detail.contains("fork")
-}
-
-/// Reads the contract stored by [`labels`], if present and well-formed.
-#[must_use]
-pub fn contract_from_labels(labels: &BTreeMap<String, String>) -> Option<MachineContract> {
-    labels
-        .get(LABEL_CONTRACT)
-        .and_then(|encoded| serde_json::from_str(encoded).ok())
 }
 
 /// Retains the usage classification of predecessor contracts without exposing a
@@ -360,18 +241,6 @@ pub(crate) fn legacy_dedicated_cpu(
             "invalid legacy CPU usage classification".into(),
         )),
     }
-}
-
-/// Label filter selecting every sandbox this provider manages for `tenant`.
-///
-/// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
-#[must_use]
-pub fn managed_filter(tenant: Option<&str>) -> BTreeMap<String, String> {
-    let mut filter = BTreeMap::from([(LABEL_MANAGED.to_owned(), "true".to_owned())]);
-    if let Some(tenant) = tenant {
-        filter.insert(LABEL_TENANT.to_owned(), tenant.to_owned());
-    }
-    filter
 }
 
 /// Outbound network policy a sandbox is created with. The SDK request carries only a digest
@@ -607,6 +476,10 @@ mod tests {
     use acyclic_machines::{Budgets, Capability, CompatibilityPolicy, Image};
 
     use super::*;
+    use acyclic_machines::core::metadata::{
+        KIND_CREATE, KIND_FORK, LABEL_COUNT, LABEL_INDEX, LABEL_KEY, LABEL_KIND, LABEL_MANAGED,
+        LABEL_READY, LABEL_TENANT, managed_filter, owned_by, provider_labels, relabel,
+    };
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(format!(
@@ -861,14 +734,14 @@ mod tests {
     #[test]
     fn ownership_requires_the_configured_tenant() {
         let mut sandbox = Sandbox::default();
-        assert!(!owned_by(&sandbox, None));
+        assert!(!owned_by(&sandbox.labels, None));
         sandbox.labels = labels(key(1), None, Some("a"), &contract());
-        assert!(owned_by(&sandbox, Some("a")));
-        assert!(!owned_by(&sandbox, Some("b")));
-        assert!(!owned_by(&sandbox, None));
+        assert!(owned_by(&sandbox.labels, Some("a")));
+        assert!(!owned_by(&sandbox.labels, Some("b")));
+        assert!(!owned_by(&sandbox.labels, None));
         sandbox.labels = labels(key(1), None, None, &contract());
-        assert!(owned_by(&sandbox, None));
-        assert!(!owned_by(&sandbox, Some("a")));
+        assert!(owned_by(&sandbox.labels, None));
+        assert!(!owned_by(&sandbox.labels, Some("a")));
         assert_eq!(managed_filter(Some("a"))[LABEL_TENANT], "a");
     }
 

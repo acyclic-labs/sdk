@@ -97,13 +97,6 @@ pub trait Backend: RawMachines {
         native: Option<&NativeBinding>,
         command: ExecCommand,
     ) -> Result<ExecSession, ProviderError>;
-    async fn raw_read_output(
-        &self,
-        machine: MachineId,
-        native: Option<&NativeBinding>,
-        offset: u64,
-        limit: u32,
-    ) -> Result<MachineOutput, ProviderError>;
     async fn raw_usage(
         &self,
         machine: MachineId,
@@ -161,13 +154,13 @@ impl<D: Backend> MachinesProvider for D {
                 "console read admission failed; recovery: request 1..65536 bytes".into(),
             ));
         }
-        let native = self
+        let (known, _) = self
             .core()
             .operations
-            .native_binding(machine, self.name())
+            .bound_machine(machine, self.name())
             .await?;
-        self.raw_read_output(machine, native.as_ref(), offset, limit)
-            .await
+        known.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        self.core().console.read(machine, offset, limit)
     }
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         let qualification = self.raw_qualify_image(image.clone()).await?;

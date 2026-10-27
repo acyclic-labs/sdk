@@ -18,9 +18,13 @@ Call `backend.core().stage_boot_env(key, env)` when boot input is needed, with
 publishes their canonical state and events. Native pagination is collected once
 by `core::collect_pages`, retaining the existing 256-page bound and refusing
 a repeated cursor without another request. Provider cursor decoding stays in the
-wire adapter. Native labels cannot reconstruct a fork result after a restart.
+wire adapter. Native labels cannot reconstruct a fork result after a restart. Their portable
+encoding, tenant matching, native names and relabeling are `core::metadata`
+projections; operation authority remains in Streams.
 Usage identity/interval and console
-read bounds are admitted there before transport. Image identity, required
+read bounds are admitted there before transport. Retained command output reads
+the core console after canonical machine/driver admission; no raw output read
+primitive or second provider history is needed. Image identity, required
 capabilities and the effective suspension contract are admitted once in core.
 An image without SuspendResume records Manual, including in the simulator.
 
@@ -30,8 +34,11 @@ fixed lifetime, then registers the shared WallAlarm/drop owner before polling
 that session. Stdout and stderr remain distinct; output backpressure cannot
 prevent cancellation or expiry. The output allowance, terminal exit/stop and
 bounded ephemeral console history use the same owner extracted from #1690.
-An unsupported raw transport still refuses before guest IO. Transport binding
-and provider captures remain separate qualification work; internal owner vectors
+An unsupported raw transport still refuses before guest IO. Daytona binds its toolbox stream to that owner; framing, process-group cleanup,
+file commands and HTTP dispatch live in core. The HTTP transport validates
+endpoint and sensitive credentials once, refuses redirects and automatic retry,
+and retains native status decoding in the wire adapter. Provider captures remain
+separate qualification work; internal owner vectors
 do not establish a live provider pass.
 
 Admission precedes native dispatch. A keyed conditional commit publishes the point
