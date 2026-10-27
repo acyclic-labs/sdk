@@ -16,6 +16,7 @@ const PROTOCOL_MINOR: u32 = 31;
 pub(super) const MAXIMUM_WRITE: u32 = 16 * 1024 * 1024;
 
 pub(super) struct PacketSession {
+    pub(super) guest: Option<Arc<dyn super::super::LocalGuestSource>>,
     router: PacketRouter,
     phase: AtomicU8,
     maximum_write: u32,
@@ -74,6 +75,7 @@ impl PacketSession {
             return Err(libc::EINVAL.into());
         }
         Ok(Self {
+            guest: None,
             router,
             phase: AtomicU8::new(COLD),
             maximum_write,
@@ -144,6 +146,10 @@ impl PacketSession {
         request: &PacketRequest<'_>,
         response: &mut [u8],
     ) -> Result<PacketReply<'a>, PacketFailure> {
+        if let Some(guest) = &self.guest {
+            guest.posix().require_identity(request.owner)?;
+            super::guest::require_metadata(guest.posix(), request)?;
+        }
         let (completion, next_phase) = if request.opcode == 26 {
             self.phase
                 .compare_exchange(COLD, NEGOTIATING, Ordering::AcqRel, Ordering::Acquire)

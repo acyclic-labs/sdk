@@ -704,7 +704,9 @@ fn encode_xattr(output: &mut PacketOutput<'_>, value: &[u8], size: u32) -> Resul
     }
 }
 
-fn decode_setattr(mut input: PacketInput<'_>) -> Result<(Option<u64>, AttributeChanges), i32> {
+pub(super) fn decode_setattr(
+    mut input: PacketInput<'_>,
+) -> Result<(Option<u64>, AttributeChanges), i32> {
     let valid = input.u32()?;
     input.take(4)?;
     let handle = input.u64()?;

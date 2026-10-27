@@ -78,8 +78,14 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let grants = mount_capabilities(workspace, writable)?;
-    let scope = issuer.bootstrap_scope("native-volume", &grants, agent, &mut None)?;
-    let verifier = issuer.verifier(&mut None)?;
+    let io = PreparationIo::from_native_work(work)?;
+    let scope = issuer.bootstrap_scope(
+        "native-volume",
+        &grants,
+        agent,
+        &mut Some(&mut io.history_io()),
+    )?;
+    let verifier = issuer.verifier(&mut Some(&mut io.history_io()))?;
     let generation = workspace.head(work, work.cancellation()).await?.id();
     authenticated_mount_options(
         workspace,
@@ -93,9 +99,6 @@ where
         work,
     )
     .await
-    // This host owns the callback ledger; it has no borrowed native execution
-    // whose physical input capture must be billed through an external lease.
-    .map(|options| options.native_context(work, None, None))
 }
 
 pub(super) fn mount_capabilities<A, O>(
@@ -211,7 +214,41 @@ where
         acyclic_fs::MountOptions::read_only()
     })
     .access_view(view)
-    .access_refresh(refresh))
+    .access_refresh(refresh.clone())
+    .native_context(work, Some(refresh), Some(work)))
+}
+
+impl<A, O> acyclic_fs::native_mount::NativeMountCallbackGuard for PolicyOwner<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    fn check<'a>(
+        &'a self,
+        work: &'a NativeMaterializationWork,
+    ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
+            if !self._custody.work().shares_ledger(work) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native source guard changed its original ledger",
+                });
+            }
+            let io = PreparationIo::from_native_work(work)?;
+            self.verifier
+                .verify(&self.scope, &mut Some(&mut io.history_io()))
+        })
+    }
+
+    fn check_write<'a>(
+        &'a self,
+        work: &'a NativeMaterializationWork,
+    ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
+        if !self.writable {
+            return Err(acyclic_fs::native_mount::MountSourceError::AccessDenied.into());
+        }
+        acyclic_fs::native_mount::NativeMountCallbackGuard::check(self, work)
+    }
 }
 
 impl<A, O> NativeAccessOwner for PolicyOwner<A, O>

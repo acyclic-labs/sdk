@@ -24,6 +24,8 @@ type MemorySource = super::super::CheckoutMountSource<
     crate::facade::MemoryObjectBackend,
 >;
 
+mod guest_admission;
+
 fn fuse_fixture_work() -> crate::NativeMaterializationWork {
     cache_work(
         crate::WorkBudget::UNBOUNDED,

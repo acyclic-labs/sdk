@@ -14,7 +14,8 @@ mod mount_authority;
 pub use mount_authority::NativeMountAuthority;
 #[cfg(feature = "filesystem-local")]
 mod local_owner;
-use access::{NativeAccessAuthority, authenticated_mount_options, owner_mount_options};
+pub(in crate::filesystem) use access::owner_mount_options;
+use access::{NativeAccessAuthority, authenticated_mount_options};
 pub use access::{
     WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read,
 };

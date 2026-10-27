@@ -5,6 +5,9 @@
     reason = "FUSE mount, descriptor transfer and recovery syscalls"
 )]
 
+mod guest;
+pub use guest::{GuestSessionAdmission, GuestSessionRetired};
+
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
