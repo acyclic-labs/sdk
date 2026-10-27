@@ -347,7 +347,7 @@ impl WasmAgents {
         owner: &WasmReducer,
         manifest: &[u8],
         #[wasm_bindgen(
-            unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>"
+            unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => Promise<Uint8Array>"
         )]
         on_record: Function,
         #[wasm_bindgen(
