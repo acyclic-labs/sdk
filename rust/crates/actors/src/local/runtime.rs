@@ -6,7 +6,7 @@
 //! dispatcher polls with that registration's waker.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
-use crate::addressing::ActorReference;
+use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
@@ -85,9 +85,13 @@ enum Event {
 }
 
 /// Executes one handler package for every actor whose state lives under the
-/// store's root, including actors created by other parties' commits.
+/// store's root and that it claims, including actors created by other
+/// parties' commits.
 pub struct Runtime<P: StreamProvider + ?Sized> {
     store: Store<P>,
+    /// The one account and namespace whose actors this runtime claims, when
+    /// several hosts share the root; `None` claims every actor.
+    claims: Option<(AccountId, NamespaceId)>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
@@ -102,12 +106,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
         Self {
             store,
+            claims: None,
             handler,
             clock,
             ready: ReadySet::default(),
             actors: SyncMutex::new(HashMap::new()),
             instance: uuid::Uuid::new_v4(),
         }
+    }
+
+    /// Claim only the actors of `within`'s account and namespace: discovery
+    /// skips every other actor and [`Self::track`] refuses it, so hosts that
+    /// share one state root never claim each other's actors.
+    #[must_use]
+    pub fn claiming(mut self, within: &ActorReference) -> Self {
+        self.claims = Some((within.account().clone(), within.namespace().clone()));
+        self
+    }
+
+    /// Whether this runtime claims `actor`.
+    pub fn claims(&self, actor: &ActorReference) -> bool {
+        self.claims.as_ref().is_none_or(|(account, namespace)| {
+            actor.account() == account && actor.namespace() == namespace
+        })
     }
 
     /// The shared store.
@@ -120,8 +141,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self.ready.counts()
     }
 
-    /// Start tracking an actor. Idempotent; the first delivery claims a new epoch.
+    /// Start tracking an actor. Idempotent; the first delivery claims a new
+    /// epoch. An actor this runtime does not [claim](Self::claims) is refused.
     pub fn track(&self, actor: ActorReference) -> Result<(), Error> {
+        if !self.claims(&actor) {
+            return Err(Error::Invalid("actor is outside this runtime's claims"));
+        }
         let mut actors = self
             .actors
             .lock()
@@ -269,7 +294,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             match event {
                 Event::Created(record) => {
                     // The opening record is not an address; skip it.
-                    if let Ok(actor) = ActorReference::decode(record.value.as_ref()) {
+                    // Another host's actors are not discovered here.
+                    if let Ok(actor) = ActorReference::decode(record.value.as_ref())
+                        && self.claims(&actor)
+                    {
                         self.track(actor)?;
                     }
                 }
