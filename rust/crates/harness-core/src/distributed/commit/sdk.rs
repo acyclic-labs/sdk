@@ -14,6 +14,7 @@ pub(crate) fn native_call_result<T>(
 pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     key: StreamIdempotencyKey,
+    binding: &acyclic_stream::request::CommitBinding,
     operation: OperationId,
     quota: &mut CodecQuota<'_, '_>,
     phase: Option<&mut CommitPhase>,
@@ -27,7 +28,7 @@ pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Siz
             .cloned()
         {
             let result = client
-                .native_inspect_idempotency(key, original.runtime_meter())
+                .native_inspect_idempotency(key.clone(), original.runtime_meter())
                 .await;
             let output = native_call_result(&original, result)?
                 .map_err(|_| Error::Indeterminate(operation))?;
@@ -40,14 +41,37 @@ pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Siz
             io.begin_call()?;
         }
         client
-            .inspect_idempotency(key)
+            .inspect_idempotency(key.clone())
             .await
             .map_err(|_| Error::Indeterminate(operation))
     }
     .await?
     .ok_or(Error::Indeterminate(operation))?;
-    if let IdempotencyOutcome::Commit(outcome) = &observation.outcome {
-        observe_commit(outcome, false, phase, quota)?;
+    if let IdempotencyOutcome::Commit(envelope) = &observation.outcome {
+        observation::observe_envelope(envelope, None, quota)?;
+    }
+    if observation.idempotency_key != key || observation.request_digest != binding.digest() {
+        return Err(guarded_boundary(
+            quota.work(), wire::ErrorCode::Conflict, "commit recovery identity reused",
+        ));
+    }
+    if let IdempotencyOutcome::Commit(envelope) = &observation.outcome {
+        let matches = binding.matches_with(envelope, |bytes| {
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.hashed_bytes(bytes)?;
+            }
+            Ok::<(), Error>(())
+        })?;
+        if !matches {
+            return Err(guarded_boundary(
+                quota.work(), wire::ErrorCode::Conflict, "commit recovery identity reused",
+            ));
+        }
+    }
+    if matches!(observation.outcome, IdempotencyOutcome::Commit(_))
+        && let Some(phase) = phase
+    {
+        *phase = CommitPhase::Committed;
     }
     if let Some(io) = quota.work().as_deref_mut() {
         io.check_cancellation()?;

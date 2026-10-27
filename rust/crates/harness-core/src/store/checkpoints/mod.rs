@@ -8,7 +8,7 @@ use crate::{
 };
 
 use acyclic_stream::{
-    CommitCondition, CommitOutcome, CommittedMutation, StreamPath, StreamProvider,
+    CommitCondition, CommitOutcome, StreamPath, StreamProvider,
 };
 
 use crate::wire_codec::CodecQuota;

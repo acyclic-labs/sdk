@@ -288,7 +288,7 @@ impl MemoryStream {
             committed_at_micros: time,
             mutations: facts,
         };
-        let (receipt, output_claim) = self.receipt(&envelope, time)?;
+        let (receipt, output_claim) = self.receipt(&envelope)?;
         let result = CommitOutcome::Committed(receipt);
         let resident = facts_claim;
         self.absorb(&mut scratch, paths_claim)?;
@@ -334,7 +334,7 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.receipt(result, result.committed_at_micros)
+            return self.receipt(result)
                 .map(|(receipt, claim)| Decision::Returned((CommitOutcome::Committed(receipt), claim)));
         }
         let check_deadline = move || {

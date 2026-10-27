@@ -91,7 +91,7 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
     Ok(())
 }
 
-fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
+pub(crate) fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
     if value.mutations.is_empty() || value.mutations.len() > MAX_ITEMS {
         return Err(StreamError::InvalidArgument);
     }

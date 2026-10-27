@@ -21,7 +21,7 @@ pub(crate) enum CommitPhase {
     reason = "Acknowledgment and same-key recovery settle one originally admitted commit quota."
 )]
 pub(crate) async fn commit<P: StreamProvider + ?Sized>(
-    (request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
+    (mut request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     client: &Arc<P>,
     operation: Option<OperationId>,
     mut phase: Option<&mut CommitPhase>,
@@ -42,13 +42,19 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
             "accepted completion requires its pre-action SDK dispatch",
         ));
     }
+    let binding = acyclic_stream::request::commit_binding_with(&mut request, |bytes| {
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.hashed_bytes(bytes)?;
+        }
+        Ok::<(), Error>(())
+    })?;
     let mut vectors = 0;
+    let (mut bytes, mut count) = (0, 0);
     if let Some(io) = quota.work().as_deref_mut() {
         vectors = (request.conditions.capacity()
             * std::mem::size_of::<acyclic_stream::CommitCondition>()
             + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>())
             as u64;
-        let (mut bytes, mut count) = (0, 0);
         for mutation in &request.mutations {
             let (acyclic_stream::CommitMutation::Append { records, .. }
             | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
@@ -109,14 +115,21 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
     let released = quota.relinquish(vectors);
     let outcome = match (committed, operation) {
         (Ok(outcome), _) => {
-            let observed = observe_commit(&outcome, true, phase.as_deref_mut(), &mut quota);
+            let observed = observe_commit(&outcome, (bytes, count), phase.as_deref_mut(), &mut quota);
             released.and(observed)?;
             outcome
         }
         (Err(StreamError::Unavailable), Some(operation)) => {
             released?;
-            match inspect_idempotency(client, key, operation, &mut quota, phase).await? {
-                IdempotencyOutcome::Commit(outcome) => outcome,
+            let before = quota.retained();
+            match inspect_idempotency(client, key, &binding, operation, &mut quota, phase).await? {
+                IdempotencyOutcome::Commit(envelope) => {
+                    let facts_owned = quota.retained() - before;
+                    let receipt = observation::receipt(&envelope, &mut quota)?;
+                    drop(envelope);
+                    quota.relinquish(facts_owned)?;
+                    acyclic_stream::CommitOutcome::Committed(receipt)
+                }
                 _ => {
                     return Err(guarded_boundary(
                         quota.work(),

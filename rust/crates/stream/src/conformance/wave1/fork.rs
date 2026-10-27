@@ -68,6 +68,22 @@ pub(super) async fn absent<P: StreamProvider + ?Sized>(
     }
 }
 
+pub(super) async fn facts<P: StreamProvider + ?Sized>(
+    history: &History<'_, P>,
+    receipt: &crate::CommitReceipt,
+) -> Result<crate::CommittedEnvelope, Failure> {
+    let envelope = history.result(
+        "read_committed_facts",
+        history.provider.read_commit(receipt.commit_id).await,
+    )?;
+    history.check(
+        "committed_receipt",
+        Invariant::CompositionReceipt,
+        receipt.matches_envelope(&envelope),
+    )?;
+    Ok(envelope)
+}
+
 pub(super) async fn values<P: StreamProvider + ?Sized>(
     history: &History<'_, P>,
     target: &StreamPath,
@@ -333,17 +349,14 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
         "composed_fork",
         history.provider.commit(request.clone()).await,
     )?;
-    let CommitOutcome::Committed(envelope) = &outcome else {
+    let CommitOutcome::Committed(receipt) = &outcome else {
         return history.check("composed_fork", Invariant::PreCommitCut, false);
     };
-    let retained = history.result(
-        "read_composed_envelope",
-        history.provider.read_commit(envelope.commit_id).await,
-    )?;
+    let retained = facts(history, receipt).await?;
     history.check(
         "composed_envelope",
         Invariant::CompositionReceipt,
-        retained == *envelope && retained.mutations.len() == 3,
+        retained.mutations.len() == 3,
     )?;
     values(
         history,
@@ -370,6 +383,6 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
         replay == outcome,
     )?;
     history
-        .require_recovery(IdempotencyOutcome::Commit(outcome))
+        .require_recovery(IdempotencyOutcome::Commit(retained))
         .await
 }

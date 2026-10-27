@@ -40,35 +40,12 @@ pub(in crate::store) async fn stage_immutable<P: StreamProvider + ?Sized>(
         let (outcome, received) =
             crate::distributed::commit(request, client, None, None, None).await?;
         quota.adopt(received)?;
-        if let CommitOutcome::Committed(envelope) = &outcome {
-            if let Some(io) = quota
-                .work()
-                .as_deref_mut()
-                .filter(|io| !operations::original_native_decode_mode(*io))
-            {
-                let slots = envelope.mutations.capacity()
-                    * std::mem::size_of::<CommittedMutation>()
-                    + envelope
-                        .mutations
-                        .iter()
-                        .map(|mutation| {
-                            let records = match mutation {
-                                CommittedMutation::Append(append) => &append.records,
-                                CommittedMutation::Fork(fork) => &fork.records,
-                            };
-                            records.capacity() * std::mem::size_of::<acyclic_stream::Record>()
-                        })
-                        .sum::<usize>();
-                io.retain_owned(slots as u64)?;
-                quota.adopt(slots as u64)?;
-            }
-            if !matches!(envelope.mutations.as_slice(),
-                [CommittedMutation::Append(append)]
-                    if append.path == path && append.start == 0 && append.end == 1
-                        && append.tail == 1
-                        && matches!(append.records.as_slice(), [record]
-                            if record.sequence == 0 && record.value == bytes
-                                && record.commit_id == envelope.commit_id))
+        if let CommitOutcome::Committed(receipt) = &outcome {
+            // add_record submitted this exact immutable buffer to the canonical commit.
+            // A successful acknowledgment binds its assigned range, not an echoed body.
+            if !receipt.forks.is_empty()
+                || !matches!(receipt.appends.as_slice(),
+                    [append] if append.path == path && append.start == 0 && append.tail == 1)
             {
                 return Err(super::super::guarded_boundary(
                     quota.work(),

@@ -252,11 +252,11 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         idempotency_key: key(b"stream-commit")?,
     };
     let committed = provider.commit(request.clone()).await?;
-    let CommitOutcome::Committed(envelope) = &committed else {
+    let CommitOutcome::Committed(receipt) = &committed else {
         return Err(StreamError::Unavailable);
     };
     if provider.commit(request).await? != committed
-        || provider.read_commit(envelope.commit_id).await? != *envelope
+        || !receipt.matches_envelope(&provider.read_commit(receipt.commit_id).await?)
     {
         return Err(StreamError::Unavailable);
     }
@@ -287,7 +287,13 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .inspect_idempotency(absent_key)
         .await?
         .ok_or(StreamError::Unavailable)?;
-    if absent_observation.outcome != IdempotencyOutcome::Commit(absent_outcome) {
+    let CommitOutcome::Committed(receipt) = absent_outcome else {
+        return Err(StreamError::Unavailable);
+    };
+    let facts = provider.read_commit(receipt.commit_id).await?;
+    if !receipt.matches_envelope(&facts)
+        || absent_observation.outcome != IdempotencyOutcome::Commit(facts)
+    {
         return Err(StreamError::Unavailable);
     }
     verify_unspent_conflicts(provider).await?;
@@ -392,9 +398,13 @@ async fn verify_fork_with_records(
         idempotency_key: key(b"stream-fork-with-records")?,
     };
     let committed = provider.commit(request.clone()).await?;
-    let CommitOutcome::Committed(envelope) = &committed else {
+    let CommitOutcome::Committed(receipt) = &committed else {
         return Err(StreamError::Unavailable);
     };
+    let envelope = provider.read_commit(receipt.commit_id).await?;
+    if !receipt.matches_envelope(&envelope) {
+        return Err(StreamError::Unavailable);
+    }
     let [CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
         return Err(StreamError::Unavailable);
     };
