@@ -182,6 +182,7 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
     fn get_vring_base(&mut self, index: u32) -> Result<VhostUserVringState> {
         self.active(|device| {
             let base = device.queue(index)?.drain()?;
+            device.changed(index)?;
             Ok(VhostUserVringState::new(index, u32::from(base)))
         })
     }

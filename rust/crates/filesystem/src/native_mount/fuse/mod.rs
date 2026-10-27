@@ -136,6 +136,7 @@ fn errno_on(span: &tracing::Span, error: i32) -> i32 {
 mod notification;
 mod packet;
 mod packet_buffers;
+mod packet_cancellation;
 mod packet_dispatch;
 mod packet_publication;
 mod packet_router;

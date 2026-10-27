@@ -1,48 +1,40 @@
 //! The host transport: one nonblocking FUSE device and a shared stop wake.
 
 use super::notification::PacketSink;
+use acyclic_native_runtime::ProcessWake;
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) struct HostIo {
     pub(super) device: Arc<File>,
-    wake: OwnedFd,
-    stopped: AtomicBool,
+    wake: ProcessWake,
+    _allocation: crate::NativeAllocation,
 }
 
 impl HostIo {
-    pub(super) fn new(device: Arc<File>) -> io::Result<Self> {
+    pub(super) fn new(
+        device: Arc<File>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, super::NativeMountError> {
+        let allocation = work.claim(
+            (crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>())
+                .map_err(|_| libc::EOVERFLOW)?
+                + ProcessWake::allocation_bytes()) as u64,
+            2,
+            crate::WorkCounters::UNCHARGED,
+        )?;
         super::transport_io::nonblocking(device.as_ref())?;
-        // SAFETY: eventfd returns a newly owned descriptor or -1.
-        let wake = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if wake < 0 {
-            return Err(io::Error::last_os_error());
-        }
         Ok(Self {
             device,
-            // SAFETY: the successful eventfd has one owner and has not escaped.
-            wake: unsafe { OwnedFd::from_raw_fd(wake) },
-            stopped: AtomicBool::new(false),
+            wake: ProcessWake::new()?,
+            _allocation: allocation,
         })
     }
 
     pub(super) fn stop(&self) {
-        if !self.stopped.swap(true, Ordering::AcqRel) {
-            let value = 1_u64.to_ne_bytes();
-            loop {
-                // SAFETY: wake is open and value is readable for the full length.
-                let result = unsafe {
-                    libc::write(self.wake.as_raw_fd(), value.as_ptr().cast(), value.len())
-                };
-                if result >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                    break;
-                }
-            }
-        }
-        // Never drain this eventfd: persistent readiness wakes every worker.
+        let _ = self.wake.stop();
     }
 
     fn wait(&self, events: i16) -> io::Result<bool> {
@@ -53,19 +45,19 @@ impl HostIo {
                 revents: 0,
             },
             libc::pollfd {
-                fd: self.wake.as_raw_fd(),
+                fd: self.wake.as_fd().as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             },
         ];
         loop {
-            if self.stopped.load(Ordering::Acquire) {
+            if self.wake.is_stopped() {
                 return Ok(false);
             }
             // SAFETY: both pollfd entries remain valid for this call; owned FDs
             // cannot be closed while this HostIo is borrowed by a worker.
             if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } >= 0 {
-                return Ok(!self.stopped.load(Ordering::Acquire));
+                return Ok(!self.wake.is_stopped());
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
@@ -102,7 +94,7 @@ impl PacketSink for HostIo {
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::EOVERFLOW))
         })?;
         loop {
-            if self.stopped.load(Ordering::Acquire) {
+            if self.wake.is_stopped() {
                 return Err(io::Error::from_raw_os_error(libc::ENODEV));
             }
             match (&*self.device).write_vectored(packet) {
@@ -129,5 +121,15 @@ impl PacketSink for HostIo {
 impl AsFd for HostIo {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.device.as_fd()
+    }
+}
+
+impl std::task::Wake for HostIo {
+    fn wake(self: Arc<Self>) {
+        self.stop();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.stop();
     }
 }

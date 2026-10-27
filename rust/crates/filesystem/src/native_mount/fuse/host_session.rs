@@ -12,11 +12,13 @@ use std::io::IoSlice;
 
 pub(super) struct HostSession {
     protocol: PacketSession,
+    // Its waker only stops physical I/O. Keep the actual registration alive
+    // through every worker's exit, then recover the typed cause from work.
+    _cancellation: crate::Cancelled<'static>,
     io: Arc<HostIo>,
     work: NativeMaterializationWork,
     owner_uid: u32,
     packet_capacity: usize,
-    _allocation: crate::NativeAllocation,
     #[cfg(test)]
     capture: Option<Arc<super::tests::packets::Capture>>,
 }
@@ -36,11 +38,6 @@ impl HostSession {
         device: Arc<std::fs::File>,
         work: &NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let allocation = work.claim(
-            (std::mem::size_of::<HostIo>() + 2 * std::mem::size_of::<usize>()) as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
         let workers =
             std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS).ok_or(libc::EINVAL)?;
         // SAFETY: sysconf has no pointer arguments or ownership effects.
@@ -48,13 +45,15 @@ impl HostSession {
             .map_err(|_| libc::EOVERFLOW)?;
         let page_size = std::num::NonZeroU32::new(page_size).ok_or(libc::EIO)?;
         let maximum_write = maximum_write(work, workers, page_size)?;
+        let io = Arc::new(HostIo::new(device, work)?);
+        let cancellation = super::packet_cancellation::register(work, &io)?;
         Ok(Self {
             protocol: PacketSession::new(router, maximum_write, page_size)?,
-            io: Arc::new(HostIo::new(device)?),
+            _cancellation: cancellation,
+            io,
             work: work.clone(),
             owner_uid: nix::unistd::geteuid().as_raw(),
             packet_capacity: maximum_write as usize + 4096,
-            _allocation: allocation,
             #[cfg(test)]
             capture: super::tests::packets::Capture::current(),
         })
@@ -69,6 +68,7 @@ impl HostSession {
         let mut buffers = PacketBuffers::new(self.packet_capacity, &self.work)?;
         while !self.protocol.ready() {
             if !self.serve(&mut buffers.input, &mut buffers.output)? {
+                self.work.admit(crate::WorkCounters::UNCHARGED)?;
                 return Err(libc::ENODEV.into());
             }
         }
@@ -103,7 +103,11 @@ impl HostSession {
                     Err(panic) => std::panic::resume_unwind(panic),
                 }
             }
-            result
+            result.and_then(|()| {
+                self.work
+                    .admit(crate::WorkCounters::UNCHARGED)
+                    .map_err(Into::into)
+            })
         })
     }
 
