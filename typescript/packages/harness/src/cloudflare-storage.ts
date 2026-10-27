@@ -128,12 +128,14 @@ export class SqliteJournal {
     return output;
   }
 
-  async append(index: number, frame: Uint8Array, changes: readonly StreamChange[]): Promise<void> {
+  async append(index: number, admit: () => Uint8Array, changes: readonly StreamChange[]): Promise<void> {
     this.storage.transactionSync(() => {
       const [metadata] = this.storage.sql.exec("SELECT count, bytes FROM acyclic_stream_domains WHERE domain = ?", this.domain);
-      if (!metadata || count(metadata.count) !== index || frame.length < 18 || frame.length > this.maximumFrameBytes) {
+      if (!metadata || count(metadata.count) !== index) {
         throw new Error("STEP sqlite-append failed: stale owner or invalid frame; recovery: reopen this domain and retry the exact original Stream request");
       }
+      const frame = admit();
+      if (frame.length < 18 || frame.length > this.maximumFrameBytes) throw new Error("STEP sqlite-append failed: invalid frame; recovery: reopen this domain and retry the exact original Stream request");
       this.storage.sql.exec("INSERT INTO acyclic_stream_commands (domain, ordinal, length) VALUES (?, ?, ?)", this.domain, index, frame.length);
       for (let offset = 0, chunk = 0; offset < frame.length; offset += CHUNK_BYTES, chunk += 1) {
         const data = frame.slice(offset, offset + CHUNK_BYTES);

@@ -61,6 +61,10 @@ async function main() {
     const output = await response.text();
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${output}`);
     console.log(`workerd SQLite: ${output}`);
+    const deadline = await fetch("http://127.0.0.1:15420/deadline");
+    const deadlineOutput = await deadline.text();
+    if (!deadline.ok) throw new Error(`deadline HTTP ${deadline.status}: ${deadlineOutput}`);
+    console.log(`workerd review: ${deadlineOutput}`);
     const guest = await fetch("http://127.0.0.1:15420/guest");
     const guestOutput = await guest.text();
     if (!guest.ok) throw new Error(`guest HTTP ${guest.status}: ${guestOutput}`);
@@ -83,6 +87,10 @@ async function main() {
     console.log(`workerd review: ${placementOutput}`);
     await stop();
     await start();
+    const deadlineReplay = await fetch("http://127.0.0.1:15420/deadline-replay");
+    const deadlineReplayOutput = await deadlineReplay.text();
+    if (!deadlineReplay.ok) throw new Error(`deadline restart HTTP ${deadlineReplay.status}: ${deadlineReplayOutput}`);
+    console.log(`workerd review: ${deadlineReplayOutput}`);
     const replay = await fetch("http://127.0.0.1:15420/guest");
     const replayOutput = await replay.text();
     if (!replay.ok || replayOutput !== guestOutput) {

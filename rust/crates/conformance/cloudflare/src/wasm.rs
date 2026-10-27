@@ -4,6 +4,75 @@ use acyclic_stream::{BoxProviderFuture, JournalStream, JournalStreamLimits, Stre
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+/// A delayed journal must decide deadlines at acceptance, including after reopen.
+#[wasm_bindgen(js_name = qualifyJournalDeadline)]
+pub async fn qualify_journal_deadline(
+    journal: JsValue,
+    retry: bool,
+) -> std::result::Result<(), JsValue> {
+    use acyclic_stream::{
+        AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
+        IdempotencyKey, StreamError, StreamPath, SystemUnixMillisClock, UnixMillisClock,
+    };
+    let result = async {
+        let path = StreamPath::new("deadline/acceptance")?;
+        let key = IdempotencyKey::new(b"deadline-acceptance".to_vec())?;
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![AppendRecord::from(b"accepted".as_slice())],
+            }],
+            idempotency_key: key.clone(),
+        };
+        let provider = JournalStream::open(journal.clone(), JournalStreamLimits::default()).await?;
+        if provider.tail(path.clone()).await? != 0
+            || provider.inspect_idempotency(key.clone()).await?.is_some()
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        if !retry {
+            let result = provider
+                .commit_before(request, SystemUnixMillisClock.now_unix_millis() + 20)
+                .await;
+            if result != Err(StreamError::DeadlineElapsed) {
+                return Err(StreamError::InvalidResponse);
+            }
+            drop(provider);
+            let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            if reopened.tail(path).await? != 0 || reopened.inspect_idempotency(key).await?.is_some()
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+        } else {
+            // The same key was not spent by the expired acceptance before restart.
+            let outcome = provider
+                .commit_before(
+                    request.clone(),
+                    SystemUnixMillisClock.now_unix_millis() + 10_000,
+                )
+                .await?;
+            if !matches!(outcome, CommitOutcome::Committed(_)) {
+                return Err(StreamError::InvalidResponse);
+            }
+            drop(provider);
+            let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            if reopened.commit_before(request, 0).await? != outcome
+                || reopened.tail(path).await? != 1
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+        }
+        Ok::<_, StreamError>(())
+    }
+    .await;
+    result.map_err(|error| {
+        JsValue::from_str(&format!(
+            "STEP journal-deadline failed: {error}; recovery: bash scripts/qualify-cloudflare.sh"
+        ))
+    })
+}
+
 /// Provision the same lazy spawn fixture for the real event-owned host.
 #[wasm_bindgen(js_name = spawnAdoptionFixture)]
 pub async fn spawn_adoption_fixture(port: JsValue) -> std::result::Result<String, JsValue> {

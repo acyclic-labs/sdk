@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
-import { initSync, qualifyCloudflare, qualifyCloudflareRpc, appendWakeRecord, spawnAdoptionFixture } from "./generated/acyclic_cloudflare_conformance.js";
+import { initSync, qualifyCloudflare, qualifyCloudflareRpc, qualifyJournalDeadline, appendWakeRecord, spawnAdoptionFixture } from "./generated/acyclic_cloudflare_conformance.js";
 import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
-import { SqliteJournal } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
+import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
 import { initSync as initGuest, WasmReducer, WasmAgentRegistry, type WasmFileRefWire } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
@@ -93,6 +93,19 @@ export class Suite extends DurableObject {
   private wakeLedger?: ReturnType<typeof openCloudflareLedger>;
   alarm() { return this.wakeLedger?.alarm(); }
 
+  async deadline(retry: boolean): Promise<void> {
+    const journal = new SqliteJournal(this.ctx.storage, "deadline-admission");
+    await qualifyJournalDeadline({
+      configure: (configuration: Uint8Array, maximum: number) => journal.configure(configuration, maximum),
+      flush: () => journal.flush(),
+      read: (index: number) => journal.read(index),
+      async append(index: number, admit: () => Uint8Array, changes: readonly StreamChange[]) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await journal.append(index, admit, changes);
+      },
+    }, retry);
+  }
+
   async wakeIsolation(): Promise<void> {
     const delivered: string[] = [];
     const ledger = openCloudflareLedger(this.ctx, async actor => {
@@ -134,6 +147,11 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (["/deadline", "/deadline-replay"].includes(new URL(request.url).pathname)) {
+      const retry = new URL(request.url).pathname === "/deadline-replay";
+      await env.SUITE.getByName("deadline").deadline(retry);
+      return Response.json({ deadline: retry ? "expired acceptance remains refused after emulator restart; same key commits and replays" : "delayed acceptance refuses expired commit without records or retry-key effects" });
+    }
     if (new URL(request.url).pathname === "/placement") {
       const owner = env.AGENT.getByName("placement-owner");
       const path = await owner.create("placement-root");

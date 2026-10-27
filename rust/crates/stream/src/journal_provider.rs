@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::StreamExt as _;
 use js_sys::Uint8Array;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::{Rc, Weak},
     sync::{Arc, Mutex},
 };
@@ -36,7 +36,7 @@ extern "C" {
     fn append(
         this: &HostJournal,
         index: u32,
-        frame: &[u8],
+        frame: &js_sys::Function,
         changes: &js_sys::Array,
     ) -> Result<js_sys::Promise, JsValue>;
 }
@@ -274,14 +274,10 @@ impl JournalStream {
         {
             return apply(&cache.provider, command, deadline).await;
         }
-        let time = SystemUnixMillisClock.now_unix_millis();
-        let mut frame = time.to_le_bytes().to_vec();
-        frame.push(u8::from(deadline.is_some()));
-        frame.extend_from_slice(&deadline.unwrap_or(0).to_le_bytes());
-        frame.extend_from_slice(&encoded);
+        let length = encoded.len() + 17;
         let bytes = cache
             .bytes
-            .checked_add(u64::try_from(frame.len()).map_err(unavailable)?)
+            .checked_add(u64::try_from(length).map_err(unavailable)?)
             .filter(|bytes| *bytes <= self.0.limits.journal_bytes)
             .ok_or(StreamError::Capacity)?;
         if cache.cursor >= self.0.limits.commands {
@@ -309,17 +305,39 @@ impl JournalStream {
                 }
             }
         }
+        // The journal calls this once, inside its acceptance transaction after
+        // any waiting and before publishing bytes. Sampling here pins deadline
+        // refusal and commit time to acceptance, rather than enqueue time. The
+        // storage adapter never interprets a deadline or a Stream command.
+        let accepted = Rc::new(Cell::new(None));
+        let sampled = accepted.clone();
+        let frame = Closure::<dyn FnMut() -> Result<Uint8Array, JsValue>>::new(move || {
+            if sampled.get().is_some() {
+                return Err(JsValue::from_str(
+                    "STEP journal-accept failed: repeated frame admission; recovery: reopen and replay the original Stream request",
+                ));
+            }
+            let time = SystemUnixMillisClock.now_unix_millis();
+            sampled.set(Some(time));
+            let mut frame = time.to_le_bytes().to_vec();
+            frame.push(u8::from(deadline.is_some()));
+            frame.extend_from_slice(&deadline.unwrap_or(0).to_le_bytes());
+            frame.extend_from_slice(&encoded);
+            Ok(Uint8Array::from(frame.as_slice()))
+        });
         // Cancellation after acceptance leaves the cursor unchanged. The next
         // query replays that accepted row before exposing any new state.
         JsFuture::from(
             self.0
                 .journal
-                .append(cache.cursor, &frame, &changes)
+                .append(cache.cursor, frame.as_ref().unchecked_ref(), &changes)
                 .map_err(unavailable)?,
         )
         .await
         .map_err(unavailable)?;
-        self.0.clock.set(time);
+        self.0
+            .clock
+            .set(accepted.get().ok_or(StreamError::Unavailable)?);
         let result = apply(&cache.provider, command, deadline).await;
         cache.failed = matches!(
             &result,
