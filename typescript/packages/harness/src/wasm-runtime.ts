@@ -121,6 +121,16 @@ export async function ensureMcpWasm(): Promise<void> {
   }
 }
 
+/** Owner-mediated context reads do not require a retired workflow runtime. */
+export async function ensureContextWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (!["captureDiscoveredContext", "contextForRequest", "readPinnedContextPath",
+    "projectDiscoveredContext", "applyContextProjection", "parseSkillMetadata", "fileDescriptor"]
+    .every(name => typeof exports[name] === "function")) {
+    throw new Error("harness WASM does not provide the required context discovery exports");
+  }
+}
+
 /** The hypothesis kernel has its own export contract on the same module. */
 export async function ensureHypothesisWasm(): Promise<void> {
   const exports = await loadHarnessWasm();
