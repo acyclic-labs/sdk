@@ -5,10 +5,13 @@ const assert = (value: unknown, message: string): void => { if (!value) throw ne
 type Volume = { readonly provider: { readonly namespace: string; readonly family: string; readonly version: string };
   readonly id: string; readonly class: string; readonly owner: { readonly kind: string; readonly id: string } };
 type FileRef = { readonly volume: Volume; readonly path: string; readonly version: string; readonly display_name: string;
-  readonly descriptor: { readonly sha256: string; readonly byte_length: number; readonly media_type: string } };
+  readonly descriptor: { readonly sha256: readonly (number | bigint)[]; readonly byte_length: number; readonly media_type: string } };
 // The page exercises demand loading only; this stands in for the host's content admission.
-const digest = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> =>
-  Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+// The Rust FileDescriptor carries the hash as 32 bytes; page decoding may widen them to BigInt.
+const digest = async (bytes: Uint8Array<ArrayBuffer>): Promise<number[]> =>
+  Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+const sameHash = (left: readonly (number | bigint)[], right: readonly (number | bigint)[]): boolean =>
+  left.length === right.length && left.every((byte, index) => Number(byte) === Number(right[index]));
 try {
   const scheduler = new RequestScheduler({ concurrent: 2, requests: 4, bytes: 8192 });
   const body = new TextEncoder().encode("Pinned selective body\n");
@@ -16,10 +19,13 @@ try {
   const volume = { provider: { namespace: "browser", family: "filesystem", version: "2" }, id: "demand", class: "project", owner: { kind: "project", id: "demand" } } as const;
   const refs: FileRef[] = Array.from({ length: 4 }, (_, i) => ({ volume, path: `messages/${i}`, version: "pinned-1", descriptor, display_name: `${i}` }));
   const verifyContentRead = (file: FileRef): void => {
-    if (JSON.stringify(file.volume) !== JSON.stringify(volume)) throw new Error("content read outside the admitted volume");
+    const { provider, owner } = file.volume;
+    if (provider.namespace !== volume.provider.namespace || provider.family !== volume.provider.family
+      || provider.version !== volume.provider.version || file.volume.id !== volume.id || file.volume.class !== volume.class
+      || owner.kind !== volume.owner.kind || owner.id !== volume.owner.id) throw new Error("content read outside the admitted volume");
   };
   const verifyFileBytes = async (file: FileRef, bytes: Uint8Array<ArrayBuffer>): Promise<void> => {
-    if (bytes.byteLength !== file.descriptor.byte_length || await digest(bytes) !== file.descriptor.sha256) throw new Error("file bytes differ from descriptor");
+    if (bytes.byteLength !== file.descriptor.byte_length || !sameHash(await digest(bytes), file.descriptor.sha256)) throw new Error("file bytes differ from descriptor");
   };
   let reads = 0, transferred = 0, allocatedBytes = 0, mainThreadMs = 0;
   const source = {
