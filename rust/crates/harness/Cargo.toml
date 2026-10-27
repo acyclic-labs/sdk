@@ -34,6 +34,16 @@ required-features = ["filesystem", "test-support"]
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[[bin]]
+name = "acyclic-virtiofsd"
+path = "src/bin/virtiofsd.rs"
+required-features = ["filesystem-local", "native-execution"]
+
+[[test]]
+name = "virtiofs"
+path = "tests/virtiofs.rs"
+required-features = ["filesystem-local", "native-execution", "test-support"]
+
 [[example]]
 name = "native-process-approval"
 required-features = ["filesystem"]
@@ -146,7 +156,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
 keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 which = { version = "8.0.6", optional = true }
-tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "net"] }
 
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }

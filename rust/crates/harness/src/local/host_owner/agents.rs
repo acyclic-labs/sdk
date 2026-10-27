@@ -517,7 +517,7 @@ impl TurnDriver for Shared {
 /// request commits its inbox record, then drains the runtime, so the reply
 /// observes the request's turn. It owns no thread or timer per agent.
 pub(super) struct NativeAgents {
-    host: AgentHost<LocalStream>,
+    host: Arc<AgentHost<LocalStream>>,
     driver: Arc<HostDriver>,
     volumes: Arc<dyn crate::agent::SpawnVolumes>,
     files: Arc<LocalFilesystem>,
@@ -539,29 +539,31 @@ impl NativeAgents {
             issuer: issuer.clone(),
         });
         let within = ActorReference::new(b"local", b"native", b"hosts").map_err(storage)?;
-        let volumes: Arc<dyn crate::agent::SpawnVolumes> =
-            Arc::new(
-                FilesystemSpawnVolumes::new(
-                    local.files.clone(),
-                    issuer.clone(),
-                    TurnAdmission::LocalRoot,
-                    MAXIMUM_BYTES,
-                )
-                .with_fork_cuts(Arc::new(crate::local::workspace::LazyForkCuts(
-                    Arc::clone(local.workspace().ok_or_else(|| {
-                        Error::Unsupported("native hosts require a checkout".into())
-                    })?),
-                ))),
-            );
-        let host = AgentHost::with_spawn_volumes(
-            stream,
-            Shared(Arc::clone(&driver)),
-            within,
-            ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(storage)?,
-            Arc::new(SystemClock),
-            Arc::clone(&volumes),
-        )
-        .map_err(storage)?;
+        let volumes = FilesystemSpawnVolumes::new(
+            local.files.clone(),
+            issuer.clone(),
+            TurnAdmission::LocalRoot,
+            MAXIMUM_BYTES,
+        );
+        let volumes = if let Some(workspace) = local.workspace() {
+            volumes.with_fork_cuts(Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(
+                workspace,
+            ))))
+        } else {
+            volumes
+        };
+        let volumes: Arc<dyn crate::agent::SpawnVolumes> = Arc::new(volumes);
+        let host = Arc::new(
+            AgentHost::with_spawn_volumes(
+                stream,
+                Shared(Arc::clone(&driver)),
+                within,
+                ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(storage)?,
+                Arc::new(SystemClock),
+                Arc::clone(&volumes),
+            )
+            .map_err(storage)?,
+        );
         let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
             name: name.to_owned(),
             volume: volume.clone(),
@@ -577,6 +579,17 @@ impl NativeAgents {
                 bind("scratch", &local.scratch),
             ],
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn bound(
+        &self,
+    ) -> crate::filesystem::hosting::Bound<LocalStream, LocalObjectBackend> {
+        crate::filesystem::hosting::Bound::local_root(
+            self.issuer.clone(),
+            Arc::clone(&self.host),
+            Arc::clone(&self.files),
+        )
     }
 
     /// Creates, or replays, root session `(host, session)` on the checkout's

@@ -172,6 +172,31 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Admits the canonical checkout source without mounting a host directory.
+    /// The signed selection owner and original callback guard in `options`
+    /// remain attached to the source used by any packet transport.
+    pub async fn native_source(
+        &self,
+        options: &MountOptions,
+    ) -> Result<Arc<CheckoutMountSource<A, O>>, MountLifecycleError> {
+        let work = options.require_native_work()?;
+        if let Some(guard) = options.callback_guard.as_ref() {
+            guard.check(work)?.await?;
+        }
+        let mode = if options.writable {
+            CheckoutMode::tracking_transaction()
+        } else {
+            CheckoutMode::read_only_pinned()
+        };
+        let checkout = self
+            .checkout(options.data_selector()?, mode, work, work.cancellation())
+            .await?;
+        AdmittedRoot::admit(options, self, checkout.generation_id(), work)
+            .await?
+            .checkout_source(checkout, work)
+            .await
+    }
+
     /// Mounts the workspace as a task view: the one public way to mount a
     /// per-agent view. On Linux and Windows the view is a namespace of the
     /// process's one shared native instance, at a fresh path that no other
@@ -206,25 +231,13 @@ where
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )?;
-        let cancellation = work.cancellation();
-        if let Some(guard) = options.callback_guard.as_ref() {
-            guard.check(&work)?.await?;
-        }
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
         let destination = destination.0;
-        let mode = if options.writable {
-            CheckoutMode::tracking_transaction()
-        } else {
-            CheckoutMode::read_only_pinned()
-        };
-        let checkout = self
-            .checkout(options.data_selector()?, mode, &work, cancellation)
-            .await?;
-        let source = AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
-            .await?
-            .checkout_source(checkout, &work)
-            .await?;
+        let guard = options.callback_guard.clone();
+        let original = options.native_original.clone();
+        let options = options.native_context(&work, guard, original.as_ref());
+        let source = self.native_source(&options).await?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

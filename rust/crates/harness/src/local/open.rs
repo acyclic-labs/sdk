@@ -172,7 +172,9 @@ impl Opening {
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts {
-            workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+            if matches!(self.config.project, LocalProject::Workspace(_)) {
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+            }
             acyclic_fs::initialize_native_mount_services().map_err(storage)?;
         }
         #[cfg(not(any(test, feature = "native-execution")))]
