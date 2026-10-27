@@ -56,14 +56,13 @@ ordinary test with the same basename retains libtest arguments. Discovery
 finishes before execution, avoiding a JSON-consumer/runner race. The second
 Cargo invocation executes already-built targets without rebuilding them.
 
-Before installing, preserve the existing `.bak-gatespeed` backup and take an
-immediate snapshot. Compare live hashes with the revision read before editing.
-Take `Q:/lanes/pr-gate/.lock` using mkdir only while absent, swap complete files,
-and release it immediately. Never interrupt an active gate. Installing a Python
-file does not update the admission daemon already in memory: hold its
-`/mnt/bb/admit/upgrade.lock` exclusively, let all existing connections and leases
-drain, replace the idle daemon, then release the lock. Existing jobs continue;
-new ticket handshakes wait in flock.
+Install only through `bb-install.py` (see `docs/buildbox-install.md`): it
+publishes whole generations behind one `current` link, canaries them before
+and after the switch, and switches back on failure. Take `Q:/lanes/pr-gate/.lock`
+using mkdir only while absent and release it immediately afterward. Never
+interrupt an active gate. The installer holds `/mnt/bb/admit/upgrade.lock`
+exclusively and retires the idle daemon, since a loaded daemon keeps its old
+code; new ticket handshakes wait in flock.
 
 For a client/runtime protocol change, install the client first and let every
 pre-install client process finish before installing the bb2 runtime. New

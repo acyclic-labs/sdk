@@ -9,6 +9,7 @@ The fixed test policy runs as var against a frozen candidate before any rename.
 """
 import argparse
 import contextlib
+import fcntl
 import importlib.util
 import hashlib
 import json
@@ -22,23 +23,20 @@ import shlex
 
 BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
-# Dependencies precede consumers. Every replacement remains a complete file;
-# in-flight interpreters retain their old inode and loaded module generation.
+# The complete tool set of one generation; it is only ever published whole.
 TOOLS = ['admission_policy.py', 'input_closure.py', 'job_caps.py', 'cpu_leases.py', 'bbcgroup-systemd-run', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
-CACHE_TOOLS = frozenset({'admission_policy.py','input_closure.py','job_caps.py','cpu_leases.py','bbcgroup-systemd-run','bb-cache.py','sccache-rustc','bb-job.py','bb-admit.py','build-slot'})
+# Generations are complete, immutable tool directories. Store entries are
+# absolute links through CURRENT, so one rename switches every tool at once and
+# a name absent from the live generation is absent (dangling), never stale.
+ROOT = Path('/opt/buildbox')
+CANARY_TIMEOUT = 300
 
 
-def migration_scope(stage, selected):
-    if not CACHE_TOOLS.intersection(selected):return contextlib.nullcontext()
-    if not CACHE_TOOLS.issubset(selected):
-        recovery=shlex.join(['sudo','-n','/usr/bin/python3','-B',str(Path(stage)/'bb-install.py'),
-                             '--publish',str(stage),'--only',*sorted(CACHE_TOOLS)])
-        raise ValueError('kind=CACHE_POLICY step=cache-generation-publication owner=gate-speed '
-                         'recovery='+shlex.quote(recovery))
-    spec=importlib.util.spec_from_file_location('qualified_cache_migration',Path(stage)/'bb-cache.py')
+def cache_authority(generation):
+    spec=importlib.util.spec_from_file_location('generation_cache_'+Path(generation).name.replace('-','_'),Path(generation)/'bb-cache.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    return module.migration()
+    return module
 
 
 def secure_bin(alias=BIN, store=Path('/opt/buildbox/bin'), persistent=True):
@@ -142,13 +140,6 @@ def file_hash(file):
     return hashlib.sha256(file.read_bytes()).hexdigest() if file.exists() else None
 
 
-def select_tools(only):
-    selected = list(TOOLS) if only is None else list(only)
-    if not selected or len(set(selected)) != len(selected) or any(name not in TOOLS for name in selected):
-        raise ValueError('publication selection must contain distinct qualified tools')
-    return selected
-
-
 def candidate_directory(candidate):
     stage=Path(candidate)
     if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():
@@ -168,11 +159,164 @@ def qualify_generation(stage, user):
     publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
 
 
-def publish_candidate(candidate, only=None):
+def generation_payload(payload, hashes):
+    """The complete on-disk generation: every tool plus its sudo-path shim."""
+    files={name:data for name,data in payload.items()}
+    if 'bbcgroup-systemd-run' in files:files['bbcg/systemd-run']=files['bbcgroup-systemd-run']
+    files['installed-tools.json']=json.dumps({'schema_version':1,'sha256':hashes}).encode()
+    return files
+
+
+def fsync_directory(directory):
+    descriptor=os.open(directory,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(descriptor)
+    finally:os.close(descriptor)
+
+
+def materialize(files, name):
+    """Write a generation beside its siblings, then expose it by one rename."""
+    generations=ROOT/'generations';generations.mkdir(parents=True,exist_ok=True,mode=0o755)
+    generation=generations/name
+    if generation.exists():
+        if {str(p.relative_to(generation)):p.read_bytes() for p in generation.rglob('*') if p.is_file()}!=files:
+            raise ValueError('generation identity collision: '+str(generation))
+        return generation
+    temporary=Path(tempfile.mkdtemp(prefix='.tmp-'+name+'-',dir=generations))
+    for relative,data in sorted(files.items()):
+        destination=temporary/relative;destination.parent.mkdir(parents=True,exist_ok=True,mode=0o755)
+        publish(destination,data,0o444 if relative=='installed-tools.json' else 0o555)
+    for directory in [temporary,*[p for p in temporary.rglob('*') if p.is_dir()]]:
+        if os.geteuid()==0:os.chown(directory,0,0)
+        directory.chmod(0o755);fsync_directory(directory)
+    os.rename(temporary,generation);fsync_directory(generations)
+    return generation
+
+
+def link(path, target):
+    path=Path(path);temporary=path.with_name('.'+path.name+'.link-'+str(os.getpid()))
+    temporary.unlink(missing_ok=True);os.symlink(str(target),temporary)
+    os.replace(temporary,path);fsync_directory(path.parent)
+
+
+def current_generation():
+    current=ROOT/'current'
+    return Path(os.readlink(current)) if current.is_symlink() else None
+
+
+def adopt_legacy(store):
+    """A pre-generation store of regular files becomes a retained generation."""
+    files={}
+    for file in Path(store).rglob('*'):
+        if file.is_symlink():raise ValueError('legacy tool store link refused: '+str(file))
+        if file.is_file():files[str(file.relative_to(store))]=file.read_bytes()
+    return materialize(files,'legacy-'+hashlib.sha256(json.dumps(sorted((k,hashlib.sha256(v).hexdigest()) for k,v in files.items())).encode()).hexdigest()[:16])
+
+
+def switch(generation, store):
+    """CURRENT is the one live pointer. Store entries are fixed absolute links
+    through it and only accumulate, so after the first adoption a switch is
+    exactly one rename; every entry resolves within one complete generation."""
+    previous=current_generation()
+    if previous is None:
+        previous=adopt_legacy(store);link(ROOT/'current',previous)
+        retired=ROOT/'retired';retired.mkdir(exist_ok=True,mode=0o755)
+        for entry in list(Path(store).iterdir()):
+            if not entry.is_symlink():os.rename(entry,retired/(entry.name+'.'+previous.name))
+    for root in [previous,generation]:
+        for name in sorted(p.name for p in Path(root).iterdir() if not p.name.startswith('.')):
+            entry=Path(store)/name;target=ROOT/'current'/name
+            if not (entry.is_symlink() and os.readlink(entry)==str(target)):link(entry,target)
+    if previous!=generation:link(ROOT/'previous',previous)
+    link(ROOT/'current',generation)
+    return previous
+
+
+@contextlib.contextmanager
+def admission_drained(generation):
+    """No ticket handshake proceeds and no admitted job or daemon is left."""
+    Path('/mnt/bb/admit').mkdir(parents=True,exist_ok=True)
+    with open('/mnt/bb/admit/upgrade.lock','a') as admission:
+        fcntl.flock(admission,fcntl.LOCK_EX)
+        cache_authority(generation).drain_admission()
+        yield
+
+
+@contextlib.contextmanager
+def generation_services(generation):
+    """Host services follow the generation that owns them."""
+    if (Path(generation)/'bb-cache.py').exists():
+        with cache_authority(generation).migration(drained=True):yield
+        return
+    unit=Path('/etc/systemd/system/buildbox-cache.service')
+    if unit.exists():subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=True)
+    yield
+
+
+CANARY_CRATE = {'Cargo.toml':b'[package]\nname = "bb-install-canary"\nversion = "0.0.0"\nedition = "2021"\n[workspace]\n',
+                'src/lib.rs':b'pub fn canary() -> u8 { 1 }\n'}
+
+
+def canary(generation=None):
+    """Real fleet-shaped jobs through the native client path: an undeclared
+    `bash -c` script and a cargo build. With `generation`, the staged
+    generation is bound over the client entry in a private mount namespace;
+    otherwise the live entry is used. Both get a private admission root, so
+    the drained host admission lock stays held, and its daemon is retired."""
+    work=Path(tempfile.mkdtemp(prefix='bb-install-canary-',dir='/mnt/bb/tmp'))
+    try:
+        admit=work/'admit';crate=work/'crate';admit.mkdir()
+        for relative,data in CANARY_CRATE.items():
+            (crate/relative).parent.mkdir(parents=True,exist_ok=True);(crate/relative).write_bytes(data)
+        account=pwd.getpwnam('var')
+        for path in [work,admit,*crate.rglob('*'),crate]:os.chown(path,account.pw_uid,account.pw_gid)
+        run=['runuser','-u','var','--','env','-i','HOME=/home/var','USER=var','LOGNAME=var',
+             'PATH=/home/var/.cargo/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin',
+             'BUILD_SLOT_LABEL=bb-install-canary','/home/var/bin/build-slot']
+        steps=['set -e','mount --bind '+shlex.quote(str(admit))+' /mnt/bb/admit']
+        if generation is not None:
+            steps.append('mount -o bind,ro '+shlex.quote(str(generation))+' /home/var/bin')
+        # The staged generation's cache authority is not yet the host service.
+        if generation is not None:run.append('--cold')
+        steps+=['cd '+shlex.quote(str(crate)),
+                shlex.join([*run,'bash','-c','echo BB_CANARY_SCRIPT_OK']),
+                shlex.join([*run,'cargo','build','--offline','--quiet'])+' && echo BB_CANARY_CARGO_OK']
+        result=subprocess.run(['unshare','--mount','--propagation','private','sh','-c','\n'.join(steps)],
+                              capture_output=True,text=True,timeout=CANARY_TIMEOUT)
+        try:
+            if (admit/'admit.sock').exists():cache_authority(generation or ROOT/'current').drain_admission(admit)
+        finally:
+            output=result.stdout+result.stderr
+            if result.returncode or 'BB_CANARY_SCRIPT_OK' not in result.stdout or 'BB_CANARY_CARGO_OK' not in result.stdout:
+                raise RuntimeError('kind=GENERATION_CANARY stage='+('staged' if generation else 'live')+
+                                   ' rc='+str(result.returncode)+' output='+shlex.quote(output[-2000:]))
+    finally:
+        subprocess.run(['rm','-rf','--one-file-system',str(work)],check=False)
+
+
+def deploy(generation, store):
+    """Canary the staged generation, switch it in by one rename, canary the
+    live entry, and switch back to the retained predecessor on failure.
+    Admission stays drained throughout, so no lane job sees a failing
+    or mixed generation."""
+    with admission_drained(generation):
+        canary(generation)
+        before=current_generation();previous=None
+        try:
+            with generation_services(generation):previous=switch(generation,store)
+            canary()
+        except BaseException:
+            restore=previous or before or current_generation()
+            if restore is not None and current_generation()!=restore:
+                with generation_services(restore):link(ROOT/'current',restore)
+                link(ROOT/'previous',generation)
+            raise
+    return previous
+
+
+def publish_candidate(candidate):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
     stage=candidate_directory(candidate)
     token=stage/'.qualified.json'; fence=stage/'.predecessors.json'
-    selected=select_tools(only)
     for file in [stage, token, fence, *[stage/name for name in TOOLS]]:
         if file.is_symlink() or file.stat().st_uid != 0 or file.stat().st_mode & 0o022:
             raise PermissionError('candidate custody is unproven: '+str(file))
@@ -184,7 +328,6 @@ def publish_candidate(candidate, only=None):
         raise ValueError('use the qualified candidate installer to publish this generation')
     # Kernel file lock serializes installers, not jobs. Qualification happens
     # before the coordinator's idle gate lock; only publication takes that lock.
-    import fcntl
     with open('/mnt/bb/locks/bb-install.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         previous=json.loads(fence.read_text())
@@ -192,41 +335,22 @@ def publish_candidate(candidate, only=None):
                 or any(value is not None and (not isinstance(value,str) or len(value)!=64
                        or any(c not in '0123456789abcdef' for c in value)) for value in previous.values())):
             raise ValueError('invalid installed predecessor record')
-        if any(file_hash(BIN/name) != previous.get(name) for name in selected):
+        if any(file_hash(BIN/name) != previous.get(name) for name in TOOLS):
             raise ValueError('installed predecessor changed; re-qualify against current tools')
         BIN.mkdir(exist_ok=True)
         store=secure_bin()
-        with migration_scope(stage,selected):
-            for name in selected:
-                data=payload[name]
-                destination=store/name; backup=store/(name+'.bak-gatespeed')
-                if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())
-                publish(destination,data)
-            if 'bbcgroup-systemd-run' in selected:
-                directory=store/'bbcg';directory.mkdir(exist_ok=True)
-                entry=directory/'systemd-run';backup=directory/'systemd-run.bak-gatespeed'
-                if entry.exists() and not backup.exists():publish(backup,entry.read_bytes())
-                publish(entry,payload['bbcgroup-systemd-run'])
-        # Existing launchers also cross this privilege boundary; var can
-        # execute, but cannot truncate, unlink or replace a tool directly.
-        for directory, dirs, files in os.walk(store, followlinks=False):
-            os.chown(directory, 0, 0); Path(directory).chmod(0o755)
-            for name in files:
-                file=Path(directory)/name
-                if not file.is_symlink():os.chown(file,0,0);file.chmod(0o555)
-        installed={name:file_hash(store/name) for name in TOOLS}
-        publish(store/'installed-tools.json',json.dumps({'schema_version':1,'sha256':installed}).encode(),0o444)
-    return {name:hashes[name] for name in selected}
+        name=hashlib.sha256(json.dumps(hashes,sort_keys=True).encode()).hexdigest()[:16]
+        generation=materialize(generation_payload(payload,hashes),name)
+        deploy(generation,store)
+    return {'generation':str(generation),'sha256':hashes}
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--source');group.add_argument('--publish')
-    parser.add_argument('--only',nargs='+',choices=TOOLS)
     args = parser.parse_args()
     if args.source:
-        if args.only:parser.error('--only requires --publish')
         try:print(prepare(args.source))
         except (OSError,ValueError,subprocess.CalledProcessError) as error:
             recovery=shlex.join(['sudo','-n','/usr/bin/python3','-B',str(Path(args.source).resolve()/'bb-install.py'),
@@ -234,4 +358,4 @@ if __name__ == '__main__':
             print('kind=INSTALL_INFRA step=qualify-source detail='+shlex.quote(str(error))+
                   ' recovery='+shlex.quote(recovery),file=sys.stderr)
             raise SystemExit(224)
-    else:print(json.dumps(publish_candidate(args.publish,args.only)),file=__import__('sys').stderr)
+    else:print(json.dumps(publish_candidate(args.publish)),file=__import__('sys').stderr)
