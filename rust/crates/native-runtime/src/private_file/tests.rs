@@ -1,6 +1,22 @@
 use super::*;
 use std::io::{Read as _, Write as _};
 
+#[cfg(unix)]
+#[test]
+fn credential_identity_requires_a_persistent_account_namespace() -> io::Result<()> {
+    // Exercise the real account lookup without opening any credential or
+    // creating a lock in the user's profile. Fixture custody remains local.
+    let directory = unix_user_data_directory()?;
+    assert_eq!(persistent_user_directory(&directory)?, directory);
+    // The former production selector was exactly /tmp. It cannot pass the
+    // same admission: PrivateTmp maps that name to a different inode per service.
+    assert!(persistent_user_directory(Path::new("/tmp")).is_err());
+    assert!(persistent_user_directory(Path::new("/tmp/service/home")).is_err());
+    assert!(persistent_user_directory(Path::new("/var/tmp/service/home")).is_err());
+    assert!(persistent_user_directory(Path::new("relative/home")).is_err());
+    Ok(())
+}
+
 #[test]
 fn private_file_permissions_exist_before_any_secret_is_written() -> io::Result<()> {
     let root = tempfile::tempdir()?;

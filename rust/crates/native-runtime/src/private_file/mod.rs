@@ -106,6 +106,101 @@ pub fn open_or_create(path: &Path) -> io::Result<File> {
     }
 }
 
+/// One stable lock inode for a user-owned OS credential identity. Unlike a
+/// fixture or owner's directory, this namespace cannot vary with TMPDIR, HOME,
+/// or the path of a copied owner record. Never unlink these lock inodes.
+pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
+    #[cfg(any(test, feature = "test-support"))]
+    let root = {
+        static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(std::env::temp_dir).clone()
+    };
+    #[cfg(all(unix, not(any(test, feature = "test-support"))))]
+    let root = unix_user_data_directory().map_err(|error| io::Error::new(error.kind(),
+        format!("credential lock namespace lookup failed: {error}; recovery: configure a persistent absolute home outside /tmp and /var/tmp for the effective OS account")))?;
+    #[cfg(unix)]
+    let user = effective_user().to_string();
+    #[cfg(all(windows, not(any(test, feature = "test-support"))))]
+    let root = windows::user_data_directory().map_err(windows::io_error)?;
+    #[cfg(windows)]
+    let user = "user";
+    // A fixture credential exists in this process only. Its lock namespace
+    // follows that same custody boundary, without changing the locking API.
+    #[cfg(any(test, feature = "test-support"))]
+    let identity = format!("fixture-{}-{identity}", std::process::id());
+    open_or_create(&root.join(format!("acyclic-custody-{user}-{identity}.lock")))
+}
+
+// Resolve the account's home through the OS account database, never HOME,
+// TMPDIR or XDG overrides. PrivateTmp services and interactive processes must
+// reach the same persistent inode when they share the user's credential store.
+#[cfg(all(unix, any(test, not(feature = "test-support"))))]
+#[allow(
+    unsafe_code,
+    reason = "getpwuid_r resolves the effective account using caller-owned output buffers"
+)]
+fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt as _};
+    let uid = effective_user();
+    let mut buffer = vec![0; 1024];
+    loop {
+        let mut account = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut found = std::ptr::null_mut();
+        // SAFETY: account and found are writable, buffer spans its supplied
+        // length, and all returned pointers are consumed before buffer changes.
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                account.as_mut_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status == libc::ERANGE {
+            let length = buffer
+                .len()
+                .checked_mul(2)
+                .ok_or(io::ErrorKind::OutOfMemory)?;
+            buffer
+                .try_reserve_exact(length - buffer.len())
+                .map_err(io::Error::other)?;
+            buffer.resize(length, 0);
+            continue;
+        }
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status));
+        }
+        if found.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "credential lock account lookup failed; recovery: configure a persistent home for the effective OS account",
+            ));
+        }
+        // SAFETY: successful getpwuid_r with a nonnull result initialized
+        // account; pw_dir is its NUL-terminated string in the live buffer.
+        let account = unsafe { account.assume_init() };
+        if account.pw_dir.is_null() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let home = unsafe { CStr::from_ptr(account.pw_dir) };
+        let directory = fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(home.to_bytes())))?;
+        return persistent_user_directory(&directory).map(Path::to_path_buf);
+    }
+}
+
+#[cfg(all(unix, any(test, not(feature = "test-support"))))]
+fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
+    if !path.is_absolute()
+        || ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
+            .iter()
+            .any(|temporary| path.starts_with(temporary))
+    {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    Ok(path)
+}
+
 /// Reject an existing nonprivate entry while permitting a missing destination.
 pub fn validate_destination(path: &Path) -> io::Result<()> {
     validate_destination_with(path, |path| open(path, false))

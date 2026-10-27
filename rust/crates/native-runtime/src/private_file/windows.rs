@@ -17,6 +17,23 @@ use windows::{
     core::{BOOL, PCWSTR},
 };
 
+/// The OS user's profile, independent of process environment overrides.
+#[cfg(not(any(test, feature = "test-support")))]
+pub(super) fn user_data_directory() -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+    };
+    // SAFETY: the shell allocates this terminated path for the current token;
+    // copy its exact UTF-16 units, then release it with the required allocator.
+    let path = unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None) }
+        .map_err(io::Error::other)?;
+    let owned = unsafe { std::ffi::OsString::from_wide(path.as_wide()) };
+    unsafe { CoTaskMemFree(Some(path.0.cast())) };
+    Ok(owned.into())
+}
+
 // windows::core wraps Win32 status in HRESULT, whereas std::io classifies the
 // underlying Win32 code. Normalize exactly that facility at this OS boundary.
 pub(super) fn io_error(error: io::Error) -> io::Error {
