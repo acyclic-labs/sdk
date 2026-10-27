@@ -11,14 +11,14 @@ use std::{fmt::Write as _, sync::Arc};
 
 /// Immutable filesystem-object storage over one exact public Objects bucket.
 #[derive(Clone)]
-pub struct LogicalObjectStore<P> {
+pub struct LogicalObjectStore<P: ?Sized> {
     provider: Arc<P>,
     bucket: wire::BucketRef,
     maximum_object_bytes: u64,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
 }
 
-impl<P> LogicalObjectStore<P> {
+impl<P: ?Sized> LogicalObjectStore<P> {
     /// Binds an authenticated provider to the account's dedicated filesystem bucket.
     pub fn new(provider: Arc<P>, bucket: wire::BucketRef) -> Self {
         Self {
@@ -84,7 +84,7 @@ macro_rules! operate {
         result.map_err(crate::async_storage::object_error)
     }};
 }
-impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
+impl<P: ObjectsProvider + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
     fn decoded_cache_get(
         &self,
         key: crate::async_storage::DecodedCacheKey,

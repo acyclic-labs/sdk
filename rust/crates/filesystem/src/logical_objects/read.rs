@@ -47,7 +47,7 @@ fn native_payload_bytes(error: &acyclic_objects::v1::NativeObjectsError) -> Resu
             },
         )
 }
-impl<P: ObjectsProvider> LogicalObjectStore<P> {
+impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
     pub(super) async fn fetch(
         &self,
         id: ObjectId,

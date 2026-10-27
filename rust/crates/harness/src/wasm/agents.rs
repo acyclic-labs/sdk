@@ -43,7 +43,8 @@ mod guest;
 mod host;
 mod providers;
 use host::{HostModel, HostTool};
-use providers::{Objects, Providers, Streams, WasmAgentProviders};
+pub use providers::WasmAgentProviders;
+use providers::{Objects, Providers, Streams};
 
 type Authorities = StreamAuthorityStore<dyn StreamProvider>;
 type BrowserTurns = FilesystemTurnHost<Streams, Authorities, Objects>;
@@ -387,6 +388,7 @@ impl WasmAgents {
         handler: Arc<dyn Handler>,
         report: Option<Function>,
     ) -> std::result::Result<WasmAgents, JsValue> {
+        options.limits.validate(&mut None).map_err(js_error)?;
         let Providers { stream, filesystem } = providers;
         let agents = Arc::new(
             AgentHost::hosting(stream, within()?, handler, Arc::new(SystemClock), None)

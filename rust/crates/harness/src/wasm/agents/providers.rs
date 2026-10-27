@@ -23,7 +23,7 @@ use acyclic_fs::{
     browser::IndexedDbObjectStore,
     storage::ObjectWrite,
 };
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
+use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BrowserStream, BrowserStreamLimits, ChildrenPage,
     ChildrenPageRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt,
@@ -34,58 +34,49 @@ use acyclic_stream::{
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
-/// The stream provider of one host's agents.
-pub(super) enum Streams {
-    /// The browser profile's `IndexedDB` stream.
-    IndexedDb(BrowserStream),
-    /// Process memory, for hosts without durable browser storage.
-    Memory(MemoryStream),
-}
-
-macro_rules! stream {
-    ($streams:expr, $stream:ident => $body:expr) => {
-        match $streams {
-            Streams::IndexedDb($stream) => $body,
-            Streams::Memory($stream) => $body,
-        }
-    };
-}
+/// The stream provider of one host's agents: any [`StreamProvider`], so a
+/// host plugs in its own store (`IndexedDB`, memory, a remote Streams
+/// service, a Durable Object, Postgres) without an SDK edit. Rust hosts can
+/// stay generic over the provider instead; this sized handle exists because
+/// a JS-constructed provider is only known at run time.
+#[derive(Clone)]
+pub(super) struct Streams(pub(super) Arc<dyn StreamProvider>);
 
 #[async_trait::async_trait(?Send)]
 impl StreamProvider for Streams {
     fn operation_claims(&self) -> &OperationClaims {
-        stream!(self, inner => inner.operation_claims())
+        self.0.operation_claims()
     }
 
     fn has_exclusive_process_owner(&self) -> bool {
-        stream!(self, inner => inner.has_exclusive_process_owner())
+        self.0.has_exclusive_process_owner()
     }
 
     fn supports_deferred_durability(&self) -> bool {
-        stream!(self, inner => inner.supports_deferred_durability())
+        self.0.supports_deferred_durability()
     }
 
     async fn durability_barrier(&self) -> Result<(), StreamError> {
-        stream!(self, inner => inner.durability_barrier().await)
+        self.0.durability_barrier().await
     }
 
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        stream!(self, inner => inner.inspect_idempotency(idempotency_key).await)
+        self.0.inspect_idempotency(idempotency_key).await
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        stream!(self, inner => inner.tail(path).await)
+        self.0.tail(path).await
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        stream!(self, inner => inner.bounds(path).await)
+        self.0.bounds(path).await
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        stream!(self, inner => inner.watermarks(path).await)
+        self.0.watermarks(path).await
     }
 
     async fn durable_receipt(
@@ -93,19 +84,19 @@ impl StreamProvider for Streams {
         path: StreamPath,
         through: u64,
     ) -> Result<Option<DurableReceipt>, StreamError> {
-        stream!(self, inner => inner.durable_receipt(path, through).await)
+        self.0.durable_receipt(path, through).await
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        stream!(self, inner => inner.append(request).await)
+        self.0.append(request).await
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        stream!(self, inner => inner.fork(request).await)
+        self.0.fork(request).await
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        stream!(self, inner => inner.read(request).await)
+        self.0.read(request).await
     }
 
     async fn follow(
@@ -114,7 +105,7 @@ impl StreamProvider for Streams {
         from: u64,
         filter: FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        stream!(self, inner => inner.follow(path, from, filter).await)
+        self.0.follow(path, from, filter).await
     }
 
     async fn follow_checked(
@@ -124,7 +115,7 @@ impl StreamProvider for Streams {
         preceding: CommitId,
         filter: FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        stream!(self, inner => inner.follow_checked(path, from, preceding, filter).await)
+        self.0.follow_checked(path, from, preceding, filter).await
     }
 
     async fn follow_updates(
@@ -134,18 +125,18 @@ impl StreamProvider for Streams {
         preceding: Option<CommitId>,
         filter: FollowFilter,
     ) -> Result<FollowStream, StreamError> {
-        stream!(self, inner => inner.follow_updates(path, from, preceding, filter).await)
+        self.0.follow_updates(path, from, preceding, filter).await
     }
 
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        stream!(self, inner => inner.children_page(request).await)
+        self.0.children_page(request).await
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        stream!(self, inner => inner.commit(request).await)
+        self.0.commit(request).await
     }
 
     async fn commit_before(
@@ -153,28 +144,28 @@ impl StreamProvider for Streams {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        stream!(self, inner => inner.commit_before(request, deadline_unix_millis).await)
+        self.0.commit_before(request, deadline_unix_millis).await
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        stream!(self, inner => inner.read_commit(commit_id).await)
+        self.0.read_commit(commit_id).await
     }
 }
 
-/// The object store of one host's volumes.
+/// The object store of one host's volumes: the browser profile's own, or
+/// any [`ObjectsProvider`] a host plugs in (memory, S3, a Durable Object).
 pub(super) enum Objects {
     /// The browser profile's `IndexedDB` objects.
     IndexedDb(IndexedDbObjectStore),
-    /// An objects provider (process memory today), for hosts without
-    /// durable browser storage.
-    Memory(LogicalObjectStore<MemoryObjects>),
+    /// A host's objects provider.
+    Provider(LogicalObjectStore<dyn ObjectsProvider>),
 }
 
 macro_rules! each {
     ($objects:expr, $store:ident => $body:expr) => {
         match $objects {
             Objects::IndexedDb($store) => $body,
-            Objects::Memory($store) => $body,
+            Objects::Provider($store) => $body,
         }
     };
 }
@@ -309,7 +300,6 @@ impl Providers {
         durable: bool,
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
-        options.limits.validate(&mut None).map_err(js_error)?;
         let filesystem = FilesystemHost::new(
             Fs::new(authority, objects, EmbeddedCapabilities { durable }),
             &options.filesystem_provider,
@@ -355,7 +345,7 @@ impl Providers {
         .await
         .map_err(storage)?;
         Self::new(
-            Arc::new(Streams::IndexedDb(stream)),
+            Arc::new(Streams(Arc::new(stream))),
             authority,
             Objects::IndexedDb(objects),
             true,
@@ -367,21 +357,36 @@ impl Providers {
     /// nothing outlives the providers, and no browser storage is touched.
     /// The database names in `options` are unused.
     pub(super) fn memory(options: &WasmBrowserAgentOptions) -> Result<Self, JsValue> {
-        let stream = Arc::new(Streams::Memory(MemoryStream::new(Self::memory_limits(
-            options,
-        ))));
         let storage = |error: String| js_error(Error::Storage(error));
         let (objects, bucket) = MemoryObjects::with_bucket("agents", MemoryOptions::default())
             .map_err(|error| storage(error.to_string()))?;
-        let objects = LogicalObjectStore::new(Arc::new(objects), bucket)
-            .with_object_limit(options.maximum_object_bytes)
-            .map_err(|error| storage(error.to_string()))?;
-        let authority: Arc<dyn StreamProvider> = stream.clone();
-        Self::new(
-            stream,
-            StreamAuthorityStore::new(authority),
-            Objects::Memory(objects),
+        Self::over(
+            Arc::new(MemoryStream::new(Self::memory_limits(options))),
+            Arc::new(objects),
+            bucket,
             false,
+            options,
+        )
+    }
+
+    /// A host's own stream and objects providers: the stream carries the
+    /// agents and their volumes' authority, `bucket` of `objects` the
+    /// volumes' objects, and `durable` says whether both outlive the host.
+    pub(super) fn over(
+        stream: Arc<dyn StreamProvider>,
+        objects: Arc<dyn ObjectsProvider>,
+        bucket: acyclic_objects::v1::wire::BucketRef,
+        durable: bool,
+        options: &WasmBrowserAgentOptions,
+    ) -> Result<Self, JsValue> {
+        let objects = LogicalObjectStore::new(objects, bucket)
+            .with_object_limit(options.maximum_object_bytes)
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        Self::new(
+            Arc::new(Streams(Arc::clone(&stream))),
+            StreamAuthorityStore::new(stream),
+            Objects::Provider(objects),
+            durable,
             options,
         )
     }
@@ -394,6 +399,8 @@ impl Providers {
         owner: &WasmReducer,
         registry: &WasmAgentRegistry,
     ) -> Result<BrowserHandler, JsValue> {
+        // The options a handler runs under are its own, not its providers'.
+        options.limits.validate(&mut None).map_err(js_error)?;
         let (model, provider, compaction) = registry
             .model
             .clone()
@@ -435,6 +442,31 @@ impl Providers {
 #[wasm_bindgen]
 pub struct WasmAgentProviders {
     pub(super) providers: Providers,
+}
+
+impl WasmAgentProviders {
+    /// A host's own storage, for a host that builds its artifact over this
+    /// crate: any stream provider (the agents and their volumes' authority)
+    /// and any objects provider, whose `bucket` holds the volumes' objects;
+    /// `durable` says whether both outlive the host. The handle serves
+    /// [`AgentGuest::open`](super::guest::AgentGuest::open) and
+    /// [`WasmAgents::open_hosting`](super::WasmAgents::open_hosting) like
+    /// the built-in constructors.
+    ///
+    /// # Errors
+    /// When `options` or the object limit are invalid.
+    pub fn over(
+        stream: Arc<dyn StreamProvider>,
+        objects: Arc<dyn ObjectsProvider>,
+        bucket: acyclic_objects::v1::wire::BucketRef,
+        durable: bool,
+        options: JsValue,
+    ) -> Result<Self, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        Ok(Self {
+            providers: Providers::over(stream, objects, bucket, durable, &options)?,
+        })
+    }
 }
 
 #[wasm_bindgen]

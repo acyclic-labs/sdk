@@ -1,5 +1,5 @@
 use super::*;
-impl<P: ObjectsProvider> LogicalObjectStore<P> {
+impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
     pub(super) fn validate_write(
         &self,
         id: ObjectId,

@@ -51,6 +51,8 @@ use admission::*;
 mod content;
 use content::*;
 mod reader;
+#[cfg(feature = "browser")]
+pub use agents::WasmAgentProviders;
 pub use reader::BrowserContentReader;
 mod context;
 use context::*;
