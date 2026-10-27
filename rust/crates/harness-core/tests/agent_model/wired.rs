@@ -523,8 +523,8 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
     let mut state = AgentState::adopted(path.clone(), &adopted(id(9)));
     state.open_children.insert(path.child(&id(10))?);
     // Each spawn call in order, under `limit`: which ones the tool refused.
-    let refused = |limit: Option<u32>| {
-        let (state, volume) = (state.clone(), binding.volume.clone());
+    let refused = |state: AgentState, limit: Option<u32>| {
+        let volume = binding.volume.clone();
         async move {
             let effects = Arc::new(Recorded::default());
             let mut tools = ToolRegistry::default();
@@ -557,8 +557,25 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
         }
     };
     // One open child and a limit of two: `b` fits (twice, as one child), `c` does not.
-    assert_eq!(refused(Some(2)).await?, (vec![false, false, true], 2));
-    // Control: without a limit every spawn is recorded.
-    assert_eq!(refused(None).await?, (vec![false, false, false], 3));
+    assert_eq!(
+        refused(state.clone(), Some(2)).await?,
+        (vec![false, false, true], 2)
+    );
+    // Control: without a configured limit every spawn is recorded.
+    assert_eq!(
+        refused(state.clone(), None).await?,
+        (vec![false, false, false], 3)
+    );
+    // Without one the agent's hard limit still holds: one below it, `b` fits
+    // and `c` is refused to the model rather than dropped by the step.
+    let mut full = state;
+    for n in 0..MAX_OPEN_CHILDREN - 2 {
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
+        full.open_children
+            .insert(path.child(&AgentId::from_bytes(bytes))?);
+    }
+    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
+    assert_eq!(refused(full, None).await?, (vec![false, false, true], 2));
     Ok(())
 }

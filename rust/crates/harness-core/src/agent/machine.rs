@@ -19,9 +19,6 @@ pub const MAX_OPEN_CHILDREN: usize = 256;
 /// Most inputs held in the checkpoint. Later input stays in the inbox, which is
 /// the agent's unbounded durable queue, and is read back as the window drains.
 pub const MAX_QUEUED: usize = 32;
-/// Most spawn outcomes held in the checkpoint, oldest evicted first: as many
-/// as the agent may have open children.
-pub const MAX_SPAWN_OUTCOMES: usize = MAX_OPEN_CHILDREN;
 
 /// Why a step did not create a requested child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,8 +146,10 @@ pub struct AgentState {
     pub reported: bool,
     /// Turn driver checkpoint while a turn is in progress.
     pub turn: Option<Vec<u8>>,
-    /// The outcome of each recent spawn, client request or tool, keyed by its
-    /// intent and in application order; at most [`MAX_SPAWN_OUTCOMES`].
+    /// The outcome of each spawn, client request or tool, that the step which
+    /// committed this state applied, keyed by intent in application order.
+    /// Each step starts it empty: an earlier step's outcomes stay in that
+    /// step's own committed checkpoint, so the state never grows with them.
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     pub spawns: VecDeque<(IntentId, SpawnOutcome)>,
 }
@@ -180,7 +179,7 @@ impl AgentState {
         }
     }
 
-    /// The recorded outcome of the spawn named `intent`, while retained.
+    /// The outcome of the spawn named `intent`, if this state's step applied it.
     #[must_use]
     pub fn spawn_outcome(&self, intent: &IntentId) -> Option<&SpawnOutcome> {
         self.spawns
@@ -358,6 +357,11 @@ pub async fn step<T: TurnDriver + ?Sized>(
     let previous = state
         .as_ref()
         .map_or(Phase::Idle, |state| state.phase.clone());
+    // This step records only the spawns it applies.
+    let state = state.map(|mut state| {
+        state.spawns.clear();
+        state
+    });
     let mut state = match (state, wake) {
         (
             None,
@@ -674,8 +678,5 @@ fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize) {
         }
         state.spawns.retain(|(recorded, _)| *recorded != intent);
         state.spawns.push_back((intent, outcome));
-        while state.spawns.len() > MAX_SPAWN_OUTCOMES {
-            state.spawns.pop_front();
-        }
     }
 }
