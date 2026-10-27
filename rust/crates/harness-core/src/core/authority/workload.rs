@@ -348,7 +348,7 @@ pub(super) fn issue(
             },
         ],
         SigningKey::from_bytes(&entropy()),
-        &issuer.public_workload_trust()?,
+        issuer.public_trust_revision()?.0.as_ref(),
         timestamp,
     )
     .map_err(unauthorized)?;
@@ -397,7 +397,7 @@ pub(super) fn resource_credential(
             },
         ],
         SigningKey::from_bytes(&entropy()),
-        &issuer.public_workload_trust()?,
+        issuer.public_trust_revision()?.0.as_ref(),
         timestamp,
     )
     .and_then(VerifiedCapability::seal)
@@ -445,8 +445,8 @@ pub(super) fn verify(
         return Err(unauthorized("foreign issuer"));
     }
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
-    let authenticated = authenticate(&verifier.public, &*trust, scope, timestamp, work)?;
-    authorize_scope(&*trust, audience, scope, timestamp, &authenticated, work)
+    let authenticated = authenticate(&verifier.public, trust.as_ref(), scope, timestamp, work)?;
+    authorize_scope(trust.as_ref(), audience, scope, timestamp, &authenticated, work)
 }
 pub(super) fn verify_trusted(
     trust: &dyn verify::Trust,

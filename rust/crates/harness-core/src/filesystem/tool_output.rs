@@ -157,7 +157,7 @@ impl AuthorityState for LocalTrust {
             .public_trust_revision()
             .map_err(|_| VerifyError::Trust)?;
         Ok(TrustSnapshot {
-            trust: Arc::new(trust),
+            trust,
             now_unix_seconds: seconds(self.clock.as_ref()),
             revision,
         })

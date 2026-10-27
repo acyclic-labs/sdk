@@ -68,11 +68,12 @@ pub(in crate::core::authority) fn record(
 ) -> Result<Vec<u8>> {
     let timestamp = now();
     let trust = runtime.public.trust.read().map_err(unauthorized)?;
-    let authenticated = authenticate(&runtime.public, &*trust, scope, timestamp, work)?;
-    let capability = authorize_scope(&*trust, audience, scope, timestamp, &authenticated, work)?;
+    let authenticated = authenticate(&runtime.public, trust.as_ref(), scope, timestamp, work)?;
+    let capability =
+        authorize_scope(trust.as_ref(), audience, scope, timestamp, &authenticated, work)?;
     let name = resource(audience)?;
     let signer = runtime.workload.receipt_signer(id, timestamp)?;
-    let receipt = RuntimeAdmission::new(&signer, &*trust, timestamp)
+    let receipt = RuntimeAdmission::new(&signer, trust.as_ref(), timestamp)
         .record(
             &capability,
             &Request {
@@ -112,7 +113,7 @@ pub(in crate::core::authority) fn verify_record(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Arc<AuthenticatedRecord>> {
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
-    let record = authenticate_record(&verifier.public, &*trust, encoded, now(), work)?;
+    let record = authenticate_record(&verifier.public, trust.as_ref(), encoded, now(), work)?;
     if record.account_id().map_err(unauthorized)? != verifier.id {
         return Err(unauthorized("foreign admission account"));
     }
@@ -136,7 +137,7 @@ pub(in crate::core::authority) fn verify_record(
     record
         .authenticated
         .check_request(
-            &*trust,
+            trust.as_ref(),
             &Request {
                 target: Target::Resource {
                     action: ACTION,
@@ -165,7 +166,10 @@ pub(in crate::core::authority) fn live_record(
 ) -> Result<Arc<AuthenticatedRecord>> {
     let capability = verifier.authenticated_event(event, work)?;
     capability
-        .check(&*verifier.public.trust.read().map_err(unauthorized)?, now())
+        .check(
+            verifier.public.trust.read().map_err(unauthorized)?.as_ref(),
+            now(),
+        )
         .map_err(unauthorized)?;
     Ok(capability)
 }
