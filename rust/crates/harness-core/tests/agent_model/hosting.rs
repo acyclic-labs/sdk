@@ -1,6 +1,6 @@
 //! The admitted root producer: a root's fresh volumes and adoption are one
-//! prepared commit, and an admission that does not cover it is refused before
-//! any stream IO.
+//! commit prepared without IO, and an admission that does not cover it is
+//! refused before any.
 
 use super::{Result, id, intent, wired::Refusing};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
@@ -183,13 +183,15 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
         let prepared = bound
             .prepare_root(&intent("root"), root(id(7), vec![private, shared]))
             .await;
-        assert!(prepared.is_err());
-        Ok::<_, Box<dyn std::error::Error>>(stream.calls.load(Ordering::SeqCst))
+        Ok::<_, Box<dyn std::error::Error>>((prepared.is_ok(), stream.calls.load(Ordering::SeqCst)))
     };
     let both: &'static [VolumeOperation] = &[VolumeOperation::Read, VolumeOperation::Write];
-    // Control: a covering admission reaches the stream (and fails there).
-    let reached = run(audience.clone(), audience.clone(), None, both, true).await?;
-    assert!(reached > 0, "a covering admission prepares its volumes");
+    // Control: a covering admission prepares its root, and preparing is pure.
+    assert_eq!(
+        run(audience.clone(), audience.clone(), None, both, true).await?,
+        (true, 0),
+        "a covering admission prepares without IO"
+    );
     for (case, issued, given, agent, operations, shared_write) in [
         (
             "read-only fresh private",
@@ -224,8 +226,11 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
             true,
         ),
     ] {
-        let calls = run(issued, given, agent, operations, shared_write).await?;
-        assert_eq!(calls, 0, "{case}: refused before any stream IO");
+        assert_eq!(
+            run(issued, given, agent, operations, shared_write).await?,
+            (false, 0),
+            "{case}: refused before any stream IO"
+        );
     }
     Ok(())
 }
