@@ -7,7 +7,7 @@
 
 use super::{
     AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase, Sender,
-    StatusRecord, VolumeBinding,
+    SpawnRequest, StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -335,6 +335,20 @@ pub async fn step<T: TurnDriver + ?Sized>(
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm) => state,
+        // A requested spawn is this step's own spawn effect; it is never a
+        // turn input, so it neither wakes nor reorders the turn.
+        (
+            Some(state),
+            Wake::Inbox {
+                sequence,
+                record: InboxRecord::Spawn(spawn),
+            },
+        ) => {
+            if let Some(out) = requested_spawn(&state, sequence, spawn) {
+                outs.push(out);
+            }
+            state
+        }
         (Some(state), Wake::Inbox { sequence, record }) => admit(state, sequence, record)?,
     };
     if state.closed {
@@ -458,7 +472,10 @@ fn input(sequence: u64, record: InboxRecord) -> Option<TurnInput> {
             id: hook.id,
             event: hook.event,
         }),
-        InboxRecord::ForkAdopted(_) | InboxRecord::Cancel(_) | InboxRecord::Archive(_) => None,
+        InboxRecord::ForkAdopted(_)
+        | InboxRecord::Cancel(_)
+        | InboxRecord::Archive(_)
+        | InboxRecord::Spawn(_) => None,
     }
 }
 
@@ -558,6 +575,27 @@ fn report(state: &AgentState, outcome: AgentOutcome, outs: &mut Vec<Out>) {
 }
 
 /// Records spawned children as open.
+/// The child that the `Spawn` request at `parent`'s inbox `sequence` names,
+/// and its spawning intent. Tool spawns name theirs `spawn:*`, so the two
+/// never collide.
+pub fn requested_child(parent: &AgentPath, sequence: u64) -> Result<(IntentId, AgentPath), Error> {
+    let intent = IntentId::try_from(format!("request:{sequence}"))?;
+    let child = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))?;
+    Ok((intent, child))
+}
+
+/// The spawn a request at `sequence` makes, or `None` when the agent is
+/// archived, its tree is at depth, or it has [`MAX_OPEN_CHILDREN`]: a refused
+/// request is consumed rather than failing every retry of the step.
+fn requested_spawn(state: &AgentState, sequence: u64, spawn: SpawnRequest) -> Option<Out> {
+    let (intent, _) = requested_child(&state.path, sequence).ok()?;
+    (!state.closed && state.open_children.len() < MAX_OPEN_CHILDREN).then(|| Out::Spawn {
+        intent,
+        brief: Some(spawn.brief.into_bytes()),
+        volumes: Vec::new(),
+    })
+}
+
 fn track_children(state: &mut AgentState, outs: &[Out]) -> Result<(), Error> {
     for out in outs {
         if let Out::Spawn { intent, .. } = out {

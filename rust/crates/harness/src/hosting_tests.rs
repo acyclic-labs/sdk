@@ -133,6 +133,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             capabilities: EmbeddedCapabilities::MEMORY,
             provider: provider()?,
             within: ActorReference::new(b"account", b"agents", b"owner")?,
+            attestor: None,
         },
         Turns {
             executors: Arc::new(Never),
@@ -184,6 +185,75 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &AgentCommand::Root).await?,
         Ok(AgentReply::Root { agent }) if agent == root
     ));
+    let children = AgentCommand::Children {
+        agent: root.clone(),
+        page: Default::default(),
+    };
+    assert!(matches!(
+        call(&client, "agents", &children).await?,
+        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
+    ));
+    // A spawn is the parent's own step: the reply names the child, and the
+    // running host's next step for the parent creates it.
+    let runner = {
+        let server = server.clone();
+        tokio::spawn(async move { server.run(|_, _| {}).await })
+    };
+    let spawn = AgentCommand::Spawn {
+        parent: root.clone(),
+        id: IntentId::try_from("s1")?,
+        brief: ModelContent::Text("child".into()),
+    };
+    let Ok(AgentReply::Spawned { agent: child, .. }) = call(&client, "agents", &spawn).await?
+    else {
+        return Err("spawn was not delivered".into());
+    };
+    assert!(
+        matches!(call(&client, "agents", &spawn).await?, Ok(AgentReply::Spawned { agent, .. }) if agent == child),
+        "a retried spawn names the same child"
+    );
+    let mut listed = false;
+    for _ in 0..500 {
+        if let Ok(AgentReply::Children { items, .. }) = call(&client, "agents", &children).await?
+            && items.iter().any(|item| item.agent == child)
+        {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(listed, "the parent's step spawned the child");
+    // Nothing waits on an approval, so none is listed and none can be decided.
+    assert!(matches!(
+        call(
+            &client,
+            "agents",
+            &AgentCommand::Approvals {
+                agent: root.clone(),
+                page: Default::default(),
+            }
+        )
+        .await?,
+        Ok(AgentReply::Approvals { items, next: None }) if items.is_empty()
+    ));
+    assert!(matches!(
+        call(
+            &client,
+            "agents",
+            &AgentCommand::Decide {
+                agent: root.clone(),
+                id: IntentId::try_from("approval-1")?,
+                binding: crate::interaction::ApprovalBinding {
+                    operation_id: OperationId::from_bytes([3; 16]),
+                    action_digest: [4; 32],
+                },
+                approved: true,
+                reason: None,
+            }
+        )
+        .await?,
+        Err(AgentControlFailure::Refused { code }) if code == "invalid_agent_record"
+    ));
     let prompt = AgentCommand::Prompt {
         agent: root.clone(),
         id: IntentId::try_from("p1")?,
@@ -195,19 +265,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             delivery: Delivered::Committed { .. }
         })
     ));
-    assert!(matches!(
-        call(
-            &client,
-            "agents",
-            &AgentCommand::Children {
-                agent: root.clone(),
-                page: Default::default(),
-            }
-        )
-        .await?,
-        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
-    ));
-    // Outside the admitted tree, and unserved commands, are typed refusals.
+    // Outside the admitted tree is a typed refusal.
     let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
     assert!(matches!(
         call(
@@ -221,19 +279,6 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         .await?,
         Err(AgentControlFailure::Refused { code }) if code == "no_such_agent"
     ));
-    assert!(matches!(
-        call(
-            &client,
-            "agents",
-            &AgentCommand::Spawn {
-                parent: root.clone(),
-                id: IntentId::try_from("s1")?,
-                brief: ModelContent::Text("child".into()),
-            }
-        )
-        .await?,
-        Err(AgentControlFailure::Refused { code }) if code == "agent_unsupported"
-    ));
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(
         call(&client, "elsewhere", &AgentCommand::Root)
@@ -242,5 +287,6 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     );
     owner.0.store(true, Ordering::SeqCst);
     assert!(call(&client, "agents", &AgentCommand::Root).await.is_err());
+    runner.abort();
     Ok(())
 }

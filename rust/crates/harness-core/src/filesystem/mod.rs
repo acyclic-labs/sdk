@@ -36,6 +36,7 @@ mod agent_effects;
 mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
+pub mod attestation;
 pub mod hosting;
 mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, spawned_volume};

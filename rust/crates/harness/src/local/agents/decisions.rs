@@ -1,7 +1,7 @@
 //! Trusted local decision ingress over the agent journal's approval owner.
 
 use super::*;
-use crate::{agent::Approval, approvals::ApprovalResponder};
+use crate::approvals::ApprovalResponder;
 
 impl LocalHarness {
     /// Durably decide an agent request, then wake its waiting turn.
@@ -34,41 +34,9 @@ impl LocalHarness {
         {
             return Err(crate::agent::Error::NoSuchAgent);
         }
-        let state = hosted.agents.state(agent).await?;
-        let from = match responder {
-            ApprovalResponder::Human(principal) => Sender::User {
-                principal: principal.to_owned(),
-            },
-            ApprovalResponder::Parent(parent) => {
-                let path = state
-                    .parent
-                    .as_ref()
-                    .filter(|path| &path.id() == parent)
-                    .ok_or(crate::agent::Error::Record(
-                        "approval responder is not the parent",
-                    ))?;
-                Sender::Agent { path: path.clone() }
-            }
-            _ => {
-                return Err(crate::agent::Error::Record(
-                    "external approval role is required",
-                ));
-            }
-        };
         hosted
             .turns
-            .decide(&state, request.as_str(), responder, approved, reason)
-            .await
-            .map_err(failure)?;
-        hosted
-            .agents
-            .send(
-                agent,
-                &from,
-                &InboxRecord::Approval(Approval {
-                    id: request.clone(),
-                }),
-            )
+            .respond(&hosted.agents, agent, request, responder, approved, reason)
             .await
     }
 }

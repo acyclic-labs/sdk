@@ -8,6 +8,7 @@ mod admission;
 mod identity;
 mod observe;
 mod publication;
+mod roots;
 mod vectors;
 mod wire;
 
@@ -53,6 +54,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     identified("publication", publication::verify(backend).await)?;
     identified("admission", admission::verify(backend).await)?;
     identified("identity", identity::verify(backend).await)?;
+    identified("roots", roots::verify(backend).await)?;
     identified("guest wire", wire::verify(backend).await)?;
     identified("restart", vectors::restart(backend).await)?;
     Ok(())
