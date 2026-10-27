@@ -222,3 +222,84 @@ fn unguarded_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::err
     );
     Ok(())
 }
+
+#[test]
+fn nonroot_enrollment_negotiates_without_granting_root_filesystem_access()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut owner, _, work) = enrollment(true)?;
+    Arc::get_mut(&mut owner)
+        .ok_or("unique enrollment")?
+        .posix
+        .identities = vec![(1000, 1000)];
+    let admission = GuestSessionAdmission::local_root(owner)?;
+    let mut response = vec![0; admission.packet_capacity()];
+    // Actual kernel INIT carries root. No credential mutation is needed for
+    // negotiation; this must not enroll root for later filesystem requests.
+    admission.packet(&captured(26)?, &mut response, |bytes| {
+        let bytes = bytes.ok_or(libc::EPROTO)?;
+        assert_eq!(bytes.get(4..8), Some(0_i32.to_ne_bytes().as_slice()));
+        Ok(())
+    })?;
+    let mut lookup = captured(1)?;
+    // Explicit negative perturbation: the real lookup was issued by uid/gid
+    // 1000. Re-tag it as root, which this enrollment deliberately excludes.
+    lookup.get_mut(24..32).ok_or("kernel credentials")?.fill(0);
+    let before = work.receipt();
+    admission.packet(&lookup, &mut response, |bytes| {
+        let bytes = bytes.ok_or(libc::EPROTO)?;
+        assert_eq!(
+            bytes.get(4..8),
+            Some((-libc::EACCES).to_ne_bytes().as_slice())
+        );
+        Ok(())
+    })?;
+    assert_eq!(
+        work.receipt(),
+        before,
+        "root must not enter a source callback"
+    );
+    // Explicit credential perturbation of the captured lookup: the enrolled
+    // caller enters dispatch and gets the source's real missing-name result.
+    lookup
+        .get_mut(24..28)
+        .ok_or("kernel uid")?
+        .copy_from_slice(&1000_u32.to_ne_bytes());
+    lookup
+        .get_mut(28..32)
+        .ok_or("kernel gid")?
+        .copy_from_slice(&1000_u32.to_ne_bytes());
+    admission.packet(&lookup, &mut response, |bytes| {
+        let bytes = bytes.ok_or(libc::EPROTO)?;
+        assert_eq!(
+            bytes.get(4..8),
+            Some((-libc::ENOENT).to_ne_bytes().as_slice())
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn kernel_negotiation_still_checks_the_original_revocable_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (owner, guard, work) = enrollment(true)?;
+    let admission = GuestSessionAdmission::local_root(owner)?;
+    guard.0.store(false, Ordering::Release);
+    let before = work.receipt();
+    let mut response = vec![0; admission.packet_capacity()];
+    assert!(
+        admission
+            .packet(&captured(26)?, &mut response, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
+    assert!(admission.take_callback_failure().is_some());
+    Ok(())
+}
