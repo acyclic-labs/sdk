@@ -132,7 +132,7 @@ receive the same Rust-admitted bytes as `serializedInput`.
 
 Enable the `conformance` feature to run the public AgentHost suite against your
 own backend. Implement `conformance::Backend` and register its async factory
-with `acyclic_harness::conformance::suite!(MyBackend::fresh)`. The suite owns
+with `acyclic_harness::conformance::suite!(MyBackend::create)`. The suite owns
 its fault injection and assertions; the backend supplies retained storage and
 its actual handler and hosting transport. `conformance::bench` and
 `conformance::scale` report data and control requests through the shared
