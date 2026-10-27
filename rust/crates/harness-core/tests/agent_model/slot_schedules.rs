@@ -22,7 +22,15 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
             wait: Wait::Host(host),
             drops: None,
         }]);
-        let result = step(&driver, &root, Some(state), 1, Wake::Alarm).await?;
+        let result = step(
+            &driver,
+            &root,
+            Some(state),
+            1,
+            Wake::Alarm,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
         assert!(
             matches!(
                 result.state.phase,
@@ -77,17 +85,43 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
             outcome: AgentOutcome::Archived,
         }),
     };
-    state = step(&driver, &root, Some(state), 2, done()).await?.state;
+    state = step(
+        &driver,
+        &root,
+        Some(state),
+        2,
+        done(),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?
+    .state;
     assert_eq!(
         state.reserved_children, 1,
         "vacated slot still belongs to the paused turn"
     );
-    state = step(&driver, &root, Some(state), 3, done()).await?.state;
+    state = step(
+        &driver,
+        &root,
+        Some(state),
+        3,
+        done(),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?
+    .state;
     assert_eq!(
         state.reserved_children, 1,
         "duplicate completion reserves no second slot"
     );
-    let client = step(&driver, &root, Some(state), 4, spawn_request(3)).await?;
+    let client = step(
+        &driver,
+        &root,
+        Some(state),
+        4,
+        spawn_request(3),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     assert!(
         spawns(&client.outs).is_empty(),
         "client took a recorded replay's vacated slot"
@@ -103,6 +137,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
                 id: intent("approval"),
             }),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     assert_eq!(spawns(&resumed.outs), [recorded]);
@@ -152,9 +187,16 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                         drops: None,
                     },
                 ]);
-                state = step(&driver, &root, Some(state), 1, Wake::Alarm)
-                    .await?
-                    .state;
+                state = step(
+                    &driver,
+                    &root,
+                    Some(state),
+                    1,
+                    Wake::Alarm,
+                    acyclic_actors::guest::CancellationToken::new(),
+                )
+                .await?
+                .state;
                 assert_eq!(usize::from(state.reserved_children), recorded);
                 for cut in 0..=5 {
                     if cut == resume_at {
@@ -169,6 +211,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                                     id: intent("approval"),
                                 }),
                             },
+                            acyclic_actors::guest::CancellationToken::new(),
                         )
                         .await?;
                         assert_eq!(spawns(&resumed.outs), named, "room={room}, cut={cut}");
@@ -184,6 +227,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             Some(before.clone()),
                             sequence + 1,
                             spawn_request(sequence),
+                            acyclic_actors::guest::CancellationToken::new(),
                         )
                         .await?;
                         // A client-spawn step never runs the driver. Losing its
@@ -194,6 +238,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             Some(before),
                             sequence + 1,
                             spawn_request(sequence),
+                            acyclic_actors::guest::CancellationToken::new(),
                         )
                         .await?;
                         assert_eq!(first.state, replay.state);

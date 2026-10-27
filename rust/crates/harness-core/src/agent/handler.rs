@@ -57,6 +57,13 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                 code: CodeSha256::try_from(digest.as_bytes().to_vec()).map_err(guest)?,
                 codec: codec(),
                 subscriptions: vec![INBOX.into()],
+                interrupts: [b"{\"cancel\":".as_slice(), b"{\"archive\":".as_slice()]
+                    .into_iter()
+                    .map(|prefix| acyclic_actors::guest::Interrupt {
+                        subscription: INBOX.into(),
+                        value_prefix: bytes::Bytes::copy_from_slice(prefix),
+                    })
+                    .collect(),
                 bindings: Vec::new(),
                 limits,
             },
@@ -237,6 +244,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         &self,
         delivery: Delivery,
         checkpoint: Option<&Checkpoint>,
+        cancellation: acyclic_actors::guest::CancellationToken,
     ) -> Result<Transition, Error> {
         let saved = checkpoint
             .map(|checkpoint| {
@@ -303,7 +311,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                 state.refill(records, end);
             }
         }
-        let mut step = step(&self.driver, &path, state, cursor, wake).await?;
+        let mut step = step(&self.driver, &path, state, cursor, wake, cancellation).await?;
         let participant = match &self.volumes {
             Some(volumes) => volumes.bind(&step.state, &mut step.outs)?,
             None => None,
@@ -361,7 +369,12 @@ where
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
-        Box::pin(async move { self.transition(delivery, checkpoint).await.map_err(guest) })
+        Box::pin(async move {
+            self.transition(delivery, checkpoint, cancellation)
+                .await
+                .map_err(guest)
+        })
     }
 }

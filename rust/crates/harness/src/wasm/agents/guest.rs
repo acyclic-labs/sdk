@@ -15,7 +15,9 @@ use crate::{
     core::{Authority, Scope},
     filesystem::TurnAdmission,
 };
-use acyclic_actors::guest::{GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, wire};
+use acyclic_actors::guest::{
+    CancellationToken, GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, wire,
+};
 use js_sys::{Function, Promise, Uint8Array};
 use serde::Deserialize;
 use tsify::Tsify;
@@ -107,10 +109,17 @@ impl AgentGuest {
         &self,
         delivery: Vec<u8>,
         #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] signal: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] interrupt: JsValue,
     ) -> Result<Vec<u8>, JsValue> {
         let (delivery, checkpoint) = wire::decode_delivery(&delivery).map_err(guest_error)?;
-        let (turn, handle) =
-            futures::future::abortable(self.handler.on_record(delivery, checkpoint.as_ref()));
+        let cancellation = CancellationToken::new();
+        let token = cancellation.clone();
+        let _interrupt = Listening::abort(&interrupt, move || token.cancel())?;
+        let (turn, handle) = futures::future::abortable(self.handler.on_record(
+            delivery,
+            checkpoint.as_ref(),
+            cancellation,
+        ));
         let _listening = Listening::abort(&signal, move || handle.abort())?;
         let transition = turn
             .await
@@ -127,14 +136,13 @@ struct Listening {
 }
 
 impl Listening {
-    fn abort(signal: &JsValue, abort: impl FnMut() + 'static) -> Result<Option<Self>, JsValue> {
+    fn abort(signal: &JsValue, mut abort: impl FnMut() + 'static) -> Result<Option<Self>, JsValue> {
         if signal.is_undefined() {
             return Ok(None);
         }
         if js_sys::Reflect::get(signal, &JsValue::from_str("aborted"))?.is_truthy() {
-            return Err(guest_error(GuestError::Handler(
-                "delivery was aborted".into(),
-            )));
+            abort();
+            return Ok(None);
         }
         let listening = Self {
             signal: signal.clone(),
@@ -168,25 +176,38 @@ fn rejected(error: JsValue) -> GuestError {
 
 /// The host's call of a guest's `onRecord`, for [`wire::Remote`]. Dropping
 /// the call (the runtime's handler timeout) aborts the guest's turn.
-pub(super) fn call(on_record: Function) -> impl Fn(Vec<u8>) -> GuestFuture<'static, Vec<u8>> {
-    move |delivery| {
+pub(super) fn call(
+    on_record: Function,
+) -> impl Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>> {
+    move |delivery, cancellation| {
         let started = Cancel::new()
             .map_err(|error| GuestError::Handler(error.into()))
             .and_then(|cancel| {
+                let interrupt = Cancel::new().map_err(|error| GuestError::Handler(error.into()))?;
                 let promise = on_record
-                    .call2(
+                    .call3(
                         &JsValue::UNDEFINED,
                         &Uint8Array::from(delivery.as_slice()),
                         &cancel.signal,
+                        &interrupt.signal,
                     )
                     .map_err(rejected)?;
-                Ok((cancel, promise))
+                Ok((cancel, interrupt, promise))
             });
         Box::pin(async move {
-            let (_cancel, promise) = started?;
-            let value = JsFuture::from(Promise::resolve(&promise))
-                .await
-                .map_err(rejected)?;
+            let (_cancel, interrupt, promise) = started?;
+            let reply = JsFuture::from(Promise::resolve(&promise));
+            futures::pin_mut!(reply);
+            let stopped = cancellation.cancelled();
+            futures::pin_mut!(stopped);
+            let value = match futures::future::select(reply, stopped).await {
+                futures::future::Either::Left((value, _)) => value,
+                futures::future::Either::Right(((), reply)) => {
+                    drop(interrupt);
+                    reply.await
+                }
+            }
+            .map_err(rejected)?;
             let view: Uint8Array = value.dyn_into().map_err(rejected)?;
             super::super::bytes::snapshot(&view, |_| Ok(()))
                 .map(|(bytes, ())| bytes)

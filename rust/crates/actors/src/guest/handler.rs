@@ -16,10 +16,33 @@ pub struct Manifest {
     /// first cursor when its state is created, so one package serves many
     /// actors whose inputs live at different paths.
     pub subscriptions: Vec<String>,
+    /// Records that cooperatively interrupt an in-flight delivery. These
+    /// filters observe later records without advancing committed cursors.
+    pub interrupts: Vec<Interrupt>,
     /// Canonical explicit resource bindings.
     pub bindings: Vec<domain::Binding>,
     /// Canonical execution and checkpoint bounds.
     pub limits: domain::ActorLimits,
+}
+
+/// One byte-prefix filter on a declared subscription's canonical values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interrupt {
+    /// Declared subscription to observe.
+    pub subscription: String,
+    /// Nonempty canonical record prefix.
+    pub value_prefix: Bytes,
+}
+
+impl Manifest {
+    pub(crate) fn validate_interrupts(&self) -> Result<(), GuestError> {
+        if self.interrupts.iter().any(|filter| {
+            filter.value_prefix.is_empty() || !self.subscriptions.contains(&filter.subscription)
+        }) {
+            return Err(GuestError::Decode("invalid interrupt filter".into()));
+        }
+        Ok(())
+    }
 }
 
 /// Durable identity of a delivery, independent of physical handler attempts.
@@ -152,5 +175,6 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: super::CancellationToken,
     ) -> GuestFuture<'a, Transition>;
 }

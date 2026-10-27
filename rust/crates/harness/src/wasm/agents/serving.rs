@@ -425,7 +425,7 @@ const PLATFORM: &str = r#"
  * checks and before dispatch, to retain the platform's native recovery wake. */
 export interface WasmHostingPlatform {
     manifest: Uint8Array;
-    onRecord(delivery: Uint8Array, signal: AbortSignal): Promise<Uint8Array>;
+    onRecord(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal): Promise<Uint8Array>;
     policy(principal: Uint8Array, command: AgentCommand): boolean | Promise<boolean>;
     admitted(): Promise<void>;
 }

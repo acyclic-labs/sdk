@@ -24,6 +24,43 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
     Ok(ActorReference::new(b"account", b"agents", id.as_bytes())?)
 }
 
+#[test]
+fn concurrent_sharded_tracking_keeps_one_registration_per_actor() -> TestResult {
+    let runtime = Runtime::new(
+        Store::new(Arc::new(MemoryStream::default()), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let actors = (0..128)
+        .map(|index| actor(&format!("shard-{index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    std::thread::scope(|scope| {
+        let workers = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    for actor in &actors {
+                        runtime.track(actor.clone())?;
+                        runtime.wake(actor);
+                    }
+                    Ok::<_, Error>(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| Error::Invalid("tracking worker panicked"))??;
+        }
+        Ok::<_, Error>(())
+    })?;
+    assert_eq!(runtime.counts().0, actors.len());
+    for actor in &actors {
+        assert!(runtime.release(actor));
+    }
+    assert_eq!(runtime.counts(), (0, 0));
+    Ok(())
+}
+
 /// A running host and the task driving it.
 type Running<P> = Option<(Arc<Runtime<P>>, tokio::task::JoinHandle<()>)>;
 
@@ -136,9 +173,10 @@ impl Handler for DropsAlarmClears {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         async move {
-            let mut transition = self.0.on_record(delivery, checkpoint).await?;
+            let mut transition = self.0.on_record(delivery, checkpoint, cancellation).await?;
             if transition.alarm == AlarmChange::Clear {
                 transition.alarm = AlarmChange::Keep;
             }
@@ -602,6 +640,7 @@ impl Limited {
                 code: crate::domain::CodeSha256::try_from(vec![0xa4; 32])?,
                 codec: conformance::codec(),
                 subscriptions: vec!["inbox".into()],
+                interrupts: Vec::new(),
                 bindings: Vec::new(),
                 limits: crate::domain::ActorLimits::new(timeout_ms, 1 << 20, checkpoint_bytes)?,
             },
@@ -617,11 +656,12 @@ impl Handler for Limited {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         if self.stall {
             return futures::future::pending().boxed();
         }
-        self.package.on_record(delivery, checkpoint)
+        self.package.on_record(delivery, checkpoint, cancellation)
     }
 }
 

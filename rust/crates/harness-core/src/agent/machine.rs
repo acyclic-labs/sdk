@@ -326,11 +326,14 @@ pub type TurnFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<TurnStep,
 /// effects must be keyed by `(agent, cursor)` so the repeat replays exactly.
 pub trait TurnDriver: acyclic_stream::ProviderPlatform {
     /// Runs one step. `input` is `None` when continuing or after an alarm.
+    /// `cancellation` is signalled by the actor runtime when a later control
+    /// matches the handler's interrupt filter; settle cleanup through this step.
     fn step<'a>(
         &'a self,
         agent: &'a AgentState,
         cursor: u64,
         input: Option<Queued>,
+        cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a>;
 }
 
@@ -377,6 +380,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     state: Option<AgentState>,
     cursor: u64,
     wake: Wake,
+    cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
@@ -443,7 +447,15 @@ pub async fn step<T: TurnDriver + ?Sized>(
     if state.closed {
         cascade(&mut state, &mut outs)?;
     } else if !spawn_wake {
-        run(driver, &mut state, cursor, alarm_wake, &mut outs).await?;
+        run(
+            driver,
+            &mut state,
+            cursor,
+            alarm_wake,
+            &mut outs,
+            cancellation,
+        )
+        .await?;
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
     // The one point every state passes before it is checkpointed: one that
@@ -577,6 +589,7 @@ async fn run<T: TurnDriver + ?Sized>(
     cursor: u64,
     alarm_wake: bool,
     outs: &mut Vec<Out>,
+    cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
     let input = match kernel::pick(
@@ -595,7 +608,7 @@ async fn run<T: TurnDriver + ?Sized>(
         (Some(turn), _) => Some(turn.inbox),
         (None, input) => input.as_ref().map(|input| input.inbox),
     };
-    let mut turn = driver.step(state, cursor, input).await?;
+    let mut turn = driver.step(state, cursor, input, cancellation).await?;
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.

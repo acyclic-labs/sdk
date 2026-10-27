@@ -22,9 +22,12 @@ mod state;
 pub use state::GuestState;
 mod handler;
 pub use handler::{
-    AlarmChange, Composer, Composition, Delivery, Effect, Handler, Manifest, Participant,
-    Transition, Trigger,
+    AlarmChange, Composer, Composition, Delivery, Effect, Handler, Interrupt, Manifest,
+    Participant, Transition, Trigger,
 };
+/// Cooperative delivery interruption; handler cleanup and publication remain
+/// subject to the original timeout and checkpoint fence.
+pub use tokio_util::sync::CancellationToken;
 pub mod wire;
 
 /// Required named export and its lifecycle hooks; HTTP enters through default.fetch.

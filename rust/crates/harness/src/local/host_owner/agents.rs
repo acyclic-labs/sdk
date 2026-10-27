@@ -385,6 +385,7 @@ impl TurnDriver for Shared {
         agent: &'a AgentState,
         _cursor: u64,
         input: Option<Queued>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             self.0

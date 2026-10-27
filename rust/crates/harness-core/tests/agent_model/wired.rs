@@ -138,7 +138,15 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption);
     let wake = || requested("r1", &parent);
-    let first = step(&driver, &path, Some(state.clone()), 2, wake()).await?;
+    let first = step(
+        &driver,
+        &path,
+        Some(state.clone()),
+        2,
+        wake(),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     let Phase::Done {
         outcome: AgentOutcome::Succeeded { result: Some(_) },
     } = &first.state.phase
@@ -155,7 +163,15 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         .collect::<std::result::Result<_, _>>()?;
     assert_eq!(entries.len(), 1);
     // A crash before the step commit re-runs the step; the journal replays it.
-    let again = step(&driver, &path, Some(state), 2, wake()).await?;
+    let again = step(
+        &driver,
+        &path,
+        Some(state),
+        2,
+        wake(),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(again.outs, first.outs);
     assert_eq!(model.requests().len(), 1);
     Ok(())
@@ -192,9 +208,17 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption);
-    // Settling the conversation creates the subtree; its inbox stays empty, so
-    // each turn's cursor (where its stop follow starts) is 0.
-    let first = step(&driver, &path, Some(state), 0, requested("r1", &path)).await?;
+    // Settling the conversation creates the subtree; its inbox stays empty,
+    // so these directly driven turns retain cursor 0.
+    let first = step(
+        &driver,
+        &path,
+        Some(state),
+        0,
+        requested("r1", &path),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     // Settle the first turn's conversation record as its step commit would.
     let records = first
         .outs
@@ -217,7 +241,15 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         })
         .await?;
     assert_eq!(first.state.conversation_tail, 1);
-    step(&driver, &path, Some(first.state), 0, requested("r2", &path)).await?;
+    step(
+        &driver,
+        &path,
+        Some(first.state),
+        0,
+        requested("r2", &path),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     let roles = |index: usize| -> Vec<ModelRole> {
@@ -285,7 +317,15 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
             adoption.parent = Some(parent.clone());
             adoption.volumes = vec![binding];
             let state = AgentState::adopted(path.clone(), &adoption);
-            let stepped = step(&driver, &path, Some(state), 2, requested("r1", &parent)).await;
+            let stepped = step(
+                &driver,
+                &path,
+                Some(state),
+                2,
+                requested("r1", &parent),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await;
             Ok::<_, Box<dyn std::error::Error>>((
                 stepped.map(|stepped| stepped.state.phase),
                 model.requests().len(),
@@ -435,7 +475,15 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             let mut state = AgentState::adopted(path.clone(), &adoption);
             // Settled history the turn would read first.
             state.conversation_tail = 3;
-            let stepped = step(&driver, &path, Some(state), 2, requested("r1", &parent)).await;
+            let stepped = step(
+                &driver,
+                &path,
+                Some(state),
+                2,
+                requested("r1", &parent),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await;
             assert!(stepped.is_err());
             assert_eq!(model.requests().len(), 0);
             Ok::<_, Box<dyn std::error::Error>>(

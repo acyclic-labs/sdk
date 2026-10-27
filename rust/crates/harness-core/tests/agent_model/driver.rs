@@ -173,7 +173,7 @@ impl TurnHost for Host {
         _: &'a AgentState,
         _: OperationId,
         _: &'a acyclic_harness_core::model::ModelContent,
-        _: Arc<acyclic_harness_core::agent::TurnStop>,
+        _: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
         let open = OpenTurn {
             executor: self.0.clone(),
@@ -276,6 +276,7 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
                 sequence: 1,
                 record: request("failed")?.0,
             },
+            acyclic_actors::guest::CancellationToken::new(),
         )
         .await;
         if terminal {
@@ -330,7 +331,14 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             inbox: 0,
             input: request("input")?.1,
         };
-        let step = driver.step(&state, 1, Some(input)).await?;
+        let step = driver
+            .step(
+                &state,
+                1,
+                Some(input),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
         assert!(
             matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message) })
             if recipient == &to && message.id == intent("sent") && message.body == body)
@@ -360,6 +368,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
             sequence: 1,
             record: request("m1")?.0,
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     let waiting = intent(&approval_intent(approval));
@@ -382,6 +391,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
                 id: intent("tool:other"),
             }),
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     assert_eq!(script.operations.lock().expect("lock").len(), 1);
@@ -407,6 +417,7 @@ async fn a_refused_approval_fails_the_agent() -> Result {
             sequence: 1,
             record: request("m1")?.0,
         },
+        acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
     assert_eq!(
@@ -555,6 +566,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             Some(state),
             sequence,
             Wake::Inbox { sequence, record },
+            acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
         assert_eq!(settled.state.phase, Phase::Idle);
@@ -598,6 +610,7 @@ ship it
                 sequence,
                 record: user.clone(),
             },
+            acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
         assert!(continuation(&settled, &path).is_none());

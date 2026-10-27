@@ -35,7 +35,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     // The fixture holds `owner`'s custody: its guest is the tree's root.
     guest: providers => AgentGuest.open(providers, options, owner, registry, { kind: "root" }),
     hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
-      (delivery, signal) => guest.onRecord(delivery, signal), (actor, error) => failures.push({ actor, error })),
+      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), (actor, error) => failures.push({ actor, error })),
     free: () => { registry.free(); owner.free(); } };
 }
 

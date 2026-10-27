@@ -16,8 +16,7 @@ use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{
-        AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, TurnStop,
-        VolumeBinding,
+        AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, VolumeBinding,
     },
     conversation::{FileRef, ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, SchemaRegistry, Scope},
@@ -750,7 +749,7 @@ where
         agent: &'a AgentState,
         turn: OperationId,
         input: &'a ModelContent,
-        stop: Arc<TurnStop>,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
             // The admission is verified before the turn's first read.

@@ -27,6 +27,7 @@ impl TurnDriver for Replying {
         agent: &'a AgentState,
         _cursor: u64,
         input: Option<Queued>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let (inbox, input) = match (input, &agent.turn) {

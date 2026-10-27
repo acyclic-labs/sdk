@@ -23,6 +23,7 @@ impl TurnDriver for Spawner {
         _agent: &'a AgentState,
         _cursor: u64,
         _input: Option<Queued>,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
