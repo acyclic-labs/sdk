@@ -1,5 +1,5 @@
 //! G40: drive the actual discovery loop twice, preserving only backend storage.
-use crate::{Backend, Result, fixtures, observe::Observed, vectors};
+use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
 use acyclic_stream::{
     StreamPath, StreamProvider,
@@ -101,7 +101,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 }
 
 async fn cursor_crashes(backend: &dyn Backend) -> Result {
-    use crate::observe::Fault;
+    use super::observe::Fault;
     for fault in [Fault::Before, Fault::After] {
         let storage = backend.fresh().await?;
         let provider = Arc::new(Observed::new(storage.open().await?));

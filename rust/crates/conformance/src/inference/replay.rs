@@ -368,7 +368,7 @@ pub async fn qualify(path: &Path) -> Result<Vec<&'static str>> {
 }
 
 /// Fresh adapter for the published suite and benchmark over hash-checked captures.
-pub fn captured(path: &Path) -> Result<impl Backend> {
+pub fn captured(path: &Path) -> Result<impl Backend + use<>> {
     load(path)
 }
 
