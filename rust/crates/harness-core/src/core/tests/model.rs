@@ -89,6 +89,15 @@ fn transition_work_with_resident_suffixes(
     // Eviction changes only optional caches. Keep the revision, active effect,
     // authority and exact authenticated input of the continuing execution.
     let mut state = predecessor.copy(&mut None)?;
+    // This invocation owns its verification cache. The process-wide signing
+    // fixture must not retain this query's native allocation after state drops.
+    let owner = issuer();
+    state.authority_verifier = AuthorityVerifier::from_public(
+        "test".into(),
+        owner.audience.clone(),
+        owner.public_workload_trust()?,
+        owner.verifier(&mut None)?.public_checkpoint_key(),
+    )?;
     while state.events.len() > retained_events {
         state.events.pop_front();
     }
@@ -273,6 +282,14 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                 );
             }
         }
+        // Compare the same cold authentication input on every side. Neither
+        // reference execution nor an earlier query owns this invocation's cache.
+        state.authority_verifier = AuthorityVerifier::from_public(
+            "test".into(),
+            owner.audience.clone(),
+            owner.public_workload_trust()?,
+            owner.verifier(&mut None)?.public_checkpoint_key(),
+        )?;
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;

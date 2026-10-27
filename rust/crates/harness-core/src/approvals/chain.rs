@@ -46,10 +46,6 @@ pub async fn next_stage<'a>(
                     ..
                 },
             ..
-        }
-        | crate::interaction::Interaction::Approval {
-            subject: crate::interaction::ApprovalSubject::Legacy {},
-            ..
         } => &*HUMAN_POLICY,
         crate::interaction::Interaction::Approval { .. } => policy,
         _ => return Err(Error::Invalid("not an approval request".into())),

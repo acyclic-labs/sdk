@@ -135,36 +135,3 @@ fn hex(bytes: &[u8]) -> String {
         .map(char::from)
         .collect()
 }
-
-// A historical response is accepted only from an already authenticated,
-// committed resolution of a pre-subject request. New decision ingress stays
-// ApprovalDecisionFile-only. This principal labels provenance, not authority.
-pub(crate) const LEGACY_DECISION_PRINCIPAL: &str = "legacy:committed";
-
-#[derive(Deserialize, crate::HeapLayout)]
-#[serde(untagged)]
-pub(crate) enum PublishedApprovalDecision {
-    Current(ApprovalDecisionFile),
-    Legacy(InteractionResponse),
-}
-
-impl PublishedApprovalDecision {
-    pub(crate) fn decode(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
-        if bytes.len() as u64 > maximum_bytes {
-            return Err(Error::Invalid(
-                "approval decision exceeds its file bound".into(),
-            ));
-        }
-        crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
-    }
-
-    pub(crate) fn matches(&self, decision: &ApprovalDecisionFile, legacy_request: bool) -> bool {
-        match self {
-            Self::Current(stored) => stored == decision,
-            Self::Legacy(InteractionResponse::Approval { approved, reason }) => {
-                legacy_request && *approved == decision.approved() && reason == &decision.reason
-            }
-            _ => false,
-        }
-    }
-}

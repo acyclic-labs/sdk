@@ -6,9 +6,18 @@ async fn open_native_history(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(StreamAggregate<Provider>, acyclic_fs::NativeAllocation)> {
     let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+    let owner = issuer();
+    // The opened aggregate owns its query's authentication cache, not the
+    // process-wide signing fixture that survives after this aggregate drops.
+    let verifier = crate::core::AuthorityVerifier::from_public(
+        "test".into(),
+        authority(),
+        owner.public_workload_trust()?,
+        owner.verifier(&mut None)?.public_checkpoint_key(),
+    )?;
     let aggregate = StreamAggregate::open(
         provider,
-        (authority(), issuer().verifier(&mut None)?, schemas()),
+        (authority(), verifier, schemas()),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,

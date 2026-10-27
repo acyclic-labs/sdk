@@ -103,7 +103,7 @@ where
             .transpose()?
             .flatten()
             .flatten();
-        let request = {
+        let _request = {
             let bytes = request_bytes.as_ref().ok_or_else(|| {
                 canonical_boundary(
                     io,
@@ -116,18 +116,17 @@ where
             let hold = io.map(|io| io.guard_owned(decoded.1)).transpose()?;
             (decoded, hold)
         };
-        let legacy_request = request.0.0.is_legacy_approval();
         let bytes = host.read_file(detail, io).await?;
         let _detail = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         if binding.is_some() {
             crate::filesystem::interaction_host::admit_interaction(&bytes, io)?;
         }
         with_history_io(io, |work| {
-            ticket.validate_published_decision_bytes(
+            ticket.validate_decision_bytes(
                 resolution,
+                None,
                 detail,
                 &bytes,
-                legacy_request,
                 work,
             )
         })?;

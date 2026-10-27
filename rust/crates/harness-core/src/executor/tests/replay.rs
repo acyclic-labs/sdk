@@ -507,6 +507,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         Err(Error::Unauthorized(_))
     ));
     let contextual = base.with_task_context(&context, operation)?;
+    // The agent's private writer exists, but this scope has no write grant.
     assert!(matches!(
         StockExecution::ordinary(&contextual)
             .settle_tool_call(
@@ -519,7 +520,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
                 &mut Vec::new()
             )
             .await,
-        Err(Error::Unsupported(_))
+        Err(Error::Unauthorized(_))
     ));
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);

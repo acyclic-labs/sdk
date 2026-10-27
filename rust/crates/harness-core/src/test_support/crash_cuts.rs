@@ -1,9 +1,9 @@
 //! Crash-cut enumeration over a real on-disk `LocalStream`.
 //!
 //! Cut points are the provider's journal appends, observed at the append
-//! itself: every persisted frame, including a conflicting commit retained
-//! with its idempotency receipt, and nothing else; an elided replay persists
-//! nothing. Snapshot compaction rewrites the same state and is not a cut. A
+//! itself: every successful commit and its idempotency receipt, and nothing
+//! else; conflicts and elided replays persist nothing. Snapshot compaction
+//! rewrites the same state and is not a cut. A
 //! clean run counts the frames, then every cut replays the operation in a
 //! fresh directory and crashes at one boundary:
 //! - `BeforeWrite(k)`: frames `1..=k` landed, along with every non-durable

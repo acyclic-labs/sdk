@@ -1,6 +1,6 @@
 use super::*;
 use crate::executor::with_history_io;
-use crate::interaction::{ApprovalDecisionFile, PublishedApprovalDecision};
+use crate::interaction::ApprovalDecisionFile;
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
@@ -31,7 +31,6 @@ where
                 .await?;
             let same = match (stored, &response) {
                 (Some(bytes), InteractionResponse::Approval { approved, reason }) if detail => {
-                    let request = self.read_ticket_request(&ticket, None).await?;
                     let expected = ApprovalDecisionFile::new(
                         responder.id(),
                         ticket.request.descriptor().sha256(),
@@ -39,8 +38,7 @@ where
                         *approved,
                         reason.clone(),
                     )?;
-                    PublishedApprovalDecision::decode(&bytes, self.maximum_bytes)?
-                        .matches(&expected, request.is_legacy_approval())
+                    ApprovalDecisionFile::decode(&bytes, self.maximum_bytes)? == expected
                 }
                 (Some(bytes), _) if !detail => {
                     crate::contract::json_from_slice::<InteractionResponse>(&bytes)

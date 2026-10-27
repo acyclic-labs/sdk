@@ -157,7 +157,7 @@ pub(super) fn interaction_request_owned_bytes(
                     arguments,
                 )?)
                 .ok_or_else(overflow),
-            ApprovalSubject::Opaque {} | ApprovalSubject::Legacy {} => Ok(prompt.capacity() as u64),
+            ApprovalSubject::Opaque {} => Ok(prompt.capacity() as u64),
         },
     }
 }

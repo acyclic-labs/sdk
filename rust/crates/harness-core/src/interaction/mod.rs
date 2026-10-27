@@ -17,7 +17,6 @@ mod approval;
 pub use approval::ApprovalBinding;
 mod decision_file;
 pub use decision_file::{ApprovalDecisionFile, ApprovalVerdict};
-pub(crate) use decision_file::{LEGACY_DECISION_PRINCIPAL, PublishedApprovalDecision};
 mod ticket;
 pub use ticket::InteractionTicket;
 mod outcome;

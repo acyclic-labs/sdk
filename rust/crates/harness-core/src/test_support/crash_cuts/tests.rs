@@ -1,5 +1,5 @@
-//! The enumerator cuts at every persisted journal frame: a conflicting
-//! commit's retained receipt is a cut point, an elided replay is not.
+//! The enumerator cuts at every persisted journal frame. Neither a conflicting
+//! commit nor an elided replay persists a receipt or adds a cut point.
 //! Every sweep also runs under limits that compact the journal mid-run.
 use super::*;
 use acyclic_stream::{
@@ -39,7 +39,7 @@ fn commit(name: &'static str, expected: u64) -> CommitRequest {
     }
 }
 
-/// (stale receipt retained, retry receipt retained, tail)
+/// (first receipt retained, retry receipt retained, tail)
 type Frames = (bool, bool, u64);
 
 async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulationError> {
@@ -57,16 +57,20 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
                 .unwrap();
         },
         |stream| async move {
-            // Frame 1: a stale condition, retained with its receipt.
+            // Frame 1: a successful conditional commit and its receipt.
+            let Ok(CommitOutcome::Committed(_)) = stream.commit(commit("first", 1)).await else {
+                return;
+            };
+            // Elided: a conflict does not consume its idempotency key.
             let Ok(CommitOutcome::Conflict(_)) = stream.commit(commit("stale", 0)).await else {
                 return;
             };
             // Frame 2: the retry commits.
-            if stream.commit(commit("retry", 1)).await.is_err() {
+            let Ok(CommitOutcome::Committed(_)) = stream.commit(commit("retry", 2)).await else {
                 return;
-            }
+            };
             // Elided: a replay of the retry persists nothing.
-            if stream.commit(commit("retry", 1)).await.is_err() {
+            if stream.commit(commit("retry", 2)).await.is_err() {
                 return;
             }
             // Frame 3: an unconditioned append.
@@ -90,8 +94,9 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
                         .is_some()
                 }
             };
+            assert!(!receipt("stale").await, "a conflict consumed its key");
             (
-                receipt("stale").await,
+                receipt("first").await,
                 receipt("retry").await,
                 stream.tail(path()).await.unwrap(),
             )
@@ -105,7 +110,7 @@ fn prefix(frames: usize) -> Frames {
     (
         frames >= 1,
         frames >= 2,
-        1 + u64::from(frames >= 2) + u64::from(frames >= 3),
+        1 + u64::from(frames >= 1) + u64::from(frames >= 2) + u64::from(frames >= 3),
     )
 }
 
@@ -122,12 +127,12 @@ fn mismatches(found: &CrashCuts<Frames>) -> Vec<(Cut, Frames)> {
 }
 
 #[tokio::test]
-async fn conflict_receipts_are_cut_points_and_replays_are_not() {
+async fn committed_receipts_are_cut_points_and_conflicts_and_replays_are_not() {
     for limits in limits() {
         let found = cuts(limits).await.unwrap();
         assert_eq!(
             found.writes, 3,
-            "conflict receipt or replay elision miscounted"
+            "committed receipt, conflict or replay elision miscounted"
         );
         assert_eq!(found.clean, prefix(3));
         assert_eq!(found.cuts.len(), 7);

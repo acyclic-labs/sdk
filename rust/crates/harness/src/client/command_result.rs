@@ -117,7 +117,7 @@ pub fn encode_command_result(
         output.overflow = false;
         serde_json::to_writer(
             &mut output,
-            &json!({"sequence":sequence,"completed":true,"output_omitted":true,
+            &json!({"sequence":sequence,"output_omitted":true,
                 "completion":completion}),
         )
         .map_err(codec)?;
@@ -147,11 +147,15 @@ mod tests {
 
     #[test]
     fn an_oversized_result_settles_as_an_omitted_terminal_outcome() -> Result<()> {
-        let bytes = encode_command_result(3, &Ok(json!({"stdout": "x".repeat(256)})), 64)?;
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
-        assert_eq!(value["output_omitted"], true);
-        assert_eq!(value["completion"], "completed");
+        for stdout in ["x".repeat(256), "\"\n".repeat(128), "λ".repeat(128)] {
+            let bytes = encode_command_result(3, &Ok(json!({"stdout": stdout})), 64)?;
+            assert!(bytes.len() <= 64);
+            let value: Value =
+                serde_json::from_slice(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
+            assert_eq!(value["sequence"], 3);
+            assert_eq!(value["output_omitted"], true);
+            assert_eq!(value["completion"], "completed");
+        }
         Ok(())
     }
 }
