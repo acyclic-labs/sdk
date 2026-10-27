@@ -8,7 +8,8 @@ Oldest-first eviction to fixed budgets, never anything a live process uses:
   wt-sdk   /mnt/bb/wt-sdk    prune-wt-sdk.py (lease-aware) with WT_AGE / WT_COUNT,
                              plus orphaned .prep markers
   keys     @u, _persistent   test-leaked user keys (KEY_PREFIXES) invalidated once
-                             first seen KEY_AGE ago, beyond any job's 10-minute cap;
+                             first seen KEY_AGE ago and every job live at that
+                             sighting has finished (a job's HOME is disposable);
                              they live in the shared per-uid quota (200 keys)
 One run at a time (flock), at most once per INTERVAL (stamp). Never touches
 /mnt/bb/cx, docker or anything outside the three roots. Log: /mnt/bb/log/janitor.log
@@ -74,8 +75,31 @@ def tree_size(path):
     return total
 
 
+def job_group(name):
+    """A job's files share one id prefix: <id>.receipt-meta.v2.json, <id>.receipt-meta.v2.json.exec, ..."""
+    return name.split('.', 1)[0]
+
+
+def live_jobs(refs=None):
+    """Job groups that a live process references (cwd, argv or environment)."""
+    groups = set()
+    for ref in live_references() if refs is None else refs:
+        at = ref.find(str(JOBS) + '/')
+        if at >= 0:
+            top = ref[at + len(str(JOBS)) + 1:].split('/', 1)[0]
+            if top:
+                groups.add(job_group(top))
+    return groups
+
+
 def remove(path):
+    """Remove an entry; returns the bytes actually freed (failures are logged)."""
+    before = tree_size(path)
     if path.is_dir() and not path.is_symlink():
+        try:
+            path.chmod(path.stat().st_mode | 0o700)
+        except OSError:
+            pass
         for base, dirs, _ in os.walk(path):
             for name in dirs:
                 child = Path(base) / name
@@ -90,6 +114,10 @@ def remove(path):
             path.unlink()
         except OSError:
             pass
+    left = tree_size(path) if (path.exists() or path.is_symlink()) else 0
+    if left:
+        log('remove-failed', path=str(path), left_bytes=left)
+    return before - left
 
 
 def evict_sccache():
@@ -119,10 +147,9 @@ def evict_sccache():
 
 
 def clean_jobs():
-    refs, now = live_references(), time.time()
-    def live(path):
-        text = str(path)
-        return any(ref == text or ref.startswith(text + '/') for ref in refs)
+    groups, now = live_jobs(), time.time()
+    def live(path):  # The whole file group of a live job is protected, not just the named file.
+        return job_group(path.name) in groups
     rows = []
     for entry in JOBS.iterdir():
         try:
@@ -146,10 +173,9 @@ def clean_jobs():
             break
         if live(entry):
             continue
-        size = tree_size(entry)
-        remove(entry)
-        total -= size
-        removed += 1
+        freed = remove(entry)
+        total -= freed
+        removed += 1 if freed else 0
     log('jobs', removed=removed, held_live=held, remaining_gib=round(total / GiB, 1))
 
 
@@ -194,11 +220,15 @@ def reclaim_keys():
         seen = json.loads(seen_file.read_text())
     except (OSError, ValueError):
         seen = {}
-    current = leaked_keys()
-    seen = {serial: seen.get(serial, now) for serial in current}
+    current, jobs = leaked_keys(), live_jobs()
+    # A key's creator is a job that was live when the key was first seen, or one
+    # that had already finished. Record that set; reclaim only once every job in
+    # it has finished, so a long-running job keeps its own signing seed.
+    seen = {serial: seen[serial] if isinstance(seen.get(serial), dict) else {'first': now, 'jobs': sorted(jobs)}
+            for serial in current}
     reclaimed = 0
-    for serial, first in list(seen.items()):
-        if now - first > KEY_AGE:
+    for serial, record in list(seen.items()):
+        if now - record['first'] > KEY_AGE and not jobs.intersection(record['jobs']):
             keyctl('invalidate', serial)  # Invalidated keys leave the quota at the next key GC.
             del seen[serial]
             reclaimed += 1

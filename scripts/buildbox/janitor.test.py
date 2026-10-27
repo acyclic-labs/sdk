@@ -44,22 +44,43 @@ class Janitor(unittest.TestCase):
         write(recent / 'out', 1, 60)
         for path, age in ((stale, 7 * hour), (live, 7 * hour), (recent, 60)):
             os.utime(path, (time.time() - age, time.time() - age))
-        with mock.patch.object(janitor, 'live_references', return_value={str(live / 'sccache.sock')}):
+        # A live job's sibling markers (named only by the job's id prefix) stay too.
+        group = [self.root / 'jobs' / ('1793-1-ab' + suffix) for suffix in ('.receipt-meta.v2.json', '.receipt-meta.v2.json.exec')]
+        for path in group:
+            write(path, 1, 7 * hour)
+        refs = {str(live / 'sccache.sock'), 'BUILD_SLOT_RECEIPT_META', str(group[0])}
+        with mock.patch.object(janitor, 'live_references', return_value=refs):
             janitor.clean_jobs()
-        self.assertEqual(sorted(p.name for p in (self.root / 'jobs').iterdir()), ['job-live', 'job-recent'])
+        self.assertEqual(sorted(p.name for p in (self.root / 'jobs').iterdir()),
+                         ['1793-1-ab.receipt-meta.v2.json', '1793-1-ab.receipt-meta.v2.json.exec', 'job-live', 'job-recent'])
+        # The former single-path match lost the sibling .exec marker of the same live job.
+        former = lambda path: any(ref == str(path) or ref.startswith(str(path) + '/') for ref in refs)
+        self.assertFalse(former(group[1]))
+
+    def test_failed_removal_frees_nothing(self):
+        stuck = self.root / 'jobs' / 'stuck'
+        write(stuck, 10, 0)
+        with mock.patch.object(janitor.Path, 'unlink', side_effect=OSError('busy')):
+            self.assertEqual(janitor.remove(stuck), 0)
+        self.assertEqual(janitor.remove(stuck), 10)
 
     def test_leaked_keys_reclaimed_only_after_outliving_any_job(self):
         state = self.root / 'state'
         state.mkdir()
         invalidated = []
         fake = lambda *args: invalidated.append(args[1]) if args[0] == 'invalidate' else ''
+        jobs = {'long-job'}
         with mock.patch.object(janitor, 'STATE', state), mock.patch.object(janitor, 'keyctl', fake), \
-                mock.patch.object(janitor, 'leaked_keys', return_value={'11', '22'}):
+                mock.patch.object(janitor, 'leaked_keys', return_value={'11', '22'}), \
+                mock.patch.object(janitor, 'live_jobs', lambda: set(jobs)):
             janitor.reclaim_keys()  # First sighting: nothing is old enough.
             self.assertEqual(invalidated, [])
             seen = janitor.json.loads((state / 'keys.json').read_text())
-            seen['11'] -= janitor.KEY_AGE + 1
+            seen['11']['first'] -= janitor.KEY_AGE + 1
             (state / 'keys.json').write_text(janitor.json.dumps(seen))
+            janitor.reclaim_keys()  # Old enough, but the job live at its sighting still runs.
+            self.assertEqual(invalidated, [])
+            jobs.clear(); jobs.add('later-job')
             janitor.reclaim_keys()
         self.assertEqual(invalidated, ['11'])
         self.assertEqual(sorted(janitor.json.loads((state / 'keys.json').read_text())), ['22'])
