@@ -51,7 +51,8 @@ impl PacketWorkers for Workers {
 }
 
 #[test]
-fn callback_failure_and_panic_join_the_other_physical_worker() {
+fn callback_failure_and_panic_join_the_other_physical_worker()
+-> Result<(), Box<dyn std::error::Error>> {
     for panic in [false, true] {
         let cancellation = crate::CancellationToken::new();
         let work = cache_work(FINITE_CACHE_BUDGET, &cancellation);
@@ -71,6 +72,10 @@ fn callback_failure_and_panic_join_the_other_physical_worker() {
             assert!(matches!(result, Ok(Err(_))));
         }
         assert_eq!(owner.retired.load(Ordering::Acquire), 1);
+        // Custody destruction defers ledger bookkeeping until the original
+        // leaf next reconciles. Measure standing storage after that boundary.
+        work.charge(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
+    Ok(())
 }

@@ -1,7 +1,7 @@
 //! One physical stop and positive join boundary for packet transports.
 
 use super::{NativeMountError, fuse_vec};
-use crate::{NativeMaterializationWork, WorkCounters};
+use crate::NativeMaterializationWork;
 use std::num::NonZeroU32;
 
 pub(super) trait PacketWorkers: Sync {
@@ -56,6 +56,6 @@ pub(super) fn run<T: PacketWorkers>(
         if let Some(payload) = panic {
             std::panic::resume_unwind(payload);
         }
-        result.and_then(|()| work.admit(WorkCounters::UNCHARGED).map_err(Into::into))
+        result
     })
 }

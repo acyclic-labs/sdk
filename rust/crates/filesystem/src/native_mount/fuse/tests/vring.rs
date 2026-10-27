@@ -53,13 +53,18 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
         .kick
         .clone()
         .ok_or("original kick missing")?;
+    // Reconcile retired fdinfo scratch custody before measuring the retained
+    // counter. SET_KICK's admission performs the same canonical reconciliation.
+    work.charge(crate::WorkCounters::UNCHARGED)?;
     let retained = work.live_allocation_bytes();
     device.set_kick(0, None)?;
     assert_eq!(work.live_allocation_bytes(), retained);
     assert!(!device.queue(0)?.accepts_kick(&polled));
     drop(polled);
+    work.charge(crate::WorkCounters::UNCHARGED)?;
     assert!(work.live_allocation_bytes() < retained);
     drop(device);
+    work.charge(crate::WorkCounters::UNCHARGED)?;
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
