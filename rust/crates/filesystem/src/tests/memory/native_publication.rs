@@ -36,7 +36,7 @@ async fn both_cancellation_roots_deny_all_authority_surfaces() -> Result<(), Box
     let store = MemoryAuthorityStore::default();
     let id = AuthorityId::from_bytes([0xe1; 16]);
     let CreateAuthorityOutcome::Created(head) =
-        provider!(store, create_authority(id, Epoch::GENESIS), BUDGET)?.value
+        provider_receipt!(store, create_authority(id, Epoch::GENESIS), BUDGET)?.value
     else {
         return Err("authority exists".into());
     };
@@ -52,7 +52,7 @@ async fn both_cancellation_roots_deny_all_authority_surfaces() -> Result<(), Box
         )
         .await
         .map_err(|error| error.into_error(std::convert::identity))?;
-    let head = provider!(store, head(id), BUDGET)?.value;
+    let head = provider_receipt!(store, head(id), BUDGET)?.value;
     for cancel_root in [false, true] {
         let root = CancellationToken::new();
         let supplied = CancellationToken::new();
@@ -101,7 +101,7 @@ async fn both_cancellation_roots_deny_all_authority_surfaces() -> Result<(), Box
         );
         assert_eq!(original.receipt(), before);
     }
-    assert_eq!(provider!(store, head(id), BUDGET)?.value, head);
+    assert_eq!(provider_receipt!(store, head(id), BUDGET)?.value, head);
     Ok(())
 }
 
@@ -137,10 +137,10 @@ async fn first_record_is_atomic_idempotent_and_matches_ordinary_publication()
         payload_bytes: 1024,
     };
     assert_eq!(
-        provider!(native, replay(id, Sequence::GENESIS, limit), BUDGET)?.value,
-        provider!(ordinary, replay(id, Sequence::GENESIS, limit), BUDGET)?.value
+        provider_receipt!(native, replay(id, Sequence::GENESIS, limit), BUDGET)?.value,
+        provider_receipt!(ordinary, replay(id, Sequence::GENESIS, limit), BUDGET)?.value
     );
-    let head = provider!(native, head(id), BUDGET)?.value;
+    let head = provider_receipt!(native, head(id), BUDGET)?.value;
     assert!(
         native
             .create_first_record(id, proposed.clone(), &mut work, None::<&mut ()>)
@@ -171,7 +171,7 @@ async fn first_record_is_atomic_idempotent_and_matches_ordinary_publication()
                 .map_err(|error| error.into_error(std::convert::identity))?
         );
     }
-    assert_eq!(provider!(native, head(id), BUDGET)?.value, head);
+    assert_eq!(provider_receipt!(native, head(id), BUDGET)?.value, head);
     original.receipt().verify(BUDGET)?;
     Ok(())
 }
@@ -189,7 +189,7 @@ async fn native_owner_reenters_provider_and_preserves_its_rejection() -> Result<
 {
     let store = Arc::new(MemoryAuthorityStore::default());
     let id = AuthorityId::from_bytes([0x96; 16]);
-    provider!(
+    provider_receipt!(
         store,
         create_authority(id, Epoch::GENESIS),
         WorkBudget::UNBOUNDED
@@ -236,7 +236,7 @@ async fn native_owner_reenters_provider_and_preserves_its_rejection() -> Result<
     ));
     assert!(original.receipt().items_examined >= 5);
     assert_eq!(
-        provider!(store, head(id), WorkBudget::UNBOUNDED)?.value,
+        provider_receipt!(store, head(id), WorkBudget::UNBOUNDED)?.value,
         head
     );
     original.receipt().verify(BUDGET)?;
@@ -249,7 +249,7 @@ async fn provider_revalidates_fence_permit_and_cancellation_after_owner_callback
     for cancel_owner in [false, true] {
         let store = Arc::new(MemoryAuthorityStore::default());
         let id = AuthorityId::from_bytes([0x97; 16]);
-        provider!(
+        provider_receipt!(
             store,
             create_authority(id, Epoch::GENESIS),
             WorkBudget::UNBOUNDED
@@ -290,7 +290,7 @@ async fn provider_revalidates_fence_permit_and_cancellation_after_owner_callback
                 matches!(outcome, Ok(AppendOutcome::Fenced { actual_epoch }) if actual_epoch.get() == 2)
             );
         }
-        let actual = provider!(store, head(id), WorkBudget::UNBOUNDED)?.value;
+        let actual = provider_receipt!(store, head(id), WorkBudget::UNBOUNDED)?.value;
         assert_eq!(actual.sequence, Sequence::GENESIS);
         if cancel_owner {
             assert_eq!(actual, head);
@@ -348,7 +348,7 @@ async fn first_record_allocation_denial_leaves_no_partial_authority() -> Result<
         Err(AuthorityStoreError::NativeOriginal(_))
     ));
     assert!(matches!(
-        provider!(store, head(id), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, head(id), WorkBudget::UNBOUNDED),
         Err(AuthorityFailure {
             error: AuthorityStoreError::Missing,
             ..
@@ -370,7 +370,7 @@ async fn ordinary_first_record_guard_runs_unlocked_on_creation_and_recovery()
         let store = store.clone();
         async move {
             assert!(matches!(
-                provider!(store, head(id), WorkBudget::UNBOUNDED),
+                provider_receipt!(store, head(id), WorkBudget::UNBOUNDED),
                 Err(AuthorityFailure {
                     error: AuthorityStoreError::Missing,
                     ..
@@ -397,7 +397,7 @@ async fn ordinary_first_record_guard_runs_unlocked_on_creation_and_recovery()
     ));
     assert!(work.spent().items_examined >= 3);
     assert!(matches!(
-        provider!(store, head(id), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, head(id), WorkBudget::UNBOUNDED),
         Err(AuthorityFailure {
             error: AuthorityStoreError::Missing,
             ..
@@ -408,7 +408,7 @@ async fn ordinary_first_record_guard_runs_unlocked_on_creation_and_recovery()
         calls += 1;
         let store = store.clone();
         async move {
-            let _ = provider!(store, head(id), WorkBudget::UNBOUNDED);
+            let _ = provider_receipt!(store, head(id), WorkBudget::UNBOUNDED);
             Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
                 value: (),
                 work: WorkCounters::UNCHARGED,
@@ -470,7 +470,7 @@ async fn opaque_native_publication_rejects_without_owner_or_io_and_keeps_ordinar
     ));
     assert_eq!(original.receipt(), before);
     assert!(matches!(
-        provider!(store, head(id), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, head(id), WorkBudget::UNBOUNDED),
         Err(AuthorityFailure {
             error: AuthorityStoreError::Missing,
             ..
