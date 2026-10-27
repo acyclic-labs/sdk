@@ -9,13 +9,16 @@ The fixed test policy runs as var against a frozen candidate before any rename.
 """
 import argparse
 import contextlib
+import ctypes
 import fcntl
+import inspect
 import importlib.util
 import hashlib
 import json
 import os
 from pathlib import Path
 import pwd
+import signal
 import subprocess
 import sys
 import tempfile
@@ -31,6 +34,7 @@ TOOLS = ['admission_policy.py', 'input_closure.py', 'job_caps.py', 'cpu_leases.p
 # a name absent from the live generation is absent (dangling), never stale.
 ROOT = Path('/opt/buildbox')
 CANARY_TIMEOUT = 300
+CACHE_UNIT = Path('/etc/systemd/system/buildbox-cache.service')
 
 
 def cache_authority(generation):
@@ -230,6 +234,38 @@ def adopt_legacy(store):
     return materialize(files,'legacy-'+hashlib.sha256(json.dumps(sorted((k,hashlib.sha256(v).hexdigest()) for k,v in files.items())).encode()).hexdigest()[:16])
 
 
+def exchange(a, b):
+    """renameat2(RENAME_EXCHANGE): both paths always exist, for files and directories."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.renameat2(-100, os.fsencode(str(a)), -100, os.fsencode(str(b)), 2) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(b))
+
+
+def adopt_entries(store, generation):
+    """Replace each regular store entry that GENERATION holds by its fixed link,
+    one atomic exchange per entry, so no tool is ever missing. Idempotent: a run
+    interrupted at any point is completed by the next one, before admission reopens."""
+    store, retired = Path(store), ROOT/'retired'
+    retired.mkdir(exist_ok=True, mode=0o755)
+    def retire(path, name):
+        target, n = retired/(name+'.'+Path(generation).name), 0
+        while target.exists() or target.is_symlink():
+            n += 1; target = retired/(name+'.'+Path(generation).name+'.'+str(n))
+        os.rename(path, target)
+    for pending in list(store.glob('.adopt-*')):  # An exchange interrupted before its retirement.
+        if pending.is_symlink(): pending.unlink()
+        else: retire(pending, pending.name[len('.adopt-'):])
+    for entry in sorted(store.iterdir()):
+        if entry.name.startswith('.') or entry.is_symlink(): continue
+        if not (Path(generation)/entry.name).exists(): continue
+        pending = store/('.adopt-'+entry.name)
+        os.symlink(str(ROOT/'current'/entry.name), pending)
+        exchange(pending, entry)
+        retire(pending, entry.name)
+    fsync_directory(store)
+
+
 def switch(generation, store):
     """CURRENT is the one live pointer. Store entries are fixed absolute links
     through it and only accumulate, so after the first adoption a switch is
@@ -237,9 +273,7 @@ def switch(generation, store):
     previous=current_generation()
     if previous is None:
         previous=adopt_legacy(store);link(ROOT/'current',previous)
-        retired=ROOT/'retired';retired.mkdir(exist_ok=True,mode=0o755)
-        for entry in list(Path(store).iterdir()):
-            if not entry.is_symlink():os.rename(entry,retired/(entry.name+'.'+previous.name))
+    adopt_entries(store,previous)
     for root in [previous,generation]:
         for name in sorted(p.name for p in Path(root).iterdir() if not p.name.startswith('.')):
             entry=Path(store)/name;target=ROOT/'current'/name
@@ -263,11 +297,37 @@ def admission_drained(generation):
 def generation_services(generation):
     """Host services follow the generation that owns them."""
     if (Path(generation)/'bb-cache.py').exists():
-        with cache_authority(generation).migration(drained=True):yield
+        authority=cache_authority(generation)
+        if 'drained' in inspect.signature(authority.migration).parameters:
+            with authority.migration(drained=True):yield
+            return
+        # A predecessor's migration() takes upgrade.lock itself (held here):
+        # its service restarts on its own unit instead.
+        yield
+        if CACHE_UNIT.exists():subprocess.run(['systemctl','try-restart','buildbox-cache.service'],check=True)
         return
-    unit=Path('/etc/systemd/system/buildbox-cache.service')
-    if unit.exists():subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=True)
+    if CACHE_UNIT.exists():subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=True)
     yield
+
+
+def service_state():
+    """The cache service exactly as it is before a deployment touches it."""
+    if not CACHE_UNIT.exists():return None
+    status=lambda verb:subprocess.run(['systemctl',verb,'--quiet','buildbox-cache.service']).returncode==0
+    return {'unit':CACHE_UNIT.read_bytes(),'enabled':status('is-enabled'),'active':status('is-active')}
+
+
+def restore_services(state):
+    """Return the cache service to STATE, whatever point a failed deployment reached."""
+    if state is None:
+        if CACHE_UNIT.exists():
+            subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=False)
+            CACHE_UNIT.unlink();subprocess.run(['systemctl','daemon-reload'],check=True)
+        return
+    if not CACHE_UNIT.exists() or CACHE_UNIT.read_bytes()!=state['unit']:
+        publish(CACHE_UNIT,state['unit'],0o644);subprocess.run(['systemctl','daemon-reload'],check=True)
+    subprocess.run(['systemctl','enable' if state['enabled'] else 'disable','buildbox-cache.service'],check=True)
+    subprocess.run(['systemctl','restart' if state['active'] else 'stop','buildbox-cache.service'],check=True)
 
 
 CANARY_CRATE = {'Cargo.toml':b'[package]\nname = "bb-install-canary"\nversion = "0.0.0"\nedition = "2021"\n[workspace]\n',
@@ -289,7 +349,7 @@ def canary(generation=None):
         for path in [work,admit,*crate.rglob('*'),crate]:os.chown(path,account.pw_uid,account.pw_gid)
         run=['runuser','-u','var','--','env','-i','HOME=/home/var','USER=var','LOGNAME=var',
              'PATH=/home/var/.cargo/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin',
-             'BUILD_SLOT_LABEL=bb-install-canary','/home/var/bin/build-slot']
+             'BUILD_SLOT_LABEL=bb-install-canary','BUILD_SLOT_TENANT=graphcoder','/home/var/bin/build-slot']
         steps=['set -e','mount --bind '+shlex.quote(str(admit))+' /mnt/bb/admit']
         if generation is not None:
             steps.append('mount -o bind,ro '+shlex.quote(str(generation))+' /home/var/bin')
@@ -301,15 +361,19 @@ def canary(generation=None):
         steps+=['cd '+shlex.quote(str(crate)),
                 shlex.join([*run,'bash','-c','echo BB_CANARY_SCRIPT_OK']),
                 shlex.join([*run,'cargo','build','--offline','--quiet'])+' && echo BB_CANARY_CARGO_OK']
-        result=subprocess.run(['unshare','--mount','--propagation','private','sh','-c','\n'.join(steps)],
-                              capture_output=True,text=True,timeout=CANARY_TIMEOUT)
+        process=subprocess.Popen(['unshare','--mount','--propagation','private','sh','-c','\n'.join(steps)],
+                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        stdout=stderr='';rc=None
         try:
+            try:stdout,stderr=process.communicate(timeout=CANARY_TIMEOUT);rc=process.returncode
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid,signal.SIGKILL);stdout,stderr=process.communicate();rc='timeout'
+        finally:  # Every exit path retires the private daemon and its admitted jobs.
+            if process.poll() is None:os.killpg(process.pid,signal.SIGKILL);process.wait()
             if (admit/'admit.sock').exists():cache_authority(generation or ROOT/'current').drain_admission(admit)
-        finally:
-            output=result.stdout+result.stderr
-            if result.returncode or any(m not in result.stdout for m in ('BB_CANARY_SCOPE_OK','BB_CANARY_SCRIPT_OK','BB_CANARY_CARGO_OK')):
-                raise RuntimeError('kind=GENERATION_CANARY stage='+('staged' if generation else 'live')+
-                                   ' rc='+str(result.returncode)+' output='+shlex.quote(output[-2000:]))
+        if rc or any(m not in stdout for m in ('BB_CANARY_SCOPE_OK','BB_CANARY_SCRIPT_OK','BB_CANARY_CARGO_OK')):
+            raise RuntimeError('kind=GENERATION_CANARY stage='+('staged' if generation else 'live')+
+                               ' rc='+str(rc)+' output='+shlex.quote((stdout+stderr)[-2000:]))
     finally:
         subprocess.run(['rm','-rf','--one-file-system',str(work)],check=False)
 
@@ -321,15 +385,19 @@ def deploy(generation, store):
     or mixed generation."""
     with admission_drained(generation):
         canary(generation)
-        before=current_generation();previous=None
+        before=current_generation();services=service_state();previous=None
         try:
             with generation_services(generation):previous=switch(generation,store)
             canary()
         except BaseException:
             restore=previous or before or current_generation()
-            if restore is not None and current_generation()!=restore:
-                with generation_services(restore):link(ROOT/'current',restore)
-                link(ROOT/'previous',generation)
+            if restore is not None:
+                if current_generation()!=restore:
+                    link(ROOT/'current',restore);link(ROOT/'previous',generation)
+                adopt_entries(store,restore)  # A partial first adoption completes.
+            # Whatever point failed (before or after the pointer rename), the
+            # cache service returns to its pre-deployment state.
+            restore_services(services)
             raise
     return previous
 

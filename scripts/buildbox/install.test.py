@@ -112,11 +112,15 @@ class InstallTests(unittest.TestCase):
             def canary(generation=None):
                 stage='staged' if generation else 'live';calls.append((stage,Path(generation or installer.current_generation()).name))
                 if stage in fail:raise RuntimeError('kind=GENERATION_CANARY stage='+stage)
-            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',drained),                 patch.object(installer,'generation_services',services),patch.object(installer,'canary',canary):
+            state=lambda:calls.append(('state',))or'prior'
+            restored=lambda prior:calls.append(('restore',prior))
+            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',drained), \
+                 patch.object(installer,'generation_services',services),patch.object(installer,'canary',canary), \
+                 patch.object(installer,'service_state',state),patch.object(installer,'restore_services',restored):
                 def read(name):return (store/name).read_bytes() if (store/name).exists() else None
                 one=installer.materialize({'a':b'one-a','b':b'one-b','bbcg/systemd-run':b'shim'},'one')
                 legacy=installer.deploy(one,store)
-                self.assertEqual(calls,[('drain','one'),('staged','one'),('services','one'),('live','one')])
+                self.assertEqual(calls,[('drain','one'),('staged','one'),('state',),('services','one'),('live','one')])
                 self.assertEqual([read('a'),read('b'),read('bbcg/systemd-run'),read('legacy-only')],[b'one-a',b'one-b',b'shim',None])
                 self.assertEqual((legacy/'a').read_bytes(),b'legacy-a')  # predecessor retained whole
                 self.assertTrue(all(p.is_symlink() for p in store.iterdir()))
@@ -129,9 +133,15 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(Path(os.readlink(root/'opt/previous')),one)
                 fail.add('live');three=installer.materialize({'a':b'three-a','c':b'c'},'three');calls.clear()
                 with self.assertRaisesRegex(RuntimeError,'stage=live'):installer.deploy(three,store)
-                self.assertEqual(calls,[('drain','three'),('staged','three'),('services','three'),('live','three'),('services','two')])
+                self.assertEqual(calls,[('drain','three'),('staged','three'),('state',),('services','three'),('live','three'),('restore','prior')])
                 self.assertEqual((installer.current_generation(),read('a'),read('c')),(two,b'two-a',None))
                 self.assertEqual((three/'a').read_bytes(),b'three-a')
+                # A switch failing before the pointer rename leaves CURRENT
+                # unchanged and still restores the services it stopped.
+                fail.clear();calls.clear()
+                with patch.object(installer,'switch',side_effect=OSError('link failed')),self.assertRaises(OSError):
+                    installer.deploy(three,store)
+                self.assertEqual((calls[-1],installer.current_generation()),(('restore','prior'),two))
                 fail={'staged'};calls.clear()
                 with self.assertRaisesRegex(RuntimeError,'stage=staged'):installer.deploy(three,store)
                 self.assertEqual((calls,installer.current_generation()),([('drain','three'),('staged','three')],two))
@@ -152,6 +162,72 @@ class InstallTests(unittest.TestCase):
                 with patch.object(installer,'publish',interrupted),self.assertRaises(OSError):
                     for name,data in [('a',b'new-a'),('b',b'new-b')]:installer.publish(former/name,data)
                 self.assertEqual([(former/n).read_bytes() for n in 'ab'],[b'new-a',b'old-b'])
+
+    def test_interrupted_first_adoption_never_removes_live_tools_and_resumes(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary);store=root/'store';(store/'dir').mkdir(parents=True)
+            for name in 'abc':(store/name).write_bytes(b'legacy-'+name.encode())
+            (store/'dir'/'tool').write_bytes(b'legacy-dir')
+            seen=[];original=installer.exchange
+            def interrupted(a,b):
+                original(a,b);seen.append(sorted(p.name for p in store.iterdir() if not p.name.startswith('.')))
+                if len(seen)==2:raise KeyboardInterrupt  # Between an exchange and its retirement.
+            @contextlib.contextmanager
+            def nothing(*args):yield
+            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'exchange',interrupted), \
+                 patch.object(installer,'admission_drained',nothing),patch.object(installer,'generation_services',nothing), \
+                 patch.object(installer,'canary',lambda generation=None:None), \
+                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state:None):
+                one=installer.materialize({'a':b'one-a'},'one')
+                with self.assertRaises(KeyboardInterrupt):installer.deploy(one,store)
+                # Every tool stayed reachable with its legacy bytes throughout.
+                self.assertEqual(seen[-1],['a','b','c','dir'])
+                self.assertEqual([(store/n).read_bytes() for n in 'abc']+[(store/'dir'/'tool').read_bytes()],
+                                 [b'legacy-a',b'legacy-b',b'legacy-c',b'legacy-dir'])
+            with patch.object(installer,'ROOT',root/'opt'),patch.object(installer,'admission_drained',nothing), \
+                 patch.object(installer,'generation_services',nothing),patch.object(installer,'canary',lambda generation=None:None), \
+                 patch.object(installer,'service_state',lambda:None),patch.object(installer,'restore_services',lambda state:None):
+                installer.deploy(one,store)  # The next run completes the adoption.
+                self.assertTrue(all(p.is_symlink() for p in store.iterdir()))
+                self.assertEqual(Path(os.readlink(root/'opt/previous')).name[:7],'legacy-')
+                self.assertEqual(((store/'a').read_bytes(),(store/'b').exists()),(b'one-a',False))
+                self.assertEqual(len(list((root/'opt/retired').iterdir())),4)
+        # The former adoption renamed every entry away before linking any: an
+        # interruption between those loops left the store empty of tools.
+        self.assertNotIn('os.rename(entry,retired',Path(installer.__file__).read_text())
+
+    def test_predecessor_cache_authority_is_restarted_not_migrated(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            legacy=Path(temporary)/'legacy';legacy.mkdir()
+            (legacy/'bb-cache.py').write_text('import contextlib\n@contextlib.contextmanager\ndef migration():\n    raise AssertionError("retakes upgrade.lock")\n    yield\n')
+            unit=Path(temporary)/'unit';unit.write_text('[Unit]\n');calls=[]
+            with patch.object(installer,'CACHE_UNIT',unit),patch.object(installer.subprocess,'run',lambda command,**kw:calls.append(command)):
+                with installer.generation_services(legacy):pass
+            self.assertEqual(calls,[['systemctl','try-restart','buildbox-cache.service']])
+
+    def test_stale_predecessor_refuses_publication_without_touching_live_tools(self):
+        driver='''import importlib.util,sys,json,hashlib,tempfile,os
+from pathlib import Path
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('i',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+stage=Path(tempfile.mkdtemp(prefix='bb-install-',dir='/mnt/bb/tmp'));live=Path(tempfile.mkdtemp(dir='/mnt/bb/tmp'))
+try:
+ os.chmod(stage,0o755)
+ payload={n:(Path(sys.argv[1]).read_bytes() if n=='bb-install.py' else n.encode()) for n in m.TOOLS}
+ for n,d in payload.items():m.publish(stage/n,d,0o444);m.publish(live/n,b'installed-'+n.encode(),0o555)
+ m.publish(stage/'.qualified.json',json.dumps({n:hashlib.sha256(d).hexdigest() for n,d in payload.items()}).encode(),0o444)
+ m.publish(stage/'.predecessors.json',json.dumps({n:m.file_hash(live/n) for n in m.TOOLS}).encode(),0o444)
+ changed=live/m.TOOLS[0];m.publish(changed,b'newer deployment',0o555)  # After qualification.
+ before={n:(live/n).read_bytes() for n in m.TOOLS}
+ with patch.object(m,'BIN',live),patch.object(m,'deploy',side_effect=AssertionError('deployed')):
+  try:m.publish_candidate(stage)
+  except ValueError as e:assert 'installed predecessor changed' in str(e),e
+  else:raise AssertionError('stale candidate published')
+ assert {n:(live/n).read_bytes() for n in m.TOOLS}==before
+finally:
+ import shutil;shutil.rmtree(stage);shutil.rmtree(live)
+'''
+        subprocess.run(['sudo','-n',*python('-c',driver,HERE/'bb-install.py')],check=True)
 
     def test_unmanaged_tools_carry_forward_and_managed_tools_never_do(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
