@@ -14,27 +14,26 @@ pub mod usage;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    num::NonZeroU32,
-    sync::{Mutex, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use acyclic_machines::{
-    Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
-    ExecCommand, ExecStream, IdempotencyKey, Image, ImageQualification, MAX_PAGE_SIZE,
-    MachineContract, MachineId, MachineObservation, MachineOutput, MachinePage, MachineState,
-    MachinesProvider, MutationOutcome, OperationId, OperationObservation, OperationStream,
-    ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
+    Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine,
+    ExecCommand, ExecStream, IdempotencyKey, Image, ImageQualification, MachineContract, MachineId,
+    MachineObservation, MachineOutput, MachineState, ProviderAssurance, ProviderError,
+    SuspensionPolicy,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
-    Dispatch, NativeBinding, NativeResource, NativeResources, OperationRegistry, RawCreated,
-    RawMachines, RawObservation,
+    Backend, BackendCore, Dispatch, NativeBinding, NativeResource, NativeResources,
+    OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage,
 };
 #[cfg(test)]
-use acyclic_machines::{ForkFidelity, MAX_FORK_CHILDREN, MutationIntent, core as ops};
+use acyclic_machines::{
+    ForkFidelity, MAX_FORK_CHILDREN, MachinesProvider, MutationIntent, MutationOutcome, core as ops,
+};
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox};
 
 /// Default Daytona API base URL.
@@ -207,26 +206,18 @@ pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
 pub struct DaytonaProvider {
     config: DaytonaConfig,
     api: DaytonaApi,
-    ops: OperationRegistry,
-    boot_env: Mutex<BTreeMap<IdempotencyKey, BTreeMap<String, String>>>,
+    core: BackendCore,
 }
 
 /// Staged boot environments hold credentials; only their count and variable names are ever
 /// rendered.
 impl std::fmt::Debug for DaytonaProvider {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let staged = self.boot_env.lock().unwrap_or_else(PoisonError::into_inner);
-        let names: BTreeSet<&str> = staged
-            .values()
-            .flat_map(|env| env.keys().map(String::as_str))
-            .collect();
         formatter
             .debug_struct("DaytonaProvider")
             .field("config", &self.config)
             .field("api", &self.api)
-            .field("ops", &self.ops)
-            .field("staged_boot_envs", &staged.len())
-            .field("staged_boot_env_names", &names)
+            .field("core", &self.core)
             .finish_non_exhaustive()
     }
 }
@@ -240,36 +231,19 @@ fn now_unix_ms() -> u64 {
 }
 
 impl DaytonaProvider {
-    /// Stages or replaces the environment for the matching create; creation clears it on completion.
-    pub fn stage_boot_env(&self, key: IdempotencyKey, env: BTreeMap<String, String>) {
-        self.boot_env
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key, env);
-    }
-
     /// Binds a provider to one Daytona organization.
     ///
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when the configuration cannot produce a client.
     pub fn new(config: DaytonaConfig, ops: OperationRegistry) -> Result<Self, ProviderError> {
         let api = DaytonaApi::new(&config)?;
-        Ok(Self {
-            config,
-            api,
+        let core = BackendCore::new(
             ops,
-            boot_env: Mutex::default(),
-        })
-    }
-
-    /// Boot environment staged for `key`, if any.
-    #[must_use]
-    pub fn staged_boot_env(&self, key: IdempotencyKey) -> Option<BTreeMap<String, String>> {
-        self.boot_env
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-            .cloned()
+            config.poll_interval,
+            config.ready_timeout,
+            ProviderAssurance::CustomerHosted,
+        )?;
+        Ok(Self { config, api, core })
     }
 
     /// Configuration in use.
@@ -283,12 +257,6 @@ impl DaytonaProvider {
     #[must_use]
     pub fn api(&self) -> &DaytonaApi {
         &self.api
-    }
-
-    /// Operation registry in use.
-    #[must_use]
-    pub fn registry(&self) -> &OperationRegistry {
-        &self.ops
     }
 
     /// Opaque compatibility revision of this provider build.
@@ -376,8 +344,8 @@ impl DaytonaProvider {
         })
     }
 
-    /// Records a sandbox observation, filling gaps from what the registry already knows.
-    async fn observe(
+    /// Decode native metadata using the admitted canonical contract when needed.
+    async fn map_observation(
         &self,
         sandbox: &Sandbox,
         fallback: Option<&MachineContract>,
@@ -389,7 +357,7 @@ impl DaytonaProvider {
             return Err(ProviderError::NotFound(sandbox.id.clone()));
         }
         let known = match map::machine_id(&sandbox.id) {
-            Ok(id) => self.ops.machine(id).await?,
+            Ok(id) => self.core.operations().machine(id).await?,
             Err(_) => None,
         };
         let fallback = fallback.or(known.as_ref().map(|value| &value.contract));
@@ -397,13 +365,7 @@ impl DaytonaProvider {
             last_checkpoint.or(known.as_ref().and_then(|value| value.last_checkpoint));
         let now = now_unix_ms();
         let observation = map::sandbox_to_observation(sandbox, fallback, last_checkpoint, now)?;
-        self.ops.observe_machine(observation.clone(), now).await?;
         Ok(observation)
-    }
-
-    /// Reads a machine from Daytona, falling back to the registry once Daytona forgot it.
-    async fn fetch_machine(&self, machine: MachineId) -> Result<MachineObservation, ProviderError> {
-        self.ops.inspect_machine(self, machine, now_unix_ms()).await
     }
 
     fn raw_created(
@@ -432,7 +394,7 @@ impl DaytonaProvider {
     /// workload can hold it. A name holder is adopted only when its provider labels (managed,
     /// key, kind, fork slot, tenant, and the serialized contract with its image) are exactly the
     /// ones this request attaches; otherwise the create fails with a conflict. The flag is
-    /// `true` for an adopted sandbox (see [`Self::claim`]).
+    /// `true` for an adopted sandbox, which core never deletes as this operation's creation.
     async fn create_or_adopt(
         &self,
         body: &api::CreateSandboxRequest,
@@ -557,7 +519,7 @@ impl RawMachines for DaytonaProvider {
         let capabilities = self.snapshot_capabilities(&snapshot).await?;
         let contract = Self::contract(request, capabilities)?;
         let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
-        body.env = self.staged_boot_env(key).unwrap_or_default();
+        body.env = self.core.staged_boot_env(key).unwrap_or_default();
         let (created, adopted) = self.create_or_adopt(&body).await?;
         Ok(Self::raw_created(&created, &contract, None, adopted))
     }
@@ -764,25 +726,27 @@ impl RawMachines for DaytonaProvider {
 }
 
 #[async_trait]
-impl MachinesProvider for DaytonaProvider {
-    /// Daytona is an external service operated in the customer's own Daytona organization;
-    /// `CustomerHosted` is the closest of the three declared classes, with Daytona's VM as the
-    /// documented boundary. It is not an Acyclic-operated managed service.
-    fn assurance(&self) -> ProviderAssurance {
-        ProviderAssurance::CustomerHosted
+impl Backend for DaytonaProvider {
+    fn core(&self) -> &BackendCore {
+        &self.core
     }
-    async fn exec(
+    fn now_unix_ms(&self) -> u64 {
+        now_unix_ms()
+    }
+    async fn raw_exec(
         &self,
         _machine: MachineId,
+        _native: Option<&NativeBinding>,
         _command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
         Err(ProviderError::Unsupported(
             "Daytona guest command streaming is not bound".into(),
         ))
     }
-    async fn read_output(
+    async fn raw_read_output(
         &self,
         _machine: MachineId,
+        _native: Option<&NativeBinding>,
         _offset: u64,
         _limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
@@ -790,8 +754,7 @@ impl MachinesProvider for DaytonaProvider {
             "Daytona retained console reads are not bound".into(),
         ))
     }
-
-    async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
+    async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         let snapshot = self.resolve_snapshot(&image)?;
         let capabilities = self.snapshot_capabilities(&snapshot).await?;
         Ok(ImageQualification {
@@ -800,277 +763,57 @@ impl MachinesProvider for DaytonaProvider {
             compatibility_revision: Self::revision(),
         })
     }
-
-    async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
-        let key = request.idempotency_key;
-        let outcome = self
-            .ops
-            .create_machine(
-                self,
-                request,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-            )
-            .await;
-        // The staged environment is only useful to the create request itself. Whatever the
-        // outcome, a later attempt stages afresh; keeping it would retain the token for nothing.
-        self.boot_env
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&key);
-        outcome.map(|settled| settled.outcome)
-    }
-
-    async fn inspect_machine(
-        &self,
-        machine: MachineId,
-    ) -> Result<MachineObservation, ProviderError> {
-        self.fetch_machine(machine).await
-    }
-
-    async fn list_machines(
-        &self,
-        after: Option<MachineId>,
-        limit: u32,
-    ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page limit must be 1..=256".into(),
-            ));
-        }
+    async fn raw_list(&self) -> Result<Vec<MachineObservation>, ProviderError> {
         let tenant = self.tenant();
         let listed = self.api.list(Some(&map::managed_filter(tenant))).await?;
+        let mut observations = Vec::new();
         for sandbox in listed
             .iter()
             .filter(|sandbox| map::owned_by(sandbox, tenant))
         {
-            match self.observe(sandbox, None, None).await {
-                Ok(_) => {}
+            match self.map_observation(sandbox, None, None).await {
+                Ok(value) => observations.push(value),
                 Err(error) => {
-                    tracing::warn!(sandbox = sandbox.id, %error, "skipping sandbox that cannot be observed");
+                    tracing::warn!(sandbox = sandbox.id, %error, "skipping sandbox that cannot be observed")
                 }
             }
         }
-        self.ops.machine_page(after, limit).await
+        Ok(observations)
     }
-
-    /// Takes a hot snapshot (filesystem and memory) of a running VM. The snapshot is an
-    /// independent Daytona object: it outlives its source and can be restored any number of
-    /// times by [`MachinesProvider::fork`].
-    async fn checkpoint(
+    async fn raw_usage(
         &self,
         machine: MachineId,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .create_checkpoint(
-                self,
-                machine,
-                key,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-                now_unix_ms(),
-            )
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn inspect_checkpoint(
-        &self,
-        checkpoint: CheckpointId,
-    ) -> Result<CheckpointObservation, ProviderError> {
-        self.ops.inspect_checkpoint(self, checkpoint).await
-    }
-
-    /// Restores a checkpoint into `count` new sandboxes by creating each from the hot
-    /// snapshot. To fork a *running* machine without a checkpoint, use
-    /// [`MachinesProvider::fork_machine`].
-    async fn fork(
-        &self,
-        checkpoint: CheckpointId,
-        count: NonZeroU32,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .fork_checkpoint(
-                self,
-                checkpoint,
-                count,
-                key,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-            )
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    /// Native memory-and-disk VM fork. Containers are refused without an atomic
-    /// snapshot boundary. Children are labelled with their source (`acyclic.parent`).
-    async fn fork_machine(
-        &self,
-        machine: MachineId,
-        count: NonZeroU32,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .fork_machine(
-                self,
-                machine,
-                count,
-                key,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-                now_unix_ms(),
-            )
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn suspend(
-        &self,
-        machine: MachineId,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .transition(
-                self,
-                machine,
-                key,
-                false,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-                now_unix_ms(),
-            )
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn wake(
-        &self,
-        machine: MachineId,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .transition(
-                self,
-                machine,
-                key,
-                true,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-                now_unix_ms(),
-            )
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn set_suspension_policy(
-        &self,
-        machine: MachineId,
-        policy: SuspensionPolicy,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .set_suspension_policy(self, machine, policy, key, now_unix_ms())
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn destroy_machine(
-        &self,
-        machine: MachineId,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .destroy_machine(self, machine, key, now_unix_ms())
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn destroy_checkpoint(
-        &self,
-        checkpoint: CheckpointId,
-        key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.ops
-            .destroy_checkpoint(self, checkpoint, key)
-            .await
-            .map(|settled| settled.outcome)
-    }
-
-    async fn events(
-        &self,
-        machine: MachineId,
-        after_sequence: Option<u64>,
-        limit: u32,
-    ) -> Result<EventPage, ProviderError> {
-        self.ops
-            .event_page(self, machine, after_sequence, limit, now_unix_ms())
-            .await
-    }
-
-    /// Allocation-based estimate; see [`usage`]. Daytona has no per-sandbox metering endpoint.
-    async fn usage(
-        &self,
-        machine: MachineId,
+        native: Option<&NativeBinding>,
+        known: Option<&MachineObservation>,
         start_unix_ms: u64,
         end_unix_ms: u64,
-    ) -> Result<UsageReceipt, ProviderError> {
-        if start_unix_ms >= end_unix_ms {
-            return Err(ProviderError::Invalid(
-                "usage interval must be non-empty".into(),
-            ));
-        }
-        let id = machine.to_string();
-        let sandbox = self.api.get(&id).await?;
-        let observation = self.observe(&sandbox, None, None).await?;
+    ) -> Result<RawUsage, ProviderError> {
+        let handle = native.map_or_else(|| machine.to_string(), |value| value.handle.clone());
+        let sandbox = self.api.get(&handle).await?;
+        let observation = self
+            .map_observation(
+                &sandbox,
+                known.map(|value| &value.contract),
+                known.and_then(|value| value.last_checkpoint),
+            )
+            .await?;
         let allocation = usage::Allocation {
             cpu: sandbox.cpu.unwrap_or(0),
             memory_gib: sandbox.memory.unwrap_or(0),
             disk_gib: sandbox.disk.unwrap_or(0),
         };
-        usage::receipt(
+        let receipt = usage::receipt(
             machine,
-            &id,
+            &handle,
             (start_unix_ms, end_unix_ms),
             (observation.created_at_unix_ms, now_unix_ms()),
             map::legacy_dedicated_cpu(&sandbox.labels)?,
             allocation,
-        )
-    }
-
-    async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        Ok(self.ops.settled(key).await?.outcome)
-    }
-
-    async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
-        self.ops
-            .record_for_key(key)
-            .await?
-            .map(|record| record.id)
-            .ok_or_else(|| ProviderError::NotFound(key.to_string()))
-    }
-
-    async fn inspect_operation(
-        &self,
-        operation: OperationId,
-    ) -> Result<OperationObservation, ProviderError> {
-        self.ops
-            .inspect(operation)
-            .await?
-            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))
-    }
-
-    async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        self.ops.cancel_with(self, operation).await
-    }
-
-    /// Current and future observations follow the canonical Streams cursor.
-    async fn watch_operation(
-        &self,
-        operation: OperationId,
-    ) -> Result<OperationStream, ProviderError> {
-        self.ops.watch(operation).await
+        )?;
+        Ok(RawUsage {
+            observation,
+            receipt,
+        })
     }
 }
 
@@ -1084,6 +827,7 @@ mod tests {
 
     use super::*;
     use acyclic_machines::OperationPhase;
+    use std::{num::NonZeroU32, sync::Mutex};
 
     fn registry() -> OperationRegistry {
         OperationRegistry::new(
@@ -1127,7 +871,7 @@ mod tests {
     fn debug_output_never_renders_staged_boot_values() {
         let provider = DaytonaProvider::new(DaytonaConfig::new("api-secret"), registry()).unwrap();
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000003").unwrap();
-        provider.stage_boot_env(
+        provider.core().stage_boot_env(
             key,
             BTreeMap::from([
                 (
@@ -1154,10 +898,10 @@ mod tests {
     fn staged_boot_env_reaches_the_create_body() {
         let provider = DaytonaProvider::new(DaytonaConfig::new("k"), registry()).unwrap();
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000002").unwrap();
-        assert!(provider.staged_boot_env(key).is_none());
+        assert!(provider.core().staged_boot_env(key).is_none());
         let env = BTreeMap::from([("ACYCLIC_BOOT_TOKEN".to_owned(), "t".to_owned())]);
-        provider.stage_boot_env(key, env.clone());
-        assert_eq!(provider.staged_boot_env(key), Some(env.clone()));
+        provider.core().stage_boot_env(key, env.clone());
+        assert_eq!(provider.core().staged_boot_env(key), Some(env.clone()));
         let body = api::CreateSandboxRequest {
             env,
             ..api::CreateSandboxRequest::default()
@@ -1205,7 +949,7 @@ mod tests {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001").unwrap();
         let mut request = CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32]);
         request.budgets.spend_micros = 5;
-        provider.stage_boot_env(
+        provider.core().stage_boot_env(
             key,
             BTreeMap::from([("ACYCLIC_BOOT_TOKEN".to_owned(), "t".to_owned())]),
         );
@@ -1215,14 +959,15 @@ mod tests {
         ));
         assert!(
             provider
-                .registry()
+                .core()
+                .operations()
                 .record_for_key(key)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            provider.staged_boot_env(key).is_none(),
+            provider.core().staged_boot_env(key).is_none(),
             "a terminal create failure clears the staged boot environment"
         );
         let op = ops::operation_id(key);
@@ -1354,7 +1099,7 @@ mod tests {
             OperationRegistry::new(Arc::new(streams), "account")?,
         )?;
         let original = provider.create(request(key)).await?;
-        let settlement = provider.registry().settled(key).await?;
+        let settlement = provider.core().operations().settled(key).await?;
         let calls = mock.requests().len();
         drop(provider);
         let streams = acyclic_stream::LocalStream::open(
@@ -1368,7 +1113,7 @@ mod tests {
         )?;
         assert_eq!(provider.create(request(key)).await?, original);
         assert_eq!(provider.recover(key).await?, original);
-        assert_eq!(provider.registry().join(key).await?, settlement);
+        assert_eq!(provider.core().operations().join(key).await?, settlement);
         assert_eq!(mock.requests().len(), calls);
         Ok(())
     }
@@ -1387,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_calls_emit_spans_without_paths_or_bodies() {
-        use std::sync::Mutex;
+        use std::{num::NonZeroU32, sync::Mutex};
         use tracing_subscriber::layer::{Context, SubscriberExt as _};
 
         type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
@@ -2158,22 +1903,28 @@ mod tests {
         .await;
         let provider = mocked(&mock, None);
         let key = test_key(17);
-        let ops::Admission::Fresh(operation) =
-            provider.registry().admit(key, &"fork").await.unwrap()
+        let ops::Admission::Fresh(operation) = provider
+            .core()
+            .operations()
+            .admit(key, &"fork")
+            .await
+            .unwrap()
         else {
             panic!("expected fresh")
         };
         for id in ["a", "b", "c"] {
             assert!(
                 provider
-                    .registry()
+                    .core()
+                    .operations()
                     .bind_created(operation, &NativeResource::Machine(id.into()))
                     .await
                     .unwrap()
             );
         }
         provider
-            .registry()
+            .core()
+            .operations()
             .fail(operation, &ProviderError::Indeterminate(key))
             .await
             .unwrap();
@@ -2188,7 +1939,8 @@ mod tests {
         assert_eq!(deletes(&mock), ["/sandbox/c", "/sandbox/b", "/sandbox/a"]);
         assert_eq!(
             provider
-                .registry()
+                .core()
+                .operations()
                 .record(operation)
                 .await
                 .unwrap()
@@ -2203,7 +1955,8 @@ mod tests {
         );
         assert!(
             provider
-                .registry()
+                .core()
+                .operations()
                 .record(operation)
                 .await
                 .unwrap()
@@ -2219,7 +1972,8 @@ mod tests {
         let provider = mocked(&mock, None);
         let key = test_key(30);
         let ops::Admission::Fresh(operation) = provider
-            .registry()
+            .core()
+            .operations()
             .admit(
                 key,
                 &MutationIntent::Checkpoint(MachineId::parse(MACHINE).unwrap()),
@@ -2231,13 +1985,19 @@ mod tests {
         };
         let resource = NativeResource::Checkpoint("accepted-pending-snapshot".into());
         provider
-            .registry()
+            .core()
+            .operations()
             .claim(provider.as_ref(), operation, &resource, false)
             .await
             .unwrap();
         provider.cancel(operation).await.unwrap();
         assert_eq!(
-            provider.registry().created(operation).await.unwrap(),
+            provider
+                .core()
+                .operations()
+                .created(operation)
+                .await
+                .unwrap(),
             [resource]
         );
         let requests = mock.requests();

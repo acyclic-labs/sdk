@@ -9,6 +9,17 @@ let operations = acyclic_machines::core::OperationRegistry::new(streams, "accoun
 let provider = acyclic_machines_daytona::DaytonaProvider::new(config, operations)?;
 ```
 
+Native adapters implement `core::Backend` and `RawMachines`; the core supplies
+`MachinesProvider` once. `BackendCore` binds the Streams registry, readiness
+profile and assurance at composition. Its staged boot input is ephemeral and
+redacted; completed create attempts clear it, including replay and refusal.
+Call `backend.core().stage_boot_env(key, env)` when boot input is needed, with
+`Backend` in scope. Raw list and usage return decoded observations; only core
+publishes their canonical state and events. Usage identity/interval and console
+read bounds are admitted there before transport. Guest transport binding still
+needs the shared execution owner from the adapter prerequisite; merely exposing
+raw guest calls is not streaming/cancellation qualification.
+
 Admission precedes native dispatch. A keyed conditional commit publishes the point
 projection and account operation log (`machines/<account>/ops`) together.
 An identical successful retry returns the original result; a different intent is

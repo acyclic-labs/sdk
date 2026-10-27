@@ -4,6 +4,10 @@ use crate::*;
 pub use crate::{OperationSettlement, SettledMutation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+mod backend;
+#[cfg(not(target_arch = "wasm32"))]
+pub use backend::{Backend, BackendCore, RawUsage};
 mod bindings;
 mod custody;
 mod journal;
