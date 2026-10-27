@@ -172,6 +172,7 @@ impl StreamProvider for Remote {
         Ok(crate::DurableReceipt::covering(path, &marks, through))
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        let key = request.idempotency_key.ok_or(StreamError::InvalidArgument)?;
         let body = wire::AppendRequest {
             path: request.path.to_string(),
             records: request
@@ -180,7 +181,7 @@ impl StreamProvider for Remote {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: Some(identity(request.idempotency_key)),
+            idempotency_key: Some(bytes::Bytes::copy_from_slice(key.as_bytes())),
         };
         let result = self
             .service()
@@ -191,6 +192,7 @@ impl StreamProvider for Remote {
         wire_codec::append_outcome_from_wire(result)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+        let key = request.idempotency_key.ok_or(StreamError::InvalidArgument)?;
         let body = wire::ForkRequest {
             exclude: request
                 .exclude
@@ -200,7 +202,7 @@ impl StreamProvider for Remote {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: Some(identity(request.idempotency_key)),
+            idempotency_key: Some(bytes::Bytes::copy_from_slice(key.as_bytes())),
         };
         let result = self
             .service()
@@ -278,10 +280,4 @@ impl StreamProvider for Remote {
             .into_inner();
         wire_codec::envelope_from_wire(result)
     }
-}
-fn identity(key: Option<IdempotencyKey>) -> bytes::Bytes {
-    key.map_or_else(
-        || bytes::Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
-        |key| bytes::Bytes::copy_from_slice(key.as_bytes()),
-    )
 }

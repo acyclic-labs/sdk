@@ -298,7 +298,7 @@ fn validate_idempotency(value: &Value) -> Result {
     match string(field(outcome, "type")?)? {
         "append" => validate_append_result(field(outcome, "outcome")?),
         "fork" => validate_fork_receipt(field(outcome, "receipt")?),
-        "commit" => validate_commit_result(field(outcome, "outcome")?),
+        "commit" => validate_envelope(field(outcome, "outcome")?),
         _ => Err("invalid idempotency outcome type"),
     }
 }

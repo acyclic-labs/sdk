@@ -25,6 +25,9 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     assert!(receipt.forks.is_empty());
     let facts = provider.read_commit(receipt.commit_id).await?;
     assert!(receipt.matches_envelope(&facts));
+    let observed = provider.inspect_idempotency(request.idempotency_key.clone()).await?
+        .ok_or(StreamError::Unavailable)?;
+    assert_eq!(observed.outcome, IdempotencyOutcome::Commit(facts.clone()));
     let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
         return Err(StreamError::Unavailable);
     };
@@ -52,8 +55,13 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     assert_eq!(fork_receipt.committed_at_micros, 9_000);
     let fork_facts = provider.read_commit(fork_receipt.commit_id).await?;
     assert!(fork_receipt.matches_envelope(&fork_facts));
+    let fork_observed = provider.inspect_idempotency(fork.idempotency_key.clone()).await?
+        .ok_or(StreamError::Unavailable)?;
+    assert_eq!(fork_observed.outcome, IdempotencyOutcome::Commit(fork_facts.clone()));
     let reopened = MemoryStream::default();
     reopened.install_state(&provider.encode_state().await).await?;
+    assert_eq!(reopened.inspect_idempotency(request.idempotency_key.clone()).await?, Some(observed));
+    assert_eq!(reopened.inspect_idempotency(fork.idempotency_key.clone()).await?, Some(fork_observed));
     assert_eq!(reopened.commit(request).await?, written);
     assert_eq!(reopened.commit(fork).await?, forked);
     assert_eq!(reopened.read_commit(receipt.commit_id).await?, facts);

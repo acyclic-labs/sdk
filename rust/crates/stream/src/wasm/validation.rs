@@ -562,7 +562,7 @@ mod http {
             "commit" => set(
                 &outcome_result,
                 "outcome",
-                &commit_result_js(field(outcome, "outcome")?)?,
+                &envelope_js(field(outcome, "outcome")?)?,
             )?,
             _ => return Err("invalid idempotency outcome type"),
         }
