@@ -23,7 +23,7 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
         let protocol = PacketSession::new(
             PacketRouter::Single(super::super::FuseProjection { core }),
             64 * 1024,
-            NonZeroU32::new(4096).ok_or(libc::EINVAL)?,
+            NonZeroU32::new(4096).ok_or("nonzero guest page size")?,
         )?;
         let (socket, peer) = UnixStream::pair()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -32,7 +32,7 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
         let session = VhostSession::new(
             protocol,
             socket,
-            NonZeroU16::new(256).ok_or(libc::EINVAL)?,
+            NonZeroU16::new(256).ok_or("nonzero maximum queue size")?,
             b"canonical-test",
             &work,
         )?;

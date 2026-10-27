@@ -826,7 +826,7 @@ fn direct_projection_does_not_admit_kernel_cache_leases() -> Result<(), Box<dyn 
             .open_directory(ROOT_INODE, &work)?
             .contains(FopenFlags::FOPEN_CACHE_DIR)
     );
-    let mut state = core.state()?;
+    let mut state = core.state().map_err(NativeMountError::from)?;
     state.admit_listing(core.source.as_ref(), ROOT_INODE, stamp, &work)?;
     state.invalidate_attributes(created.attr.ino.0, &work)?;
     assert!(state.by_inode.values().all(|entry| {
