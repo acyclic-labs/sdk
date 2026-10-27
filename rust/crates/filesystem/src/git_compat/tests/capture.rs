@@ -64,12 +64,8 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
     )
     .await
     .expect("capture");
-    assert!(
-        unbounded!(captured.generation, stat("/target/drop.bin")).is_err()
-    );
-    assert!(
-        unbounded!(captured.generation, stat("/target/nested/keep.txt")).is_ok()
-    );
+    assert!(unbounded!(captured.generation, stat("/target/drop.bin")).is_err());
+    assert!(unbounded!(captured.generation, stat("/target/nested/keep.txt")).is_ok());
     assert_eq!(
         captured.tracked_paths,
         BTreeSet::from(["target/nested/keep.txt".to_owned()])
@@ -126,12 +122,8 @@ async fn capture_at_generation_excludes_later_workspace_updates() {
     )
     .await
     .expect("pinned capture");
-    assert!(
-        unbounded!(captured.generation, stat("/published.txt")).is_ok()
-    );
-    assert!(
-        unbounded!(captured.generation, stat("/later.txt")).is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/published.txt")).is_ok());
+    assert!(unbounded!(captured.generation, stat("/later.txt")).is_err());
 }
 
 #[tokio::test]
@@ -174,9 +166,7 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
     assert_eq!(source.file_id, linked.file_id);
     assert_eq!(source.link_count, 2);
     assert_eq!(source.metadata.posix_mode, Some(0o100_640));
-    assert!(
-        unbounded!(captured.generation, stat("/ignored")).is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/ignored")).is_err());
 }
 
 #[tokio::test]
@@ -210,15 +200,9 @@ async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
     )
     .await
     .expect("capture");
-    assert!(
-        unbounded!(captured.generation, stat("/src/drop.tmp")).is_err()
-    );
-    assert!(
-        unbounded!(captured.generation, stat("/src/keep.tmp")).is_ok()
-    );
-    assert!(
-        unbounded!(captured.generation, stat("/outside.tmp")).is_ok()
-    );
+    assert!(unbounded!(captured.generation, stat("/src/drop.tmp")).is_err());
+    assert!(unbounded!(captured.generation, stat("/src/keep.tmp")).is_ok());
+    assert!(unbounded!(captured.generation, stat("/outside.tmp")).is_ok());
 }
 
 #[tokio::test]
@@ -364,9 +348,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     )
     .await
     .expect("capture");
-    assert!(
-        unbounded!(captured.generation, stat("/build/keep.txt")).is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/build/keep.txt")).is_err());
 }
 
 #[tokio::test]

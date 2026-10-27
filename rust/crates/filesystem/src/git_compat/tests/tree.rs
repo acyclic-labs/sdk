@@ -97,7 +97,9 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         panic!("patch did not commit");
     };
     assert_eq!(
-        unbounded!(generation, read("/a.txt", 1_024)).expect("patched file").as_ref(),
+        unbounded!(generation, read("/a.txt", 1_024))
+            .expect("patched file")
+            .as_ref(),
         b"one\nnew\n"
     );
     assert!(matches!(
@@ -136,7 +138,9 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         panic!("add/delete patch did not commit");
     };
     assert_eq!(
-        unbounded!(generation, read("/nested/new.txt", 1_024)).expect("created file").as_ref(),
+        unbounded!(generation, read("/nested/new.txt", 1_024))
+            .expect("created file")
+            .as_ref(),
         b"made\n"
     );
     assert!(
@@ -329,7 +333,9 @@ async fn git_patch_preimage_cannot_overwrite_a_newer_transaction_base() {
         "stale Git preimage overwrote the newer base"
     );
     assert_eq!(
-        unbounded!(workspace, read("/a.txt", 16)).expect("current file").as_ref(),
+        unbounded!(workspace, read("/a.txt", 16))
+            .expect("current file")
+            .as_ref(),
         b"other\n"
     );
 }

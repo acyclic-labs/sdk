@@ -48,11 +48,11 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
     )
     .await
     .expect("incremental capture");
-    assert!(
-        unbounded!(captured.generation, stat("/src/new.tmp")).is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/src/new.tmp")).is_err());
     assert_eq!(
-        unbounded!(captured.generation, read("/src/kept.txt", 64)).expect("kept").as_ref(),
+        unbounded!(captured.generation, read("/src/kept.txt", 64))
+            .expect("kept")
+            .as_ref(),
         b"after"
     );
     assert!(!captured.tracked_paths.contains("src/new.tmp"));
@@ -213,19 +213,19 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
         "incremental capture must fork from the prior filtered capture"
     );
     assert_eq!(
-        unbounded!(captured.generation, read("/kept.txt", 64)).expect("edited file").as_ref(),
+        unbounded!(captured.generation, read("/kept.txt", 64))
+            .expect("edited file")
+            .as_ref(),
         b"after"
     );
     assert_eq!(
-        unbounded!(captured.generation, read("/unchanged.txt", 64)).expect("unchanged file").as_ref(),
+        unbounded!(captured.generation, read("/unchanged.txt", 64))
+            .expect("unchanged file")
+            .as_ref(),
         b"same"
     );
-    assert!(
-        unbounded!(captured.generation, stat("/new.tmp")).is_err()
-    );
-    assert!(
-        unbounded!(captured.generation, stat("/previous.tmp")).is_err()
-    );
+    assert!(unbounded!(captured.generation, stat("/new.tmp")).is_err());
+    assert!(unbounded!(captured.generation, stat("/previous.tmp")).is_err());
     assert_eq!(
         captured.tracked_paths,
         BTreeSet::from(["kept.txt".to_owned(), "unchanged.txt".to_owned()])
@@ -268,10 +268,6 @@ async fn nested_gitignore_change_forces_exact_capture() {
     )
     .await
     .expect("capture");
-    assert!(
-        unbounded!(captured.generation, stat("/src/ignored.txt")).is_err()
-    );
-    assert!(
-        unbounded!(captured.generation, stat("/src/.gitignore")).is_ok()
-    );
+    assert!(unbounded!(captured.generation, stat("/src/ignored.txt")).is_err());
+    assert!(unbounded!(captured.generation, stat("/src/.gitignore")).is_ok());
 }

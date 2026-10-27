@@ -119,7 +119,8 @@ mod tests {
 
     #[tokio::test]
     async fn call_files_replay_first_effect_and_order_by_key() -> Result<()> {
-        let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let provider =
+            ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
         let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16]));
         let owner = AgentId::from_bytes(agent.id().to_bytes());
