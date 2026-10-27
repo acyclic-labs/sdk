@@ -29,7 +29,11 @@ Default bounds: 64 KiB JWKS, 16 keys, 16 KiB compact token, 30 seconds between
 refresh attempts (including failures), a 10-second fetch deadline, one-hour
 last-good key lifetime and zero `nbf` clock skew. Configuration permits bounded
 changes: at most 1 MiB, 64 keys, 64 KiB tokens, one-day key lifetime and 30 seconds
-of `nbf` skew. Refresh validates the complete replacement before publishing it.
+of `nbf` skew. Refresh counts and bounds the whole response, then selects keys
+for the pinned algorithm and verification use. Other signing families and
+encryption keys are ignored. Eligible keys still require valid material and
+unique bounded identifiers; malformed candidates or a set with no eligible
+keys refuse the replacement before publication.
 Failed refresh retains the last-good snapshot without extending its lifetime;
 a stale snapshot refuses admission. Unknown keys refuse without fetching.
 Refresh uses the shared platform executor. The native HTTP source disables
@@ -37,7 +41,8 @@ redirects and retries and implements only one GET (44 physical lines).
 
 Validation runs the unchanged agent-host suite, including identity vectors for
 forgery, expiry, audience, subject, algorithm confusion, rotation/removal, stale
-keys, bounded refresh and last-good preservation. Invalid tokens perform zero
+keys, mixed signing families and uses, bounded refresh and last-good preservation.
+Invalid tokens perform zero
 turn-provider reads/writes and no executor calls; cached admission performs no
 JWKS I/O. A disposable local Dex issuer additionally exercises real RS256
 verification and admitted scope expiry against the same host implementation.

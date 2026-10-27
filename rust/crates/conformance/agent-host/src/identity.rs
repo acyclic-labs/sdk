@@ -1,4 +1,5 @@
 //! Actual OIDC admission into the same FilesystemTurnHost, including zero-read refusals.
+mod key_sets;
 mod tokens;
 use crate::{Backend, Result, admission::fixture::Fixture};
 use acyclic_harness_core::{
@@ -124,6 +125,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     .await?;
     rotation(backend, now).await?;
     refresh_bounds(now).await?;
+    key_sets::verify(backend, now).await?;
     Ok(())
 }
 

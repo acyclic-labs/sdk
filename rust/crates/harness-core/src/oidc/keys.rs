@@ -153,7 +153,7 @@ struct Set {
 }
 #[derive(Deserialize)]
 struct RawKey {
-    kid: String,
+    kid: Option<String>,
     kty: String,
     alg: Option<String>,
     #[serde(rename = "use")]
@@ -192,19 +192,38 @@ pub(super) async fn fetch(
     }
     let mut keys = BTreeMap::new();
     for raw in set.keys {
-        if raw.kid.is_empty()
-            || raw.kid.len() > 256
-            || keys.contains_key(&raw.kid)
-            || raw
-                .alg
-                .as_deref()
-                .is_some_and(|alg| alg != config.algorithm.name())
+        // An issuer may publish signing families and encryption keys together.
+        // Select verification candidates before validating their key material.
+        if raw
+            .alg
+            .as_deref()
+            .is_some_and(|alg| alg != config.algorithm.name())
             || raw.usage.as_deref().is_some_and(|usage| usage != "sig")
             || raw
                 .key_ops
                 .as_ref()
-                .is_some_and(|ops| ops.len() != 1 || ops.first().is_none_or(|op| op != "verify"))
+                .is_some_and(|ops| !ops.iter().any(|op| op == "verify"))
         {
+            continue;
+        }
+        if raw.alg.is_none()
+            && match config.algorithm {
+                SigningAlgorithm::Rs256 => raw.kty != "RSA",
+                SigningAlgorithm::Es256 => {
+                    raw.kty != "EC" || raw.crv.as_deref().is_some_and(|curve| curve != "P-256")
+                }
+                SigningAlgorithm::EdDsa => {
+                    raw.kty != "OKP" || raw.crv.as_deref().is_some_and(|curve| curve != "Ed25519")
+                }
+            }
+        {
+            continue;
+        }
+        let kid = raw
+            .kid
+            .filter(|kid| !kid.is_empty() && kid.len() <= 256)
+            .ok_or_else(|| refused("OIDC verification key requires a bounded identifier"))?;
+        if keys.contains_key(&kid) || raw.key_ops.as_ref().is_some_and(|ops| ops.len() != 1) {
             return Err(refused("ambiguous or disallowed OIDC verification key"));
         }
         let key = match (config.algorithm, raw.kty.as_str(), raw.crv.as_deref()) {
@@ -251,12 +270,15 @@ pub(super) async fn fetch(
         )
         .map_err(|_| refused("invalid OIDC public key"))?;
         keys.insert(
-            raw.kid,
+            kid,
             Key {
                 algorithm: config.algorithm.algorithm(),
                 decoding: key,
             },
         );
+    }
+    if keys.is_empty() {
+        return Err(refused("OIDC key set has no eligible verification keys"));
     }
     Ok(keys)
 }
