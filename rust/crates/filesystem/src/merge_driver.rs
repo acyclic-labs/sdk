@@ -7,7 +7,7 @@
 
 use crate::{FileId, GenerationId};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -363,9 +363,8 @@ pub fn resolve_merge_plan(
     replanning: bool,
 ) -> Result<UnpublishedMergeCandidate, MergePlanResolutionError> {
     let mut resolutions = BTreeMap::new();
-    let mut conflicts = BTreeSet::new();
     for conflict in &plan.conflicts {
-        if !conflicts.insert(conflict.key.clone()) {
+        if resolutions.contains_key(&conflict.key) {
             return Err(MergePlanResolutionError::DuplicateConflict(
                 conflict.key.clone(),
             ));
@@ -508,9 +507,7 @@ impl MergeDriverRegistry {
             }
             let mut fields = line.split_whitespace();
             let pattern = fields.next().unwrap_or_default();
-            let attributes = fields.collect::<Vec<_>>();
-            let driver = attributes
-                .iter()
+            let driver = fields
                 .rev()
                 .find_map(|attribute| attribute.strip_prefix("merge="));
             if pattern.is_empty() || driver.is_some_and(str::is_empty) {

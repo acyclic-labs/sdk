@@ -481,17 +481,7 @@ mod tests {
 
     #[test]
     fn durable_size_rejection_precedes_the_shared_writer() {
-        let original = proposal();
-        let durable = DurableCommit {
-            epoch: Epoch::GENESIS,
-            sequence: Sequence::new(1),
-            operation_id: original.operation_id,
-            fingerprint: original.fingerprint,
-            previous_digest: Digest::ZERO,
-            digest: Digest::from_bytes([4; 32]),
-            payload: original.payload,
-            settled_at_micros: None,
-        };
+        let durable = durable();
         let called = std::cell::Cell::new(false);
         let result = StreamsDurableRecord::encode_with(&durable, 1, |_, _| {
             called.set(true);
@@ -506,17 +496,7 @@ mod tests {
 
     #[test]
     fn borrowed_observer_preserves_canonical_bytes_and_genuine_failed_copy_prefix() {
-        let original = proposal();
-        let durable = DurableCommit {
-            epoch: Epoch::GENESIS,
-            sequence: Sequence::new(1),
-            operation_id: original.operation_id,
-            fingerprint: original.fingerprint,
-            previous_digest: Digest::ZERO,
-            digest: Digest::from_bytes([4; 32]),
-            payload: original.payload,
-            settled_at_micros: None,
-        };
+        let durable = durable();
         let encoded =
             StreamsDurableRecord::encode(&durable, 4096).expect("canonical bounded record");
         let mut copied = 0;
@@ -571,6 +551,20 @@ mod tests {
             operation_id: OperationId::from_bytes([1; 16]),
             fingerprint: Digest::from_bytes([2; 32]),
             payload: Bytes::from_static(b"canonical-operation"),
+        }
+    }
+
+    fn durable() -> DurableCommit {
+        let original = proposal();
+        DurableCommit {
+            epoch: Epoch::GENESIS,
+            sequence: Sequence::new(1),
+            operation_id: original.operation_id,
+            fingerprint: original.fingerprint,
+            previous_digest: Digest::ZERO,
+            digest: Digest::from_bytes([4; 32]),
+            payload: original.payload,
+            settled_at_micros: None,
         }
     }
 

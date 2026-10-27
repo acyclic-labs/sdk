@@ -48,7 +48,6 @@ pub(crate) async fn in_span<F: std::future::Future>(span: &OperationSpan, future
         reason = "WASM records no spans or synchronous native work"
     )
 )]
-#[cfg(any(test, feature = "local", feature = "native-watch"))]
 #[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
     #[cfg(not(target_arch = "wasm32"))]
@@ -59,20 +58,18 @@ pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
 
 /// Captures caller ancestry for worker attribution.
 #[cfg(all(
-    any(test, feature = "local", feature = "native-watch"),
+    any(test, feature = "native-watch"),
     not(target_arch = "wasm32")
 ))]
-#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn caller_context() -> OperationSpan {
     OperationSpan::new(tracing::Span::current())
 }
 
 /// Carries an explicitly selected operation/ancestry context through actual work.
 #[cfg(all(
-    any(test, feature = "local", feature = "native-watch"),
+    any(test, feature = "native-watch"),
     not(target_arch = "wasm32")
 ))]
-#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn in_context<T>(
     span: OperationSpan,
     job: impl FnOnce() -> T + Send + 'static,

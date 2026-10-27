@@ -22,15 +22,15 @@ pub enum GitPatchError {
     },
 }
 
-struct UnifiedPatch {
-    old_path: Option<String>,
-    new_path: Option<String>,
-    hunks: Vec<UnifiedHunk>,
+struct UnifiedPatch<'a> {
+    old_path: Option<&'a str>,
+    new_path: Option<&'a str>,
+    hunks: Vec<UnifiedHunk<'a>>,
 }
 
-struct UnifiedHunk {
+struct UnifiedHunk<'a> {
     old_start: usize,
-    lines: Vec<String>,
+    lines: Vec<&'a str>,
 }
 
 /// Applies a bounded UTF-8 patch under one writer permit.
@@ -86,13 +86,12 @@ pub(super) async fn apply_git_patch_at<
     for patch in patches {
         let path = patch
             .new_path
-            .as_ref()
-            .or(patch.old_path.as_ref())
+            .or(patch.old_path)
             .ok_or_else(|| GitPatchError::Invalid("patch has no path".to_owned()))?;
         let original = if patch.old_path.is_none() {
-            String::new()
+            acyclic_stream::OwnedBytes::from_static(b"")
         } else {
-            let bytes = head
+            head
                 .read(
                     &format!("/{path}"),
                     MAXIMUM_PATCH_FILE_BYTES,
@@ -101,10 +100,10 @@ pub(super) async fn apply_git_patch_at<
                 )
                 .await
                 .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
-            String::from_utf8(bytes.to_vec()).map_err(|_| GitPatchError::NonText)?
+                .map_err(|failure| failure.error)?
         };
-        let replacement = apply_unified_hunks(path, &original, &patch.hunks)?;
+        let original = std::str::from_utf8(&original).map_err(|_| GitPatchError::NonText)?;
+        let replacement = apply_unified_hunks(path, original, &patch.hunks)?;
         if patch.new_path.is_none() {
             if !replacement.is_empty() {
                 return Err(GitPatchError::Invalid(
@@ -158,66 +157,50 @@ pub(super) async fn apply_git_patch_at<
         .map_err(Into::into)
 }
 
-#[allow(
-    clippy::indexing_slicing,
-    reason = "every patch line index is bounded by the surrounding length checks"
-)]
-fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, GitPatchError> {
+fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch<'_>>, GitPatchError> {
     let text = std::str::from_utf8(bytes).map_err(|_| GitPatchError::NonText)?;
     if text.contains("GIT binary patch") {
         return Err(GitPatchError::Invalid(
             "binary patches require a typed binary mutation".to_owned(),
         ));
     }
-    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    let mut lines = text.split_inclusive('\n').peekable();
     let mut patches = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        if !lines[index].starts_with("--- ") {
-            index += 1;
+    while let Some(line) = lines.next() {
+        if !line.starts_with("--- ") {
             continue;
         }
-        let old_path = parse_patch_path(lines[index].trim_end_matches(['\r', '\n']), "--- ")?;
-        index += 1;
-        let Some(next) = lines.get(index) else {
+        let old_path = parse_patch_path(line.trim_end_matches(['\r', '\n']), "--- ")?;
+        let Some(next) = lines.next() else {
             return Err(GitPatchError::Invalid("missing +++ header".to_owned()));
         };
         let new_path = parse_patch_path(next.trim_end_matches(['\r', '\n']), "+++ ")?;
-        index += 1;
         let mut hunks = Vec::new();
-        while index < lines.len() && !lines[index].starts_with("--- ") {
-            if !lines[index].starts_with("@@ ") {
-                index += 1;
+        while let Some(line) = lines.next_if(|line| !line.starts_with("--- ")) {
+            if !line.starts_with("@@ ") {
                 continue;
             }
-            let old_start = parse_hunk_old_start(lines[index])?;
-            index += 1;
-            let mut hunk_lines: Vec<String> = Vec::new();
-            while index < lines.len()
-                && !lines[index].starts_with("@@ ")
-                && !lines[index].starts_with("--- ")
+            let old_start = parse_hunk_old_start(line)?;
+            let mut hunk_lines: Vec<&str> = Vec::new();
+            while let Some(line) = lines
+                .next_if(|line| !line.starts_with("@@ ") && !line.starts_with("--- "))
             {
-                let line = lines[index];
                 if line.starts_with('\\') {
                     let previous = hunk_lines.last_mut().ok_or_else(|| {
                         GitPatchError::Invalid(
                             "no-newline marker does not follow a hunk line".to_owned(),
                         )
                     })?;
-                    if previous.ends_with('\n') {
-                        previous.pop();
-                        if previous.ends_with('\r') {
-                            previous.pop();
-                        }
+                    if let Some(line) = previous.strip_suffix('\n') {
+                        *previous = line.strip_suffix('\r').unwrap_or(line);
                     }
                 } else if line.starts_with([' ', '+', '-']) {
-                    hunk_lines.push(line.to_owned());
+                    hunk_lines.push(line);
                 } else {
                     return Err(GitPatchError::Invalid(
                         "hunk line lacks a unified-diff prefix".to_owned(),
                     ));
                 }
-                index += 1;
             }
             hunks.push(UnifiedHunk {
                 old_start,
@@ -239,7 +222,7 @@ fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, GitPatchError>
     Ok(patches)
 }
 
-fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String>, GitPatchError> {
+fn parse_patch_path<'a>(line: &'a str, prefix: &str) -> Result<Option<&'a str>, GitPatchError> {
     let value = line
         .strip_prefix(prefix)
         .ok_or_else(|| GitPatchError::Invalid(format!("missing {prefix}header")))?
@@ -259,7 +242,7 @@ fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String>, GitPatch
             "patch path escapes its root".to_owned(),
         ));
     }
-    Ok(Some(value.to_owned()))
+    Ok(Some(value))
 }
 
 fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
@@ -277,7 +260,7 @@ fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
 fn apply_unified_hunks(
     path: &str,
     original: &str,
-    hunks: &[UnifiedHunk],
+    hunks: &[UnifiedHunk<'_>],
 ) -> Result<String, GitPatchError> {
     let source: Vec<_> = original.split_inclusive('\n').collect();
     let mut output = String::new();
