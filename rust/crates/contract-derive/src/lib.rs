@@ -46,7 +46,9 @@ mod registration;
 #[proc_macro_attribute]
 pub fn explicit_provider(_arguments: TokenStream, input: TokenStream) -> TokenStream {
     let contract = parse_macro_input!(input as syn::ItemTrait);
-    explicit_provider::expand(contract).unwrap_or_else(syn::Error::into_compile_error).into()
+    explicit_provider::expand(contract)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 /// Derive a registered prost shadow and fallible semantic ingress.

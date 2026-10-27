@@ -764,7 +764,10 @@ fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit:
         };
         let opened = match state.spawned(intent) {
             Ok(child) if state.open_children.contains(&child) => true,
-            Ok(child) if !state.closed && super::slots::admits(state.open_children.len(), limit, false) => {
+            Ok(child)
+                if !state.closed
+                    && super::slots::admits(state.open_children.len(), limit, false) =>
+            {
                 state.open_children.insert(child);
                 true
             }

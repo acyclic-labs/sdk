@@ -199,7 +199,9 @@ mod tests {
         let n = ((MAX_OUTCOME_BYTES - overhead) / 6).min(MAX_MESSAGE_BYTES);
         assert!(serde_json::to_vec(&failure(n)).expect("outcome").len() <= MAX_OUTCOME_BYTES);
         if n < MAX_MESSAGE_BYTES {
-            assert!(serde_json::to_vec(&failure(n + 1)).expect("outcome").len() > MAX_OUTCOME_BYTES);
+            assert!(
+                serde_json::to_vec(&failure(n + 1)).expect("outcome").len() > MAX_OUTCOME_BYTES
+            );
         }
         failure(n)
     }
@@ -445,11 +447,20 @@ mod tests {
     // Exercise the canonical encoder itself, before its size refusal. A refused
     // oversized record is a failure of this property, not a passing bound.
     fn assert_record_bound<T: AgentRecord>(record: &T) -> usize {
-        record.check().expect("generated record satisfies structural admission");
+        record
+            .check()
+            .expect("generated record satisfies structural admission");
         let raw = crate::contract::canonical_json_bytes(record).expect("canonical record");
-        assert!(raw.len() <= MAX_RECORD_BYTES, "{}: {} > {MAX_RECORD_BYTES}",
-            std::any::type_name::<T>(), raw.len());
-        assert_eq!(record.encode().expect("bounded encoder accepts record"), raw);
+        assert!(
+            raw.len() <= MAX_RECORD_BYTES,
+            "{}: {} > {MAX_RECORD_BYTES}",
+            std::any::type_name::<T>(),
+            raw.len()
+        );
+        assert_eq!(
+            record.encode().expect("bounded encoder accepts record"),
+            raw
+        );
         raw.len()
     }
 
@@ -463,16 +474,24 @@ mod tests {
                 }
             }
             serde_json::Value::Array(values) => {
-                for value in values { vary_text(value, name, text); }
+                for value in values {
+                    vary_text(value, name, text);
+                }
             }
             serde_json::Value::Object(values) => {
-                for value in values.values_mut() { vary_text(value, name, text); }
+                for value in values.values_mut() {
+                    vary_text(value, name, text);
+                }
             }
             _ => {}
         }
     }
 
-    fn varied<T: serde::Serialize + serde::de::DeserializeOwned>(record: &T, name: u8, text: u8) -> T {
+    fn varied<T: serde::Serialize + serde::de::DeserializeOwned>(
+        record: &T,
+        name: u8,
+        text: u8,
+    ) -> T {
         let mut value = serde_json::to_value(record).expect("record value");
         vary_text(&mut value, name, text);
         serde_json::from_value(value).expect("bounded field variation")
@@ -525,11 +544,20 @@ mod tests {
     #[test]
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
-            let record = StatusRecord { phase: Phase::WaitingHost { host }, cursor: 0 };
-            assert!(record.check().is_err(), "unbounded or malformed host name admitted");
+            let record = StatusRecord {
+                phase: Phase::WaitingHost { host },
+                cursor: 0,
+            };
+            assert!(
+                record.check().is_err(),
+                "unbounded or malformed host name admitted"
+            );
         }
         let record = StatusRecord {
-            phase: Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) }, cursor: u64::MAX,
+            phase: Phase::WaitingHost {
+                host: widest(MAX_INTENT_BYTES),
+            },
+            cursor: u64::MAX,
         };
         assert_record_bound(&record);
     }

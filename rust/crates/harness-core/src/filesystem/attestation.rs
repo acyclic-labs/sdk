@@ -369,7 +369,10 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
 mod tests {
     /// Counts each request for evidence.
     #[derive(Default)]
-    struct Counting(std::sync::atomic::AtomicUsize, std::sync::Mutex<Vec<super::TurnAdmission>>);
+    struct Counting(
+        std::sync::atomic::AtomicUsize,
+        std::sync::Mutex<Vec<super::TurnAdmission>>,
+    );
 
     impl super::Attestor for Counting {
         fn attest<'a>(
@@ -377,7 +380,10 @@ mod tests {
             attempt: super::Attempt<'a>,
         ) -> super::BoxProviderFuture<'a, Result<super::Attestation, super::StreamError>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.1.lock().expect("admission ledger").push(attempt.admission.clone());
+            self.1
+                .lock()
+                .expect("admission ledger")
+                .push(attempt.admission.clone());
             Box::pin(std::future::ready(Ok(super::Attestation(
                 attempt.digest.to_vec().into(),
             ))))
@@ -396,9 +402,15 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     impl Probe {
         fn write(&self, digest: [u8; 32]) -> super::StreamError {
-            assert_eq!(self.bound, Some(super::Attestation(digest.to_vec().into())),
-                "write must reach the binding for its own canonical digest");
-            self.reached.lock().expect("probe ledger").push(self.bound.clone());
+            assert_eq!(
+                self.bound,
+                Some(super::Attestation(digest.to_vec().into())),
+                "write must reach the binding for its own canonical digest"
+            );
+            self.reached
+                .lock()
+                .expect("probe ledger")
+                .push(self.bound.clone());
             super::StreamError::AccessDenied
         }
     }
@@ -470,8 +482,11 @@ mod tests {
         ) -> Result<super::CommitOutcome, super::StreamError> {
             Err(self.write(super::commit_digest(&request)?))
         }
-        async fn commit_before(&self, request: super::CommitRequest, _: u64)
-            -> Result<super::CommitOutcome, super::StreamError> {
+        async fn commit_before(
+            &self,
+            request: super::CommitRequest,
+            _: u64,
+        ) -> Result<super::CommitOutcome, super::StreamError> {
             Err(self.write(super::commit_digest(&request)?))
         }
         async fn read_commit(
@@ -490,20 +505,32 @@ mod tests {
             let result = super::commit_digest(&request).map(|digest| self.write(digest));
             super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
         }
-        fn native_append(&self, request: super::AppendRequest,
-            _: std::sync::Arc<dyn super::NativeReadMeter>)
-            -> super::NativeProviderFuture<'_, super::AppendOutcome> {
-            let result = acyclic_stream::request::append_digest(&request).map(|digest| self.write(digest));
+        fn native_append(
+            &self,
+            request: super::AppendRequest,
+            _: std::sync::Arc<dyn super::NativeReadMeter>,
+        ) -> super::NativeProviderFuture<'_, super::AppendOutcome> {
+            let result =
+                acyclic_stream::request::append_digest(&request).map(|digest| self.write(digest));
             super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
         }
-        fn native_commit_guarded<E, F, Fut>(&self, request: super::CommitRequest,
-            _: Option<u64>, _: std::sync::Arc<dyn super::NativeReadMeter>, _before: F)
-            -> super::NativeProviderFuture<'_, super::CommitOutcome, E>
-        where Self: Sized, E: From<super::StreamError> + Send + 'static,
-              F: FnMut() -> Fut + Send + 'static,
-              Fut: std::future::Future<Output = Result<(), E>> + Send + 'static {
+        fn native_commit_guarded<E, F, Fut>(
+            &self,
+            request: super::CommitRequest,
+            _: Option<u64>,
+            _: std::sync::Arc<dyn super::NativeReadMeter>,
+            _before: F,
+        ) -> super::NativeProviderFuture<'_, super::CommitOutcome, E>
+        where
+            Self: Sized,
+            E: From<super::StreamError> + Send + 'static,
+            F: FnMut() -> Fut + Send + 'static,
+            Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
+        {
             let result = super::commit_digest(&request).map(|digest| self.write(digest));
-            super::NativeProviderFuture::ready(Ok(Err(E::from(result.unwrap_or_else(|error| error)))))
+            super::NativeProviderFuture::ready(Ok(Err(E::from(
+                result.unwrap_or_else(|error| error),
+            ))))
         }
     }
 

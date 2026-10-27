@@ -399,8 +399,10 @@ impl AgentRecord for StatusRecord {
         match &self.phase {
             Phase::Done { outcome } => check_outcome(outcome),
             Phase::WaitingHost { host } => check_text(host),
-            Phase::Idle | Phase::Running | Phase::WaitingApproval { .. }
-                | Phase::WaitingAlarm { .. } => Ok(()),
+            Phase::Idle
+            | Phase::Running
+            | Phase::WaitingApproval { .. }
+            | Phase::WaitingAlarm { .. } => Ok(()),
         }
     }
 }

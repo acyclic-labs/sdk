@@ -5,14 +5,20 @@ use syn::{FnArg, ItemTrait, Pat, TraitItem};
 
 pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
     if !contract.generics.params.is_empty() {
-        return Err(syn::Error::new_spanned(&contract.generics, "provider contract must not be generic"));
+        return Err(syn::Error::new_spanned(
+            &contract.generics,
+            "provider contract must not be generic",
+        ));
     }
     let mut explicit = contract.clone();
     explicit.ident = format_ident!("Explicit{}", contract.ident);
     let mut forwarding = Vec::new();
     for item in &mut explicit.items {
         let TraitItem::Fn(method) = item else {
-            return Err(syn::Error::new_spanned(item, "provider contract must contain only methods"));
+            return Err(syn::Error::new_spanned(
+                item,
+                "provider contract must contain only methods",
+            ));
         };
         method.default = None;
         method.semi_token = Some(Default::default());
@@ -22,7 +28,10 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
                 FnArg::Receiver(_) => args.push(quote!(self)),
                 FnArg::Typed(arg) => {
                     let Pat::Ident(name) = &*arg.pat else {
-                        return Err(syn::Error::new_spanned(&arg.pat, "provider argument must be named"));
+                        return Err(syn::Error::new_spanned(
+                            &arg.pat,
+                            "provider argument must be named",
+                        ));
                     };
                     let name = &name.ident;
                     args.push(quote!(#name));
@@ -42,10 +51,18 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
     // rustc expands cfg_attr before invoking this attribute macro. Preserve
     // async_trait in either form so trait and forwarding impl have identical
     // erased-future lifetimes on native and WASM targets.
-    let attrs: Vec<_> = contract.attrs.iter().filter(|attr| {
-        attr.path().is_ident("cfg_attr")
-            || attr.path().segments.last().is_some_and(|part| part.ident == "async_trait")
-    }).collect();
+    let attrs: Vec<_> = contract
+        .attrs
+        .iter()
+        .filter(|attr| {
+            attr.path().is_ident("cfg_attr")
+                || attr
+                    .path()
+                    .segments
+                    .last()
+                    .is_some_and(|part| part.ident == "async_trait")
+        })
+        .collect();
     let name = &contract.ident;
     let required = &explicit.ident;
     Ok(quote! {

@@ -25,7 +25,11 @@ fn every_recorded_child_fits_after_client_admission() {
     assert!(after_clients + reserved <= slots::MAX_OPEN_CHILDREN);
     // The last distinct recorded spawn can still be admitted at settlement.
     if reserved > 0 {
-        assert!(slots::admits(after_clients + reserved - 1, slots::MAX_OPEN_CHILDREN, false));
+        assert!(slots::admits(
+            after_clients + reserved - 1,
+            slots::MAX_OPEN_CHILDREN,
+            false
+        ));
     }
 }
 
