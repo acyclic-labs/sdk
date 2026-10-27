@@ -6,6 +6,7 @@
 //! and commits each step (checkpoint, conversation, status and every outgoing
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
+mod checkpoint;
 mod commit;
 #[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
@@ -24,6 +25,8 @@ mod records;
 mod volumes;
 pub use volumes::SpawnVolumes;
 
+pub use checkpoint::MAX_CHECKPOINT_BYTES;
+pub(crate) use checkpoint::checkpoint_state;
 pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
 };
@@ -31,16 +34,15 @@ pub use driver::{
     ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
     turn_id,
 };
-pub(crate) use handler::checkpoint_state;
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child,
-    step,
+    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED, MAX_QUEUED_BYTES,
+    OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, SpawnOutcome, SpawnRefusal, Step, TurnDriver,
+    TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,

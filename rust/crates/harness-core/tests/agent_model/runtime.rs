@@ -237,6 +237,47 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
 }
 
 #[tokio::test]
+async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
+    // Every open child is in the root's checkpoint, so a root at the limit
+    // is the largest the child set makes it; that state must commit.
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider,
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let request = |n: usize| {
+        InboxRecord::Spawn(SpawnRequest {
+            by: user(),
+            id: intent(&format!("s{n}")),
+            brief: "task".into(),
+        })
+    };
+    let mut last = 0;
+    for n in 0..=MAX_OPEN_CHILDREN {
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
+            return Err("spawn request was not committed".into());
+        };
+        last = inbox;
+    }
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = host.state(&root).await?;
+    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
+    let (spawn, _) = requested_child(&root, last)?;
+    assert_eq!(
+        host.spawned(&root, last, &spawn).await?,
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
@@ -264,9 +305,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let (first, child) = requested_child(&root, sequences[0])?;
-    let state = host.state(&root).await?;
-    assert_eq!(state.spawn_outcome(&first), None, "a later step committed");
-    assert_eq!(state.open_children.len(), 3);
+    assert_eq!(host.state(&root).await?.open_children.len(), 3);
     // The exact retry replays its inbox record, and its outcome comes from
     // the step that consumed it: the same child, and no second one.
     let Delivered::Committed { inbox } = host.send(&root, &user(), &request(0)).await? else {

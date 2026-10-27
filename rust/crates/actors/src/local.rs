@@ -1,6 +1,8 @@
 //! Single-node Actors runtime primitives over the canonical Stream transaction.
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
+mod record;
+pub use record::{STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
 pub use runtime::{Clock, Runtime, SystemClock};
 
@@ -39,9 +41,6 @@ pub enum Error {
         /// Why local participant settlement failed.
         source: GuestError,
     },
-    /// Durable state encoding failed.
-    #[error(transparent)]
-    Codec(#[from] serde_json::Error),
     /// Another owner or transition changed the exact durable cut.
     #[error("actor epoch or checkpoint changed")]
     Conflict,
@@ -89,7 +88,8 @@ pub struct Subscription {
 }
 
 /// One committed state/cursor/alarm tuple. Fields cannot be forged by callers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Its only durable form is [`State::encode`].
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     epoch: u64,
     checkpoint: Option<Checkpoint>,
@@ -355,7 +355,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 conditions: vec![CommitCondition::Absent { path: path.clone() }],
                 mutation: CommitMutation::Append {
                     path,
-                    records: vec![serde_json::to_vec(&state)?.into()],
+                    records: vec![state.encode().into()],
                 },
             },
             self.activation(actor),
@@ -396,7 +396,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if record.sequence != tail - 1 {
             return Err(Error::Invalid("checkpoint cursor changed"));
         }
-        let state = serde_json::from_slice(&record.value)?;
+        let state = State::decode(&record.value)?;
         Ok(Snapshot {
             path,
             tail,
@@ -606,7 +606,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 conditions: vec![own],
                 mutations: vec![CommitMutation::Append {
                     path: previous.path.clone(),
-                    records: vec![serde_json::to_vec(state)?.into()],
+                    records: vec![state.encode().into()],
                 }],
                 idempotency_key: key,
             },
