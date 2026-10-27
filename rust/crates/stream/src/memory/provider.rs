@@ -41,23 +41,25 @@ fn projected_tail(
     let Some(stream) = paths.get(&target) else {
         return Ok(None);
     };
+    Ok(last_record(stream))
+}
+
+fn last_record(stream: &PathState) -> Option<Record> {
     let Some(from) = stream.tail.checked_sub(1) else {
-        return Ok(None);
+        return None;
     };
     if let Some(window) = stream.prefix_window(from, stream.tail) {
-        return Ok(window.records.records.get(window.start).cloned());
+        return window.records.records.get(window.start).cloned();
     }
-    Ok(
-        HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
-            |(history, ceiling)| {
-                if let History::Batch { records, .. } = history {
-                    history_window(Arc::clone(records), ceiling, from)
-                        .and_then(|window| window.records.records.get(window.start).cloned())
-                } else {
-                    None
-                }
-            },
-        ),
+    HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
+        |(history, ceiling)| {
+            if let History::Batch { records, .. } = history {
+                history_window(Arc::clone(records), ceiling, from)
+                    .and_then(|window| window.records.records.get(window.start).cloned())
+            } else {
+                None
+            }
+        },
     )
 }
 

@@ -213,6 +213,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
         )
         .ok()?;
+        state.decision = state.decision.checked_add(1)?;
     }
     state.retained = inventory;
     state.decision = decision;

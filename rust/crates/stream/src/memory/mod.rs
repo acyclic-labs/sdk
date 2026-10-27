@@ -58,6 +58,7 @@ include!("follow.rs");
 include!("follow_progress.rs");
 
 include!("namespace.rs");
+include!("head.rs");
 include!("state.rs");
 
 include!("retained.rs");

@@ -185,6 +185,7 @@ mod path;
 pub use path::StreamPath;
 
 include!("lib/domain.rs");
+include!("lib/head.rs");
 
 mod changes;
 mod record_headers;

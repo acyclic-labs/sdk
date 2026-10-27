@@ -514,9 +514,10 @@ fn publish(
 ) -> Result<(), StreamError> {
     let mut next = state.paths.clone();
     for (path, data) in paths {
-        next.put_data(&path, data, build)?;
+        next.put_data(&path, data, None, build)?;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
+        let mut origin = None;
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => {
@@ -528,7 +529,7 @@ fn publish(
                 #[cfg(all(loom, feature = "local"))]
                 let subtree =
                     if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
-                        build.node(subtree.data.clone(), None)?
+                        build.node(subtree.data.clone(), None, subtree.origin.clone())?
                     } else {
                         subtree
                     };
@@ -543,6 +544,13 @@ fn publish(
                 #[cfg(not(all(loom, feature = "local")))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
+                origin = Some(ForkMarker {
+                    source: fork.source.clone(),
+                    snapshot: subtree.clone(),
+                    forked_at: fork.forked_at,
+                    commit_id: envelope.commit_id,
+                    decision: state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
+                });
                 next.put(&fork.destination, subtree, build)?;
                 (&fork.destination, fork.tail)
             }
@@ -550,7 +558,7 @@ fn publish(
         // Root prefix and histories are derived from the same old cut even
         // when this envelope also appends to the source.
         let data = fact_data(&state.paths, fact, history, tail)?;
-        next.put_data(path, data, build)?;
+        next.put_data(path, data, origin, build)?;
     }
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;

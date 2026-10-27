@@ -20,12 +20,14 @@ impl<'a> NamespaceBuilder<'a> {
         &mut self,
         data: PathState,
         children: Index,
+        origin: Option<ForkMarker>,
     ) -> Result<Arc<NamespaceNode>, StreamError> {
         if let Some(pool) = &mut self.reserve {
             let mut node = pool.nodes.pop().ok_or(StreamError::Capacity)?;
             let slot = Arc::get_mut(&mut node).ok_or(StreamError::Unavailable)?;
             slot.data = data;
             slot.children = children;
+            slot.origin = origin;
             Ok(node)
         } else {
             let allocation = (self.allocate)(
@@ -34,6 +36,7 @@ impl<'a> NamespaceBuilder<'a> {
             Ok(Arc::new(NamespaceNode {
                 data,
                 children,
+                origin,
                 _allocation: allocation,
             }))
         }
@@ -66,10 +69,10 @@ impl MemoryStream {
             prefix: [None, None],
             tail: 0,
         };
-        let dummy = builder.node(blank(), None)?;
+        let dummy = builder.node(blank(), None, None)?;
         let name = SegmentText::new("", &mut builder)?;
         for _ in 0..depth {
-            nodes.push(builder.node(blank(), None)?);
+            nodes.push(builder.node(blank(), None, None)?);
         }
         for _ in 0..depth.saturating_mul(height) {
             branches.push(branch(
@@ -111,7 +114,18 @@ impl SegmentText {
 struct NamespaceNode {
     data: PathState,
     children: Index,
+    origin: Option<ForkMarker>,
     _allocation: Allocation,
+}
+#[derive(Clone)]
+struct ForkMarker {
+    source: StreamPath,
+    snapshot: Arc<NamespaceNode>,
+    forked_at: u64,
+    commit_id: CommitId,
+    // Existing canonical decision order distinguishes a new nested graft from
+    // markers shared inside its source. It is not a separate history or index.
+    decision: u64,
 }
 struct Branch {
     name: Segment,
@@ -366,7 +380,7 @@ impl Namespace {
             } else {
                 let parent = existing.ok_or(StreamError::Unavailable)?;
                 let children = put(&parent.children, parts, node, build)?;
-                build.node(parent.data.clone(), children)?
+                build.node(parent.data.clone(), children, parent.origin.clone())?
             };
             // Share existing segment text; charge a fresh segment with its edge.
             let name = segment(index, name).map_or_else(|| SegmentText::new(name, build), Ok)?;
@@ -377,17 +391,20 @@ impl Namespace {
     }
     #[cfg(test)]
     fn insert(&mut self, path: &StreamPath, data: PathState) {
-        self.put_data(path, data, &mut NamespaceBuilder::new(&|_| Ok(None)))
+        self.put_data(path, data, None, &mut NamespaceBuilder::new(&|_| Ok(None)))
             .expect("validated snapshot namespace");
     }
     fn put_data(
         &mut self,
         path: &StreamPath,
         data: PathState,
+        origin: Option<ForkMarker>,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
-        let children = self.node(path).and_then(|n| n.children.clone());
-        let node = build.node(data, children)?;
+        let existing = self.node(path);
+        let children = existing.and_then(|n| n.children.clone());
+        let origin = origin.or_else(|| existing.and_then(|n| n.origin.clone()));
+        let node = build.node(data, children, origin)?;
         self.put(path, node, build)
     }
     fn excluded(
@@ -415,7 +432,7 @@ impl Namespace {
                 child,
                 build,
             )?;
-            build.node(node.data.clone(), children)
+            build.node(node.data.clone(), children, node.origin.clone())
         }
         let mut node = node.clone();
         for exclude in excludes {
