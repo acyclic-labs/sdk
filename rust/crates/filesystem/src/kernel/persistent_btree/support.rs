@@ -202,67 +202,24 @@ where
     })?;
 
     let mut comparisons = 0_u64;
-    for start in (0..count / 2).rev() {
-        sift_down::<F, M>(mutations, start, count, &mut comparisons)?;
-    }
-    for end in (1..count).rev() {
-        mutations.swap(0, end);
-        sift_down::<F, M>(mutations, 0, end, &mut comparisons)?;
-    }
+    crate::kernel::sort::heap_sort(
+        mutations,
+        &mut comparisons,
+        |left, right, comparisons| {
+            *comparisons = comparisons.checked_add(1).ok_or(WorkError::Overflow)?;
+            Ok::<_, WorkError>(indexed_order::<F, M>(left, right))
+        },
+        |values, left, right, _| {
+            values.swap(left, right);
+            Ok(())
+        },
+        |_| Ok(()),
+    )?;
     accounting.record_completed(WorkCounters {
         items_examined: comparisons,
         ..WorkCounters::default()
     })?;
     Ok(())
-}
-
-pub(super) fn sift_down<F, M>(
-    mutations: &mut [(usize, &M)],
-    mut root: usize,
-    end: usize,
-    comparisons: &mut u64,
-) -> Result<(), WorkError>
-where
-    F: Format,
-    M: Mutation<F>,
-{
-    loop {
-        let left = root.checked_mul(2).and_then(|value| value.checked_add(1));
-        let Some(left) = left.filter(|left| *left < end) else {
-            return Ok(());
-        };
-        let right = left + 1;
-        let mut greater = left;
-        // `left < end` was just established by the `filter` above, and callers
-        // maintain `end <= mutations.len()` (it is either the original slice
-        // length or a shrinking heap boundary passed in by `sort_indexed`), so
-        // `left < mutations.len()`. `right` is only indexed inside the
-        // `right < end` guard, so it too is `< mutations.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "left < end and (guarded) right < end, with end <= mutations.len() maintained by callers"
-        )]
-        if right < end {
-            *comparisons = comparisons.checked_add(1).ok_or(WorkError::Overflow)?;
-            if indexed_order::<F, M>(&mutations[left], &mutations[right]).is_lt() {
-                greater = right;
-            }
-        }
-        *comparisons = comparisons.checked_add(1).ok_or(WorkError::Overflow)?;
-        // `root` is either the initial caller-supplied index (`< end` by
-        // construction in `sort_indexed`) or a previous `greater`, and
-        // `greater` is one of `left`/`right`, both shown `< end <=
-        // mutations.len()` above.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "root and greater are both < end <= mutations.len(), established above and by sort_indexed's callers"
-        )]
-        if !indexed_order::<F, M>(&mutations[root], &mutations[greater]).is_lt() {
-            return Ok(());
-        }
-        mutations.swap(root, greater);
-        root = greater;
-    }
 }
 
 pub(super) fn indexed_order<F, M>(left: &(usize, &M), right: &(usize, &M)) -> std::cmp::Ordering

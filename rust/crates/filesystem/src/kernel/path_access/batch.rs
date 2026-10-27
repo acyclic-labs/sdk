@@ -14,44 +14,20 @@ pub(super) fn active_order(
             .then_with(|| left.path_index.cmp(&right.path_index))
     })
 }
-pub(super) fn sift_active(
-    values: &mut [ActivePath],
-    mut root: usize,
-    end: usize,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
-    loop {
-        let Some(mut child) = root
-            .checked_mul(2)
-            .and_then(|index| index.checked_add(1))
-            .filter(|index| *index < end)
-        else {
-            return Ok(());
-        };
-        if child + 1 < end
-            && active_order(&values[child], &values[child + 1], accounting)? == Ordering::Less
-        {
-            child += 1;
-        }
-        if active_order(&values[root], &values[child], accounting)? != Ordering::Less {
-            return Ok(());
-        }
-        values.swap(root, child);
-        root = child;
-    }
-}
 pub(super) fn sort_active(
     values: &mut [ActivePath],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
-    for root in (0..values.len() / 2).rev() {
-        sift_active(values, root, values.len(), accounting)?;
-    }
-    for end in (1..values.len()).rev() {
-        values.swap(0, end);
-        sift_active(values, 0, end, accounting)?;
-    }
-    Ok(())
+    crate::kernel::sort::heap_sort(
+        values,
+        accounting,
+        active_order,
+        |values, left, right, _| {
+            values.swap(left, right);
+            Ok(())
+        },
+        |_| Ok(()),
+    )
 }
 #[derive(Clone, Copy)]
 pub(super) struct PendingBinding {

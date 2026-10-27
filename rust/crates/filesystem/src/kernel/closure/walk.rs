@@ -366,6 +366,46 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Ok(())
     }
 
+    async fn read_ordered_page<F: crate::kernel::persistent_btree::Format>(
+        &mut self,
+        page_id: ObjectId,
+        lower: Option<&F::Key>,
+        upper: Option<&F::Key>,
+        pending: &mut ProofVec<'a, PendingPage<F::Key>>,
+    ) -> Result<(crate::kernel::persistent_btree::Page<F>, ProofGuard), crate::FsError> {
+        use crate::kernel::persistent_btree::Page;
+        let bytes = self.read_object(page_id, true).await?;
+        let page = self.meter.decode_steps(|observe| {
+            F::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
+                observe(step)
+            })
+        })?;
+        drop(bytes);
+        match &page.0 {
+            Page::Leaf(values) => {
+                validate_ordered_bounds(values.iter().map(F::key), lower, upper)?;
+            }
+            Page::Internal(children) => {
+                validate_ordered_bounds(children.iter().map(|child| &child.first), lower, upper)?;
+                for (index, child) in children.iter().enumerate().rev() {
+                    self.examine(1)?;
+                    let child_lower = self
+                        .meter
+                        .clone_key::<F>(&child.first, self.limits.decode.maximum_name_bytes)?;
+                    let upper_key = children.get(index + 1).map(|next| &next.first).or(upper);
+                    let child_upper = upper_key
+                        .map(|key| {
+                            self.meter
+                                .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
+                        })
+                        .transpose()?;
+                    pending.push((child.page, Some(child_lower), child_upper))?;
+                }
+            }
+        }
+        Ok(page)
+    }
+
     async fn prove_tree(
         &mut self,
         root: ObjectId,
@@ -380,54 +420,16 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
             }
-            let bytes = self.read_object(page_id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                crate::kernel::tree::decode_tree_page(
-                    &bytes.0.bytes,
-                    self.limits.decode,
-                    &mut |step| observe(step),
+            let page = self
+                .read_ordered_page::<crate::kernel::tree_mutation::TreeFormat>(
+                    page_id,
+                    lower.as_ref().map(|key| &key.0),
+                    upper.as_ref().map(|key| &key.0),
+                    &mut pending,
                 )
-            })?;
-            drop(bytes);
-            match &page.0 {
-                TreePage::Leaf(values) => {
-                    validate_ordered_bounds(
-                        values.iter().map(|entry| &entry.name),
-                        lower.as_ref().map(|key| &key.0),
-                        upper.as_ref().map(|key| &key.0),
-                    )?;
-                    leaves.push(page)?;
-                }
-                TreePage::Internal(children) => {
-                    validate_ordered_bounds(
-                        children.iter().map(|child| &child.first),
-                        lower.as_ref().map(|key| &key.0),
-                        upper.as_ref().map(|key| &key.0),
-                    )?;
-                    for (index, child) in children.iter().enumerate().rev() {
-                        self.examine(1)?;
-                        let child_lower = self
-                            .meter
-                            .clone_key::<crate::kernel::tree_mutation::TreeFormat>(
-                                &child.first,
-                                self.limits.decode.maximum_name_bytes,
-                            )?;
-                        let upper_key = children
-                            .get(index + 1)
-                            .map(|next| &next.first)
-                            .or(upper.as_ref().map(|key| &key.0));
-                        let child_upper = upper_key
-                            .map(|key| {
-                                self.meter
-                                    .clone_key::<crate::kernel::tree_mutation::TreeFormat>(
-                                        key,
-                                        self.limits.decode.maximum_name_bytes,
-                                    )
-                            })
-                            .transpose()?;
-                        pending.push((child.page, Some(child_lower), child_upper))?;
-                    }
-                }
+                .await?;
+            if let (crate::kernel::persistent_btree::Page::Leaf(values), guard) = page {
+                leaves.push((TreePage::Leaf(values), guard))?;
             }
         }
         Ok(leaves)
@@ -566,57 +568,19 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
             }
-            let bytes = self.read_object(page_id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                crate::kernel::attribute::decode_attribute_page(
-                    &bytes.0.bytes,
-                    self.limits.decode,
-                    &mut |step| observe(step),
+            let page = self
+                .read_ordered_page::<crate::kernel::attribute_mutation::AttributeFormat>(
+                    page_id,
+                    lower.as_ref().map(|key| &key.0),
+                    upper.as_ref().map(|key| &key.0),
+                    &mut pending,
                 )
-            })?;
-            drop(bytes);
-            match &page.0 {
-                AttributePage::Leaf(entries) => {
-                    validate_ordered_bounds(
-                        entries.iter().map(|entry| &entry.name),
-                        lower.as_ref().map(|key| &key.0),
-                        upper.as_ref().map(|key| &key.0),
-                    )?;
-                    for entry in entries {
-                        self.examine(1)?;
-                        if self.prove_blob(entry.value).await? != entry.value_bytes {
-                            return Err(ClosureError::BlobLengthMismatch.into());
-                        }
-                    }
-                }
-                AttributePage::Internal(children) => {
-                    validate_ordered_bounds(
-                        children.iter().map(|child| &child.first),
-                        lower.as_ref().map(|key| &key.0),
-                        upper.as_ref().map(|key| &key.0),
-                    )?;
-                    for (index, child) in children.iter().enumerate().rev() {
-                        self.examine(1)?;
-                        let child_lower = self
-                            .meter
-                            .clone_key::<crate::kernel::attribute_mutation::AttributeFormat>(
-                            &child.first,
-                            self.limits.decode.maximum_name_bytes,
-                        )?;
-                        let upper_key = children
-                            .get(index + 1)
-                            .map(|next| &next.first)
-                            .or(upper.as_ref().map(|key| &key.0));
-                        let child_upper = upper_key
-                            .map(|key| {
-                                self.meter
-                                    .clone_key::<crate::kernel::attribute_mutation::AttributeFormat>(
-                                        key,
-                                        self.limits.decode.maximum_name_bytes,
-                                    )
-                            })
-                            .transpose()?;
-                        pending.push((child.page, Some(child_lower), child_upper))?;
+                .await?;
+            if let crate::kernel::persistent_btree::Page::Leaf(entries) = &page.0 {
+                for entry in entries {
+                    self.examine(1)?;
+                    if self.prove_blob(entry.value).await? != entry.value_bytes {
+                        return Err(ClosureError::BlobLengthMismatch.into());
                     }
                 }
             }

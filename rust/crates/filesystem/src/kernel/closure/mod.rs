@@ -1,8 +1,8 @@
 //! Bounded whole-generation authentication before authority publication.
 
 use super::{
-    AttributeName, AttributePage, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload,
-    FileRecord, FileTablePage, GenerationRoot, LogicalName, MetadataField, TreeEntry, TreePage,
+    AttributeName, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload, FileRecord,
+    FileTablePage, GenerationRoot, LogicalName, MetadataField, TreeEntry, TreePage,
     decode_file_metadata,
 };
 use crate::CancellationToken;

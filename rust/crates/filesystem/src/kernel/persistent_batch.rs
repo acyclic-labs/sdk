@@ -476,14 +476,18 @@ pub(crate) fn sort_by_with_accounting<T>(
         items_examined: sort_admission_bound(count).map_err(query_error)?,
         ..WorkCounters::UNCHARGED
     })?;
-    for start in (0..count / 2).rev() {
-        sift_down(values, start, count, accounting, &compare)?;
-    }
-    for end in (1..count).rev() {
-        swap_sorted(values, 0, end, accounting)?;
-        sift_down(values, 0, end, accounting, &compare)?;
-    }
-    Ok(())
+    super::sort::heap_sort(
+        values,
+        accounting,
+        |left, right, accounting| {
+            accounting.admit(item)?;
+            let comparison = compare(left, right);
+            accounting.record_completed(item)?;
+            Ok(comparison)
+        },
+        swap_sorted,
+        |_| Ok(()),
+    )
 }
 
 fn swap_sorted<T>(
@@ -520,50 +524,6 @@ fn sort_admission_bound(count: usize) -> Result<u64, Error> {
         .checked_mul(u64::from(levels))
         .and_then(|value| value.checked_mul(3))
         .ok_or(Error::Work(WorkError::Overflow))
-}
-
-#[allow(
-    clippy::indexing_slicing,
-    reason = "heap indices stay below end <= values.len()"
-)]
-fn sift_down<T>(
-    values: &mut [T],
-    mut root: usize,
-    end: usize,
-    accounting: &mut KernelAccounting<'_>,
-    compare: &impl Fn(&T, &T) -> std::cmp::Ordering,
-) -> Result<(), crate::FsError> {
-    let item = WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::UNCHARGED
-    };
-    loop {
-        let Some(left) = root
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(1))
-            .filter(|left| *left < end)
-        else {
-            return Ok(());
-        };
-        let right = left + 1;
-        let mut greater = left;
-        if right < end {
-            accounting.admit(item)?;
-            let comparison = compare(&values[left], &values[right]);
-            accounting.record_completed(item)?;
-            if comparison.is_lt() {
-                greater = right;
-            }
-        }
-        accounting.admit(item)?;
-        let comparison = compare(&values[root], &values[greater]);
-        accounting.record_completed(item)?;
-        if !comparison.is_lt() {
-            return Ok(());
-        }
-        swap_sorted(values, root, greater, accounting)?;
-        root = greater;
-    }
 }
 
 fn indexed_order<K: Ord>(
