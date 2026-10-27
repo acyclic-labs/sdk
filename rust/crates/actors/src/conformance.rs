@@ -13,11 +13,11 @@ use crate::guest::{
 use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, FollowFilter, IdempotencyKey, StreamError,
-    StreamPath, StreamProvider,
+    AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, FollowFilter, IdempotencyKey,
+    ProviderPlatform, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
-use futures::{FutureExt, StreamExt, future::BoxFuture};
+use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -29,7 +29,7 @@ const ALARM_MS: u64 = 100;
 const QUIET_MS: u64 = 250;
 
 /// The host under test, already running [`Package`] under `store().root()`.
-pub trait Backend: Send + Sync {
+pub trait Backend: ProviderPlatform {
     /// Fresh namespace retained for this suite invocation.
     fn namespace(&self) -> &str {
         "conformance"
@@ -47,9 +47,9 @@ pub trait Backend: Send + Sync {
         &'a self,
         actor: &'a ActorReference,
         paused: bool,
-    ) -> BoxFuture<'a, Result<(), Error>>;
+    ) -> BoxProviderFuture<'a, Result<(), Error>>;
     /// Stop and restart the host; the next placement takes a new epoch.
-    fn restart(&self) -> BoxFuture<'_, Result<(), Error>>;
+    fn restart(&self) -> BoxProviderFuture<'_, Result<(), Error>>;
 }
 
 /// Compatibility spelling for the same backend contract.
@@ -66,7 +66,8 @@ macro_rules! actors_conformance_suite {
         $crate::actors_conformance_suite!(actors_conformance, $factory);
     };
     ($name:ident, $factory:path) => {
-        #[tokio::test]
+        #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+        #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
         async fn $name() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let backend = $factory().await?;
             $crate::conformance::verify(&backend).await?;
@@ -131,7 +132,7 @@ impl Handler for Package {
         checkpoint: Option<&'a Checkpoint>,
         cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
-        async move {
+        Box::pin(async move {
             let checkpoint = checkpoint.ok_or_else(|| guest("missing ledger"))?;
             let mut ledger: Ledger = serde_json::from_slice(&checkpoint.bytes).map_err(guest)?;
             let (alarm, output) = match (&delivery.trigger, &delivery.record) {
@@ -195,8 +196,7 @@ impl Handler for Package {
                 alarm,
                 effects,
             })
-        }
-        .boxed()
+        })
     }
 }
 

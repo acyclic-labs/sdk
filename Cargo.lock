@@ -57,6 +57,7 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
