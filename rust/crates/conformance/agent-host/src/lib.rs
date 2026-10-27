@@ -50,6 +50,7 @@ pub fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
 pub async fn verify(backend: &dyn Backend) -> Result {
     identified("controls", vectors::controls(backend).await)?;
     identified("spawn", vectors::spawn_cut(backend).await)?;
+    identified("reply", vectors::reply(backend).await)?;
     identified("publication", publication::verify(backend).await)?;
     identified("admission", admission::verify(backend).await)?;
     identified("identity", identity::verify(backend).await)?;

@@ -34,7 +34,7 @@ pub async fn prompt(
         match reply {
             Reply::Answered { entry, .. } => return print(conversation, &entry, output).await,
             Reply::Dropped => {
-                eprintln!("graphcoder: the prompt was cancelled");
+                eprintln!("graphcoder: {}", conversation.dropped().await?);
                 return Ok(1);
             }
             Reply::Pending => {}
@@ -100,7 +100,9 @@ async fn settled(
 ) -> Result<Option<Value>, Failure> {
     Ok(match reply {
         Reply::Answered { entry, .. } => Some(answer(conversation, id, &entry).await?),
-        Reply::Dropped => Some(json!({"id": id, "inbox": inbox, "error": "cancelled"})),
+        Reply::Dropped => {
+            Some(json!({"id": id, "inbox": inbox, "error": conversation.dropped().await?}))
+        }
         Reply::Pending => None,
     })
 }

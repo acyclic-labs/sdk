@@ -80,12 +80,13 @@ impl TurnDriver for Driver {
         input: Option<Queued>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let Some(Queued {
-                input: TurnInput::ApprovalRequested { id, .. },
-                ..
-            }) = input
-            else {
-                return Err(Error::Record("unexpected conformance input"));
+            let id = match input {
+                Some(Queued {
+                    input: TurnInput::ApprovalRequested { id, .. },
+                    ..
+                }) => id,
+                Some(Queued { inbox, input }) => return answer(inbox, input),
+                None => return Err(Error::Record("unexpected conformance input")),
             };
             let mut outs = vec![Out::Conversation(id.as_str().as_bytes().to_vec())];
             if matches!(id.as_str(), "spawn" | "respawn") {
@@ -102,6 +103,32 @@ impl TurnDriver for Driver {
             })
         })
     }
+}
+
+/// A message settles as the shared conversation entry, except `hold`, whose
+/// turn stays open until the agent is archived.
+fn answer(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> {
+    let TurnInput::Message { id, body, .. } = &input else {
+        return Err(Error::Record("unexpected conformance input"));
+    };
+    if id.as_str() == "hold" {
+        return Ok(TurnStep {
+            checkpoint: Some(Vec::new()),
+            outs: Vec::new(),
+            wait: Wait::Approval(id.clone()),
+        });
+    }
+    let output = (**body).clone();
+    let entry = ConversationEntry {
+        inbox,
+        input,
+        output,
+    };
+    Ok(TurnStep {
+        checkpoint: None,
+        outs: vec![Out::Conversation(entry.encode()?)],
+        wait: Wait::Input,
+    })
 }
 
 pub(crate) async fn drain(host: &AgentHost<Observed>) -> Result {
@@ -271,6 +298,66 @@ pub(crate) async fn restart(backend: &dyn Backend) -> Result {
             if values(&*reopened, actual.path.conversation()?).await? != [b"once".to_vec()] {
                 return Err(format!("reopen duplicated an effect at {at}/{fault:?}").into());
             }
+        }
+    }
+    Ok(())
+}
+
+fn message(id: &str) -> Result<InboxRecord> {
+    Ok(InboxRecord::Message(Message {
+        from: sender(),
+        id: intent(id)?,
+        body: Box::new(prompt()?),
+    }))
+}
+
+async fn sent(host: &AgentHost<Observed>, root: &AgentPath, id: &str) -> Result<(IntentId, u64)> {
+    match host.send(root, &sender(), &message(id)?).await? {
+        Delivered::Committed { inbox } => Ok((intent(id)?, inbox)),
+        Delivered::Closed => Err("open recipient refused a message".into()),
+    }
+}
+
+/// A prompt's reply is read from committed state alone: pending until its turn
+/// settles, then the entry at its own inbox sequence, a conflict for another
+/// prompt's sequence, and dropped once an archive clears it unanswered.
+pub(crate) async fn reply(backend: &dyn Backend) -> Result {
+    let storage = backend.fresh().await?;
+    let provider = Arc::new(Observed::new(storage.open().await?));
+    let host = host(backend, provider)?;
+    let root = host.create(&intent("create")?, adopted()).await?;
+    drain(&host).await?;
+    let (first, at) = sent(&host, &root, "first").await?;
+    if host.reply(&root, &first, at).await? != Reply::Pending {
+        return Err("an unread prompt was not pending".into());
+    }
+    drain(&host).await?;
+    match host.reply(&root, &first, at).await? {
+        Reply::Answered { entry, .. }
+            if entry.inbox == at
+                && matches!(&entry.input, TurnInput::Message { id, .. } if *id == first) => {}
+        other => return Err(format!("a settled prompt replied {other:?}").into()),
+    }
+    if !matches!(
+        host.reply(&root, &intent("other")?, at).await,
+        Err(Error::Conflict(_))
+    ) {
+        return Err("another prompt's entry was not a conflict".into());
+    }
+    let held = sent(&host, &root, "hold").await?;
+    drain(&host).await?;
+    let queued = sent(&host, &root, "queued").await?;
+    drain(&host).await?;
+    for (id, inbox) in [&held, &queued] {
+        if host.reply(&root, id, *inbox).await? != Reply::Pending {
+            return Err("a running or queued prompt was not pending".into());
+        }
+    }
+    host.archive(&root, &sender(), &intent("archive")?).await?;
+    drain(&host).await?;
+    for (id, inbox) in [&held, &queued] {
+        if host.reply(&root, id, *inbox).await? != Reply::Dropped {
+            return Err("an archived prompt was not dropped".into());
         }
     }
     Ok(())
