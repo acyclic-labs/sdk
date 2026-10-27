@@ -3,6 +3,7 @@ use super::*;
 /// A typed predicate on the exact admitted argument object. These selectors
 /// restrict approval; they never grant filesystem or workload authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApprovalSelector {
     /// Exact value at a JSON pointer, for example the declared volume identity.
@@ -10,6 +11,7 @@ pub enum ApprovalSelector {
         /// RFC 6901 pointer into the admitted arguments.
         pointer: String,
         /// Required value; missing fields never match, even when this is null.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         value: Value,
     },
     /// Anchored string pattern, for example a shell command. Only `*` is a
