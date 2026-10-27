@@ -24,7 +24,15 @@ const options = {
 export class Ledger extends DurableObject {
   private readonly ledger = openCloudflareLedger(this.ctx,
     actor => this.env.AGENT.getByName(actor).wake(), { ...options.stream_limits, commands: 65536 });
-  register(actor: string, paths: string[]) { return this.ledger.register(actor, paths); }
+  async register(actor: string, paths: string[]) {
+    const placement = await this.ledger.register(actor, paths);
+    if (actor === "uncertain-placement" && "admitted" in placement
+      && !(await this.ctx.storage.get("lost-placement-ack"))) {
+      await this.ctx.storage.put("lost-placement-ack", true);
+      throw new Error("STEP injected placement acknowledgement loss; recovery: retry the original named placement");
+    }
+    return placement;
+  }
   dispatch(actor: string, operation: string, input: Uint8Array) { return this.ledger.dispatch(actor, operation, input); }
   open(operation: string, input: Uint8Array, preceding: Uint8Array) { return this.ledger.open(operation, input, preceding); }
   objectLength(key: Uint8Array) { return this.ledger.objectLength(key); }
@@ -93,8 +101,12 @@ export class Suite extends DurableObject {
     }, { ...options.stream_limits, commands: 65536 });
     this.wakeLedger = ledger;
     try {
-      await ledger.register("a-failing", ["wake/a/inbox", "wake/a/state"]);
-      await ledger.register("z-healthy", ["wake/z/inbox", "wake/z/state"]);
+      for (const [actor, prefix] of [["a-failing", "wake/a"], ["z-healthy", "wake/z"]]) {
+        const placement = await ledger.register(actor!, [`${prefix}/inbox`, `${prefix}/state`]);
+        if (!("admitted" in placement)) {
+          throw new Error("STEP wake-fixture placement failed; recovery: bash scripts/qualify-cloudflare.sh");
+        }
+      }
       const port = streamLedgerPort(ledger, "");
       await appendWakeRecord(port, "wake/a/inbox");
       await appendWakeRecord(port, "wake/z/inbox");
@@ -122,6 +134,45 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/placement") {
+      const owner = env.AGENT.getByName("placement-owner");
+      const path = await owner.create("placement-root");
+      const inbox = (await owner.read("inbox")).length;
+      const adopter = env.AGENT.getByName("placement-adopter");
+      const creator = env.AGENT.getByName("placement-creator");
+      let refused = 0;
+      try { await adopter.adopt(path); } catch { refused += 1; }
+      try { await creator.create("placement-root"); } catch { refused += 1; }
+      await adopter.wake();
+      await creator.wake();
+      if (refused !== 2 || (await adopter.read("inbox")).length !== 0
+        || (await creator.read("inbox")).length !== 0 || (await owner.read("inbox")).length !== inbox) {
+        throw new Error("STEP rejected-placement refusal failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      await adopter.create("after-refused-adoption");
+      await creator.create("after-refused-creation");
+      const uncertain = env.AGENT.getByName("uncertain-placement");
+      let unknown = false;
+      try { await uncertain.create("uncertain-root", "Respond after recovering placement"); }
+      catch { unknown = true; }
+      let changed = false;
+      try { await uncertain.create("changed-after-unknown"); } catch { changed = true; }
+      if (!unknown || !changed) {
+        throw new Error("STEP uncertain-placement custody failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      return Response.json({ placement: "refused adoption and creation leave named hosts reusable; unknown retains original intent" });
+    }
+    if (new URL(request.url).pathname === "/placement-replay") {
+      await env.AGENT.getByName("placement-adopter").create("after-refused-adoption");
+      await env.AGENT.getByName("placement-creator").create("after-refused-creation");
+      const uncertain = env.AGENT.getByName("uncertain-placement");
+      const path = await uncertain.create("uncertain-root", "Respond after recovering placement");
+      if (path !== await uncertain.create("uncertain-root", "Respond after recovering placement")
+        || (await uncertain.read("conversation")).length !== 1) {
+        throw new Error("STEP uncertain-placement replay failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      return Response.json({ placement: "refusal recovery and lost-ack exact replay survive emulator restart" });
+    }
     if (new URL(request.url).pathname === "/review") {
       const agent = env.AGENT.getByName("invalid-create");
       let rejected = 0;

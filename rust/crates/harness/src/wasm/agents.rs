@@ -335,13 +335,13 @@ fn within() -> std::result::Result<ActorReference, JsValue> {
 #[wasm_bindgen]
 impl WasmAgents {
     /// Checks permanent creation input errors before an event host retains its
-    /// recovery intent. This performs no provider reads or writes.
+    /// recovery intent, returning its canonical path without provider IO.
     #[wasm_bindgen(js_name = validateCreate)]
     pub fn validate_create(
         &self,
         intent: &str,
         brief: Option<String>,
-    ) -> std::result::Result<(), JsValue> {
+    ) -> std::result::Result<String, JsValue> {
         IntentId::try_from(intent).map_err(agent_error)?;
         if brief
             .as_ref()
@@ -351,7 +351,8 @@ impl WasmAgents {
                 "agent brief exceeds file byte limit".into(),
             )));
         }
-        Ok(())
+        let id = AgentId::from_bytes(digest16("acyclic.browser.agent.v1", &[intent.as_bytes()]));
+        Ok(AgentPath::root(&id).to_string())
     }
 
     /// Checks the canonical path and its committed adoption before an event
@@ -558,8 +559,9 @@ impl WasmAgents {
         intent: String,
         brief: Option<String>,
     ) -> std::result::Result<String, JsValue> {
-        self.validate_create(&intent, brief.clone())?;
-        let id = AgentId::from_bytes(digest16("acyclic.browser.agent.v1", &[intent.as_bytes()]));
+        let path = AgentPath::try_from(self.validate_create(&intent, brief.clone())?)
+            .map_err(agent_error)?;
+        let id = path.id();
         let volume = VolumeRef::new(
             self.provider.clone(),
             PRIVATE_VOLUME.to_owned(),
@@ -572,7 +574,6 @@ impl WasmAgents {
             .create_volume(&volume)
             .await
             .map_err(js_error)?;
-        let path = AgentPath::root(&id);
         let brief = match brief {
             Some(text) => Some(self.stage(&path, &volume, "brief", &intent, &text).await?),
             None => None,

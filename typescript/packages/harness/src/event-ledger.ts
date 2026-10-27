@@ -1,5 +1,5 @@
 import { WasmStream, type WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
-import { WakeIndex, type EventStorage, type StreamChange } from "./event-storage.js";
+import { WakeIndex, type EventStorage, type StreamChange, type Placement } from "./event-storage.js";
 
 export type ProviderReply<T> = { value: T } | { code: string };
 export interface ImmutableObjects {
@@ -9,7 +9,7 @@ export interface ImmutableObjects {
 }
 /** Private provider RPC contract, independent of its transport. */
 export interface StreamLedger {
-  register(actor: string, paths: string[]): Promise<void>;
+  register(actor: string, paths: string[]): Promise<Placement>;
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>>;
   open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>>;
   objectLength(key: Uint8Array): Promise<number | null>;

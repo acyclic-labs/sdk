@@ -6,7 +6,12 @@ import { decodeMetadata, type EventStorage } from "./event-storage.js";
 
 export { EventStreamLedger, streamLedgerPort } from "./event-ledger.js";
 export type { StreamLedger, ImmutableObjects, ProviderReply } from "./event-ledger.js";
-export type { EventStorage, StreamChange } from "./event-storage.js";
+export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
+
+interface Identity {
+  intent: string; brief?: string; path: string; create: boolean;
+  stage: "claiming" | "creating" | "ready";
+}
 
 /** Shared one-actor host with event-owned delivery and durable recovery. */
 export class EventAgentHost {
@@ -34,16 +39,54 @@ export class EventAgentHost {
     } finally { providers.free(); stream.free(); }
   }
 
-  private identity(): { intent: string; brief: string | undefined; path: string | undefined } | undefined {
+  private identity(): Identity | undefined {
     const value = this.storage.get("identity");
     if (value === undefined) return undefined;
     const row: unknown = decodeMetadata(value);
+    if (row === null) return undefined;
     if (typeof row !== "object" || row === null || !("intent" in row) || typeof row.intent !== "string"
-      || ("brief" in row && typeof row.brief !== "string") || ("path" in row && typeof row.path !== "string")) {
+      || ("brief" in row && typeof row.brief !== "string") || !("path" in row) || typeof row.path !== "string"
+      || !("create" in row) || typeof row.create !== "boolean" || !("stage" in row)
+      || (row.stage !== "claiming" && row.stage !== "creating" && row.stage !== "ready")
+      || (row.stage === "creating" && !row.create)) {
       throw new Error("STEP actor-identity failed; recovery: restore host metadata from a verified backup");
     }
-    return { intent: row.intent, brief: "brief" in row ? row.brief as string : undefined,
-      path: "path" in row ? row.path as string : undefined };
+    return row as unknown as Identity;
+  }
+
+  private async retain(identity: Identity | null): Promise<void> {
+    this.storage.put("identity", JSON.stringify(identity));
+    await this.storage.flush();
+  }
+
+  private async resume(identity: Identity): Promise<Identity> {
+    if (identity.stage === "claiming") {
+      const placement = await this.ledger.register(this.name, this.host.wakePaths(identity.path));
+      if ("refused" in placement) {
+        await this.retain(null);
+        throw new Error(`STEP actor-placement refused: ${placement.refused}; recovery: choose an unclaimed actor path and an available consistency domain`);
+      }
+      identity = { ...identity, stage: identity.create ? "creating" : "ready" };
+      await this.retain(identity);
+    }
+    if (identity.stage === "creating") {
+      await this.host.create(identity.intent, identity.brief);
+      identity = { ...identity, stage: "ready" };
+      await this.retain(identity);
+    }
+    return identity;
+  }
+
+  private async place(candidate: Identity): Promise<Identity> {
+    const identity = this.identity();
+    if (identity && (identity.intent !== candidate.intent || identity.brief !== candidate.brief
+      || identity.path !== candidate.path || identity.create !== candidate.create)) {
+      throw new Error("STEP actor-placement conflict; recovery: retry the original placement and prompt, or choose a different named actor host");
+    }
+    // Retain the proposal before the first remote claim. A lost acknowledgement
+    // retries exactly that claim; only a definitive refusal makes it reusable.
+    if (!identity) await this.retain(candidate);
+    return this.resume(identity ?? candidate);
   }
   private command<T>(action: () => Promise<T>): Promise<T> {
     const next = this.commands.then(action);
@@ -69,17 +112,13 @@ export class EventAgentHost {
   }
 
   private async drain(generation: number): Promise<void> {
-    let identity = this.identity();
-    if (identity && !identity.path) {
-      const path = await this.host.create(identity.intent, identity.brief);
-      this.storage.put("identity", JSON.stringify({ ...identity, path }));
-      await this.storage.flush();
-      identity = { ...identity, path };
-    }
+    const identity = await this.command(async () => {
+      const pending = this.identity();
+      return pending ? this.resume(pending) : undefined;
+    });
     let alarm: bigint | undefined;
     if (identity) {
-      await this.ledger.register(this.name, this.host.wakePaths(identity.path!));
-      alarm = await this.host.drain(identity.path!);
+      alarm = await this.host.drain(identity.path);
     }
     await this.command(async () => {
       // A later admitted control already owns a durable recovery alarm. An
@@ -92,16 +131,8 @@ export class EventAgentHost {
 
   create(intent: string, brief?: string): Promise<string> {
     return this.event(async () => {
-      this.host.validateCreate(intent, brief);
-      const identity = this.identity();
-      if (identity && (identity.intent !== intent || identity.brief !== brief)) {
-        throw new Error("STEP actor-create conflict; recovery: retry the original intent and prompt, or choose a different named actor host");
-      }
-      if (!identity) this.storage.put("identity", JSON.stringify({ intent, brief }));
-      await this.storage.flush();
-      const path = await this.host.create(intent, brief);
-      this.storage.put("identity", JSON.stringify({ intent, brief, path }));
-      await this.storage.flush();
+      const path = this.host.validateCreate(intent, brief);
+      await this.place({ intent, brief, path, create: true, stage: "claiming" });
       return path;
     });
   }
@@ -109,7 +140,7 @@ export class EventAgentHost {
   send(intent: string, text: string) {
     return this.event(async () => {
       const identity = this.identity();
-      if (!identity?.path) throw new Error("STEP actor-send failed; recovery: complete create with the actor's original intent and prompt");
+      if (identity?.stage !== "ready") throw new Error("STEP actor-send failed; recovery: complete create with the actor's original intent and prompt");
       return this.host.send(identity.path, intent, text);
     });
   }
@@ -117,26 +148,21 @@ export class EventAgentHost {
   /** Explicitly activate an already spawned child; spawning alone never calls this. */
   adopt(path: string): Promise<void> {
     return this.event(async () => {
-      const identity = this.identity();
-      if (identity && identity.path !== path) {
-        throw new Error("STEP actor-adopt conflict; recovery: route this path to a different named actor host");
-      }
       await this.host.validateAdopt(path);
-      if (!identity) this.storage.put("identity", JSON.stringify({ intent: path, path }));
-      await this.storage.flush();
+      await this.place({ intent: path, path, create: false, stage: "claiming" });
     });
   }
 
   async read(stream: "inbox" | "conversation" | "status", from = 0n, limit = 128) {
     const identity = this.identity();
-    if (!identity?.path) return [];
+    if (identity?.stage !== "ready") return [];
     return this.host.read(identity.path, stream, from, limit);
   }
 
   private path(): string {
-    const path = this.identity()?.path;
-    if (!path) throw new Error("STEP actor-control failed; recovery: complete create with the actor's original intent and prompt");
-    return path;
+    const identity = this.identity();
+    if (identity?.stage !== "ready") throw new Error("STEP actor-control failed; recovery: complete the actor's original placement");
+    return identity.path;
   }
 
   cancel(intent: string) { return this.event(() => this.host.cancel(this.path(), intent)); }

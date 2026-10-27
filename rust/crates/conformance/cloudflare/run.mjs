@@ -77,6 +77,10 @@ async function main() {
     const reviewOutput = await review.text();
     if (!review.ok) throw new Error(`review regression HTTP ${review.status}: ${reviewOutput}`);
     console.log(`workerd review: ${reviewOutput}`);
+    const placement = await fetch("http://127.0.0.1:15420/placement");
+    const placementOutput = await placement.text();
+    if (!placement.ok) throw new Error(`placement HTTP ${placement.status}: ${placementOutput}`);
+    console.log(`workerd review: ${placementOutput}`);
     await stop();
     await start();
     const replay = await fetch("http://127.0.0.1:15420/guest");
@@ -89,6 +93,10 @@ async function main() {
     const adoptedOutput = await adopted.text();
     if (!adopted.ok) throw new Error(`adoption restart HTTP ${adopted.status}: ${adoptedOutput}`);
     console.log(`workerd review: ${adoptedOutput}`);
+    const placed = await fetch("http://127.0.0.1:15420/placement-replay");
+    const placedOutput = await placed.text();
+    if (!placed.ok) throw new Error(`placement restart HTTP ${placed.status}: ${placedOutput}`);
+    console.log(`workerd review: ${placedOutput}`);
   } finally {
     await stop();
     if (persistence) await rm(persistence, { recursive: true, force: true });

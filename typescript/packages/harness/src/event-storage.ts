@@ -12,6 +12,8 @@ export interface EventStorage {
 }
 
 export type StreamChange = readonly [path: string, subtree: boolean];
+/** Definitive placement decisions; rejected transport/durability promises are unknown. */
+export type Placement = { admitted: true } | { refused: "invalid_argument" | "conflict" | "capacity" };
 interface Registration { paths: string[]; generation: number; pending: boolean }
 
 export function decodeMetadata(value: string): unknown {
@@ -42,24 +44,26 @@ export class WakeIndex {
     return this.storage.entries().map(([actor, value]) => [actor, this.decode(value)]);
   }
 
-  async register(actor: string, paths: string[]): Promise<void> {
+  async register(actor: string, paths: string[]): Promise<Placement> {
     if (!actor || new TextEncoder().encode(actor).length > 1024 || paths.length !== 2
       || new Set(paths).size !== 2 || paths.some(path => !path || path.length > 4096)) {
-      throw new Error("STEP actor-register failed; recovery: supply a named actor and its canonical host wakePaths");
+      return { refused: "invalid_argument" };
     }
-    this.storage.transaction(() => {
+    const result = this.storage.transaction<Placement>(() => {
       const rows = this.rows();
       const existing = rows.find(([name]) => name === actor)?.[1];
       if ((existing && existing.paths.some(path => !paths.includes(path)))
         || rows.some(([name, row]) => name !== actor && row.paths.some(path => paths.includes(path)))) {
-        throw { code: "conflict", step: "actor-register", recovery: "route this actor to its original named host" };
+        return { refused: "conflict" };
       }
       if (!existing && rows.length >= this.maximumActors) {
-        throw { code: "capacity", step: "actor-register", recovery: "choose a new consistency domain for additional actors" };
+        return { refused: "capacity" };
       }
       this.storage.put(actor, JSON.stringify(existing ?? { paths, generation: 0, pending: false }));
+      return { admitted: true };
     });
-    await this.storage.flush();
+    if ("admitted" in result) await this.storage.flush();
+    return result;
   }
 
   /** Called inside the journal append's storage transaction. */
