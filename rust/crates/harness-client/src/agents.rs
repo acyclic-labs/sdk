@@ -101,6 +101,10 @@ pub struct AgentClient {
 impl AgentClient {
     /// Bind controls to this observer's exact authenticated pool and slot.
     /// The host supplies canonical routing; no second wire owner is opened.
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub fn controls(&self, binding: crate::AgentBinding) -> crate::AgentControls {
         crate::AgentControls::new(self.session.client().clone(), self.credential, binding)
     }

@@ -1,7 +1,9 @@
 //! Headless conversations: one `-p` prompt, or JSONL requests on stdin.
 use acyclic_harness::agent::{IntentId, Phase};
-use acyclic_harness::local::agent_conversation::{Conversation, Event, ended};
-use futures::StreamExt as _;
+use acyclic_harness::local::{
+    Event,
+    agent_conversation::{Conversation, ended},
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, sync::Arc};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
@@ -21,15 +23,15 @@ pub async fn prompt(
     prompt: &str,
     output: &mut impl Write,
 ) -> Result<u8, Failure> {
-    let mut events = conversation.events(0).await?;
+    let mut events = conversation.observe(0).await?;
     let inbox = conversation.send(operation, prompt).await?;
     let mut answers = stdin_lines();
     // Entries observed, and the conversation tail once the agent dropped the
     // message: no entry for it by then means it was cancelled.
     let mut seen = 0_u64;
     let mut dropped = None;
-    while let Some(event) = events.next().await {
-        match event? {
+    loop {
+        match events.next().await? {
             Event::Turn {
                 inbox: Some(settled),
                 entry,
@@ -39,6 +41,7 @@ pub async fn prompt(
                 return Ok(0);
             }
             Event::Turn { .. } => seen += 1,
+            Event::Output => {}
             Event::Failed(error) => {
                 eprintln!("graphcoder: agent turn failed: {error}");
                 return Ok(1);
@@ -64,7 +67,6 @@ pub async fn prompt(
             return Ok(1);
         }
     }
-    Err("agent status follow ended".into())
 }
 
 /// One JSONL request per stdin line: `{"prompt": text, "id"?: id}`,
@@ -78,7 +80,7 @@ pub async fn jsonl(
     operation: &str,
     output: &mut impl Write,
 ) -> Result<u8, Failure> {
-    let mut events = conversation.events(0).await?;
+    let mut events = conversation.observe(0).await?;
     let mut lines = stdin_lines();
     let mut open = true;
     let mut sent = 0_u64;
@@ -151,7 +153,7 @@ pub async fn jsonl(
                     return Err(format!("unknown JSONL request: {line}").into());
                 }
             }
-            event = events.next() => match event.ok_or("agent status follow ended")?? {
+            event = events.next() => match event? {
                 Event::Turn { inbox, entry } => {
                     seen += 1;
                     if let Some(inbox) = inbox {
@@ -159,6 +161,7 @@ pub async fn jsonl(
                     }
                 }
                 Event::Failed(error) => failure = Some(error),
+                Event::Output => {}
                 Event::Status(observed) => {
                     for inbox in pending.keys().copied().filter(|inbox| *inbox < observed.cursor) {
                         if !settled.contains_key(&inbox)

@@ -354,26 +354,28 @@ pub(super) fn issue(
     .map_err(unauthorized)?;
     retain(scope, &capability, work)
 }
-/// A sealed credential for `actions` on the `fs:/` `prefix`, under
-/// `issuer`'s audience. Its certificate is bound to `parent`: it expires no
-/// later and is revoked with it.
+/// A sealed credential for exactly `grants`, each `(resource, prefix,
+/// actions)`, under `issuer`'s audience at `timestamp`. Its certificate is
+/// bound to `parent`: it expires no later and is revoked with it.
 pub(super) fn resource_credential(
     issuer: &AuthorityRoot,
     parent: &VerifiedCapability,
-    prefix: &str,
-    actions: &[&str],
+    grants: &[(&str, bool, &[&str])],
+    timestamp: u64,
 ) -> Result<Vec<u8>> {
-    let timestamp = now();
     let grants = GrantSet {
-        grants: vec![Grant {
-            kind: GrantKind::Resource(ResourceGrant {
-                resource: ResourcePattern {
-                    name: prefix.into(),
-                    prefix: true,
-                },
-                actions: actions.iter().map(|action| (*action).into()).collect(),
-            }),
-        }],
+        grants: grants
+            .iter()
+            .map(|(name, prefix, actions)| Grant {
+                kind: GrantKind::Resource(ResourceGrant {
+                    resource: ResourcePattern {
+                        name: (*name).into(),
+                        prefix: *prefix,
+                    },
+                    actions: actions.iter().map(|action| (*action).into()).collect(),
+                }),
+            })
+            .collect(),
     };
     let capability = signer_with_grants(
         &issuer.id,

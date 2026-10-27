@@ -39,12 +39,12 @@ pub use reply::{
 };
 
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod agents;
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use acyclic_harness_core::agent::{
@@ -57,7 +57,7 @@ pub use acyclic_harness_core::{
     model::ModelContent,
 };
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};

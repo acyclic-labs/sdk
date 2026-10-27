@@ -1,232 +1,144 @@
-//! A live, read-only follow of one agent's tool output.
-use super::{LocalHarness, storage};
-use crate::{
-    Error, Result,
-    agent::AgentPath,
-    conversation::{ContentAccess, ContentResidencyVerifier, VolumeRef},
-    filesystem::{FilesystemContentVerifier, TOOL_OUTPUT, TurnAdmission, agent_authority},
-};
-use acyclic_stream::session::Client;
-use std::sync::Arc;
-
-/// One agent's tool output, followed through an in-process session over the
-/// local filesystem's own change streams.
-pub struct ToolOutput {
-    /// Session pool serving the follows; register `credential` on it.
-    pub client: Client,
-    /// The `fs:/` resource of the agent's `tools/`; turn `t`'s calls are
-    /// under `{resource}/{t}`.
-    pub resource: String,
-    /// Sealed credential to list and read under `resource`.
-    pub credential: Vec<u8>,
-    reader: Arc<dyn ContentResidencyVerifier>,
-    volume: VolumeRef,
-}
-
-impl ToolOutput {
-    /// Reads one output file named by a change follow: a path under
-    /// `tools/` on the agent's private volume, at most `maximum_bytes`.
-    ///
-    /// # Errors
-    /// Fails for a path outside `tools/`, a missing file or a larger one.
-    pub async fn read(&self, path: &str, maximum_bytes: u64) -> Result<Vec<u8>> {
-        let (_, bytes, _) = self
-            .reader
-            .read_private_path(
-                &self.volume,
-                TOOL_OUTPUT,
-                path,
-                None,
-                maximum_bytes,
-                ContentAccess::default(),
-            )?
-            .await?;
-        Ok(bytes.to_vec())
-    }
-}
-
-impl LocalHarness {
-    /// A follow of `agent`'s tool output, derived from its own scope and
-    /// bound to its audience.
-    ///
-    /// # Errors
-    /// Fails for an embedded harness, an unknown agent, or a scope that does
-    /// not grant reading its tool output.
-    pub async fn tool_output(self: &Arc<Self>, agent: &AgentPath) -> Result<ToolOutput> {
-        let (agents, _) = self.agents().await?;
-        let state = agents.state(agent).await.map_err(storage)?;
-        let issuer = self.root_authority.as_ref().ok_or_else(|| {
-            Error::Unsupported("an embedded harness has no agent signing custody".into())
-        })?;
-        let stream = self
-            .agent_stream
-            .clone()
-            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
-        let authority = agent_authority(
-            issuer,
-            &TurnAdmission::LocalRoot,
-            &state.path,
-            &state.volumes,
-            &[],
-        )?;
-        let follow = self
-            .files
-            .tool_output_follow(&authority, &authority.private.volume)
-            .await?;
-        let changes = self.files.change_provider(Arc::clone(&stream))?;
-        let reader = FilesystemContentVerifier::new(
-            Arc::clone(&self.files),
-            &authority.verifier,
-            &authority.scope,
-            self.limits.file_bytes,
-            None,
-        )?;
-        Ok(ToolOutput {
-            client: Client::in_process_with_resources(
-                stream,
-                follow.authority,
-                Arc::new(changes),
-                Arc::new(acyclic_stream::runtime::PlatformExecutor),
-            ),
-            resource: follow.resource,
-            credential: follow.credential,
-            reader,
-            volume: authority.private.volume.clone(),
-        })
-    }
-}
+//! The live display of an agent's newest tool call, folded from the change
+//! records of its `tools/` directory.
 
 /// Bytes of the newest call's output a [`OutputTail`] retains.
 const TAIL_BYTES: usize = 16 * 1024;
 /// Largest output chunk a shell call stages.
 pub(super) const CHUNK_BYTES: usize = 64 * 1024;
 
-/// The live output of an agent's newest tool call: a follow of its whole
-/// `tools/` directory that reads each new `stdout`/`stderr` chunk once.
-pub struct OutputTail {
-    output: ToolOutput,
-    session: acyclic_harness_client::WireSession,
-    /// Next record sequence not yet absorbed.
+/// The newest call's output: its last [`TAIL_BYTES`] at most, decoded across
+/// chunk boundaries.
+#[derive(Default)]
+pub(super) struct OutputTail {
+    /// Next change record not yet absorbed.
     next: u64,
+    /// The opened follow's replayed history ends here; nothing is chosen
+    /// before it is drained, so a reopen reads only the newest call.
+    replayed: Option<u64>,
     /// `tools/{turn}/{operation}` of the newest call.
     call: Option<String>,
     text: String,
+    /// Bytes of a character a chunk split, for stdout and stderr.
+    split: [Vec<u8>; 2],
 }
 
-impl ToolOutput {
-    /// Follows this agent's tool output from its first record.
-    ///
-    /// # Errors
-    /// Fails when the session refuses the credential or the follow.
-    pub fn tail(self) -> Result<OutputTail> {
-        use acyclic_stream::wire;
-        let mut session = acyclic_harness_client::WireSession::new(
-            self.client.clone(),
-            acyclic_harness_client::DemandPolicy::default(),
-        );
-        session
-            .register_credential(0, self.credential.clone().into())
-            .map_err(storage)?;
-        session
-            .begin_resource(wire::SessionSubscription {
-                credential: 0,
-                filter: None,
-                channel: None,
-                resume: Some(wire::SessionCursor {
-                    next: 0,
-                    opaque: Default::default(),
-                }),
-                kind: Some(wire::session_subscription::Kind::Follow(
-                    wire::SessionFollow {
-                        resource: self.resource.clone(),
-                        delivery: wire::SessionDelivery::All as i32,
-                        ..Default::default()
-                    },
-                )),
-            })
-            .map_err(storage)?;
-        Ok(OutputTail {
-            output: self,
-            session,
-            next: 0,
-            call: None,
-            text: String::new(),
-        })
-    }
+/// Chunks to read for one absorb, committed with [`OutputTail::apply`].
+pub(super) struct Plan {
+    end: u64,
+    call: Option<String>,
+    /// Each chunk's path and whether it is stderr.
+    pub(super) reads: Vec<(String, bool)>,
 }
 
 impl OutputTail {
-    /// Completes when the follow delivers a frame; cancel-safe.
-    ///
-    /// # Errors
-    /// Fails when the follow is refused or ends.
-    pub async fn changed(&mut self) -> Result<()> {
-        let resource = &self.output.resource;
-        let session = &mut self.session;
-        futures::future::poll_fn(|context| session.poll_resource(resource, context))
-            .await
-            .map_err(storage)?
-            .map(drop)
-            .ok_or_else(|| Error::Storage("tool output follow ended".into()))
+    /// First change record sequence not yet absorbed.
+    pub(super) const fn next(&self) -> u64 {
+        self.next
     }
 
-    /// Reads the output chunks the follow has announced since the last call.
-    /// Only the newest call's chunks are read, so a reopened history costs
-    /// one call's output, not every call's.
-    ///
-    /// # Errors
-    /// Fails when an announced chunk cannot be read.
-    pub async fn absorb(&mut self) -> Result<()> {
-        let Some(view) = self.session.resource_view(&self.output.resource) else {
-            return Ok(());
-        };
+    /// Plans reading the newest call's chunks that `records`, each a
+    /// sequence and its changed paths, announce at or after [`Self::next`],
+    /// up to `end`. `accepted` is the follow's accepted watermark; until the
+    /// first one opened is drained this returns `None` and plans nothing.
+    pub(super) fn plan(
+        &mut self,
+        records: impl IntoIterator<Item = (u64, Vec<String>)>,
+        end: u64,
+        accepted: u64,
+    ) -> Option<Plan> {
+        if end < *self.replayed.get_or_insert(accepted) {
+            return None;
+        }
+        let mut call = None;
         let mut chunks = Vec::new();
-        for record in view.records().filter(|record| record.sequence >= self.next) {
-            // Filesystem change records carry their paths in the compact
-            // change list, not as wire keys.
-            let changes = acyclic_stream::decode_changes(&record.value).map_err(storage)?;
-            for entry in &changes.entries {
-                if let Ok(path) = std::str::from_utf8(&entry.key)
-                    && let Some((call, _)) = path
-                        .split_once("/stdout/")
-                        .or_else(|| path.split_once("/stderr/"))
+        for (sequence, paths) in records {
+            if sequence < self.next {
+                continue;
+            }
+            for path in paths {
+                if let Some((owner, stderr)) = path
+                    .split_once("/stdout/")
+                    .map(|(owner, _)| (owner, false))
+                    .or_else(|| path.split_once("/stderr/").map(|(owner, _)| (owner, true)))
                 {
-                    chunks.push((call.to_owned(), path.to_owned()));
+                    call = Some(owner.to_owned());
+                    chunks.push((owner.to_owned(), path.clone(), stderr));
+                } else if let Some(owner) = path.strip_suffix("/request.json") {
+                    // A new call starts its display even before it writes.
+                    call = Some(owner.to_owned());
                 }
             }
         }
-        let next = view.next_sequence();
-        let Some((newest, _)) = chunks.last() else {
-            self.next = next;
-            return Ok(());
-        };
-        let newest = newest.clone();
-        // Stage the display and commit it with the cursor only after every
-        // announced read settles: a failed or cancelled absorb changes
-        // nothing, so a retry reads the same announcements exactly once.
-        let mut text = if self.call.as_ref() == Some(&newest) {
-            self.text.clone()
-        } else {
-            String::new()
-        };
-        for (call, path) in chunks {
-            if call == newest {
-                let bytes = self.output.read(&path, CHUNK_BYTES as u64).await?;
-                text.push_str(&String::from_utf8_lossy(&bytes));
-                keep_tail(&mut text);
-            }
-        }
-        self.next = next;
-        self.call = Some(newest);
-        self.text = text;
-        Ok(())
+        let reads = chunks
+            .into_iter()
+            .filter(|(owner, _, _)| call.as_deref() == Some(owner))
+            .map(|(_, path, stderr)| (path, stderr))
+            .collect();
+        Some(Plan { end, call, reads })
     }
 
-    /// The newest call's output, its last [`TAIL_BYTES`] at most.
-    #[must_use]
-    pub fn text(&self) -> &str {
+    /// Commits `plan` once every one of its reads, `bytes` in order, settled:
+    /// a failed or cancelled absorb changes nothing, so a retry reads the
+    /// same announcements exactly once.
+    pub(super) fn apply(&mut self, plan: Plan, bytes: Vec<Vec<u8>>) {
+        if plan.call.is_some() && plan.call != self.call {
+            self.call = plan.call;
+            self.text.clear();
+            self.split = Default::default();
+        }
+        for ((_, stderr), bytes) in plan.reads.iter().zip(bytes) {
+            decode(
+                &mut self.split[usize::from(*stderr)],
+                &bytes,
+                &mut self.text,
+            );
+            keep_tail(&mut self.text);
+        }
+        self.next = plan.end;
+    }
+
+    /// Clears the display when a turn settles; records before `end` are
+    /// never shown again.
+    pub(super) fn reset(&mut self, end: u64) {
+        self.next = self.next.max(end);
+        self.call = None;
+        self.text.clear();
+        self.split = Default::default();
+    }
+
+    pub(super) fn text(&self) -> &str {
         &self.text
     }
+}
+
+/// Appends `bytes` to `text`, completing the character `split` holds and
+/// keeping a trailing incomplete one there for the next chunk.
+fn decode(split: &mut Vec<u8>, bytes: &[u8], text: &mut String) {
+    split.extend_from_slice(bytes);
+    let mut start = 0;
+    while start < split.len() {
+        match std::str::from_utf8(&split[start..]) {
+            Ok(valid) => {
+                text.push_str(valid);
+                start = split.len();
+            }
+            Err(error) => {
+                let valid = start + error.valid_up_to();
+                text.push_str(&String::from_utf8_lossy(&split[start..valid]));
+                match error.error_len() {
+                    Some(invalid) => {
+                        text.push(char::REPLACEMENT_CHARACTER);
+                        start = valid + invalid;
+                    }
+                    None => {
+                        start = valid;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    split.drain(..start);
 }
 
 /// Bounds the staged display to its last [`TAIL_BYTES`] on a char boundary.
@@ -237,5 +149,91 @@ fn keep_tail(text: &mut String) {
             cut += 1;
         }
         text.drain(..cut);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputTail;
+
+    fn paths(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    /// Plans and applies one absorb whose reads return `bytes` in order.
+    fn absorb(
+        tail: &mut OutputTail,
+        records: Vec<(u64, Vec<String>)>,
+        end: u64,
+        accepted: u64,
+        bytes: &[&[u8]],
+    ) -> Option<Vec<String>> {
+        let plan = tail.plan(records, end, accepted)?;
+        let reads = plan.reads.iter().map(|(path, _)| path.clone()).collect();
+        tail.apply(plan, bytes.iter().map(|bytes| bytes.to_vec()).collect());
+        Some(reads)
+    }
+
+    #[test]
+    fn a_reopen_drains_replayed_history_and_reads_only_the_newest_call() {
+        let mut tail = OutputTail::default();
+        let old = (
+            0,
+            paths(&["tools/t1/a/request.json", "tools/t1/a/stdout/0"]),
+        );
+        let new = (
+            1,
+            paths(&["tools/t2/b/request.json", "tools/t2/b/stdout/0"]),
+        );
+        // The first frame replays only the old call; the follow opened at 2.
+        assert!(absorb(&mut tail, vec![old.clone()], 1, 2, &[]).is_none());
+        assert_eq!(tail.next(), 0);
+        assert_eq!(
+            absorb(&mut tail, vec![old, new], 2, 2, &[b"new"]),
+            Some(vec!["tools/t2/b/stdout/0".to_owned()])
+        );
+        assert_eq!(tail.text(), "new");
+        // Once drained, live records are absorbed as they arrive.
+        let live = (2, paths(&["tools/t2/b/stdout/1"]));
+        assert!(absorb(&mut tail, vec![live], 3, 4, &[b" more"]).is_some());
+        assert_eq!(tail.text(), "new more");
+    }
+
+    #[test]
+    fn a_settled_turn_clears_the_display_and_skips_its_records() {
+        let mut tail = OutputTail::default();
+        let first = (0, paths(&["tools/t1/a/stdout/0"]));
+        assert!(absorb(&mut tail, vec![first.clone()], 1, 1, &[b"old"]).is_some());
+        let late = (1, paths(&["tools/t1/a/stdout/1"]));
+        tail.reset(2);
+        assert_eq!(tail.text(), "");
+        // Records the settled turn announced are not read again.
+        assert_eq!(
+            absorb(&mut tail, vec![first, late], 2, 2, &[]),
+            Some(Vec::new())
+        );
+        assert_eq!(tail.text(), "");
+        // The next turn's call starts its own display.
+        let next = (2, paths(&["tools/t2/b/request.json"]));
+        assert!(absorb(&mut tail, vec![next], 3, 3, &[]).is_some());
+        let output = (3, paths(&["tools/t2/b/stdout/0"]));
+        assert!(absorb(&mut tail, vec![output], 4, 4, &[b"fresh"]).is_some());
+        assert_eq!(tail.text(), "fresh");
+    }
+
+    #[test]
+    fn a_character_split_across_chunks_decodes_whole() {
+        let mut tail = OutputTail::default();
+        let bytes = "é✓".as_bytes();
+        let records = vec![(0, paths(&["tools/t/a/stdout/0", "tools/t/a/stdout/1"]))];
+        assert!(absorb(&mut tail, records, 1, 1, &[&bytes[..1], &bytes[1..3]]).is_some());
+        assert_eq!(tail.text(), "é");
+        let records = vec![(1, paths(&["tools/t/a/stdout/2"]))];
+        assert!(absorb(&mut tail, records, 2, 2, &[&bytes[3..]]).is_some());
+        assert_eq!(tail.text(), "é✓");
+        // An invalid byte is replaced, and decoding resumes after it.
+        let records = vec![(2, paths(&["tools/t/a/stderr/0"]))];
+        assert!(absorb(&mut tail, records, 3, 3, &[b"\xffok"]).is_some());
+        assert_eq!(tail.text(), "é✓\u{fffd}ok");
     }
 }

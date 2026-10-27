@@ -1,6 +1,6 @@
 //! The interactive terminal: one conversation's settled turns, its pending
 //! prompts and its phase, over the shared prompt editor and screen widgets.
-use acyclic_harness::local::agent_conversation::{Conversation, Event};
+use acyclic_harness::local::{Event, agent_conversation::Conversation};
 use acyclic_harness::{
     agent::{IntentId, Phase},
     tui::{
@@ -77,6 +77,7 @@ impl View {
                 });
             }
             Event::Failed(error) => self.failure = Some(error),
+            Event::Output => return Ok(()),
             Event::Status(status) => {
                 self.failure = None;
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
@@ -179,10 +180,10 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
     let mut terminal = FrameTerminal::new(output, size()?)?;
     let mut keys = terminal_events(tty);
     let from = conversation.settled().await?.saturating_sub(HISTORY);
-    let mut events = conversation.events(from).await?;
+    // Its settled turns, its phase and, while it works, the newest tool
+    // call's output.
+    let mut events = conversation.observe(from).await?;
     let mut view = View::default();
-    // The newest tool call's output, shown while the agent works.
-    let mut output = conversation.tool_output().await?;
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
     let mut viewport = Viewport::default();
@@ -211,18 +212,18 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
             (areas, usize::from(areas.transcript.height).max(1))
         };
         tokio::select! {
-            changed = output.changed() => {
-                changed?;
-                output.absorb().await?;
-                let lines = output.text().lines().collect::<Vec<_>>();
+            event = events.next() => {
+                let event = event?;
+                if matches!(event, Event::Output) {
+                    events.absorb().await?;
+                }
+                view.apply(&conversation, event).await?;
+                // A settled turn clears the output with its display.
+                let lines = events.output().lines().collect::<Vec<_>>();
                 output_rows = lines[lines.len().saturating_sub(OUTPUT_ROWS)..]
                     .iter()
                     .map(|line| Line::raw((*line).to_owned()))
                     .collect();
-            }
-            event = events.next() => {
-                let event = event.ok_or("agent status follow ended")??;
-                view.apply(&conversation, event).await?;
             }
             batch = keys.next() => {
                 for event in batch.ok_or("terminal input ended")?? {
