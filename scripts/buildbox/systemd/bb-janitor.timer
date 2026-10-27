@@ -1,0 +1,8 @@
+[Unit]
+Description=Run bb2 janitor every 5 minutes
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+[Install]
+WantedBy=timers.target

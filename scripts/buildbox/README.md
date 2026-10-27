@@ -40,7 +40,12 @@ private namespace is a typed refusal, including after disconnected FUSE tests.
 This directory is the maintained source for the coordinator's bb2 runtime.
 `bb-job.py`, `bb-admit.py`, `bb-admit`, `build-slot`, `sccache-rustc`,
 `buildbox-receipt.mjs`, `job_exports.py` and the SDK source-copy pruner install
-under `/home/var/bin` on bb2. `buildbox.mjs` and the receipt module install in
+under `/home/var/bin` on bb2. `bb-janitor.py` installs root-owned at
+`/usr/local/lib/buildbox/bb-janitor.py`, run as var every 5 minutes by
+`systemd/bb-janitor.{service,timer}`: it evicts least-recently-used sccache
+files to 50 GiB, job entries idle over 6 h (then oldest idle over 1 h while
+above 40 GiB) and SDK source copies beyond 32 through the lease-aware pruner,
+never anything a live process names, and never /mnt/bb/cx or Docker. `buildbox.mjs` and the receipt module install in
 WSL's `/home/var/bin`. `coordinator/pr-gate.sh` installs as `Q:/lanes/pr-gate.sh`;
 `../pr-gate-checks.sh` installs as `Q:/lanes/pr-gate-checks.sh`.
 `coordinator/gate-checks.sh` installs as `Q:/lanes/gate-checks.sh`, and
