@@ -31,6 +31,12 @@ never yields resources for cancellation to delete.
 
 Adapters dispatch each native mutation once. Asynchronous native resources use
 the shared bounded `settle` observer, which repeats reads, never mutations.
+Suspend/wake admission and policy transitions are shared too. Native readiness is
+separate from public state: a Running VM may still be busy with a fork or snapshot.
+A destroyed canonical observation cannot be replaced by a stale native read.
+Fork rounds join every started sibling before reporting failure, retaining cleanup
+ownership. Only an explicit definite native refusal permits dispatch backoff; a
+lost reply never does. Machine/event page construction belongs to this core.
 The raw backend migration is in progress; the operation authority alone does not
 establish that all adapters meet the approximately 300-line budget.
 

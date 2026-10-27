@@ -36,21 +36,10 @@ from the machine contract or the outcome, never from the provider type:
   `GET /sandbox/{id}/forks` first and returns `ProviderError::Conflict` until the children are
   gone; destroy children in reverse index order (a source always has a lower index than the
   children forked from it), then the parent.
-- **Containers** declare only `DiskFork` (`ForkFidelity::DiskOnly`). The provider archives
-  `DaytonaConfig::workspace_dir` (default `/home/daytona/workspace`, env
-  `DAYTONA_WORKSPACE_DIR`) in the parent once, creates each child from the parent's snapshot
-  with its lifecycle intervals, environment, and non-provider labels, and unpacks the archive
-  into it through the toolbox files API. Processes and memory are not inherited: the caller
-  restarts its workload in each child from durable history. The workspace is the provider's
-  declared persistent disk (`ForkFidelity::DiskOnly` copies provider-declared persistent data);
-  writes outside it are not copied, so keep durable state in the workspace. The archive is kept
-  only when two consecutive reads of the workspace agree, so it reflects one quiescent instant;
-  a workspace that keeps changing across five attempts fails the fork with
-  `ProviderError::Conflict` before any child exists. A child gets `acyclic.ready=true` only
-  after its workspace is unpacked. A fork that fails definitively deletes the children it
-  created; an indeterminate one keeps them for `recover`, and `cancel` deletes them. Children
-  never block deleting the parent.
-  Measured on `daytona-small` (eu): a 4 MiB workspace forked into two children in about 7 s.
+- **Containers** declare no fork capability. A pair of matching TAR reads cannot
+  prove one atomic filesystem generation. Container checkpoint/fork requests are
+  refused until a provider snapshot or canonical immutable filesystem generation
+  covers every writer. No archive capture or restore-copy path remains.
 
 Every live-fork child carries `acyclic.kind=live-fork`, `acyclic.parent=<requested machine>`,
 `acyclic.fork_source=<sandbox it was forked from>`, its index and the requested count, and
@@ -94,8 +83,6 @@ also require `DAYTONA_MACHINES_JOURNAL=/durable/account-specific/directory`:
 ```sh
 # Container smoke test of the REST client (create, exec, delete; bounded TTL):
 DAYTONA_API_KEY=... cargo test -p acyclic-machines-daytona --test live -- --ignored smoke
-# Container disk fork through the trait (three short-lived sandboxes, always deleted):
-DAYTONA_API_KEY=... cargo test -p acyclic-machines-daytona --test live -- --ignored container_disk_fork
 # Full Machines conformance suite; needs a Linux VM snapshot and bills the organization:
 DAYTONA_API_KEY=... DAYTONA_SNAPSHOT=<vm snapshot> \
   cargo test -p acyclic-machines-daytona --test live -- --ignored conformance

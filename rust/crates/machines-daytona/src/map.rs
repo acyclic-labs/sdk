@@ -110,8 +110,7 @@ pub fn is_vm_class(class: Option<&str>) -> bool {
 /// does not admit.
 ///
 /// VM classes get memory checkpoints, native memory-and-disk live fork, and pause/resume.
-/// Containers get only disk fork: the provider copies the workspace into fresh sandboxes
-/// booted from the parent's snapshot, and no process state is inherited.
+/// Containers have no admitted atomic snapshot boundary and declare no fork capability.
 #[must_use]
 pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability>> {
     if is_vm_class(class) {
@@ -121,7 +120,7 @@ pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability
             Capability::SuspendResume,
         ]))
     } else if class.is_some_and(|class| class.eq_ignore_ascii_case(CONTAINER_CLASS)) {
-        Some(BTreeSet::from([Capability::DiskFork]))
+        Some(BTreeSet::new())
     } else {
         None
     }
@@ -335,28 +334,6 @@ pub fn owned_by(sandbox: &Sandbox, tenant: Option<&str>) -> bool {
         .get(LABEL_MANAGED)
         .is_some_and(|value| value == "true")
         && sandbox.labels.get(LABEL_TENANT).map(String::as_str) == tenant
-}
-
-/// Rounds of a doubling fork fan-out of `count` children: each round lists `(child index,
-/// source node)` pairs, where node 0 is the requested machine and node `n + 1` is child `n`.
-/// Every existing node forks once per round, so round `r` (from zero) forks up to `2^r`
-/// children, children are numbered in the order they are forked, and a node never forks twice
-/// in one round.
-#[must_use]
-pub fn fork_rounds(count: u32) -> Vec<Vec<(u32, usize)>> {
-    let mut rounds = Vec::new();
-    let mut produced: u32 = 0;
-    while produced < count {
-        let nodes = produced.saturating_add(1);
-        let batch = nodes.min(count - produced);
-        rounds.push(
-            (0..batch)
-                .map(|source| (produced + source, source as usize))
-                .collect(),
-        );
-        produced += batch;
-    }
-    rounds
 }
 
 /// Whether a failed Daytona fork was refused only because its source is not `started` yet
@@ -750,7 +727,7 @@ mod tests {
         );
         assert_eq!(
             capabilities_for_class(Some("container")),
-            Some(BTreeSet::from([Capability::DiskFork]))
+            Some(BTreeSet::new())
         );
         assert_eq!(capabilities_for_class(Some("android")), None);
         assert_eq!(capabilities_for_class(None), None);
@@ -959,18 +936,18 @@ mod tests {
 
     #[test]
     fn fork_rounds_double_the_forking_nodes() {
-        assert!(fork_rounds(0).is_empty());
-        assert_eq!(fork_rounds(1), [vec![(0, 0)]]);
+        assert!(acyclic_machines::core::fork_rounds(0).is_empty());
+        assert_eq!(acyclic_machines::core::fork_rounds(1), [vec![(0, 0)]]);
         assert_eq!(
-            fork_rounds(7),
+            acyclic_machines::core::fork_rounds(7),
             [
                 vec![(0, 0)],
                 vec![(1, 0), (2, 1)],
                 vec![(3, 0), (4, 1), (5, 2), (6, 3)],
             ]
         );
-        assert_eq!(fork_rounds(15).len(), 4);
-        let sixteen = fork_rounds(16);
+        assert_eq!(acyclic_machines::core::fork_rounds(15).len(), 4);
+        let sixteen = acyclic_machines::core::fork_rounds(16);
         assert_eq!(sixteen.len(), 5);
         assert_eq!(sixteen[4], [(15, 0)]);
         let indices: Vec<u32> = sixteen.iter().flatten().map(|&(index, _)| index).collect();

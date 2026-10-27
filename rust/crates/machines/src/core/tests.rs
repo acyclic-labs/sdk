@@ -327,3 +327,171 @@ async fn failed_admission_performs_no_native_dispatch() -> TestResult {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+struct NativeLifecycle {
+    value: tokio::sync::Mutex<MachineObservation>,
+    mutations: AtomicUsize,
+    reads: AtomicUsize,
+}
+
+#[async_trait]
+impl RawMachines for NativeLifecycle {
+    async fn raw_observe(
+        &self,
+        _: MachineId,
+        _: Option<&MachineObservation>,
+    ) -> Result<RawObservation, ProviderError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(RawObservation {
+            machine: self.value.lock().await.clone(),
+            settled: true,
+        })
+    }
+    async fn raw_suspend(&self, _: MachineId) -> Result<(), ProviderError> {
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        self.value.lock().await.state = MachineState::Suspended;
+        Ok(())
+    }
+    async fn raw_wake(&self, _: MachineId) -> Result<(), ProviderError> {
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        self.value.lock().await.state = MachineState::Running;
+        Ok(())
+    }
+    async fn raw_set_suspension_policy(
+        &self,
+        _: MachineId,
+        policy: SuspensionPolicy,
+    ) -> Result<(), ProviderError> {
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        self.value.lock().await.contract.suspension = policy;
+        Ok(())
+    }
+    async fn destroy(&self, _: &str) -> Result<(), ProviderError> {
+        Err(ProviderError::Rejected(
+            "internal lifecycle oracle must never delete an existing target".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let machine = value.id;
+    let native = NativeLifecycle {
+        value: tokio::sync::Mutex::new(value),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let key = IdempotencyKey::new();
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.transition(
+            &native,
+            machine,
+            key,
+            false,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            3
+        )
+        .await?,
+        MutationOutcome::Suspended(machine)
+    );
+    let settled = core.settled(key).await?;
+    let reads = native.reads.load(Ordering::SeqCst);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.transition(
+            &native,
+            machine,
+            key,
+            false,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            4
+        )
+        .await?,
+        settled.outcome
+    );
+    assert_eq!(core.settled(key).await?, settled);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), 1);
+    assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(
+        core.transition(
+            &native,
+            machine,
+            IdempotencyKey::new(),
+            true,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            5
+        )
+        .await?,
+        MutationOutcome::Woken(machine)
+    );
+    core.mark_destroyed(machine, 6).await?;
+    assert_eq!(
+        core.inspect_machine(&native, machine, 7).await?.state,
+        MachineState::Destroyed
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn definite_refusal_retries_but_unknown_dispatch_does_not() -> TestResult {
+    let key = IdempotencyKey::new();
+    let calls = AtomicUsize::new(0);
+    let value = retry_refused(
+        key,
+        Duration::from_millis(1),
+        Duration::from_secs(1),
+        || async {
+            if calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                Ok(Dispatch::Refused)
+            } else {
+                Ok(Dispatch::Accepted(7))
+            }
+        },
+    )
+    .await?;
+    assert_eq!(value, 7);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    calls.store(0, Ordering::SeqCst);
+    let unknown = retry_refused::<(), _, _>(
+        key,
+        Duration::from_millis(1),
+        Duration::from_secs(1),
+        || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::Unavailable)
+        },
+    )
+    .await;
+    assert!(matches!(unknown, Err(ProviderError::Unavailable)));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_fork_round_still_joins_every_started_sibling() -> TestResult {
+    let completed = AtomicUsize::new(0);
+    let finished = &completed;
+    let result = fork_tree(0, 3, |index, _source| async move {
+        if index == 1 {
+            return Err(ProviderError::Failed);
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        finished.fetch_add(1, Ordering::SeqCst);
+        Ok(index + 1)
+    })
+    .await;
+    assert!(matches!(result, Err(ProviderError::Failed)));
+    assert_eq!(completed.load(Ordering::SeqCst), 2);
+    Ok(())
+}

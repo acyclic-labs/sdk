@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod journal;
 mod raw;
-pub use raw::RawMachines;
+pub use raw::{RawMachines, RawObservation};
+mod fork;
+mod lifecycle;
+pub use fork::{Dispatch, fork_rounds, fork_tree, retry_refused};
 mod settle;
 pub use settle::settle;
 #[cfg(test)]
@@ -362,7 +365,7 @@ impl OperationRegistry {
     /// owned, including when the process exits between the delete and its receipt.
     pub async fn cleanup(
         &self,
-        driver: &impl RawMachines,
+        driver: &(impl RawMachines + ?Sized),
         operation: OperationId,
     ) -> Result<(), ProviderError> {
         for resource in self.created(operation).await?.into_iter().rev() {
@@ -380,7 +383,7 @@ impl OperationRegistry {
     /// The durable registry owns cancel and its cleanup; an adapter only deletes.
     pub async fn cancel_with(
         &self,
-        driver: &impl RawMachines,
+        driver: &(impl RawMachines + ?Sized),
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
         let (observation, _) = self
@@ -396,7 +399,7 @@ impl OperationRegistry {
     /// Adopted resources are targets and can never be reclaimed by this attempt.
     pub async fn claim(
         &self,
-        driver: &impl RawMachines,
+        driver: &(impl RawMachines + ?Sized),
         operation: OperationId,
         resource: &str,
         adopted: bool,
