@@ -175,6 +175,7 @@ fn page_tail_records_keep_keys_and_attributes() {
     let response = wire::ChildrenPageResponse {
         hierarchy_version: vec![7; 32].into(),
         children: vec![wire::Child {
+            origin: None,
             path: "agents/a".to_owned(),
             tail_record: Some(wire::Record {
                 sequence: 0,

@@ -52,10 +52,10 @@ try {
   assertFields("ForkRequest", [["source", 1], ["destination", 2], ["at_tail", 3], ["idempotency_key", 4], ["exclude", 5]]);
   assertFields("ForkMutation", [["source", 1], ["destination", 2], ["at_tail", 3], ["records", 4], ["exclude", 5]]);
   assertFields("CommittedFork", [["source", 1], ["destination", 2], ["forked_at", 3], ["tail", 4], ["records", 5], ["exclude", 6]]);
-  assertFields("Child", [["path", 1], ["tail_record", 2]]);
+  assertFields("Child", [["path", 1], ["tail_record", 2], ["origin", 3]]);
   assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5]]);
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
-  assertFields("TailRequest", [["path", 1], ["accepted", 2]]);
+  assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3]]);
   assertFields("HeadRequest", [["path", 1]]);
   assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4]]);
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);

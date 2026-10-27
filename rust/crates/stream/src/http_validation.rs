@@ -112,6 +112,9 @@ fn validate_children_page(value: &Value) -> Result {
         if let Some(record) = child.get("tailRecord") {
             validate_record(record)?;
         }
+        if let Some(origin) = child.get("origin") {
+            validate_origin(origin)?;
+        }
         let path_value = field(child, "path")?;
         path(path_value)?;
         let current = string(path_value)?;
@@ -127,6 +130,13 @@ fn validate_children_page(value: &Value) -> Result {
         }
     }
     Ok(())
+}
+
+fn validate_origin(value: &Value) -> Result<u64> {
+    let origin = object(value)?;
+    path(field(origin, "source")?)?;
+    id(field(origin, "commitId")?)?;
+    u64_string(field(origin, "forkedAt")?)
 }
 
 fn validate_append_result(value: &Value) -> Result {
@@ -338,10 +348,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
             }
             let origin = field(item, "origin")?;
             if !origin.is_null() {
-                let origin = object(origin)?;
-                path(field(origin, "source")?)?;
-                id(field(origin, "commitId")?)?;
-                if u64_string(field(origin, "forkedAt")?)? > tail {
+                if validate_origin(origin)? > tail {
                     return Err("inherited cut exceeds head");
                 }
             }

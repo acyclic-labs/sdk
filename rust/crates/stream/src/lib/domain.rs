@@ -259,6 +259,8 @@ impl DurableReceipt {
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {
+    /// Immediate inherited source at the page's immutable namespace cut.
+    pub origin: Option<crate::ForkOrigin>,
     /// Last record of the requested relative stream at this page cut.
     pub tail_record: Option<Record>,
     /// Exact child path.

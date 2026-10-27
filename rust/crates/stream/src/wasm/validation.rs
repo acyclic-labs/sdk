@@ -307,6 +307,9 @@ mod http {
                 if let Some(record) = child.get("tailRecord") {
                     set(&result, "tailRecord", &record_js(record)?)?;
                 }
+                if let Some(origin) = child.get("origin") {
+                    set(&result, "origin", &origin_js(origin)?)?;
+                }
                 Ok(result.into())
             })?,
         )?;
@@ -604,13 +607,17 @@ mod http {
         }
         let origin = field(item, "origin")?;
         if !origin.is_null() {
-            let origin = object(origin)?;
-            let projected = Object::new();
-            set(&projected, "source", &string_js(field(origin, "source")?)?)?;
-            set(&projected, "forkedAt", &bigint_js(field(origin, "forkedAt")?)?)?;
-            set(&projected, "commitId", &bytes_js(field(origin, "commitId")?)?)?;
-            set(&result, "origin", &projected.into())?;
+            set(&result, "origin", &origin_js(origin)?)?;
         }
+        Ok(result.into())
+    }
+
+    fn origin_js(value: &Value) -> Result<JsValue> {
+        let origin = object(value)?;
+        let result = Object::new();
+        set(&result, "source", &string_js(field(origin, "source")?)?)?;
+        set(&result, "forkedAt", &bigint_js(field(origin, "forkedAt")?)?)?;
+        set(&result, "commitId", &bytes_js(field(origin, "commitId")?)?)?;
         Ok(result.into())
     }
 

@@ -77,7 +77,7 @@ export type AppendOptions = PublicWire<WireAppendRequest, { readonly idempotency
 export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?: IdempotencyKey; readonly exclude?: readonly string[] }, "source" | "destination">;
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
 export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
-export interface StreamChild { readonly path: string; readonly tailRecord?: EncodedRecord }
+export interface StreamChild { readonly path: string; readonly tailRecord?: EncodedRecord; readonly origin?: ForkOrigin }
 export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
   | Readonly<{ after: string; hierarchyVersion: CommitId }>

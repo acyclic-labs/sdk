@@ -27,11 +27,7 @@ pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
                 "tail": head.tail.to_string(),
                 "last": head.last.as_ref().map(record_json),
                 "durable": head.durable.to_string(),
-                "origin": head.origin.map(|origin| json!({
-                    "source": origin.source,
-                    "forkedAt": origin.forked_at.to_string(),
-                    "commitId": STANDARD.encode(&origin.commit_id),
-                })),
+                "origin": head.origin.as_ref().map(origin_json),
             })
         }
         "append" => {
@@ -70,6 +66,14 @@ fn record_json(value: &wire::Record) -> Value {
             "name": attribute.name,
             "value": STANDARD.encode(&attribute.value),
         })).collect::<Vec<_>>(),
+    })
+}
+
+fn origin_json(value: &wire::ForkOrigin) -> Value {
+    json!({
+        "source": value.source,
+        "forkedAt": value.forked_at.to_string(),
+        "commitId": STANDARD.encode(&value.commit_id),
     })
 }
 
@@ -143,6 +147,9 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
             let mut value = serde_json::Map::from_iter([("path".into(), json!(child.path))]);
             if let Some(record) = child.tail_record {
                 value.insert("tailRecord".into(), record_json(&record));
+            }
+            if let Some(origin) = child.origin {
+                value.insert("origin".into(), origin_json(&origin));
             }
             Value::Object(value)
         })

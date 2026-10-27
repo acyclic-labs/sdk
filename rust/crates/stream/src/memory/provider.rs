@@ -240,8 +240,10 @@ impl StreamProvider for MemoryStream {
             .map(|path| {
                 let tail_record =
                     projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-                let child = Child { path, tail_record };
+                let origin = state.paths.origin(&path)?;
+                let child = Child { path, tail_record, origin };
                 let encoded = crate::wire::Child {
+                    origin: child.origin.clone().map(crate::wire_codec::fork_origin_to_wire),
                     path: child.path.to_string(),
                     tail_record: child
                         .tail_record

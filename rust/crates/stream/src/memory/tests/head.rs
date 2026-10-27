@@ -115,6 +115,16 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen() -> 
             source: StreamPath::new(source)?, forked_at: cut, commit_id: second.commit_id,
         }));
     }
+    let page = provider.children_page(crate::ChildrenPageRequest {
+        parent: Some(StreamPath::new("second")?),
+        tail_stream: None,
+        after: None,
+        hierarchy_version: None,
+        limit: 32,
+    }).await?;
+    for child in page.children {
+        assert_eq!(child.origin, provider.head(child.path).await?.origin);
+    }
     let reopened = MemoryStream::default();
     reopened.install_state(&provider.encode_state().await).await?;
     for path in ["first", "first/child", "first/new", "first/excluded/leaf", "first/nested", "second/child", "second/nested"] {

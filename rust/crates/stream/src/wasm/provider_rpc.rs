@@ -338,6 +338,7 @@ impl StreamProvider for InjectedStream {
                 .into_iter()
                 .map(|child| {
                     Ok(Child {
+                        origin: child.origin.map(wire_codec::fork_origin_from_wire).transpose()?,
                         path: wire_codec::path(child.path)?,
                         tail_record: child.tail_record.map(wire_codec::record).transpose()?,
                     })

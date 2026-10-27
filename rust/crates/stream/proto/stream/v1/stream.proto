@@ -195,6 +195,7 @@ message ReadResponse {
 message Child {
   string path = 1;
   optional Record tail_record = 2;
+  optional ForkOrigin origin = 3;
 }
 message ChildrenPageRequest {
   optional string tail_stream = 5;

@@ -381,6 +381,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
             .children
             .into_iter()
             .map(|child| wire::Child {
+                origin: child.origin.map(fork_origin_to_wire),
                 tail_record: child.tail_record.map(record_wire),
                 path: child.path.to_string(),
             })
