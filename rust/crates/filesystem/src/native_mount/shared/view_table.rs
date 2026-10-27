@@ -477,7 +477,10 @@ mod tests {
             assert_eq!(drops.load(Ordering::SeqCst), 0);
             assert_eq!(lease.id, 1);
             drop(lease);
-            assert_eq!(release.recv().unwrap(), if unwind { Err(()) } else { Ok(1) });
+            assert_eq!(
+                release.recv().unwrap(),
+                if unwind { Err(()) } else { Ok(1) }
+            );
             retirer.join().unwrap();
             assert_eq!(drops.load(Ordering::SeqCst), 1);
         }
