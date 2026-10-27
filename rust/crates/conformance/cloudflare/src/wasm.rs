@@ -26,7 +26,7 @@ pub async fn qualify_journal_deadline(
             idempotency_key: key.clone(),
         };
         let provider = JournalStream::open(journal.clone(), JournalStreamLimits::default()).await?;
-        if provider.tail(path.clone()).await? != 0
+        if provider.tail(path.clone()).await != Err(StreamError::NotFound)
             || provider.inspect_idempotency(key.clone()).await?.is_some()
         {
             return Err(StreamError::InvalidResponse);
@@ -40,7 +40,8 @@ pub async fn qualify_journal_deadline(
             }
             drop(provider);
             let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
-            if reopened.tail(path).await? != 0 || reopened.inspect_idempotency(key).await?.is_some()
+            if reopened.tail(path).await != Err(StreamError::NotFound)
+                || reopened.inspect_idempotency(key).await?.is_some()
             {
                 return Err(StreamError::InvalidResponse);
             }
