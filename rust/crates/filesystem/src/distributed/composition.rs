@@ -40,7 +40,7 @@ pub struct FilesystemCommit {
 #[must_use]
 pub enum FilesystemCommitOutcome {
     /// Every caller and filesystem mutation committed under one receipt.
-    Committed(acyclic_stream::CommittedEnvelope),
+    Committed(acyclic_stream::CommitReceipt),
     /// Nothing changed; a caller or filesystem condition did not hold.
     Rejected(Vec<acyclic_stream::CommitConflict>),
     /// The result is unknown. Retry exactly this commit: its idempotency key
