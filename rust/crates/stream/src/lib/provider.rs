@@ -126,15 +126,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     }
     /// Executes one all-or-nothing optimistic commit.
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
-    /// Executes one coordinated commit only if the provider's trusted clock is
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        let _ = (request, deadline_unix_millis);
-        Err(StreamError::Unsupported)
-    }
     /// Reads one complete immutable successful envelope.
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
     /// Canonical inspection funded by the original native work owner.

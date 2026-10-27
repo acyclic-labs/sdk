@@ -229,13 +229,6 @@ impl StreamProvider for LocalStream {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         commit::<true>(self, request, None).await
     }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        commit::<true>(self, request, Some(deadline)).await
-    }
 
     async fn read_commit(
         &self,

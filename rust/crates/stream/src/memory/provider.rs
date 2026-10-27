@@ -263,15 +263,6 @@ impl StreamProvider for MemoryStream {
             .map(|(value, _)| value)
     }
 
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_inner(request, Some(deadline_unix_millis))
-            .await
-            .map(|(value, _)| value)
-    }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.state

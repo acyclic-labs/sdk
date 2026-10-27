@@ -140,7 +140,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"accepted"))?,
     };
     assert!(matches!(
-        provider.commit_before(accepted, 11).await?,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(11), ..accepted }).await?,
         CommitOutcome::Committed(_)
     ));
     let expired = CommitRequest {
@@ -155,7 +155,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"expired"))?,
     };
     assert_eq!(
-        provider.commit_before(expired, 10).await,
+        provider.commit(CommitRequest { deadline_unix_millis: Some(10), ..expired }).await,
         Err(StreamError::DeadlineElapsed)
     );
     drop(provider);

@@ -261,16 +261,6 @@ impl HttpStream {
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
-    async fn commit_request(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let mut wire = wire_codec::commit_to_wire(&request);
-        wire.deadline_unix_millis = deadline.into_iter().chain(request.deadline_unix_millis).min();
-        let response = self.request("commit", wire.encode_to_vec()).await?;
-        Self::commit_response(&response)
-    }
 }
 
 #[async_trait]
@@ -403,14 +393,9 @@ impl StreamProvider for HttpStream {
         self.session_client()?.children_page(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_request(request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_request(request, Some(deadline)).await
+        let wire = wire_codec::commit_to_wire(&request);
+        let response = self.request("commit", wire.encode_to_vec()).await?;
+        Self::commit_response(&response)
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let value = self

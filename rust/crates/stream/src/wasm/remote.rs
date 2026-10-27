@@ -62,23 +62,6 @@ impl Remote {
             .insert("authorization", authorization);
         Ok(request)
     }
-    async fn commit_deadline(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let body = wire::CommitRequest {
-            deadline_unix_millis: deadline.into_iter().chain(request.deadline_unix_millis).min(),
-            ..wire_codec::commit_to_wire(&request)
-        };
-        let response = self
-            .service()
-            .commit(self.request(body).await?)
-            .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner();
-        wire_codec::commit_outcome_from_wire(response)
-    }
 }
 #[async_trait(?Send)]
 impl StreamProvider for Remote {
@@ -232,14 +215,14 @@ impl StreamProvider for Remote {
         self.sessions.children_page(request, 0).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, Some(deadline)).await
+        let body = wire_codec::commit_to_wire(&request);
+        let response = self
+            .service()
+            .commit(self.request(body).await?)
+            .await
+            .map_err(|e| wire_codec::status(&e))?
+            .into_inner();
+        wire_codec::commit_outcome_from_wire(response)
     }
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {

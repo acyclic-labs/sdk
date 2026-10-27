@@ -42,15 +42,8 @@ fn check_command_size(input: &[u8]) -> Result<(), JsValue> {
 
 async fn dispatch_commit(provider: &dyn StreamProvider, input: &[u8]) -> Result<Vec<u8>, JsValue> {
     let request = decode::<wire::CommitRequest>(input)?;
-    let deadline_unix_millis = request.deadline_unix_millis;
     let request = wire_codec::commit_from_wire(request).map_err(js_error)?;
-    let response = match deadline_unix_millis {
-        Some(deadline) => provider
-            .commit_before(request, deadline)
-            .await
-            .map_err(js_error)?,
-        None => provider.commit(request).await.map_err(js_error)?,
-    };
+    let response = provider.commit(request).await.map_err(js_error)?;
     Ok(wire_codec::commit_outcome_to_wire(response).encode_to_vec())
 }
 

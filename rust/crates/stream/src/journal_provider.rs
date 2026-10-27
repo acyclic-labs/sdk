@@ -391,11 +391,10 @@ async fn apply(
     match command {
         Command::Append(request) => provider.append(request).await.map(Outcome::Append),
         Command::Fork(request) => provider.fork(request).await.map(Outcome::Fork),
-        Command::Commit(request) => match deadline {
-            Some(deadline) => provider.commit_before(request, deadline).await,
-            None => provider.commit(request).await,
+        Command::Commit(mut request) => {
+            request.deadline_unix_millis = deadline.into_iter().chain(request.deadline_unix_millis).min();
+            provider.commit(request).await.map(Outcome::Commit)
         }
-        .map(Outcome::Commit),
     }
 }
 fn replayable(result: &Result<Outcome, StreamError>) -> Result<(), StreamError> {
@@ -461,20 +460,8 @@ impl StreamProvider for JournalStream {
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        match self.execute(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        match self
-            .execute(Command::Commit(request), Some(deadline))
-            .await?
-        {
+        let deadline = request.deadline_unix_millis;
+        match self.execute(Command::Commit(request), deadline).await? {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }

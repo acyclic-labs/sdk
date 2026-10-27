@@ -296,10 +296,10 @@ impl BrowserStream {
         let outcome = match command {
             Command::Append(request) => Outcome::Append(cache.provider.append(request).await?),
             Command::Fork(request) => Outcome::Fork(cache.provider.fork(request).await?),
-            Command::Commit(request) => Outcome::Commit(match deadline {
-                Some(deadline) => cache.provider.commit_before(request, deadline).await?,
-                None => cache.provider.commit(request).await?,
-            }),
+            Command::Commit(mut request) => {
+                request.deadline_unix_millis = deadline.into_iter().chain(request.deadline_unix_millis).min();
+                Outcome::Commit(cache.provider.commit(request).await?)
+            }
         };
         if existing
             || matches!(
@@ -438,20 +438,8 @@ impl StreamProvider for BrowserStream {
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        match self.execute(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        match self
-            .execute(Command::Commit(request), Some(deadline))
-            .await?
-        {
+        let deadline = request.deadline_unix_millis;
+        match self.execute(Command::Commit(request), deadline).await? {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }

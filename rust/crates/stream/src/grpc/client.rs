@@ -210,17 +210,15 @@ impl StreamProvider for Client {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_with_deadline(request, None).await
+        let body = commit_to_wire(&request);
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.commit(request).await })
+            })
+            .await?;
+        decode_response(response, commit_outcome_from_wire)
     }
 
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_with_deadline(request, Some(deadline_unix_millis))
-            .await
-    }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {
@@ -235,24 +233,6 @@ impl StreamProvider for Client {
     }
 }
 
-impl Client {
-    async fn commit_with_deadline(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let body = wire::CommitRequest {
-            deadline_unix_millis: deadline_unix_millis.into_iter().chain(request.deadline_unix_millis).min(),
-            ..commit_to_wire(&request)
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.commit(request).await })
-            })
-            .await?;
-        decode_response(response, commit_outcome_from_wire)
-    }
-}
 
 /// A mutation's retry identity belongs to its caller, including transport retries.
 fn retry_identity(key: Option<IdempotencyKey>) -> Result<Bytes, StreamError> {

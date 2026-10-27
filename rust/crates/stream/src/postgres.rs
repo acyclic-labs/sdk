@@ -429,20 +429,8 @@ impl StreamProvider for PostgresStream {
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        match self.publish(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::InvalidResponse),
-        }
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        match self
-            .publish(Command::Commit(request), Some(deadline))
-            .await?
-        {
+        let deadline = request.deadline_unix_millis;
+        match self.publish(Command::Commit(request), deadline).await? {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::InvalidResponse),
         }

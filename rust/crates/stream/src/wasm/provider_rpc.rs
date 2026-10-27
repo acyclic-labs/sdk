@@ -158,17 +158,6 @@ impl InjectedStream {
             .boxed_local(),
         )
     }
-    async fn commit_deadline(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let input = wire::CommitRequest {
-            deadline_unix_millis: deadline.into_iter().chain(request.deadline_unix_millis).min(),
-            ..wire_codec::commit_to_wire(&request)
-        };
-        wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
-    }
 }
 #[async_trait::async_trait(?Send)]
 impl StreamProvider for InjectedStream {
@@ -280,14 +269,8 @@ impl StreamProvider for InjectedStream {
         })
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, Some(deadline)).await
+        let input = wire_codec::commit_to_wire(&request);
+        wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
