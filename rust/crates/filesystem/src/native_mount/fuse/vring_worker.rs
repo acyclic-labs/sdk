@@ -15,10 +15,9 @@ pub(super) fn run(
     control: &VringControl,
     session: &PacketSession,
     index: u32,
-    capacity: usize,
+    mut buffers: PacketBuffers,
 ) -> Result<(), NativeMountError> {
     let change = control.changes.get(index as usize).ok_or(libc::EINVAL)?;
-    let mut buffers = PacketBuffers::new(capacity, &control.work)?;
     loop {
         if control.is_stopped() {
             return Ok(());

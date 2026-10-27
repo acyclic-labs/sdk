@@ -92,16 +92,31 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
     let temporary = tempfile::tempdir()?;
     let mut session = mount(Arc::new(inner), volume_id, temporary.path())?;
     let written = temporary.path().join("written");
-    std::fs::write(&written, b"first")?;
-    for body in [b"second write".as_slice(), b"third".as_slice()] {
-        let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
-        std::io::Write::write_all(&mut file, body)?;
-        drop(file);
-        assert_eq!(std::fs::metadata(&written)?.len(), 12);
+    let mut step = "initial write";
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::write(&written, b"first")?;
+        for body in [b"second write".as_slice(), b"third".as_slice()] {
+            step = "reopen written file";
+            let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
+            step = "rewrite opened file";
+            std::io::Write::write_all(&mut file, body)?;
+            drop(file);
+            step = "read updated node facts";
+            assert_eq!(std::fs::metadata(&written)?.len(), 12);
+        }
+        step = "read rewritten bytes";
+        assert_eq!(std::fs::read(&written)?, b"thirdd write");
+        step = "positive session stop";
+        assert!(session.stop()?);
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        eprintln!(
+            "FUSE_NODE_FACTS step={step} error={error:?} callback_failure={:?}",
+            session.take_callback_failure()
+        );
     }
-    assert_eq!(std::fs::read(&written)?, b"thirdd write");
-    assert!(session.stop()?);
-    Ok(())
+    result
 }
 
 #[test]
