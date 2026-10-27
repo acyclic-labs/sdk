@@ -32,8 +32,10 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(test)]
 use acyclic_machines::core as ops;
-use acyclic_machines::core::{NativeBinding, OperationRegistry, RawMachines, RawObservation};
-use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox, Snapshot};
+use acyclic_machines::core::{
+    NativeBinding, NativeResource, OperationRegistry, RawMachines, RawObservation,
+};
+use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox};
 
 /// Default Daytona API base URL.
 pub const DEFAULT_API_URL: &str = "https://app.daytona.io/api";
@@ -428,39 +430,6 @@ impl DaytonaProvider {
         .await
     }
 
-    /// Polls a snapshot by id or name until it is active or failed. A snapshot that does not
-    /// exist yet counts as pending, since `POST /sandbox/{id}/snapshot` returns before the
-    /// snapshot record is readable.
-    async fn wait_snapshot(
-        &self,
-        snapshot: &str,
-        key: IdempotencyKey,
-    ) -> Result<Snapshot, ProviderError> {
-        acyclic_machines::core::settle(
-            key,
-            self.config.poll_interval,
-            self.config.ready_timeout,
-            || async {
-                match self.api.get_snapshot(snapshot).await {
-                    Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
-                        if value
-                            .state
-                            .as_deref()
-                            .is_some_and(|state| state.eq_ignore_ascii_case("active"))
-                        {
-                            Ok(Some(value))
-                        } else {
-                            Err(ProviderError::Failed)
-                        }
-                    }
-                    Ok(_) | Err(ProviderError::NotFound(_)) => Ok(None),
-                    Err(error) => Err(error),
-                }
-            },
-        )
-        .await
-    }
-
     async fn claim_sandbox(
         &self,
         operation: OperationId,
@@ -481,7 +450,12 @@ impl DaytonaProvider {
                 // The native mutation already returned a handle. Malformed metadata
                 // must retain its cleanup ownership and must never release the key.
                 self.ops
-                    .claim(self, operation, &sandbox.id, adopted)
+                    .claim(
+                        self,
+                        operation,
+                        &NativeResource::Machine(sandbox.id.clone()),
+                        adopted,
+                    )
                     .await?;
                 tracing::error!(%operation, %error,
                     "native create metadata mapping failed; recovery: cancel this operation before dispatching a new create");
@@ -801,8 +775,73 @@ impl RawMachines for DaytonaProvider {
             .await
     }
 
-    async fn destroy(&self, resource: &str) -> Result<(), ProviderError> {
-        self.api.delete(resource).await
+    async fn raw_checkpoint(
+        &self,
+        source: &MachineObservation,
+        native: Option<&NativeBinding>,
+        key: IdempotencyKey,
+    ) -> Result<String, ProviderError> {
+        let handle = native
+            .map(|value| value.handle.clone())
+            .unwrap_or_else(|| source.id.to_string());
+        let name = map::checkpoint_name(key);
+        self.api
+            .snapshot(
+                &handle,
+                &CreateSnapshotRequest {
+                    name: name.clone(),
+                    include_memory: true,
+                },
+            )
+            .await?;
+        Ok(name)
+    }
+
+    async fn raw_observe_checkpoint(
+        &self,
+        handle: &str,
+        source: &MachineObservation,
+    ) -> Result<Option<CheckpointObservation>, ProviderError> {
+        match self.api.get_snapshot(handle).await {
+            Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
+                if !value
+                    .state
+                    .as_deref()
+                    .is_some_and(|state| state.eq_ignore_ascii_case("active"))
+                {
+                    return Err(ProviderError::Failed);
+                }
+                map::snapshot_to_checkpoint(
+                    &value,
+                    Some(source.id),
+                    source.contract.clone(),
+                    true,
+                    now_unix_ms(),
+                )
+                .map(Some)
+            }
+            Ok(_) | Err(ProviderError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+        match resource {
+            NativeResource::Machine(handle) => self.api.delete(handle).await,
+            NativeResource::Checkpoint(handle) => {
+                // An accepted snapshot can be absent before materialization. Its
+                // missing name is not proof of deletion; retain cleanup ownership.
+                let snapshot =
+                    self.api
+                        .get_snapshot(handle)
+                        .await
+                        .map_err(|error| match error {
+                            ProviderError::NotFound(_) => ProviderError::Unavailable,
+                            error => error,
+                        })?;
+                self.api.delete_snapshot(&snapshot.id).await
+            }
+        }
     }
 }
 
@@ -918,48 +957,16 @@ impl MachinesProvider for DaytonaProvider {
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.apply(
-            key,
-            &MutationIntent::Checkpoint(machine),
-            async |operation| {
-                let source = self.fetch_machine(machine).await?;
-                require_capability(&source, Capability::LiveCheckpoint)?;
-                if source.state != MachineState::Running {
-                    return Err(ProviderError::Conflict(
-                        "Daytona memory snapshots require a started sandbox".into(),
-                    ));
-                }
-                let id = machine.to_string();
-                let name = map::checkpoint_name(key);
-                self.ops.bind_target(operation, &id).await?;
-                let request = CreateSnapshotRequest {
-                    name: name.clone(),
-                    include_memory: true,
-                };
-                match self.api.snapshot(&id, &request).await {
-                    // A replay after a lost response finds the snapshot already named.
-                    Ok(_) | Err(ProviderError::Conflict(_)) => {}
-                    Err(error) => return Err(error),
-                }
-                let settled = self.wait_snapshot(&name, key).await?;
-                self.wait_settled(&id, key).await?;
-                let now = now_unix_ms();
-                let checkpoint = map::snapshot_to_checkpoint(
-                    &settled,
-                    Some(machine),
-                    source.contract.clone(),
-                    true,
-                    now,
-                )?;
-                self.ops.remember_checkpoint(checkpoint.clone()).await?;
-                let mut updated = source;
-                updated.last_checkpoint = Some(checkpoint.id);
-                updated.changed_at_unix_ms = now;
-                self.ops.observe_machine(updated, now).await?;
-                Ok(MutationOutcome::Checkpointed(checkpoint))
-            },
-        )
-        .await
+        self.ops
+            .create_checkpoint(
+                self,
+                machine,
+                key,
+                self.config.poll_interval,
+                self.config.ready_timeout,
+                now_unix_ms(),
+            )
+            .await
     }
 
     async fn inspect_checkpoint(
@@ -2377,7 +2384,7 @@ mod tests {
             assert!(
                 provider
                     .registry()
-                    .bind_created(operation, id)
+                    .bind_created(operation, &NativeResource::Machine(id.into()))
                     .await
                     .unwrap()
             );
@@ -2404,7 +2411,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .created,
-            ["a"]
+            [NativeResource::Machine("a".into())]
         );
         provider.cancel(operation).await.unwrap();
         assert_eq!(
@@ -2420,6 +2427,47 @@ mod tests {
                 .unwrap()
                 .created
                 .is_empty()
+        );
+    }
+    #[tokio::test]
+    async fn cancel_retains_an_accepted_snapshot_that_has_not_materialized() {
+        // Internal refusal oracle; this is not a captured provider response.
+        let mock = mock::Mock::start(|_| async { (404, "{}".into()) }).await;
+        let provider = mocked(&mock, None);
+        let key = test_key(30);
+        let ops::Admission::Fresh(operation) = provider
+            .registry()
+            .admit(
+                key,
+                &MutationIntent::Checkpoint(MachineId::parse(MACHINE).unwrap()),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected fresh");
+        };
+        let resource = NativeResource::Checkpoint("accepted-pending-snapshot".into());
+        provider
+            .registry()
+            .claim(provider.as_ref(), operation, &resource, false)
+            .await
+            .unwrap();
+        provider.cancel(operation).await.unwrap();
+        assert_eq!(
+            provider.registry().created(operation).await.unwrap(),
+            [resource]
+        );
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests
+                .first()
+                .unwrap()
+                .is("GET", "/snapshots/accepted-pending-snapshot")
+        );
+        assert_eq!(
+            provider.inspect_operation(operation).await.unwrap().phase,
+            acyclic_machines::OperationPhase::Cancelled
         );
     }
 }

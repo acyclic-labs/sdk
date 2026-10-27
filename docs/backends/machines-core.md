@@ -35,6 +35,14 @@ never yields resources for cancellation to delete.
 
 Adapters dispatch each native mutation once. Asynchronous native resources use
 the shared bounded `settle` observer, which repeats reads, never mutations.
+Accepted atomic checkpoints are owned before the first readiness read. Machine
+and checkpoint cleanup use typed native addresses in the same operation record.
+A native conflict does not establish snapshot ownership. An accepted Daytona
+snapshot may not yet be readable by name: a 404 at that point retains deletion
+debt. If a deletion reply is lost and its name subsequently disappears, cleanup
+conservatively remains indeterminate; no absence poll manufactures an acknowledgment.
+Checkpoint results and their original settlement replay after reopening.
+
 Suspend/wake admission and policy transitions are shared too. Native readiness is
 separate from public state: a Running VM may still be busy with a fork or snapshot.
 A destroyed canonical observation cannot be replaced by a stale native read.

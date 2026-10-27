@@ -6,6 +6,10 @@ use acyclic_stream::{
 use futures::{StreamExt, TryStreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn machine_resource(value: &str) -> NativeResource {
+    NativeResource::Machine(value.into())
+}
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 async fn open(path: &std::path::Path) -> Result<OperationRegistry, Box<dyn std::error::Error>> {
@@ -29,7 +33,8 @@ async fn restart_preserves_success_and_exact_settlement_identity() -> TestResult
     let machine = MachineId::new();
     let core = open(dir.path()).await?;
     let id = fresh(core.admit(key, &"suspend").await?)?;
-    core.bind_created(id, "new-resource").await?;
+    core.bind_created(id, &machine_resource("new-resource"))
+        .await?;
     core.complete(id, MutationOutcome::Suspended(machine))
         .await?;
     let settled = core.settled(key).await?;
@@ -111,17 +116,21 @@ async fn cancellation_retains_cleanup_until_each_delete_is_acknowledged() -> Tes
     let key = IdempotencyKey::new();
     let core = open(dir.path()).await?;
     let id = fresh(core.admit(key, &"fork").await?)?;
-    assert!(core.bind_created(id, "child-0").await?);
+    assert!(core.bind_created(id, &machine_resource("child-0")).await?);
     core.bind_target(id, "existing-parent").await?;
     core.fail(id, &ProviderError::Unavailable).await?;
     core.cancel(id).await?;
     drop(core);
     let core = open(dir.path()).await?;
-    assert_eq!(core.created(id).await?, ["child-0"]);
-    assert!(!core.bind_created(id, "late-child").await?);
-    core.deleted(id, "child-0").await?;
-    assert_eq!(core.created(id).await?, ["late-child"]);
-    core.deleted(id, "late-child").await?;
+    assert_eq!(core.created(id).await?, [machine_resource("child-0")]);
+    assert!(
+        !core
+            .bind_created(id, &machine_resource("late-child"))
+            .await?
+    );
+    core.deleted(id, &machine_resource("child-0")).await?;
+    assert_eq!(core.created(id).await?, [machine_resource("late-child")]);
+    core.deleted(id, &machine_resource("late-child")).await?;
     assert!(core.created(id).await?.is_empty());
     core.complete(id, MutationOutcome::Woken(MachineId::new()))
         .await?;
@@ -137,18 +146,19 @@ async fn failed_operation_retains_cleanup_and_never_replays() -> TestResult {
     let core = OperationRegistry::new(Arc::new(MemoryStream::new(Default::default())), "account")?;
     let key = IdempotencyKey::new();
     let id = fresh(core.admit(key, &"fork").await?)?;
-    core.bind_created(id, "child").await?;
+    core.bind_created(id, &machine_resource("child")).await?;
     core.fail(id, &ProviderError::Failed).await?;
     assert!(
-        core.cancel(id).await?.is_some_and(
-            |(obs, resources)| obs.phase == OperationPhase::Failed && resources == ["child"]
-        )
+        core.cancel(id)
+            .await?
+            .is_some_and(|(obs, resources)| obs.phase == OperationPhase::Failed
+                && resources == [machine_resource("child")])
     );
     assert!(matches!(
         core.admit(key, &"fork").await,
         Err(ProviderError::Failed)
     ));
-    core.deleted(id, "child").await?;
+    core.deleted(id, &machine_resource("child")).await?;
     assert!(core.created(id).await?.is_empty());
     Ok(())
 }
@@ -330,6 +340,7 @@ async fn failed_admission_performs_no_native_dispatch() -> TestResult {
 
 struct NativeLifecycle {
     provider: &'static str,
+    checkpoint_owner: Option<(OperationRegistry, IdempotencyKey)>,
     value: tokio::sync::Mutex<MachineObservation>,
     mutations: AtomicUsize,
     reads: AtomicUsize,
@@ -372,7 +383,40 @@ impl RawMachines for NativeLifecycle {
         self.value.lock().await.contract.suspension = policy;
         Ok(())
     }
-    async fn destroy(&self, _: &str) -> Result<(), ProviderError> {
+    async fn raw_checkpoint(
+        &self,
+        _: &MachineObservation,
+        _: Option<&NativeBinding>,
+        key: IdempotencyKey,
+    ) -> Result<String, ProviderError> {
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        Ok(CheckpointId::from_digest(Sha256::digest(key.as_bytes()).into()).to_string())
+    }
+    async fn raw_observe_checkpoint(
+        &self,
+        handle: &str,
+        source: &MachineObservation,
+    ) -> Result<Option<CheckpointObservation>, ProviderError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if let Some((core, key)) = &self.checkpoint_owner {
+            if core.created(operation_id(*key)).await?
+                != [NativeResource::Checkpoint(handle.into())]
+            {
+                return Err(ProviderError::Rejected(
+                    "internal readiness oracle observed a snapshot before durable ownership".into(),
+                ));
+            }
+        }
+        Ok(Some(CheckpointObservation {
+            id: CheckpointId::parse(handle)
+                .map_err(|error| ProviderError::Rejected(error.to_string()))?,
+            source: source.id,
+            contract: source.contract.clone(),
+            forkable: true,
+            created_at_unix_ms: source.changed_at_unix_ms,
+        }))
+    }
+    async fn raw_destroy(&self, _: &NativeResource) -> Result<(), ProviderError> {
         Err(ProviderError::Rejected(
             "internal lifecycle oracle must never delete an existing target".into(),
         ))
@@ -389,6 +433,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
     let machine = value.id;
     let native = NativeLifecycle {
         provider: "internal",
+        checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
@@ -513,6 +558,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
     };
     let native = NativeLifecycle {
         provider: "internal",
+        checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
@@ -555,9 +601,13 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
         core.native_binding(value.id, "internal").await?,
         Some(binding)
     );
-    assert_eq!(core.created(operation).await?, ["opaque-native-id"]);
+    assert_eq!(
+        core.created(operation).await?,
+        [machine_resource("opaque-native-id")]
+    );
     let other = NativeLifecycle {
         provider: "other",
+        checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
@@ -603,7 +653,91 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
     );
     assert_eq!(
         core.created(operation).await?,
-        ["opaque-native-id", "late-native-id"]
+        [
+            machine_resource("opaque-native-id"),
+            machine_resource("late-native-id")
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reopen() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let core = open(dir.path()).await?;
+    let key = IdempotencyKey::new();
+    let native = NativeLifecycle {
+        provider: "internal",
+        checkpoint_owner: Some((core.clone(), key)),
+        value: tokio::sync::Mutex::new(value.clone()),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let result = core
+        .create_checkpoint(
+            &native,
+            value.id,
+            key,
+            Duration::from_millis(1),
+            Duration::from_secs(5),
+            10,
+        )
+        .await?;
+    let MutationOutcome::Checkpointed(checkpoint) = &result else {
+        return Err("expected checkpoint".into());
+    };
+    assert_eq!(
+        core.machine(value.id)
+            .await?
+            .and_then(|value| value.last_checkpoint),
+        Some(checkpoint.id)
+    );
+    assert_eq!(
+        core.checkpoint(checkpoint.id).await?,
+        Some(checkpoint.clone())
+    );
+    assert!(core.created(operation_id(key)).await?.is_empty());
+    let settlement = core.settled(key).await?;
+    let reads = native.reads.load(Ordering::SeqCst);
+    drop(core);
+    let reopened = open(dir.path()).await?;
+    assert_eq!(
+        reopened
+            .create_checkpoint(
+                &native,
+                value.id,
+                key,
+                Duration::from_millis(1),
+                Duration::from_secs(5),
+                20
+            )
+            .await?,
+        result
+    );
+    assert_eq!(reopened.settled(key).await?, settlement);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), 1);
+    assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    // Unacknowledged checkpoint deletion remains typed and owned after reopening.
+    let key = IdempotencyKey::new();
+    let operation = fresh(
+        reopened
+            .admit(key, &MutationIntent::Checkpoint(value.id))
+            .await?,
+    )?;
+    let resource = NativeResource::Checkpoint("pending-snapshot".into());
+    reopened.claim(&native, operation, &resource, false).await?;
+    reopened.cancel_with(&native, operation).await?;
+    drop(reopened);
+    let reopened = open(dir.path()).await?;
+    assert_eq!(reopened.created(operation).await?, [resource]);
+    assert_eq!(
+        reopened.machine(value.id).await?.map(|value| value.state),
+        Some(MachineState::Running)
     );
     Ok(())
 }

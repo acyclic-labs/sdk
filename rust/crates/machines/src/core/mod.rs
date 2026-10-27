@@ -7,7 +7,7 @@ mod bindings;
 mod journal;
 pub use bindings::NativeBinding;
 mod raw;
-pub use raw::{RawMachines, RawObservation};
+pub use raw::{NativeResource, RawMachines, RawObservation};
 mod fork;
 mod lifecycle;
 pub use fork::{Dispatch, fork_rounds, fork_tree, retry_refused};
@@ -32,7 +32,7 @@ pub struct OperationRecord {
     pub key: IdempotencyKey,
     pub intent_digest: [u8; 32],
     pub provider: Option<String>,
-    pub created: Vec<String>,
+    pub created: Vec<NativeResource>,
     pub targets: Vec<String>,
     pub phase: OperationPhase,
     pub outcome: Option<MutationOutcome>,
@@ -56,7 +56,7 @@ struct StoredOperation {
     intent_digest: [u8; 32],
     #[serde(default)]
     provider: Option<String>,
-    created: Vec<String>,
+    created: Vec<NativeResource>,
     targets: Vec<String>,
     phase: OperationPhase,
     outcome: Option<journal::Blob>,
@@ -182,14 +182,14 @@ impl OperationRegistry {
     pub async fn bind_created(
         &self,
         id: OperationId,
-        resource: &str,
+        resource: &NativeResource,
     ) -> Result<bool, ProviderError> {
         self.change(id, |record| {
             if record.phase == OperationPhase::Succeeded {
                 return false;
             }
             if !record.created.iter().any(|id| id == resource) {
-                record.created.push(resource.into());
+                record.created.push(resource.clone());
             }
             record.phase == OperationPhase::Pending
         })
@@ -334,7 +334,7 @@ impl OperationRegistry {
     pub async fn cancel(
         &self,
         id: OperationId,
-    ) -> Result<Option<(OperationObservation, Vec<String>)>, ProviderError> {
+    ) -> Result<Option<(OperationObservation, Vec<NativeResource>)>, ProviderError> {
         if self
             .journal
             .load::<StoredOperation>(&format!("ops/{id}"))
@@ -361,7 +361,7 @@ impl OperationRegistry {
         .await
     }
 
-    pub async fn created(&self, id: OperationId) -> Result<Vec<String>, ProviderError> {
+    pub async fn created(&self, id: OperationId) -> Result<Vec<NativeResource>, ProviderError> {
         Ok(self
             .journal
             .load::<StoredOperation>(&format!("ops/{id}"))
@@ -372,7 +372,11 @@ impl OperationRegistry {
     }
 
     /// Release only this acknowledged deletion, preserving concurrent late creates.
-    pub async fn deleted(&self, id: OperationId, resource: &str) -> Result<(), ProviderError> {
+    pub async fn deleted(
+        &self,
+        id: OperationId,
+        resource: &NativeResource,
+    ) -> Result<(), ProviderError> {
         self.change(id, |record| {
             record.created.retain(|id| id != resource);
         })
@@ -388,11 +392,11 @@ impl OperationRegistry {
     ) -> Result<(), ProviderError> {
         self.check_driver(operation, driver.name()).await?;
         for resource in self.created(operation).await?.into_iter().rev() {
-            match driver.destroy(&resource).await {
+            match driver.raw_destroy(&resource).await {
                 Ok(()) | Err(ProviderError::NotFound(_)) => {
                     self.deleted(operation, &resource).await?
                 }
-                Err(error) => tracing::warn!(%operation, resource, %error,
+                Err(error) => tracing::warn!(%operation, resource = resource.handle(), %error,
                     "Machines native deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
             }
         }
@@ -421,23 +425,20 @@ impl OperationRegistry {
         &self,
         driver: &(impl RawMachines + ?Sized),
         operation: OperationId,
-        resource: &str,
+        resource: &NativeResource,
         adopted: bool,
     ) -> Result<(), ProviderError> {
-        self.bind_driver(operation, driver.name()).await?;
-        if adopted {
-            return if self.bind_adopted(operation, resource).await? {
-                Ok(())
-            } else {
-                Err(ProviderError::Cancelled)
-            };
-        }
-        if self.bind_created(operation, resource).await? {
+        let pending = self
+            .change(operation, |record| {
+                bindings::own(record, driver.name(), resource, adopted)
+            })
+            .await??;
+        if pending {
             return Ok(());
         }
-        match driver.destroy(resource).await {
+        match driver.raw_destroy(resource).await {
             Ok(()) | Err(ProviderError::NotFound(_)) => self.deleted(operation, resource).await?,
-            Err(error) => tracing::warn!(%operation, resource, %error,
+            Err(error) => tracing::warn!(%operation, resource = resource.handle(), %error,
                 "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
         }
         Err(ProviderError::Cancelled)

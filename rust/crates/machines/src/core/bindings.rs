@@ -1,6 +1,5 @@
 //! Native identity and cleanup ownership publish at the same canonical boundary.
 use super::*;
-use acyclic_stream::CommitMutation;
 
 /// Only native addressing, never credentials or a second operation journal.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -21,6 +20,38 @@ pub(super) fn check_driver(record: &StoredOperation, provider: &str) -> Result<(
         ));
     }
     Ok(())
+}
+
+/// One pure ownership decision for machine and checkpoint results.
+pub(super) fn own(
+    record: &mut StoredOperation,
+    provider: &str,
+    resource: &NativeResource,
+    adopted: bool,
+) -> Result<bool, ProviderError> {
+    check_driver(record, provider)?;
+    if record.phase == OperationPhase::Succeeded {
+        return Err(ProviderError::Conflict(
+            "native result arrived after settlement; recovery: inspect the settled operation before reclaiming any resource".into(),
+        ));
+    }
+    let pending = record.phase == OperationPhase::Pending;
+    if adopted && !pending {
+        return Err(ProviderError::Cancelled);
+    }
+    record.provider = Some(provider.to_owned());
+    if adopted {
+        if !record
+            .targets
+            .iter()
+            .any(|value| value == resource.handle())
+        {
+            record.targets.push(resource.handle().to_owned());
+        }
+    } else if !record.created.contains(resource) {
+        record.created.push(resource.clone());
+    }
+    Ok(pending)
 }
 
 pub(super) fn project(
@@ -158,13 +189,6 @@ impl OperationRegistry {
             let mut record = op
                 .value
                 .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-            check_driver(&record, driver.name())?;
-            record.provider = Some(driver.name().to_owned());
-            if record.phase == OperationPhase::Succeeded {
-                return Err(ProviderError::Conflict(
-                    "native result arrived after settlement; recovery: inspect the settled operation before reclaiming any resource".into(),
-                ));
-            }
             let mut state = machine.value;
             if state
                 .as_ref()
@@ -175,20 +199,14 @@ impl OperationRegistry {
                     "machine identity has a different native binding; recovery: reconcile the original provider resource before retrying".into(),
                 ));
             }
-            let pending = record.phase == OperationPhase::Pending;
-            if adopted && !pending {
-                return Err(ProviderError::Cancelled);
-            }
-            let owned = if adopted {
-                &mut record.targets
-            } else {
-                &mut record.created
-            };
-            // Native IDs stay in the operation's bounded ownership list. The full
-            // endpoint/binding lives once in the machine projection.
-            if !owned.contains(&native.handle) {
-                owned.push(native.handle.clone());
-            }
+            // Full addressing lives once in the machine projection; cleanup
+            // stores only a typed native address in this same operation commit.
+            let pending = own(
+                &mut record,
+                driver.name(),
+                &NativeResource::Machine(native.handle.clone()),
+                adopted,
+            )?;
             let mut mutations = Vec::new();
             if let Some(event) = project(&mut state, &observation, observation.changed_at_unix_ms)?
             {
@@ -217,10 +235,9 @@ impl OperationRegistry {
         if pending {
             return Ok(());
         }
-        match driver.destroy(&native.handle).await {
-            Ok(()) | Err(ProviderError::NotFound(_)) => {
-                self.deleted(operation, &native.handle).await?
-            }
+        let resource = NativeResource::Machine(native.handle);
+        match driver.raw_destroy(&resource).await {
+            Ok(()) | Err(ProviderError::NotFound(_)) => self.deleted(operation, &resource).await?,
             Err(error) => tracing::warn!(%operation, %error,
                 "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with the original operation identity again"),
         }
