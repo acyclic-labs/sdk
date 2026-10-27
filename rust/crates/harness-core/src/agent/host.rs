@@ -375,8 +375,9 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         Ok(alarm)
     }
 
-    /// One inbox commit, independent of the observed inbox tail. The tail read
-    /// rejects an absent agent; an existing inbox cannot disappear. The closed
+    /// One inbox commit, independent of the observed inbox tail. A retained
+    /// canonical actor cursor proves an already-consumed inbox exists; cold
+    /// agents are checked once. An existing inbox cannot disappear. The closed
     /// marker fences admission in the commit itself. Removing only the inbox
     /// Tail condition makes exact intent retries identical after other appends,
     /// while changed semantic bytes still fail the provider's digest check.
@@ -387,7 +388,13 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     ) -> Result<Delivered, Error> {
         loop {
             let inbox = to.inbox()?;
-            let tail = inbox_tail(&*self.provider, to).await?;
+            let tail = match self
+                .runtime
+                .observed_cursor(&self.actor(to)?, INBOX, &inbox)
+            {
+                Some(cursor) if cursor > 0 => cursor,
+                _ => inbox_tail(&*self.provider, to).await?,
+            };
             let mut request = request(tail)?;
             request.conditions.retain(|condition| {
                 !matches!(condition, CommitCondition::Tail { path, .. } if path == &inbox)

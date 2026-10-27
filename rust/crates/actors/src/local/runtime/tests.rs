@@ -598,6 +598,92 @@ async fn two_runtimes_claiming_one_cut_cannot_share_an_epoch() -> TestResult {
     Ok(())
 }
 
+/// A retained cut is evidence for CAS, never permission to ignore a later
+/// pause, resume or placement. Refresh only on the real conflict/control path.
+#[tokio::test]
+async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "retained", &[b"emit"]).await?;
+    let inbox = StreamPath::new("agents/retained")?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.track(address.clone())?;
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
+    provider
+        .append(AppendRequest {
+            path: inbox.clone(),
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: Some(1),
+            idempotency_key: None,
+        })
+        .await?;
+    let cut = store.load(&address).await?;
+    store
+        .set_paused(&cut, 1, true, key("external-pause")?)
+        .await?;
+    runtime.wake(&address);
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(
+        records(&*provider, "out/retained").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    let cut = store.load(&address).await?;
+    store
+        .set_paused(&cut, 1, false, key("external-resume")?)
+        .await?;
+    runtime.wake(&address);
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(2));
+    assert_eq!(
+        records(&*provider, "out/retained").await?,
+        vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
+    );
+    let cut = store.load(&address).await?;
+    store.claim(&cut, 2, key("foreign-placement")?).await?;
+    provider
+        .append(AppendRequest {
+            path: inbox,
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: Some(2),
+            idempotency_key: None,
+        })
+        .await?;
+    runtime.wake(&address);
+    let failures = runtime.drain().await;
+    assert!(
+        matches!(failures.as_slice(), [(_, Error::Conflict)]),
+        "{failures:?}"
+    );
+    assert_eq!(runtime.counts(), (0, 0));
+    assert_eq!(records(&*provider, "out/retained").await?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_cursor_never_blocks_control_admission() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "control", &[b"emit"]).await?;
+    let inbox = StreamPath::new("agents/control")?;
+    let runtime = Runtime::new(
+        Store::new(provider, root()?),
+        Arc::new(Package::new()?),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.track(address.clone())?;
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
+    let slot = runtime.slot(&address).ok_or("missing actor slot")?;
+    let _running_handler = slot.inner.lock().await;
+    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), None);
+    Ok(())
+}
+
 /// Generated keys stay bounded for any valid root: a 338-byte root hosts.
 #[tokio::test]
 async fn a_long_state_root_still_claims_and_delivers() -> TestResult {
