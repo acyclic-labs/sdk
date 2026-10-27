@@ -27,9 +27,17 @@ wait on the runtime's token, replacing `TurnStop` and its second inbox follow.
 The strict guest manifest carries the same filters. `onRecord` takes separate
 abort and cooperative-interrupt signals, so a cancelled guest can settle while
 a timed-out guest is aborted. The adapter retains only its existing primitives.
+Multiple filtered subscriptions share a polling budget; sustained earlier input
+can delay a later subscription's interrupt. Fair polling is tracked in
+[#1710](https://github.com/acyclic-labs/sdk/issues/1710). AgentHandler uses one inbox.
 
 Validation commands on bb2: `scripts/check-actor-runtime.sh`, actor and
 agent-model tests, and `scripts/qualify-host-serving.sh`. The shared actor suite
 checks cancellation with intervening input and restart. The host suite checks
 saved discovery cursors and in-flight interruption for each backend unchanged.
-Source-qualified execution receipts will be recorded in the PR after validation.
+On bb2, both native host entries passed in 5.81 seconds and the browser entry
+passed in 10.80 seconds. Actor tests, all 34 agent-model tests and strict typed
+forwarding against the generated guest declarations also passed. Workerd runs
+the unchanged Stream and host suites plus packaged-guest restart checks.
+Exact source pins and backend qualification receipts are recorded in
+[#1709](https://github.com/acyclic-labs/sdk/pull/1709).
