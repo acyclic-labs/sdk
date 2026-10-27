@@ -49,14 +49,32 @@ pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 mod demand;
 pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
-#[cfg(any(feature = "session", feature = "wasm"))]
+// Agent controls include Actors' wasm runtime. Session-only clients retain
+// their native transport boundary without implicitly selecting browser I/O.
+#[cfg(any(
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
+))]
 mod session;
-#[cfg(any(feature = "session", feature = "wasm"))]
+#[cfg(any(
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
+))]
 pub use session::{WireSession, WireSessionError};
 
-#[cfg(any(feature = "session", feature = "wasm"))]
+#[cfg(any(
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
+))]
 mod stream_view;
-#[cfg(any(feature = "session", feature = "wasm"))]
+#[cfg(any(
+    feature = "agents",
+    feature = "wasm",
+    all(feature = "session", not(target_arch = "wasm32"))
+))]
 pub use stream_view::{StreamView, StreamViewPolicy};
 
 use std::{
