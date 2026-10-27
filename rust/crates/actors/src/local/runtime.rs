@@ -2,8 +2,8 @@
 //!
 //! One dispatcher owns one follow of the state root's activation log, one
 //! ready index and one timer. A dormant actor owns no task, timer or socket: only its
-//! registration and a passive follow cursor per subscription that the
-//! dispatcher polls with that registration's waker.
+//! registration, one bounded state cut and a passive follow cursor per
+//! subscription that the dispatcher polls with that registration's waker.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 mod dispatcher;
@@ -595,6 +595,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     None => return Ok(()),
                 },
             };
+            // A retained publication cut cannot admit external handler work:
+            // another host may already have paused or replaced this placement.
+            // Until canonical control invalidation is available, observe the
+            // real provider before every handler attempt, including alarms.
+            let admitted = Arc::new(self.store.load(actor).await?);
+            if admitted.tail != snapshot.tail || admitted.anchor != snapshot.anchor {
+                inner.observed = Some(admitted);
+                continue;
+            }
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
             let cancellation = crate::guest::CancellationToken::new();

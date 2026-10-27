@@ -598,21 +598,48 @@ async fn two_runtimes_claiming_one_cut_cannot_share_an_epoch() -> TestResult {
     Ok(())
 }
 
-/// A retained cut is evidence for CAS, never permission to ignore a later
-/// pause, resume or placement. Refresh only on the real conflict/control path.
+/// Count actual handler admission, including work a later CAS would refuse.
+struct Invocations {
+    package: Package,
+    calls: Arc<AtomicU64>,
+}
+
+impl Handler for Invocations {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.package.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+/// A retained cut is evidence for CAS, never permission to invoke a handler
+/// after an external pause or replacement has already committed.
 #[tokio::test]
 async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "retained", &[b"emit"]).await?;
     let inbox = StreamPath::new("agents/retained")?;
+    let calls = Arc::new(AtomicU64::new(0));
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
-        Arc::new(Package::new()?),
+        Arc::new(Invocations {
+            package: Package::new()?,
+            calls: Arc::clone(&calls),
+        }),
         Arc::new(Manual(AtomicU64::new(1))),
     );
     runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
     provider
         .append(AppendRequest {
@@ -629,6 +656,11 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     runtime.wake(&address);
     assert!(runtime.drain().await.is_empty());
     assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "paused actor must not invoke its handler"
+    );
+    assert_eq!(
         records(&*provider, "out/retained").await?,
         vec![Bytes::from_static(b"r0")]
     );
@@ -638,6 +670,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         .await?;
     runtime.wake(&address);
     assert!(runtime.drain().await.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(2));
     assert_eq!(
         records(&*provider, "out/retained").await?,
@@ -660,6 +693,11 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         "{failures:?}"
     );
     assert_eq!(runtime.counts(), (0, 0));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "replaced placement must not invoke its handler"
+    );
     assert_eq!(records(&*provider, "out/retained").await?.len(), 2);
     Ok(())
 }
