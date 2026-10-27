@@ -1,6 +1,7 @@
 [
   "docs/backends/browser-agent-host.md",
   "docs/backends/local-agent-host.md",
+  "docs/backends/virtiofs.md",
   "rust/crates/conformance/agent-host/README.md",
   "docs/backends/postgres.md",
   "docs/backends/s3.md",
@@ -65,6 +66,7 @@
   "rust/crates/conformance/README.md",
   "rust/crates/conformance/client-conformance.md",
   "rust/crates/conformance/S3_STORAGE_DESIGN.md",
+  "rust/crates/filesystem/fixtures/fuse/README.md",
   "rust/crates/filesystem/KANI.md",
   "rust/crates/filesystem/README.md",
   "rust/crates/filesystem/native-exchange-contract.md",
