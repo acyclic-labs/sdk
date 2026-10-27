@@ -259,9 +259,7 @@ fn release_generation_requires_executed_profiles() {
 #[test]
 fn missing_external_rustdoc_span_is_restored_at_rustdoc_path() {
     let (_root_directory, root) = test_root("generated-span-staging");
-    let root = root
-        .canonicalize()
-        .expect("test root should canonicalize");
+    let root = root.canonicalize().expect("test root should canonicalize");
     let candidate = root.join("target/candidate/wire.rs");
     write(&root, "target/candidate/wire.rs", b"pub struct Wire;\n");
     let foreign = root.join("target/producer/wire.rs");

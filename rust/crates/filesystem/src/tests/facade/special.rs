@@ -87,7 +87,8 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
         (fs.create_volume_with_id(VolumeId::from_bytes([116; 16]), windows, B, &cancellation))
             .await?
             .value;
-    let mut windows_checkout = open_checkout(&windows_volume, writable_pinned(), &cancellation).await?;
+    let mut windows_checkout =
+        open_checkout(&windows_volume, writable_pinned(), &cancellation).await?;
     let reparse = path("reparse")?;
     let reparse_payload = OwnedBytes::from_static(b"opaque-reparse-data");
     let receipt = (windows_checkout.apply_authored_transaction(

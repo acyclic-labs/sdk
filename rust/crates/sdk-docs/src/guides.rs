@@ -117,7 +117,10 @@ pub(super) fn guide_title(markdown: &str, fallback: &str) -> String {
         .to_owned()
 }
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    hex_digest("", ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+    hex_digest(
+        "",
+        ring::digest::digest(&ring::digest::SHA256, bytes).as_ref(),
+    )
 }
 
 pub(super) fn hex_digest(prefix: &str, bytes: &[u8]) -> String {
