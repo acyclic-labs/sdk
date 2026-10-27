@@ -28,7 +28,7 @@ mod registration;
 /// #[explicit_provider]
 /// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 /// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-/// trait Provider { async fn write(&self) -> u8 { 0 } }
+/// trait Provider: Sync { async fn write(&self) -> u8 { 0 } }
 /// struct Complete;
 /// #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 /// #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
