@@ -60,6 +60,21 @@ where
 {
     before_effect().await?;
     workspace.access.require(workspace.view.workspace()).await?;
+    // A replayed request returns its saved result before reading any
+    // command input (a patch file it consumed may be gone by now).
+    if let Some(request) = workspace.request.clone()
+        && let Some(output) =
+            GitCompatRepository::new(workspace.repository, workspace.store.clone())
+                .for_request(request)
+                .request_result()
+                .await
+                .map_err(super::errors::compat_error)?
+    {
+        return Ok(Output {
+            command: Some(output),
+            switched: None,
+        });
+    }
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,

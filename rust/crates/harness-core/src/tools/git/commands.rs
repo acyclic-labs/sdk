@@ -33,10 +33,10 @@ pub(crate) fn git_transition_command(argv: &[String]) -> bool {
     ) || argv.first().is_some_and(|command| command == "add")
 }
 
-/// Returns the request's saved result, or settles any pending transition
-/// under the request that started it, or executes this command. Recovering
-/// another request's transition returns `None`: the command's view and tree
-/// predate that recovery.
+/// Settles any pending transition under the request that started it, or
+/// executes this command; the caller already returned a saved result.
+/// Recovering another request's transition returns `None`: the command's
+/// view and tree predate that recovery.
 pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     repository: &GitCompatRepository<LocalCoreStateStore>,
     argv: &[String],
@@ -46,15 +46,6 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
-    let saved = async || {
-        repository
-            .request_result()
-            .await
-            .map_err(super::errors::compat_error)
-    };
-    if let Some(output) = saved().await? {
-        return Ok(Some(output));
-    }
     if !git_transition_command(argv)
         && repository
             .resume(executor)
@@ -63,7 +54,10 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
             .is_some()
     {
         // The recovered transition may be this request's own.
-        return saved().await;
+        return repository
+            .request_result()
+            .await
+            .map_err(super::errors::compat_error);
     }
     let output = if let Some(patch) = patch {
         repository

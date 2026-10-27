@@ -99,7 +99,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let result = self
             .perform(transition.operation_id(), action, executor)
             .await?;
-        self.settle(transition, &result, true)
+        self.settle(transition, &result, true, None)
             .await
             .map_err(Into::into)
     }
@@ -135,7 +135,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .validate_merge_resolution(pending.id.operation_id(), &pending.action, workspace_tree)
             .await
             .map_err(GitCompatRunError::Executor)?;
-        self.complete_transition_result(pending.id, &result)
+        self.settle(pending.id, &result, false, self.request_operation())
             .await
             .map_err(Into::into)
     }
@@ -171,7 +171,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             state.pending = None;
             // An abort is its own command, not recovery of the merge.
-            state.record_request(self.request_operation(), self.retention(), &output);
+            state.record_request(self.request_operation(), self.unanswered(), &output);
             Ok(())
         })
         .await?;
@@ -251,7 +251,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 // Prepared work settles under the request that started it.
                 pending.request = self.request_operation();
             } else {
-                state.record_request(self.request_operation(), self.retention(), &output);
+                state.record_request(self.request_operation(), self.unanswered(), &output);
             }
             if self.publish(state).await? {
                 return Ok(output);

@@ -100,7 +100,8 @@ pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
     native: agents::NativeAgents,
     views: BTreeMap<AgentPath, host_workspace::HostWorkspace>,
-    /// The native request files, whose retention keeps saved results.
+    /// The native owner directory, whose `requests` and `results` files say
+    /// which requests still await their reply.
     requests: Option<std::path::PathBuf>,
     #[cfg(test)]
     retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
@@ -124,11 +125,11 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result while its file under
-    /// `requests` is retained.
+    /// Keeps each native request's saved result until its reply under
+    /// `directory`'s `results` is durable: the reply then answers a replay.
     #[must_use]
-    pub fn with_requests(mut self, requests: std::path::PathBuf) -> Self {
-        self.requests = Some(requests);
+    pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
+        self.requests = Some(directory);
         self
     }
 
@@ -282,19 +283,19 @@ impl HostWorkspaceOwner {
                 ));
             }
         }
-        // A native request's saved result lives while its request file does.
+        // A native request's saved result lives until its reply is written
+        // (the owner serves requests one at a time, so at most the requests
+        // in flight when it stopped are unanswered), or until its client
+        // withdrew the request.
         let request = self
             .requests
             .clone()
-            .map(|requests| acyclic_fs::GitRequest {
+            .map(|directory| acyclic_fs::GitRequest {
                 operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-                retained: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
-                    requests
-                        .join(format!(
-                            "{}.json",
-                            OperationId::from_bytes(request.into_bytes())
-                        ))
-                        .exists()
+                unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
+                    let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
+                    directory.join("requests").join(&file).exists()
+                        && !directory.join("results").join(&file).exists()
                 }),
             });
         serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)

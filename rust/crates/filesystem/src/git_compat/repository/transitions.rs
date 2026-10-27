@@ -48,18 +48,21 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         transition: GitTransitionId,
         result: &GitFilesystemResult,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        self.settle(transition, result, false).await
+        self.settle(transition, result, false, None).await
     }
 
     /// Settles `transition` and saves its result with it, under the request
     /// that started it rather than the one resuming it: the
     /// filesystem result itself, for a transition that settles to no state
-    /// change, when `filesystem` is set.
+    /// change, when `filesystem` is set. A request that explicitly
+    /// `continues` the transition saves the result under itself too, in the
+    /// same update, so its own replay finds it.
     pub(super) async fn settle(
         &self,
         transition: GitTransitionId,
         result: &GitFilesystemResult,
         filesystem: bool,
+        continues: Option<OperationId>,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         self.update(|state| {
             let pending = state
@@ -77,7 +80,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 Err(GitCompatError::NothingToCommit) => return Ok(None),
                 Err(error) => return Err(error),
             };
-            state.record_request(request, self.retention(), &output);
+            state.record_request(request, self.unanswered(), &output);
+            if continues != request {
+                state.record_request(continues, self.unanswered(), &output);
+            }
             Ok(Some(output))
         })
         .await?

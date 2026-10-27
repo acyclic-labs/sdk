@@ -11,17 +11,17 @@ pub struct GitCompatRepository<S> {
     pub(super) request: Option<GitRequest>,
 }
 
-/// Whether a request's own record is still retained; its saved result is
-/// kept exactly as long.
-pub type GitRequestRetention = std::sync::Arc<dyn Fn(OperationId) -> bool + Send + Sync>;
+/// Whether a request still awaits its durable reply; its saved result is
+/// kept exactly as long, after which the reply answers any replay.
+pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Send + Sync>;
 
 /// The request a command runs as.
 #[derive(Clone)]
 pub struct GitRequest {
     /// The request's operation, which keys its saved result.
     pub operation: OperationId,
-    /// Whether a request's record is still retained.
-    pub retained: GitRequestRetention,
+    /// Whether a request still awaits its durable reply.
+    pub unanswered: GitRequestUnanswered,
 }
 
 /// Compatibility history record produced by one distributed publication.
@@ -68,8 +68,8 @@ impl<S> GitCompatRepository<S> {
         self.request.as_ref().map(|request| request.operation)
     }
 
-    pub(super) fn retention(&self) -> Option<&GitRequestRetention> {
-        self.request.as_ref().map(|request| &request.retained)
+    pub(super) fn unanswered(&self) -> Option<&GitRequestUnanswered> {
+        self.request.as_ref().map(|request| &request.unanswered)
     }
 
     /// Returns the repository's workspace identity.

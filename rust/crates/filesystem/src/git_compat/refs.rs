@@ -58,7 +58,10 @@ pub struct GitCompatState {
     /// The results of state-changing requests, each keyed by the request
     /// that started the command and committed with the command's own effect,
     /// so a replayed request returns its saved result instead of running
-    /// again. A result is kept while its request's record is retained.
+    /// again. A result is kept only until its request is answered: once the
+    /// reply is durable it is the request's record, so this holds only the
+    /// results of requests still awaiting their reply (at most the requests
+    /// in flight when an owner stopped), never a history.
     /// Records written before it existed hold none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub requests: BTreeMap<OperationId, GitCommandOutput>,
@@ -106,18 +109,19 @@ impl GitCompatState {
 
     /// Saves `output` as the result of `operation`, the request that started
     /// the command, in the commit that carries its effect, dropping the
-    /// results of requests whose records `retention` no longer retains.
+    /// results of requests `unanswered` reports answered. Only unanswered
+    /// results are ever kept, so the sweep visits only those.
     pub(super) fn record_request(
         &mut self,
         operation: Option<OperationId>,
-        retention: Option<&GitRequestRetention>,
+        unanswered: Option<&GitRequestUnanswered>,
         output: &GitCommandOutput,
     ) {
-        if let Some(retained) = retention {
-            self.requests.retain(|request, _| retained(*request));
+        if let Some(unanswered) = unanswered {
+            self.requests.retain(|request, _| unanswered(*request));
         }
         if let Some(operation) = operation
-            && retention.is_none_or(|retained| retained(operation))
+            && unanswered.is_none_or(|unanswered| unanswered(operation))
         {
             self.requests.insert(operation, output.clone());
         }

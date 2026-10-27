@@ -183,8 +183,8 @@ pub async fn serve_until(
     let bytes = serde_json::to_vec(&endpoint).map_err(storage)?;
     let descriptor = directory.path().join("owner.json");
     immutable(&descriptor, &bytes)?;
-    let mut owner = HostWorkspaceOwner::new(Arc::clone(&local))?
-        .with_requests(directory.path().join("requests"));
+    let mut owner =
+        HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(directory.path().to_path_buf());
     let changed = Arc::new(tokio::sync::Notify::new());
     let wake = Arc::clone(&changed);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
