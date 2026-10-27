@@ -59,7 +59,7 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
                 ContextPipeline::default(),
                 catalog.clone(),
             )
-            .with_tool_authority(scope, None)?,
+            .with_tool_authority(scope, allowed()?)?,
             Arc::new(Journal::default()),
             "test".into(),
             ModelContent::Text("continue".into()),

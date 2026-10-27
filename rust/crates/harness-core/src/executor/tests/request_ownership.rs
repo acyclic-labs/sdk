@@ -115,7 +115,7 @@ proptest! {
             Arc::new(ScriptedModelProvider::new([])), ContextPipeline::default(), tools,
         ).with_tool_authority(
             RuntimeScope::new(Capabilities::new(["model:generate", "tool:call:example.echo"]), Limits::default()).unwrap(),
-            None,
+            allowed().unwrap(),
         ).unwrap();
         let session = StockExecution::ordinary(&executor);
         let input = ContextInput {

@@ -17,11 +17,13 @@ use super::{
 use crate::{
     OperationId,
     agent::{
-        AgentHost, AgentId, AgentPath, Error, ExecutorDriver, ForkAdopted, IntentId, Sender, Spawn,
-        VolumeBinding,
+        AgentHost, AgentId, AgentPath, Delivered, Error, ExecutorDriver, ForkAdopted, IntentId,
+        Sender, Spawn, VolumeBinding,
     },
+    approvals::ApprovalResponder,
     conversation::{ContentAccess, ContentGrant, ContentPublisher, FileRef, VolumeOperation},
     core::{Authority, AuthorityRoot, Scope},
+    interaction::{ApprovalBinding, Interaction},
     resources::ProviderRef,
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
@@ -138,6 +140,9 @@ pub struct Turns {
     pub actors: ActorLimits,
     /// Alarm clock.
     pub clock: Arc<dyn Clock>,
+    /// The approval policy of every agent with no policy file of its own:
+    /// the host's preset ([`crate::preset::Preset::approval_policy`]).
+    pub approval_policy: crate::approvals::ApprovalPolicy,
 }
 
 /// A host's custody, a caller's admission and the one placement they act on,
@@ -206,6 +211,8 @@ where
         let stream = filesystem.stream_provider();
         let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
         let maximum_bytes = turns.limits.maximum_bytes;
+        // The preset's policy binds before any agent runs under it.
+        turns.approval_policy.bind().map_err(turn)?;
         let turner = Arc::new(FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
@@ -213,6 +220,7 @@ where
             admission.clone(),
             turns.executors,
             turns.limits,
+            turns.approval_policy,
         ));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         let spawns = Arc::new(FilesystemSpawnVolumes::new(
@@ -258,6 +266,75 @@ where
     #[must_use]
     pub const fn turns(&self) -> &Arc<Turner<P, O>> {
         &self.turns
+    }
+
+    /// The approval `agent` waits on, with the exact action it shows. An
+    /// agent waits on at most one.
+    ///
+    /// # Errors
+    /// When `agent` is absent or its request file is unreadable.
+    pub async fn pending_approval(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<Option<(IntentId, Interaction)>, Error> {
+        let state = self.agents.state(agent).await?;
+        self.turns.pending_approval(&state).await.map_err(turn)
+    }
+
+    /// `principal` decides approval `id` of `agent`, bound to the exact action
+    /// it was shown: the pending approval, or, for an identical retry after
+    /// the agent resumed, the request `principal` already decided. Then the
+    /// agent is woken with the decision.
+    ///
+    /// # Errors
+    /// When `binding` names no such pending or already-decided action, or
+    /// the decision or its delivery fails.
+    pub async fn decide(
+        &self,
+        agent: &AgentPath,
+        id: &IntentId,
+        binding: &ApprovalBinding,
+        principal: &str,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<Delivered, Error> {
+        let binds = |shown: Option<Interaction>| {
+            matches!(
+                shown,
+                Some(Interaction::Approval { operation_id, action_digest, .. })
+                    if operation_id == binding.operation_id
+                        && action_digest == binding.action_digest
+            )
+        };
+        let pending = self
+            .pending_approval(agent)
+            .await?
+            .and_then(|(pending, shown)| (&pending == id).then_some(shown));
+        let shown = match pending {
+            Some(shown) => binds(Some(shown)),
+            None => {
+                let state = self.agents.state(agent).await?;
+                binds(
+                    self.turns
+                        .decided_approval(&state, id, principal)
+                        .await
+                        .map_err(turn)?,
+                )
+            }
+        };
+        if !shown {
+            return Err(Error::Record("approval is not pending with this binding"));
+        }
+        self.turns
+            .respond(
+                &self.agents,
+                agent,
+                id,
+                ApprovalResponder::Human(principal),
+                approved,
+                reason,
+            )
+            .await
     }
 
     /// Account and namespace of this binding's agent actors.

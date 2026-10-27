@@ -95,22 +95,6 @@ fn approval_data_never_bypasses_the_interaction_gate() -> Result<()> {
 }
 
 #[test]
-fn approval_obligation_survives_registry_clone_and_composition() -> Result<()> {
-    let defaults = crate::tools::defaults()?;
-    let mut combined = crate::tool::ToolRegistry::default();
-    assert!(!combined.requires_approval_policy());
-    combined.extend(defaults.clone())?;
-    for tools in [defaults.clone(), combined] {
-        assert_eq!(
-            tools.requires_approval_policy(),
-            defaults.requires_approval_policy()
-        );
-    }
-    assert!(defaults.requires_approval_policy());
-    Ok(())
-}
-
-#[test]
 fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
     let opaque = crate::interaction::ApprovalSubject::Opaque {};
     let selected = ApprovalRule {

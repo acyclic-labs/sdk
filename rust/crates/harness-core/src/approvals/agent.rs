@@ -61,13 +61,12 @@ pub struct AgentApprovalPolicy {
 impl AgentApprovalPolicy {
     /// Pins `policy` for an agent spawned by `parent`.
     pub fn new(
-        policy: Option<ApprovalPolicy>,
+        policy: ApprovalPolicy,
         parent: Option<AgentId>,
         models: super::ApproverModels,
         limits: Limits,
     ) -> Result<Self> {
         use crate::runtime::ToolPolicy as _;
-        let policy = policy.unwrap_or_default();
         let digest = policy.bind()?.identity().digest;
         Ok(Self {
             policy,

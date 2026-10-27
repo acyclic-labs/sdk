@@ -85,6 +85,7 @@ impl Fixture {
                 max_steps: 4,
                 history_turns: 8,
             },
+            Default::default(),
         ));
         let handler = backend.handler(Arc::new(AgentHandler::new(
             actor_store(&self.scheduler)?,

@@ -51,7 +51,6 @@ pub fn bind_defaults(
             continue;
         }
         registry.register((spec.bind()?, None), &mut None, None)?;
-        registry.require_approval_policy();
         if bound.is_none() && !grants.contains(&capability) {
             grants.push(capability);
         }

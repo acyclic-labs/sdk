@@ -70,7 +70,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
                     ..Limits::default()
                 },
             )?,
-            None,
+            allowed()?,
         )?;
         // Exercise either side of the effective min(stock, scope) limit.
         if !bare_at_limit {

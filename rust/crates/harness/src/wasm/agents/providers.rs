@@ -303,6 +303,7 @@ impl Providers {
                 limits: options.limits,
             }),
             turn_limits,
+            options.approval_policy.clone(),
         ));
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,

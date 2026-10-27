@@ -96,7 +96,7 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
                 Capabilities::new(["model:generate", "tool:call:example.echo"]),
                 Limits::default(),
             )?,
-            None,
+            allowed()?,
         )?;
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -242,7 +242,7 @@ async fn continued_tool_results_stop_before_aggregate_render_overflow_is_publish
             Capabilities::new(["model:generate", "tool:call:example.echo"]),
             limits,
         )?,
-        None,
+        allowed()?,
     )?
     .with_limits(limits);
     let journal = Journal::default();

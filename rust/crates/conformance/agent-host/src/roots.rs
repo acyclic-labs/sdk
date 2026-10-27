@@ -73,7 +73,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-fn volume(name: &str, agent: AgentId) -> Result<VolumeBinding> {
+pub(crate) fn volume(name: &str, agent: AgentId) -> Result<VolumeBinding> {
     Ok(VolumeBinding {
         name: name.into(),
         volume: VolumeRef::new(
@@ -185,6 +185,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             },
             actors: vectors::limits()?,
             clock: Arc::new(SystemClock),
+            approval_policy: Default::default(),
         },
     )?;
     let request = || RootRequest {

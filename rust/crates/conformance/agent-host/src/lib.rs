@@ -5,6 +5,7 @@
 //! fault injection and assertions belong here, never in a backend adapter.
 
 mod admission;
+mod approvals;
 pub mod fixtures;
 mod identity;
 mod observe;
@@ -56,6 +57,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     identified("admission", admission::verify(backend).await)?;
     identified("identity", identity::verify(backend).await)?;
     identified("roots", roots::verify(backend).await)?;
+    identified("approvals", approvals::verify(backend).await)?;
     identified("guest wire", wire::verify(backend).await)?;
     identified("restart", vectors::restart(backend).await)?;
     Ok(())

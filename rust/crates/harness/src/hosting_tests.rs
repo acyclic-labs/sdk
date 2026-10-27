@@ -145,6 +145,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
+            approval_policy: Default::default(),
         },
     )?;
     let agent = AgentId::from_bytes([1; 16]);

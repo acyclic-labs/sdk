@@ -48,7 +48,7 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?
     .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
         crate::context::ThresholdCompaction {
@@ -125,7 +125,7 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?
     .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
         crate::context::ThresholdCompaction {

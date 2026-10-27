@@ -30,8 +30,6 @@ use crate::{
         AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId, Message, Sender,
         SpawnOutcome, SpawnRequest, StatusRecord, requested_child,
     },
-    approvals::ApprovalResponder,
-    interaction::Interaction,
     model::ModelContent,
 };
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
@@ -314,7 +312,7 @@ where
                 // An agent waits on at most one approval: one page holds it.
                 let pending = match page.cursor() {
                     Some(_) => None,
-                    None => self.pending(agent).await?,
+                    None => self.bound.pending_approval(agent).await?,
                 };
                 Ok(AgentReply::Approvals {
                     items: pending
@@ -336,62 +334,14 @@ where
                 let Sender::User { principal } = by else {
                     return Err(Error::Record("a decision needs a human principal"));
                 };
-                // The decision binds the exact action the caller was shown:
-                // the pending approval, or, for an identical retry after the
-                // agent resumed, the request this principal already decided.
-                let binds = |shown: Option<Interaction>| {
-                    matches!(
-                        shown,
-                        Some(Interaction::Approval { operation_id, action_digest, .. })
-                            if operation_id == binding.operation_id
-                                && action_digest == binding.action_digest
-                    )
-                };
-                let pending = self
-                    .pending(agent)
-                    .await?
-                    .and_then(|(pending, shown)| (&pending == id).then_some(shown));
-                let shown = if pending.is_some() {
-                    binds(pending)
-                } else {
-                    let state = self.bound.agents().state(agent).await?;
-                    binds(
-                        self.bound
-                            .turns()
-                            .decided_approval(&state, id, principal)
-                            .await
-                            .map_err(|error| Error::Turn(Box::new(error)))?,
-                    )
-                };
-                if !shown {
-                    return Err(Error::Record("approval is not pending with this binding"));
-                }
                 Ok(AgentReply::Delivered {
                     delivery: self
                         .bound
-                        .turns()
-                        .respond(
-                            agents,
-                            agent,
-                            id,
-                            ApprovalResponder::Human(principal),
-                            *approved,
-                            reason.clone(),
-                        )
+                        .decide(agent, id, binding, principal, *approved, reason.clone())
                         .await?,
                 })
             }
         }
-    }
-
-    /// The approval `agent` waits on.
-    async fn pending(&self, agent: &AgentPath) -> Result<Option<(IntentId, Interaction)>, Error> {
-        let state = self.bound.agents().state(agent).await?;
-        self.bound
-            .turns()
-            .pending_approval(&state)
-            .await
-            .map_err(|error| Error::Turn(Box::new(error)))
     }
 
     /// `agent`'s last published status, if any.

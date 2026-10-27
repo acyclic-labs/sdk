@@ -236,7 +236,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {
@@ -486,7 +486,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
         tools,
     )
-    .with_tool_authority(scope, None)?
+    .with_tool_authority(scope, allowed()?)?
     // This context has no private summary writer, so it cannot enable compaction.
     .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let journal = Journal::default();

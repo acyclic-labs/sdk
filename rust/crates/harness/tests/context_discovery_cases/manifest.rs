@@ -64,7 +64,12 @@ fn stock(
     )
     .with_limits(limits)
     .with_compaction_policy(CompactionPolicy::Disabled)
-    .with_tool_authority(RuntimeScope::new(grants, limits)?, None)
+    .with_tool_authority(
+        RuntimeScope::new(grants, limits)?,
+        Arc::new(acyclic_harness_core::test_support::FixedToolPolicy::new(
+            acyclic_harness_core::runtime::ToolPolicyDecision::Allow,
+        )?),
+    )
 }
 
 const INSTRUCTIONS: [(&str, &str); 4] = [

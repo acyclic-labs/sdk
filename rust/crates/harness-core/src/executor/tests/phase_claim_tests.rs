@@ -148,7 +148,7 @@ async fn dispatch_claims_have_no_fallible_post_publication_barrier() -> Result<(
                 Capabilities::new(["model:generate", "tool:call:example.echo"]),
                 Limits::default(),
             )?,
-            None,
+            allowed()?,
         )?;
         let journal = BarrierJournal(Journal::default(), dispatch, AtomicUsize::new(0));
         let operation = OperationId::new();

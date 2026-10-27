@@ -398,60 +398,69 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         started: bool,
     ) -> Result<Option<PolicyStop>> {
-        if !stock_is_native(self.io) {
-            let scope = &self.stock.tool_scope;
-            if let Some(policy) = &self.stock.policy {
-                if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
-                    return Err(Error::Conflict("stock policy changed after binding".into()));
-                }
-                let decision = policy.evaluate(invocation, scope, None)?.await?.0;
-                if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
-                    return Err(Error::Conflict(
-                        "stock policy changed during evaluation".into(),
+        // Every call, ordinary or native, passes the one pinned policy. A
+        // call reaching here without one has no tool authority, so it is
+        // refused: there is no ungated state.
+        let scope = &self.stock.tool_scope;
+        let Some(policy) = &self.stock.policy else {
+            let denial = Error::Unauthorized("no approval policy admits this tool call".into());
+            return if started {
+                Err(denial)
+            } else {
+                Ok(Some(PolicyStop::Refused(denial)))
+            };
+        };
+        if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
+            return Err(Error::Conflict("stock policy changed after binding".into()));
+        }
+        // Evaluation, the prompt and the approval request are charged to the
+        // call's original ledger; the prompt's custody is held while it settles.
+        let (decision, custody) = policy.evaluate(invocation, scope, self.io)?.await?;
+        if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
+            return Err(Error::Conflict(
+                "stock policy changed during evaluation".into(),
+            ));
+        }
+        match decision {
+            ToolPolicyDecision::Allow => {}
+            // A denial before dispatch is the call's result; the pinned policy
+            // re-derives it on replay. After a recorded start it is a conflict.
+            ToolPolicyDecision::Deny { reason } if !started => {
+                return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
+            }
+            ToolPolicyDecision::Deny { reason } => {
+                return Err(Error::Unauthorized(reason));
+            }
+            ToolPolicyDecision::RequireApproval { prompt } => {
+                if !scope.grants().contains(capability::INTERACTION_ROUTE) {
+                    return Err(Error::Unauthorized(
+                        "stock tool approval requires interaction:route".into(),
                     ));
                 }
-                match decision {
-                    ToolPolicyDecision::Allow => {}
-                    // A denial before dispatch is the call's result; the pinned policy
-                    // re-derives it on replay. After a recorded start it is a conflict.
-                    ToolPolicyDecision::Deny { reason } if !started => {
-                        return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
-                    }
-                    ToolPolicyDecision::Deny { reason } => {
-                        return Err(Error::Unauthorized(reason));
-                    }
-                    ToolPolicyDecision::RequireApproval { prompt } => {
-                        if !scope.grants().contains(capability::INTERACTION_ROUTE) {
-                            return Err(Error::Unauthorized(
-                                "stock tool approval requires interaction:route".into(),
-                            ));
-                        }
-                        let task = TaskId::from_bytes(operation_id.into_bytes());
-                        let ((approval_operation, request), _hold) = tool_approval_request(
-                            task,
-                            self.stock.policy_identity.as_ref().ok_or_else(|| {
-                                Error::Conflict("stock policy identity is missing".into())
-                            })?,
-                            &tool.definition,
-                            invocation,
-                            (prompt, None),
-                            None,
-                            crate::interaction::ApprovalRoute::Policy,
-                        )?;
-                        if let Some(progress) = self
-                            .settle_approval(
-                                journal,
-                                operation_id,
-                                approval_operation,
-                                &request,
-                                invocation,
-                                started,
-                            )
-                            .await?
-                        {
-                            return Ok(Some(PolicyStop::Progress(progress)));
-                        }
-                    }
+                let task = TaskId::from_bytes(operation_id.into_bytes());
+                let ((approval_operation, request), _hold) = tool_approval_request(
+                    task,
+                    self.stock.policy_identity.as_ref().ok_or_else(|| {
+                        Error::Conflict("stock policy identity is missing".into())
+                    })?,
+                    &tool.definition,
+                    invocation,
+                    (prompt, custody),
+                    self.native_work(),
+                    crate::interaction::ApprovalRoute::Policy,
+                )?;
+                if let Some(progress) = self
+                    .settle_approval(
+                        journal,
+                        operation_id,
+                        approval_operation,
+                        &request,
+                        invocation,
+                        started,
+                    )
+                    .await?
+                {
+                    return Ok(Some(PolicyStop::Progress(progress)));
                 }
             }
         }
