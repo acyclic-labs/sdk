@@ -134,6 +134,7 @@ proptest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 loom = { version = "=0.7.2", features = ["checkpoint"] }
+vhost = { version = "0.16.0", features = ["vhost-user-frontend"] }
 
 [build-dependencies]
 icu_casemap.workspace = true
@@ -241,8 +242,6 @@ tempfile = "3.27.0"
 tokio-stream.workspace = true
 tower = { workspace = true, features = ["util"] }
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-vhost = { version = "0.16.0", features = ["vhost-user-frontend"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
