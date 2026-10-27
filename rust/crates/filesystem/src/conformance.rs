@@ -13,6 +13,8 @@ use acyclic_stream::{
 use bytes::Bytes;
 use std::sync::Arc;
 
+mod counted;
+
 /// Production filesystem composition and accounting at its actual storage seam.
 /// Retain any temporary directories, services or mounts in this backend value.
 pub trait Backend: ProviderPlatform {
