@@ -4,13 +4,14 @@
 //! The host under test runs [`Package`] for every actor under the target's
 //! state root. The suite creates actors with the companion create mutation,
 //! appends commands to their inboxes and observes their committed outboxes;
-//! only pause/resume and restart go through [`Target`].
+//! only pause/resume and restart go through [`Backend`].
 use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
     Manifest, Transition, Trigger,
 };
 use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
+use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, FollowFilter, IdempotencyKey, StreamError,
     StreamPath, StreamProvider,
@@ -28,7 +29,13 @@ const ALARM_MS: u64 = 100;
 const QUIET_MS: u64 = 250;
 
 /// The host under test, already running [`Package`] under `store().root()`.
-pub trait Target: Send + Sync {
+pub trait Backend: Send + Sync {
+    /// Fresh namespace retained for this suite invocation.
+    fn namespace(&self) -> &str {
+        "conformance"
+    }
+    /// Dispatch accounting for this host, including its scheduler and storage.
+    fn requests(&self) -> RequestLedger;
     /// Stream provider holding actor state, inboxes and outboxes.
     type Provider: StreamProvider + ?Sized;
     /// The store whose root the host watches.
@@ -43,6 +50,29 @@ pub trait Target: Send + Sync {
     ) -> BoxFuture<'a, Result<(), Error>>;
     /// Stop and restart the host; the next placement takes a new epoch.
     fn restart(&self) -> BoxFuture<'_, Result<(), Error>>;
+}
+
+/// Compatibility spelling for the same backend contract.
+pub use Backend as Target;
+
+/// Register the complete suite using an async factory for a fresh running host.
+/// The backend must keep every runtime and disposable storage resource alive.
+pub use crate::actors_conformance_suite as suite;
+
+/// Implementation of [`suite!`].
+#[macro_export]
+macro_rules! actors_conformance_suite {
+    ($factory:path) => {
+        $crate::actors_conformance_suite!(actors_conformance, $factory);
+    };
+    ($name:ident, $factory:path) => {
+        #[tokio::test]
+        async fn $name() -> std::result::Result<(), Box<dyn std::error::Error>> {
+            let backend = $factory().await?;
+            $crate::conformance::verify(&backend).await?;
+            Ok(())
+        }
+    };
 }
 
 /// The conformance package's checkpoint codec.
@@ -186,7 +216,7 @@ pub enum Failure {
     Target(#[from] Error),
 }
 
-struct Fixture<'a, T: Target + ?Sized> {
+struct Fixture<'a, T: Backend + ?Sized> {
     target: &'a T,
     case: &'static str,
     actor: ActorReference,
@@ -197,7 +227,7 @@ struct Fixture<'a, T: Target + ?Sized> {
     sent: u64,
 }
 
-impl<'a, T: Target + ?Sized> Fixture<'a, T> {
+impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
     /// Prepare a fresh actor. Its companion creation rides in the commit that
     /// creates its inbox with the first command, as a spawn does; the host
     /// discovers it from the activation log without placement.
@@ -354,8 +384,9 @@ fn idempotency(value: &str) -> Result<IdempotencyKey, Error> {
     Ok(IdempotencyKey::new(value.as_bytes().to_vec())?)
 }
 
-/// Run every case against fresh resources named by `run` (unique per run).
-pub async fn verify<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+/// Run every case against the backend's fresh disposable resources.
+pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
+    let run = target.namespace();
     ordered(target, run).await?;
     alarms(target, run).await?;
     paused(target, run).await?;
@@ -377,7 +408,7 @@ async fn interrupted<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Fa
 }
 
 /// Records are consumed in order, exactly once, by an actor nobody placed.
-async fn ordered<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn ordered<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut ordered = Fixture::create(target, run, "ordered").await?;
     for _ in 0..3 {
         ordered.send("emit").await?;
@@ -391,7 +422,7 @@ async fn ordered<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
 
 /// An alarm saved with the checkpoint fires once; Clear invalidates the
 /// armed generation; replacing fires only the newest generation.
-async fn alarms<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut alarm = Fixture::create(target, run, "alarm").await?;
     alarm.send(&format!("set {ALARM_MS}")).await?;
     alarm.expect(&["a1"]).await?;
@@ -409,7 +440,7 @@ async fn alarms<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure
 }
 
 /// Pause holds input; resume delivers it.
-async fn paused<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn paused<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut paused = Fixture::create(target, run, "paused").await?;
     paused.send("emit").await?;
     paused.expect(&["r0"]).await?;
@@ -424,7 +455,7 @@ async fn paused<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure
 
 /// A restart keeps the checkpoint, cursor and pending alarm, with no
 /// duplicate or lost publication.
-async fn restarted<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut restarted = Fixture::create(target, run, "restarted").await?;
     restarted.send("emit").await?;
     restarted.expect(&["r0"]).await?;
@@ -436,4 +467,46 @@ async fn restarted<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Fail
     target.restart().await?;
     restarted.send("emit").await?;
     restarted.expect(&["r0", "r2", "a1"]).await
+}
+
+/// Measurements from the common ordered-delivery workload.
+#[derive(Debug)]
+pub struct Measurement {
+    /// Committed inbox deliveries and corresponding outbox publications.
+    pub deliveries: usize,
+    /// Time from the first measured send to the final observed publication.
+    pub elapsed: std::time::Duration,
+    /// Provider calls during the measured steady-state workload.
+    pub requests: Requests,
+}
+
+/// Measure the same 256-delivery workload for every backend. Setup and warmup
+/// are excluded; every emitted sequence is checked before returning a sample.
+/// Use a fresh backend, independently of [`verify`]. This is opt-in only.
+pub async fn bench<T: Backend + ?Sized>(target: &T) -> Result<Measurement, Failure> {
+    const DELIVERIES: usize = 256;
+    let mut fixture = Fixture::create(target, target.namespace(), "bench").await?;
+    fixture.send("emit").await?;
+    if fixture.observe(1, BUDGET_MS).await? != ["r0"] {
+        return fixture.violation("benchmark warmup did not publish r0".into());
+    }
+    let ledger = target.requests();
+    let before = ledger.requests();
+    let started = std::time::Instant::now();
+    for _ in 0..DELIVERIES {
+        fixture.send("emit").await?;
+    }
+    let observed = fixture.observe(DELIVERIES + 1, BUDGET_MS).await?;
+    let elapsed = started.elapsed();
+    let expected = (0..=DELIVERIES)
+        .map(|i| format!("r{i}"))
+        .collect::<Vec<_>>();
+    if observed != expected {
+        return fixture.violation("benchmark lost, reordered or duplicated a delivery".into());
+    }
+    Ok(Measurement {
+        deliveries: DELIVERIES,
+        elapsed,
+        requests: ledger.requests().since(before),
+    })
 }
