@@ -66,6 +66,11 @@ path = "src/bin/graphcoder_seams.rs"
 required-features = ["graphcoder-backends"]
 
 [[bin]]
+name = "harness-conformance"
+path = "src/bin/harness_conformance.rs"
+test = false
+
+[[bin]]
 name = "inference-qualify"
 path = "src/bin/inference_qualify.rs"
 required-features = ["inference"]
