@@ -17,6 +17,11 @@ CAPTURE_ALIASES = {
 CAPTURE_ALIASES[FIXTURE_PREFIX + 'owner-updates-v1/fs339/' + FS_SOURCE + 'tests/workspace/mod.rs'] = (
     FIXTURE_PREFIX + 'fs-append-eof/341/' + FS_SOURCE + 'tests/workspace/mod.rs'
 )
+CAPTURE_ALIASES.update({
+    FIXTURE_PREFIX + 'entrypoint-policy-20261026T030954Z/' + name + '.py':
+    FIXTURE_PREFIX + 'entrypoint-policy-20261026T030635Z/' + name + '.py'
+    for name in ('omit-candidate-multiset', 'borrow-dependency-proof', 'borrow-unrelated-invariant', 'omit-wildcard-discovery')
+})
 
 
 def repository_relative(relative):

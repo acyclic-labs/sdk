@@ -40,7 +40,21 @@ class EvidencePolicy(unittest.TestCase):
                 self.assertEqual(shared.stat().st_size, capture['bytes'])
                 self.assertFalse((ROOT / logical).exists())
                 checked.add(logical)
-        self.assertEqual(checked, set(CAPTURE_ALIASES))
+        self.assertEqual(checked, {name for name in CAPTURE_ALIASES if name.endswith('.rs')})
+
+    def test_shared_entrypoint_mutants_retain_both_executed_hashes(self):
+        aliases = {name: shared for name, shared in CAPTURE_ALIASES.items() if name.endswith('.py')}
+        self.assertEqual(len(aliases), 4)
+        for logical, shared in aliases.items():
+            with self.subTest(capture=logical):
+                source = repository_path(ROOT, logical)
+                self.assertEqual(source, ROOT / shared)
+                self.assertFalse((ROOT / logical).exists())
+                for original in (logical, shared):
+                    receipt = json.loads((ROOT / original).with_name('receipt.json').read_bytes())
+                    run = next(run for run in receipt['runs'] if run['label'] == Path(original).stem)
+                    self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),
+                                     run['implementations']['scripts/check-proof-coverage.py'])
 
     def test_historical_checker_controls_reconstruct_exact_executed_bytes(self):
         captures = ROOT / "scripts/tests/fixtures/proof-policy"
