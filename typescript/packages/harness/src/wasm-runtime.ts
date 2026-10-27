@@ -104,6 +104,16 @@ export async function ensureModelWasm(): Promise<void> {
   }
 }
 
+/** Declarative content contracts need neither a provider registry nor a runtime. */
+export async function ensureModelContentWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (!["modelContentInventory", "validateModelContent", "validateModelMessages",
+    "validateUserInput", "prepareModelRequest", "admitModelEvent"]
+    .every(name => typeof exports[name] === "function")) {
+    throw new Error("harness WASM does not provide the required model content exports");
+  }
+}
+
 /** MCP uses its Rust contracts and transport on the same physical module. */
 export async function ensureMcpWasm(): Promise<void> {
   const exports = await loadHarnessWasm();

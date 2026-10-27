@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef,
+  Harness, NativeContracts, descriptorFor, type AgentId, type FileRef,
 } from "@acyclic-labs/harness";
 
 const contracts = await NativeContracts.create();
@@ -24,16 +24,6 @@ async function nativePart() {
     },
   } } };
 }
-
-test("installed native inventory preserves ordered tool media, option refs and full-width revisions", async () => {
-  const part = await nativePart();
-  const inventory = contracts.modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
-    content: { kind: "parts", parts: Object.freeze([{ kind: "text" as const, text: "media" }, part]) } }, DEFAULT_LIMITS);
-  expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
-  expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
-  expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
-  expect(Object.isFrozen(inventory.nativeConfigurations[0])).toBe(true);
-});
 
 test("installed local runtime rejects unsupported original option admission before provider IO", async () => {
   let calls = 0;

@@ -7,6 +7,7 @@ export { SnapshotStore, type ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
 export * from "./hypotheses.js";
 export * from "./providers.js";
+export * from "./model-content.js";
 export * from "./context-discovery.js";
 export { createBrowserMcpHttpProvider } from "./mcp-http.js";
 export {

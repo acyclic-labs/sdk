@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
-import { validateModelContent, validateUserInput,
-  type WasmFileRefWire } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmFileRefWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import { decodeClientJson } from "../src/client.js";
-import { initializeModelProviders } from "../src/providers.js";
+import { initializeModelContent, validateModelContent, validateUserInput, admitModelEvent, modelContentInventory } from "../src/model-content.js";
 import { MODEL_TEST_LIMITS as fixtureLimits } from "./support/model-limits.mjs";
 
-await initializeModelProviders();
+await initializeModelContent();
 
 // Metadata admission only: no read capability or filesystem IO is fabricated.
 async function file(): Promise<WasmFileRefWire> {
@@ -75,12 +74,44 @@ async function nativeOptionPart() {
 
 test("Rust inventory includes nested tool media and options while preserving original revisions", async () => {
   const part = await nativeOptionPart();
-  const inventory = contracts.modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
+  const inventory = modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
     content: { kind: "parts", parts: [{ kind: "text", text: "attachment" }, part] } }, fixtureLimits);
   expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
   expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
   expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
-  expect(contracts.modelContentInventory("plain text", fixtureLimits)).toEqual({ files: [], nativeConfigurations: [] });
+  expect(modelContentInventory("plain text", fixtureLimits)).toEqual({ files: [], nativeConfigurations: [] });
+});
+
+test("public model content preserves original option revisions across Rust context projection", async () => {
+  const part = await nativeOptionPart();
+  const projected = contracts.applyContextProjection({ messages: [], metadata: {} },
+    [{ role: "user", content: part }], "prompt", "append", fixtureLimits);
+  expect(contracts.encodeCanonicalJson(projected.messages[0]!.content)).toEqual(contracts.encodeCanonicalJson(part));
+  const result = contracts.applyContextProjection({ messages: [], metadata: {} }, [
+    { role: "assistant", content: { kind: "tool_call", callId: "call", name: "inspect", arguments: {} } },
+    { role: "tool", content: { kind: "tool_result", callId: "call", name: "inspect",
+      content: { kind: "parts", parts: [part] } } },
+  ], "prompt", "append", fixtureLimits);
+  // Rust returns canonical field names; opaque JSON remains Map/exact BigInt.
+  expect(contracts.encodeCanonicalJson(result.messages[1]!.content)).toEqual(contracts.encodeCanonicalJson(
+    { kind: "tool_result", call_id: "call", name: "inspect", content: { kind: "parts", parts: [part] } }));
+});
+
+test("model admission enforces portable tool integers and preserves full-width completion metadata", () => {
+  const maximum = 9_007_199_254_740_991n;
+  const value = maximum + 2n;
+  const call = (cursor: bigint) => ({ kind: "tool_call" as const, callId: "bigint-call", name: "lookup",
+    arguments: { tokens: 1n, cursor } });
+  const admitted = admitModelEvent(call(maximum), fixtureLimits, null);
+  expect(contracts.encodeCanonicalJson(admitted.event)).toEqual(contracts.encodeCanonicalJson(
+    { kind: "tool_call", call_id: "bigint-call", name: "lookup", arguments: { tokens: 1n, cursor: maximum } }));
+  for (const cursor of [maximum + 1n, value]) {
+    expect(() => admitModelEvent(call(cursor), fixtureLimits, null)).toThrow("inexact number");
+  }
+  const literal = { "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } };
+  const completed = admitModelEvent({ kind: "completed", metadata: { ...literal, tokens: 1n, cursor: value } }, fixtureLimits, null);
+  expect(contracts.encodeCanonicalJson(completed.event)).toEqual(contracts.encodeCanonicalJson(
+    { kind: "completed", metadata: { ...literal, tokens: 1n, cursor: value } }));
 });
 
 test("generated context selections and updates use native schemas, placement and bounds", () => {

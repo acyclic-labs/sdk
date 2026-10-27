@@ -7,8 +7,6 @@ import {
 import {
   prepareModelRequest, encodeModelPrefix, WasmReducer, validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-import { publicModelContent } from "../src/projection.js";
-import type { ModelContent as NativeModelContent } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 
 const contracts = await NativeContracts.create();
@@ -243,20 +241,6 @@ test("synthetic accounting counts nested media and native options with wide revi
     + part.policy.native.configuration.configuration.content.descriptor.byte_length]);
 });
 
-test("public model content preserves original option revisions across Rust context projection", async () => {
-  const part = await nativeOptionPart();
-  const projected = contracts.applyContextProjection({ messages: [], metadata: {} },
-    [{ role: "user", content: part }], "prompt", "append", DEFAULT_LIMITS);
-  expect(publicModelContent(projected.messages[0]!.content as NativeModelContent)).toEqual(part);
-  const result = contracts.applyContextProjection({ messages: [], metadata: {} }, [
-    { role: "assistant", content: { kind: "tool_call", callId: "call", name: "inspect", arguments: {} } },
-    { role: "tool", content: { kind: "tool_result", callId: "call", name: "inspect",
-      content: { kind: "parts", parts: [part] } } },
-  ], "prompt", "append", DEFAULT_LIMITS);
-  expect(publicModelContent(result.messages[1]!.content as NativeModelContent))
-    .toEqual({ kind: "tool_result", callId: "call", name: "inspect", content: { kind: "parts", parts: [part] } });
-});
-
 test("local model dispatch rejects claimed native options before invoking a custom provider", async () => {
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(
@@ -268,19 +252,4 @@ test("local model dispatch rejects claimed native options before invoking a cust
   await expect(runtime.run({ prompt: "", content: [await nativeOptionPart()] })).rejects.toThrow(
     );
   expect(calls).toBe(0);
-});
-
-test("model admission enforces portable tool integers and preserves full-width completion metadata", () => {
-  const maximum = 9_007_199_254_740_991n;
-  const value = maximum + 2n;
-  const call = (cursor: bigint) => ({ kind: "tool_call" as const, callId: "bigint-call", name: "lookup",
-    arguments: { tokens: 1n, cursor } });
-  const admitted = contracts.admitModelEvent(call(maximum), DEFAULT_LIMITS);
-  expect(admitted.event).toEqual({ ...call(maximum), arguments: { tokens: 1, cursor: Number(maximum) } });
-  for (const cursor of [maximum + 1n, value]) {
-    expect(() => contracts.admitModelEvent(call(cursor), DEFAULT_LIMITS)).toThrow("inexact number");
-  }
-  const literal = { "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } };
-  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { ...literal, tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
-  expect(completed.event).toEqual({ kind: "completed", metadata: { ...literal, tokens: 1, cursor: value } });
 });

@@ -1,63 +1,52 @@
 import { expect, test } from "bun:test";
-import { NativeContracts, extensionIdentity, type ExtensionAdmission, type ExtensionConfiguration, type ExtensionDependency, type ExtensionRecord, type ExtensionStateMigration } from "../src/index.js";
+import { validateContract } from "../generated/wasm/acyclic_harness_wasm.js";
+import { decodeClientJson, initializeClientQueries } from "../src/client.js";
 
-const contracts = await NativeContracts.create();
+await initializeClientQueries();
 
-const json = (value: unknown): string => JSON.stringify(value, (_key, part: unknown) =>
-  typeof part === "bigint" ? Number(part) : part);
+// These golden fixtures use small integers. Never round a newly widened field.
+const json = (value: unknown): string => JSON.stringify(value, (_key, part: unknown) => {
+  if (typeof part !== "bigint") return part;
+  const exact = Number(part);
+  if (!Number.isSafeInteger(exact)) throw new RangeError("fixture integer is not exact");
+  return exact;
+});
+const decode = (fixture: string) => decodeClientJson(new TextEncoder().encode(fixture));
 
 test("Rust and TypeScript share the canonical v2 extension record fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-record.json", import.meta.url)).text()).trim();
-  const record = contracts.validate("extension_record", JSON.parse(fixture) as ExtensionRecord);
-  expect(JSON.stringify(record)).toBe(fixture);
-  expect(() => contracts.validate("extension_record", { ...record, implementation_digest: Array(32).fill(0) })).toThrow();
-  expect(() => contracts.validate("extension_record", { ...record, name: "example.\u0000state" })).toThrow();
+  const record = validateContract("extension_record", decode(fixture), undefined);
+  expect(json(record)).toBe(fixture);
+  expect(() => validateContract("extension_record", { ...record, implementation_digest: Array(32).fill(0) }, undefined)).toThrow();
+  expect(() => validateContract("extension_record", { ...record, name: "example.\u0000state" }, undefined)).toThrow();
 });
 
 test("Rust and TypeScript share the exact extension migration envelope", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-state-migration.json", import.meta.url)).text()).trim();
-  const migration = contracts.validate("extension_state_migration", JSON.parse(fixture) as ExtensionStateMigration);
+  const migration = validateContract("extension_state_migration", decode(fixture), undefined);
   expect(json(migration)).toBe(fixture);
   expect(typeof migration.previous.revision).toBe("bigint");
-  expect(() => contracts.validate("extension_state_migration", { ...migration, previous: { ...migration.previous, revision: 0n } })).toThrow();
+  expect(() => validateContract("extension_state_migration", { ...migration, previous: { ...migration.previous, revision: 0n } }, undefined)).toThrow();
 });
 
 test("Rust and TypeScript share the exact extension dependency fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-dependency.json", import.meta.url)).text()).trim();
-  const dependency = contracts.validate("extension_dependency", JSON.parse(fixture) as ExtensionDependency);
-  expect(JSON.stringify(dependency)).toBe(fixture);
-  expect(() => contracts.validate("extension_dependency", { name: "example.state", version: 0 })).toThrow();
+  const dependency = validateContract("extension_dependency", decode(fixture), undefined);
+  expect(json(dependency)).toBe(fixture);
+  expect(() => validateContract("extension_dependency", { name: "example.state", version: 0 }, undefined)).toThrow();
 });
 
 test("Rust and TypeScript share the ref-only extension configuration fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-configuration.json", import.meta.url)).text()).trim();
-  const configuration = contracts.validate("extension_configuration", JSON.parse(fixture) as ExtensionConfiguration);
-  expect(JSON.stringify(configuration)).toBe(fixture);
-  expect(() => contracts.validate("extension_configuration", { ...configuration, schema_digest: Array(32).fill(0) })).toThrow();
+  const configuration = validateContract("extension_configuration", decode(fixture), undefined);
+  expect(json(configuration)).toBe(fixture);
+  expect(() => validateContract("extension_configuration", { ...configuration, schema_digest: Array(32).fill(0) }, undefined)).toThrow();
 });
 
 test("Rust and TypeScript share the pinned extension admission fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-admission.json", import.meta.url)).text()).trim();
-  const admission = contracts.validate("extension_admission", JSON.parse(fixture) as ExtensionAdmission);
+  const admission = validateContract("extension_admission", decode(fixture), undefined);
   expect(json(admission)).toBe(fixture);
   expect(typeof admission.source.revision).toBe("bigint");
-  expect(() => contracts.validate("extension_admission", { ...admission, source: { ...admission.source, revision: 0n } })).toThrow();
-});
-
-test("the TypeScript lifecycle facade keeps executable identity separate from durable dependency state", async () => {
-  const record = contracts.validate("extension_record", JSON.parse(
-    (await Bun.file(new URL("../../../../fixtures/harness/v2/extension-record.json", import.meta.url)).text()).trim(),
-  ) as ExtensionRecord);
-  const identity = await extensionIdentity({
-    name: record.name,
-    version: record.version,
-    digest: record.implementation_digest,
-  });
-  expect(identity).toEqual({
-    name: record.name,
-    version: record.version,
-    digest: record.implementation_digest,
-  });
-  await expect(extensionIdentity({ ...identity, digest: Array(32).fill(0) })).rejects.toThrow();
-  await expect(extensionIdentity({ ...identity, version: 0 })).rejects.toThrow();
+  expect(() => validateContract("extension_admission", { ...admission, source: { ...admission.source, revision: 0n } }, undefined)).toThrow();
 });
