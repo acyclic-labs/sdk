@@ -1,6 +1,6 @@
 //! The admitted root producer: a root's fresh volumes and adoption are one
-//! commit prepared without IO, and an admission that does not cover it is
-//! refused before any.
+//! commit prepared without stream IO and held until it settles, and an
+//! admission that does not cover it is refused before any IO.
 
 use super::{Result, id, intent, wired::Refusing};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
@@ -12,7 +12,7 @@ use acyclic_harness_core::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{
         FilesystemHost, PRIVATE_VOLUME,
-        hosting::{Bound, Prepared, RootRequest, VerifiedCaller},
+        hosting::{Bound, RootRequest, RootSubmission, VerifiedCaller},
     },
     resources::ProviderRef,
 };
@@ -41,20 +41,46 @@ impl TurnDriver for Idle {
 
 type Objects = LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
 
-/// Agents and volumes on the one stream `provider`, and the volumes' provider.
+/// The volumes' object bucket, to observe what preparation writes.
+struct Bucket(
+    Arc<acyclic_objects::v1::MemoryObjects>,
+    acyclic_objects::v1::wire::BucketRef,
+);
+
+impl Bucket {
+    /// How many objects the bucket holds.
+    async fn objects(&self) -> Result<usize> {
+        use acyclic_objects::v1::ObjectsProvider as _;
+        Ok(self
+            .0
+            .list(acyclic_objects::v1::wire::ListObjectsRequest {
+                bucket: Some(self.1.clone()),
+                ..Default::default()
+            })
+            .await?
+            .entries
+            .len())
+    }
+}
+
+/// Agents and volumes on the one stream `provider`, the volumes' provider,
+/// and their object bucket.
 fn stores<P: StreamProvider>(
     provider: &Arc<P>,
 ) -> Result<(
     Arc<AgentHost<P>>,
     Arc<FilesystemHost<StreamAuthorityStore<P>, Objects>>,
     ProviderRef,
+    Bucket,
 )> {
     let reference = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = Arc::new(objects);
+    let observed = Bucket(objects.clone(), bucket.clone());
     let volumes = FilesystemHost::new(
         Fs::new(
             StreamAuthorityStore::new(provider.clone()),
-            LogicalObjectStore::new(Arc::new(objects), bucket),
+            LogicalObjectStore::new(objects, bucket),
             EmbeddedCapabilities::MEMORY,
         ),
         &reference,
@@ -67,7 +93,7 @@ fn stores<P: StreamProvider>(
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
     )?);
-    Ok((agents, volumes, reference))
+    Ok((agents, volumes, reference, observed))
 }
 
 fn volume(reference: &ProviderRef, name: &str, agent: AgentId) -> Result<VolumeBinding> {
@@ -96,7 +122,7 @@ fn root(agent: AgentId, fresh: Vec<VolumeBinding>) -> RootRequest {
 #[tokio::test]
 async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly() -> Result {
     let provider = Arc::new(MemoryStream::default());
-    let (agents, volumes, reference) = stores(&provider)?;
+    let (agents, volumes, reference, _) = stores(&provider)?;
     let bound = Bound::local_root(
         AuthorityRoot::new(
             "agents",
@@ -116,21 +142,25 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
     let again = bound
         .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
         .await?;
-    assert_eq!(
-        first.request, again.request,
-        "preparation is pure and exact"
-    );
-    let created = bound
-        .create_root(&intent("root"), root(id(1), vec![private.clone()]))
-        .await?;
-    assert_eq!(created, first.child);
-    assert_eq!(agents.state(&created).await?.volumes, vec![private]);
-    // The Unknown path: the exact prepared bytes resubmit as the same creation.
-    let Prepared { request, .. } = first;
+    assert_eq!(first.request(), again.request(), "preparation is exact");
+    let child = first.child().clone();
+    let RootSubmission::Created(created) = bound.submit_root(first).await? else {
+        return Err("the root's submission was uncertain".into());
+    };
+    assert_eq!(created, child);
+    assert_eq!(agents.state(&created).await?.volumes, vec![private.clone()]);
+    // The Unknown path: the identical prepared commit resubmits as the same
+    // creation, and creating again under the intent replays it.
     assert!(matches!(
-        submit(&*provider, request).await?,
-        Submitted::Committed(_)
+        bound.submit_root(again).await?,
+        RootSubmission::Created(replayed) if replayed == child
     ));
+    assert_eq!(
+        bound
+            .create_root(&intent("root"), root(id(1), vec![private]))
+            .await?,
+        child
+    );
     Ok(())
 }
 
@@ -154,7 +184,7 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
                operations: &'static [VolumeOperation],
                shared_write: bool| async move {
         let stream = Arc::new(Refusing::default());
-        let (agents, volumes, reference) = stores(&stream)?;
+        let (agents, volumes, reference, bucket) = stores(&stream)?;
         let issuer = AuthorityRoot::new("agents", [7; 32], issued);
         let private = volume(&reference, PRIVATE_VOLUME, id(7))?;
         let shared = volume(&reference, "shared", id(7))?;
@@ -183,14 +213,22 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
         let prepared = bound
             .prepare_root(&intent("root"), root(id(7), vec![private, shared]))
             .await;
-        Ok::<_, Box<dyn std::error::Error>>((prepared.is_ok(), stream.calls.load(Ordering::SeqCst)))
+        // Stream IO, and whether objects were written: only a covering
+        // admission writes its fresh volumes' initial objects.
+        let written = bucket.objects().await? > 0;
+        Ok::<_, Box<dyn std::error::Error>>((
+            prepared.is_ok(),
+            stream.calls.load(Ordering::SeqCst),
+            written,
+        ))
     };
     let both: &'static [VolumeOperation] = &[VolumeOperation::Read, VolumeOperation::Write];
-    // Control: a covering admission prepares its root, and preparing is pure.
+    // Control: a covering admission prepares its root with no stream IO,
+    // writing only its fresh volumes' initial objects.
     assert_eq!(
         run(audience.clone(), audience.clone(), None, both, true).await?,
-        (true, 0),
-        "a covering admission prepares without IO"
+        (true, 0, true),
+        "a covering admission prepares without stream IO"
     );
     for (case, issued, given, agent, operations, shared_write) in [
         (
@@ -228,8 +266,8 @@ async fn an_admission_that_does_not_cover_the_root_is_refused_before_any_io() ->
     ] {
         assert_eq!(
             run(issued, given, agent, operations, shared_write).await?,
-            (false, 0),
-            "{case}: refused before any stream IO"
+            (false, 0, false),
+            "{case}: refused before any stream or object IO"
         );
     }
     Ok(())
