@@ -24,10 +24,6 @@ node --test scripts/graphcoder-pty/screen.test.mjs
 cargo build --locked -p graphcoder --features acyclic-harness/grpc,acyclic-harness/search-http --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl graphcoder > .bb-sessions-binaries.env
 source .bb-sessions-binaries.env
-node scripts/test-graphcoder.mjs "$SESSIONS_GRAPHCODER_BINARY"
-for scenario in kill-mid-turn same-text-twice retry-jsonl; do
-  node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$SESSIONS_GRAPHCODER_BINARY" "$scenario"
-done
 node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY"
 node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY" interactive-prompt
 node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY" interactive

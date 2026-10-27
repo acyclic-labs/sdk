@@ -142,20 +142,9 @@ fork_join_conformance() {
     local::host_workspace::tests:: -- --test-threads=4
 }
 
-# Exercise the installed native host against its real local providers, not a
-# test-only coordinator. The script records binary, suite and scenario evidence.
+# Exercise the shipping binary through its shared real-provider CLI suite.
 installed_graphcoder() {
-  local install_root="$SDK_TEMP_DIR/graphcoder-installed"
-  cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug \
-    --root "$install_root" --target-dir "$target_dir"
-  bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
-  node --test scripts/graphcoder-pty/screen.test.mjs
-  node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder"
-  local scenario
-  for scenario in kill-mid-turn same-text-twice retry-jsonl; do
-    node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$install_root/bin/graphcoder" "$scenario"
-  done
-  node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder"
+  cargo test --locked -p graphcoder --test cli
 }
 
 # The native hosts own tools and providers. Qualify their thin adapters and the
