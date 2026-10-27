@@ -167,7 +167,6 @@ impl CoreLog {
         flush: &mut Option<crate::NativeWorkReservation>,
         deferred: bool,
     ) -> Result<(), LocalCoreStateStoreError> {
-        let lease = self.lease(work)?;
         let mut position = 0;
         while position < buffer.len() {
             let mut credit = work
