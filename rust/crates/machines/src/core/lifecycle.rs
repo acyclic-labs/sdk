@@ -22,7 +22,22 @@ impl OperationRegistry {
                     "create readiness admission failed; recovery: configure positive poll_interval and ready_timeout".into(),
                 ));
             }
-            let created = driver.raw_create(&request).await?;
+            let created = driver.raw_create(&request).await?.checked(|initial| {
+                if initial.contract.image != request.image
+                    || initial.contract.compatibility != request.compatibility
+                    || initial.contract.expiration != request.expiration
+                    || initial.contract.network_policy_digest != request.network_policy_digest
+                    || initial.contract.budgets != request.budgets
+                    || (initial.contract.suspension != request.suspension
+                        && (initial.contract.capabilities.contains(&Capability::SuspendResume)
+                            || initial.contract.suspension != SuspensionPolicy::Manual))
+                {
+                    return Err(ProviderError::Rejected(
+                        "native create contract contradicts admission; recovery: inspect this operation's cleanup before creating a new machine".into(),
+                    ));
+                }
+                Ok(())
+            });
             let initial = self.accept_created(driver, operation, created, key).await?;
             let ready = self.wait_machine(driver, initial.id, key, interval, timeout).await?;
             if ready.state != MachineState::Running || ready.contract != initial.contract {
@@ -176,55 +191,6 @@ impl OperationRegistry {
         self.machine(machine)
             .await?
             .ok_or_else(|| ProviderError::NotFound(machine.to_string()))
-    }
-
-    /// The shared owner records an accepted snapshot before any readiness read.
-    /// Native conflicts and lost replies are refusals, never proof of adoption.
-    pub async fn create_checkpoint<D: RawMachines + ?Sized>(
-        &self,
-        driver: &D,
-        machine: MachineId,
-        key: IdempotencyKey,
-        interval: Duration,
-        timeout: Duration,
-        at: u64,
-    ) -> Result<MutationOutcome, ProviderError> {
-        self.apply_with(driver, key, &MutationIntent::Checkpoint(machine), async |operation| {
-            let source = self.inspect_machine(driver, machine, at).await?;
-            require_capability(&source, Capability::LiveCheckpoint)?;
-            if source.state != MachineState::Running {
-                return Err(ProviderError::Conflict(
-                    "checkpoint requires a running machine; recovery: wake the source before taking a checkpoint".into(),
-                ));
-            }
-            if interval.is_zero() || timeout.is_zero() {
-                return Err(ProviderError::Invalid(
-                    "checkpoint readiness admission failed; recovery: configure positive poll_interval and ready_timeout".into(),
-                ));
-            }
-            let native = self.native_binding(machine, driver.name()).await?;
-            self.bind_target(operation, native.as_ref().map_or_else(|| machine.to_string(), |value| value.handle.clone()).as_str()).await?;
-            let resource = super::NativeResource::Checkpoint(driver.raw_checkpoint(&source, native.as_ref(), key).await?);
-            self.claim(driver, operation, &resource, false).await?;
-            let checkpoint = settle(key, interval, timeout, || async {
-                driver.raw_observe_checkpoint(resource.handle(), &source).await
-            }).await?;
-            if checkpoint.source != machine || checkpoint.contract != source.contract || !checkpoint.forkable {
-                return Err(ProviderError::Rejected(
-                    "native checkpoint does not match its admitted source; recovery: cancel this operation and repair the raw checkpoint mapping".into(),
-                ));
-            }
-            self.wait_machine(driver, machine, key, interval, timeout).await?;
-            self.remember_bound_checkpoint(checkpoint.clone(), Some(NativeBinding {
-                provider: driver.name().into(),
-                handle: resource.handle().into(),
-                endpoint: None,
-            })).await?;
-            let mut current = self.machine(machine).await?.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
-            current.last_checkpoint = Some(checkpoint.id);
-            self.observe_machine(current.clone(), current.changed_at_unix_ms).await?;
-            Ok(MutationOutcome::Checkpointed(checkpoint))
-        }).await
     }
 
     /// Suspend/wake are one canonical state transition with one native dispatch.

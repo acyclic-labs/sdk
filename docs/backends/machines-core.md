@@ -56,6 +56,14 @@ conservatively remains indeterminate; no absence poll manufactures an acknowledg
 Checkpoint results and their original settlement replay after reopening. The
 checkpoint projection also retains the provider's opaque accepted address; inspect,
 fork and deletion never assume its public UUID is the native snapshot address.
+The core sequences checkpoint forks, validates each child before projecting its
+identity, retains accepted cleanup addresses on metadata or identity failure, and
+waits for children in their admitted index order. Checkpoint inspection requires
+its canonical admitted record: an untracked native snapshot cannot reconstruct
+its historical contract from the source machine's current state. Creation time
+and the original contract stay immutable across later native reads. A conflicting
+logical machine ID retains the new native cleanup address without replacing the
+original binding.
 A different provider is refused before native IO. This draft's unpublished journal
 schema changes with that projection; it does not implement a legacy journal shim.
 

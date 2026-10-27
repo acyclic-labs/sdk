@@ -822,7 +822,8 @@ impl RawMachines for DaytonaProvider {
     async fn raw_observe_checkpoint(
         &self,
         handle: &str,
-        source: &MachineObservation,
+        source: MachineId,
+        contract: &MachineContract,
     ) -> Result<Option<CheckpointObservation>, ProviderError> {
         match self.api.get_snapshot(handle).await {
             Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
@@ -835,8 +836,8 @@ impl RawMachines for DaytonaProvider {
                 }
                 map::snapshot_to_checkpoint(
                     &value,
-                    Some(source.id),
-                    source.contract.clone(),
+                    Some(source),
+                    contract.clone(),
                     true,
                     now_unix_ms(),
                 )
@@ -845,6 +846,25 @@ impl RawMachines for DaytonaProvider {
             Ok(_) | Err(ProviderError::NotFound(_)) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    async fn raw_fork(
+        &self,
+        checkpoint: CheckpointId,
+        native: Option<&NativeBinding>,
+        contract: &MachineContract,
+        slot: map::ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<RawCreated, ProviderError> {
+        let handle = native.map_or_else(|| checkpoint.to_string(), |native| native.handle.clone());
+        let body = map::create_request(&self.config, &handle, key, Some(slot), contract)?;
+        let (created, adopted) = self.create_or_adopt(&body).await?;
+        Ok(Self::raw_created(
+            &created,
+            contract,
+            Some(checkpoint),
+            adopted,
+        ))
     }
 
     async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
@@ -982,47 +1002,7 @@ impl MachinesProvider for DaytonaProvider {
         &self,
         checkpoint: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
-        let native = self
-            .ops
-            .native_checkpoint_binding(checkpoint, "daytona")
-            .await?;
-        let handle = native.map_or_else(|| checkpoint.to_string(), |native| native.handle);
-        let known = self.ops.checkpoint(checkpoint).await?;
-        match self.api.get_snapshot(&handle).await {
-            Ok(snapshot) => {
-                let (source, contract, forkable) = if let Some(known) = &known {
-                    (Some(known.source), known.contract.clone(), known.forkable)
-                } else {
-                    let source_id = snapshot
-                        .source_sandbox_id
-                        .as_deref()
-                        .map(map::machine_id)
-                        .transpose()?
-                        .ok_or_else(|| ProviderError::NotFound(checkpoint.to_string()))?;
-                    (
-                        Some(source_id),
-                        self.fetch_machine(source_id).await?.contract,
-                        true,
-                    )
-                };
-                let observation = map::snapshot_to_checkpoint(
-                    &snapshot,
-                    source,
-                    contract,
-                    forkable,
-                    now_unix_ms(),
-                )?;
-                self.ops.remember_checkpoint(observation.clone()).await?;
-                Ok(observation)
-            }
-            Err(ProviderError::NotFound(_)) => known
-                .map(|mut value| {
-                    value.forkable = false;
-                    value
-                })
-                .ok_or_else(|| ProviderError::NotFound(checkpoint.to_string())),
-            Err(error) => Err(error),
-        }
+        self.ops.inspect_checkpoint(self, checkpoint).await
     }
 
     /// Restores a checkpoint into `count` new sandboxes by creating each from the hot
@@ -1034,51 +1014,16 @@ impl MachinesProvider for DaytonaProvider {
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
-        self.apply(
-            key,
-            &MutationIntent::Fork(checkpoint, count),
-            async |operation| {
-                let source = self.inspect_checkpoint(checkpoint).await?;
-                if !source.forkable {
-                    return Err(ProviderError::Conflict(
-                        "checkpoint no longer accepts forks".into(),
-                    ));
-                }
-                let mut contract = source.contract;
-                contract.image = Image::Checkpoint(checkpoint);
-                let snapshot = self
-                    .ops
-                    .native_checkpoint_binding(checkpoint, "daytona")
-                    .await?
-                    .map_or_else(|| checkpoint.to_string(), |native| native.handle);
-                let mut ids = Vec::with_capacity(count as usize);
-                for index in 0..count {
-                    let slot = map::ForkSlot { index, count };
-                    let body =
-                        map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
-                    let (created, adopted) = self.create_or_adopt(&body).await?;
-                    self.claim_sandbox(
-                        operation,
-                        &created,
-                        &contract,
-                        Some(checkpoint),
-                        adopted,
-                        key,
-                    )
-                    .await?;
-                    ids.push(created.id);
-                }
-                let children = self
-                    .settle_children(ids, key, &contract, Some(checkpoint))
-                    .await?;
-                Ok(MutationOutcome::Forked(children))
-            },
-        )
-        .await
+        self.ops
+            .fork_checkpoint(
+                self,
+                checkpoint,
+                count,
+                key,
+                self.config.poll_interval,
+                self.config.ready_timeout,
+            )
+            .await
     }
 
     /// Native memory-and-disk VM fork. Containers are refused without an atomic

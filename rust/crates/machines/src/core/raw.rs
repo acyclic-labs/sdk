@@ -1,8 +1,8 @@
 //! Raw provider primitives. Replay, ordering and resource ownership live in core.
 use super::NativeBinding;
 use crate::{
-    CheckpointObservation, CreateMachine, IdempotencyKey, MachineId, MachineObservation,
-    ProviderError, SuspensionPolicy,
+    CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, MachineContract, MachineId,
+    MachineObservation, ProviderError, SuspensionPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,8 +72,20 @@ pub trait RawMachines: Send + Sync {
     async fn raw_observe_checkpoint(
         &self,
         handle: &str,
-        source: &MachineObservation,
+        source: MachineId,
+        contract: &MachineContract,
     ) -> Result<Option<CheckpointObservation>, ProviderError>;
+
+    /// Create one independent child from the admitted immutable checkpoint.
+    /// Sequencing, child order, ownership and readiness remain in the core.
+    async fn raw_fork(
+        &self,
+        checkpoint: CheckpointId,
+        native: Option<&NativeBinding>,
+        contract: &MachineContract,
+        slot: ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<RawCreated, ProviderError>;
 
     /// Delete one opaque resource once. A missing resource may return NotFound;
     /// a lost native reply remains Unavailable. Retry decisions belong to core.
@@ -93,4 +105,25 @@ pub struct RawCreated {
     pub endpoint: Option<String>,
     pub observation: Result<MachineObservation, ProviderError>,
     pub adopted: bool,
+}
+
+impl RawCreated {
+    /// Admission validation shares the same retained-handle path as wire decoding.
+    pub(super) fn checked(
+        mut self,
+        check: impl FnOnce(&MachineObservation) -> Result<(), ProviderError>,
+    ) -> Self {
+        self.observation = self.observation.and_then(|observation| {
+            check(&observation)?;
+            Ok(observation)
+        });
+        self
+    }
+}
+
+/// Position of one child within an admitted fork.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForkSlot {
+    pub index: u32,
+    pub count: u32,
 }

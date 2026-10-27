@@ -76,6 +76,11 @@ Lifecycle operation ownership, idempotency, state events and watch use
 [`acyclic_machines::core`](../../../docs/backends/machines-core.md). Construction
 requires an explicit `OperationRegistry` over the application's canonical Streams
 backend. Restart with that same store; pending outcomes never authorize redispatch.
+Checkpoint inspection and fork sequencing use that same core and the original
+admitted contract, including the opaque provider snapshot address. An untracked
+native snapshot is refused; it cannot inherit a historical contract from its
+source's current mutable state. Accepted native handles remain cleanup debt when
+metadata validation fails, including a collision with an existing logical ID.
 
 Live checks are ignored by default and require `DAYTONA_API_KEY`. Provider checks
 also require `DAYTONA_MACHINES_JOURNAL=/durable/account-specific/directory`:

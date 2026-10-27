@@ -243,6 +243,15 @@ impl OperationRegistry {
                 .and_then(|state| state.native.as_ref())
                 .is_some_and(|binding| binding != &native)
             {
+                // The native mutation already accepted a resource. Refusing its
+                // conflicting logical identity must not drop the new handle.
+                self.claim(
+                    driver,
+                    operation,
+                    &NativeResource::Machine(native.handle.clone()),
+                    adopted,
+                )
+                .await?;
                 return Err(ProviderError::Conflict(
                     "machine identity has a different native binding; recovery: reconcile the original provider resource before retrying".into(),
                 ));

@@ -361,6 +361,7 @@ struct NativeLifecycle {
     expected_handle: Option<&'static str>,
     checkpoint_owner: Option<(OperationRegistry, IdempotencyKey)>,
     value: tokio::sync::Mutex<MachineObservation>,
+    children: tokio::sync::Mutex<BTreeMap<MachineId, MachineObservation>>,
     mutations: AtomicUsize,
     reads: AtomicUsize,
 }
@@ -395,13 +396,17 @@ impl RawMachines for NativeLifecycle {
 
     async fn raw_observe(
         &self,
-        _: MachineId,
+        machine: MachineId,
         _: Option<&NativeBinding>,
         _: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        let child = self.children.lock().await.get(&machine).cloned();
         Ok(RawObservation {
-            machine: self.value.lock().await.clone(),
+            machine: match child {
+                Some(value) => value,
+                None => self.value.lock().await.clone(),
+            },
             settled: true,
         })
     }
@@ -448,7 +453,8 @@ impl RawMachines for NativeLifecycle {
     async fn raw_observe_checkpoint(
         &self,
         handle: &str,
-        source: &MachineObservation,
+        source: MachineId,
+        contract: &MachineContract,
     ) -> Result<Option<CheckpointObservation>, ProviderError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some((core, key)) = &self.checkpoint_owner {
@@ -462,11 +468,38 @@ impl RawMachines for NativeLifecycle {
         }
         Ok(Some(CheckpointObservation {
             id: CheckpointId::from_digest(Sha256::digest(handle.as_bytes()).into()),
-            source: source.id,
-            contract: source.contract.clone(),
+            source,
+            contract: contract.clone(),
             forkable: true,
-            created_at_unix_ms: source.changed_at_unix_ms,
+            created_at_unix_ms: self.value.lock().await.changed_at_unix_ms,
         }))
+    }
+    async fn raw_fork(
+        &self,
+        checkpoint: CheckpointId,
+        native: Option<&NativeBinding>,
+        contract: &MachineContract,
+        slot: ForkSlot,
+        key: IdempotencyKey,
+    ) -> Result<RawCreated, ProviderError> {
+        if native.is_none_or(|native| !native.handle.starts_with("opaque-checkpoint-")) {
+            return Err(ProviderError::Rejected(
+                "internal fork oracle requires the canonical opaque checkpoint address".into(),
+            ));
+        }
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        let id = MachineId::from_digest(Sha256::digest(format!("{key}/{}", slot.index)).into());
+        let mut child = self.value.lock().await.clone();
+        child.id = id;
+        child.contract = contract.clone();
+        child.last_checkpoint = Some(checkpoint);
+        self.children.lock().await.insert(id, child.clone());
+        Ok(RawCreated {
+            handle: format!("opaque-fork-{id}"),
+            endpoint: None,
+            observation: Ok(child),
+            adopted: false,
+        })
     }
     async fn raw_destroy(&self, _: &NativeResource) -> Result<(), ProviderError> {
         Err(ProviderError::Rejected(
@@ -488,6 +521,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
         expected_handle: Some("opaque-running-vm"),
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value),
+        children: tokio::sync::Mutex::default(),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
     };
@@ -645,6 +679,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
     };
@@ -695,6 +730,7 @@ async fn native_binding_observation_event_and_ownership_reopen_from_one_commit()
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
     };
@@ -762,6 +798,7 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
         expected_handle: None,
         checkpoint_owner: Some((core.clone(), key)),
         value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
     };
@@ -856,6 +893,7 @@ async fn creation_reopens_exact_native_binding_and_settlement_without_dispatch()
         expected_handle: None,
         checkpoint_owner: None,
         value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
         mutations: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
     };
@@ -921,6 +959,153 @@ async fn creation_reopens_exact_native_binding_and_settlement_without_dispatch()
             .await?
             .map(|operation| operation.phase),
         Some(OperationPhase::Indeterminate)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_checkpoint_fork_keeps_order_native_addresses_and_exact_replay() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let native = NativeLifecycle {
+        provider: "internal",
+        expected_handle: None,
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    let interval = Duration::from_millis(1);
+    let timeout = Duration::from_secs(5);
+    let MutationOutcome::Checkpointed(checkpoint) = core
+        .create_checkpoint(
+            &native,
+            value.id,
+            IdempotencyKey::new(),
+            interval,
+            timeout,
+            10,
+        )
+        .await?
+    else {
+        return Err("expected checkpoint".into());
+    };
+    let key = IdempotencyKey::new();
+    let count = NonZeroU32::new(2).ok_or("invalid internal count")?;
+    let original = core
+        .fork_checkpoint(&native, checkpoint.id, count, key, interval, timeout)
+        .await?;
+    let MutationOutcome::Forked(children) = &original else {
+        return Err("expected fork".into());
+    };
+    for (index, child) in children.iter().enumerate() {
+        assert_eq!(
+            child.id,
+            MachineId::from_digest(Sha256::digest(format!("{key}/{index}")).into())
+        );
+        assert_eq!(
+            core.native_binding(child.id, "internal")
+                .await?
+                .map(|native| native.handle),
+            Some(format!("opaque-fork-{}", child.id))
+        );
+    }
+    let settlement = core.settled(key).await?;
+    let reads = native.reads.load(Ordering::SeqCst);
+    let mutations = native.mutations.load(Ordering::SeqCst);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.fork_checkpoint(&native, checkpoint.id, count, key, interval, timeout)
+            .await?,
+        original
+    );
+    assert_eq!(core.settled(key).await?, settlement);
+    assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
+    assert!(matches!(
+        core.fork_checkpoint(
+            &native,
+            CheckpointId::new(),
+            count,
+            IdempotencyKey::new(),
+            interval,
+            timeout
+        )
+        .await,
+        Err(ProviderError::NotFound(_))
+    ));
+    assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
+    Ok(())
+}
+
+#[tokio::test]
+async fn conflicting_logical_identity_keeps_new_native_cleanup_without_rebinding() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) =
+        SimulatedMachines::default().create(request.clone()).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let native = NativeLifecycle {
+        provider: "internal",
+        expected_handle: None,
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    core.create_machine(
+        &native,
+        request,
+        Duration::from_millis(1),
+        Duration::from_secs(5),
+    )
+    .await?;
+    let key = IdempotencyKey::new();
+    let result = core
+        .apply_with(
+            &native,
+            key,
+            &"internal duplicate logical identity",
+            async |operation| {
+                core.accept_created(
+                    &native,
+                    operation,
+                    RawCreated {
+                        handle: "new-handle-for-duplicate-logical-id".into(),
+                        endpoint: None,
+                        observation: Ok(value.clone()),
+                        adopted: false,
+                    },
+                    key,
+                )
+                .await
+                .map(MutationOutcome::Created)
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(ProviderError::Conflict(_))));
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.native_binding(value.id, "internal")
+            .await?
+            .map(|native| native.handle),
+        Some("opaque-created-vm".into())
+    );
+    assert_eq!(
+        core.created(operation_id(key)).await?,
+        [machine_resource("new-handle-for-duplicate-logical-id")]
     );
     Ok(())
 }

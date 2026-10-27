@@ -258,14 +258,7 @@ pub fn checkpoint_name(key: IdempotencyKey) -> String {
     format!("acyclic-ckpt-{key}")
 }
 
-/// Position of one child within a fork of `count` children.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ForkSlot {
-    /// Zero-based child index.
-    pub index: u32,
-    /// Number of children the fork requested.
-    pub count: u32,
-}
+pub use acyclic_machines::core::ForkSlot;
 
 /// Builds the labels attached to a sandbox created (`slot` `None`) or forked under `key`.
 #[must_use]
@@ -615,6 +608,11 @@ pub fn snapshot_to_checkpoint(
 ) -> Result<CheckpointObservation, ProviderError> {
     let id = checkpoint_id(&snapshot.id)?;
     let source = match (source, snapshot.source_sandbox_id.as_deref()) {
+        (Some(source), Some(native)) if machine_id(native)? != source => {
+            return Err(ProviderError::Rejected(
+                "native snapshot source contradicts admission; recovery: repair the raw snapshot mapping".into(),
+            ));
+        }
         (Some(source), _) => source,
         (None, Some(sandbox_id)) => machine_id(sandbox_id)?,
         (None, None) => {
@@ -997,6 +995,18 @@ mod tests {
         );
         assert!(checkpoint.forkable);
         assert_eq!(checkpoint.created_at_unix_ms, 1_789_122_300_000);
+        // The recorded response is unchanged; this is an internal admission
+        // mismatch, not a fabricated provider response.
+        assert!(matches!(
+            snapshot_to_checkpoint(
+                &snapshot,
+                Some(MachineId::from_digest([42; 32])),
+                contract(),
+                true,
+                0,
+            ),
+            Err(ProviderError::Rejected(_))
+        ));
         let destroyed = snapshot_to_checkpoint(&snapshot, None, contract(), false, 0).unwrap();
         assert!(!destroyed.forkable);
     }
