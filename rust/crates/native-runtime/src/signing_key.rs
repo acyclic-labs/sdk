@@ -27,6 +27,14 @@ pub struct ProvisionalSigningKey {
     reference: SigningKeyReference,
     cleanup: AtomicBool,
     entry: keyring::Entry,
+    // Declared after the entry: Drop deletes abandoned custody while the
+    // actual credential identity remains exclusively held across processes.
+    _transaction: crate::FileLock,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TRY_TRANSACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl ProvisionalSigningKey {
@@ -77,11 +85,23 @@ impl SigningKeyReference {
             return Err(io::ErrorKind::InvalidData.into());
         }
         let reference = Self(*blake3::hash(seed).as_bytes());
+        let name = blake3::Hash::from_bytes(reference.0).to_hex();
+        let file = crate::private_file::credential_lock(name.as_str())?;
+        let acquire: fn(std::fs::File, crate::FileLockMode) -> io::Result<crate::FileLock> =
+            crate::FileLock::acquire;
+        #[cfg(test)]
+        let acquire = if TRY_TRANSACTION.get() {
+            crate::FileLock::try_acquire
+        } else {
+            acquire
+        };
+        let transaction = acquire(file, crate::FileLockMode::Exclusive)?;
         let entry = reference.entry()?;
         let key = ProvisionalSigningKey {
             reference,
             cleanup: AtomicBool::new(false),
             entry,
+            _transaction: transaction,
         };
         match key.entry.get_secret() {
             Ok(existing) => {
@@ -180,6 +200,61 @@ mod tests {
     use super::*;
     use crate::private_file::{self, PublicationStage};
     use std::io::Write as _;
+
+    #[test]
+    fn shared_seed_publication_survives_another_owner_abandoning() -> io::Result<()> {
+        for former_unlocked in [true, false] {
+            let root = tempfile::tempdir()?;
+            let seed = Zeroizing::new(new_key()?);
+            let first = SigningKeyReference::retain(&seed)?;
+            let reference = first.reference();
+            if former_unlocked {
+                // Actual former transaction: its cleanup guard outlived the
+                // acquisition, so another independently located owner entered.
+                first._transaction.unlock()?;
+            }
+            TRY_TRANSACTION.set(true);
+            let contender = SigningKeyReference::retain(&seed);
+            TRY_TRANSACTION.set(false);
+            let publish = |key: &ProvisionalSigningKey| -> io::Result<()> {
+                let bytes = serde_json::to_vec(&key.reference()).map_err(io::Error::other)?;
+                assert!(private_file::publish_new(
+                    &root.path().join("copied-owner"),
+                    &root.path().join("copied-next"),
+                    |file| file.write_all(&bytes),
+                    |stage| { key.observe_publication(stage); Ok(()) },
+                )?);
+                Ok(())
+            };
+            if former_unlocked {
+                let contender = contender?;
+                publish(&contender)?;
+            } else {
+                assert!(matches!(contender, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+            }
+            let failed = private_file::publish_new(
+                &root.path().join("original-owner"),
+                &root.path().join("original-next"),
+                |_| Err(io::ErrorKind::Interrupted.into()),
+                |stage| { first.observe_publication(stage); Ok(()) },
+            );
+            assert!(failed.is_err());
+            drop(first);
+            if !former_unlocked {
+                let contender = SigningKeyReference::retain(&seed)?;
+                publish(&contender)?;
+            }
+            assert!(root.path().join("copied-owner").is_file());
+            let reopened = reference.with_seed(|stored| bool::from(stored.ct_eq(&*seed)));
+            assert_eq!(reopened.is_ok(), !former_unlocked,
+                "abandonment deleted another published owner's credential");
+            if !former_unlocked {
+                assert!(reopened?);
+                reference.entry()?.delete_credential().map_err(|_| unavailable())?;
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn provisional_keys_follow_actual_owner_publication_at_every_cut() -> io::Result<()> {

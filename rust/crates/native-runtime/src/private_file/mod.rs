@@ -106,6 +106,30 @@ pub fn open_or_create(path: &Path) -> io::Result<File> {
     }
 }
 
+/// One stable lock inode for a user-owned OS credential identity. Unlike a
+/// fixture or owner's directory, this namespace cannot vary with TMPDIR, HOME,
+/// or the path of a copied owner record. Never unlink these lock inodes.
+pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
+    #[cfg(any(test, feature = "test-support"))]
+    let root = {
+        static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(std::env::temp_dir).clone()
+    };
+    #[cfg(all(unix, not(any(test, feature = "test-support"))))]
+    let root = std::path::PathBuf::from("/tmp");
+    #[cfg(unix)]
+    let user = effective_user().to_string();
+    #[cfg(all(windows, not(any(test, feature = "test-support"))))]
+    let root = windows::user_data_directory().map_err(windows::io_error)?;
+    #[cfg(windows)]
+    let user = "user";
+    // A fixture credential exists in this process only. Its lock namespace
+    // follows that same custody boundary, without changing the locking API.
+    #[cfg(any(test, feature = "test-support"))]
+    let identity = format!("fixture-{}-{identity}", std::process::id());
+    open_or_create(&root.join(format!("acyclic-custody-{user}-{identity}.lock")))
+}
+
 /// Reject an existing nonprivate entry while permitting a missing destination.
 pub fn validate_destination(path: &Path) -> io::Result<()> {
     validate_destination_with(path, |path| open(path, false))
