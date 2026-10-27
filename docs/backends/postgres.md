@@ -1,5 +1,13 @@
 # PostgreSQL Stream
 
+The storage-selection draft depends on Streams surface PR #1705 for the
+prepare/durability/install correction described below. Those three signed
+changes were transferred to its sole owner and removed from this branch;
+the rebased storage draft has not been qualified. Historical receipts below
+remain tied to their recorded source. Full endpoint observation also awaits
+the canonical asynchronous policy-revalidation and durable filesystem-watch
+surfaces; this draft must not ship before those dependencies are integrated.
+
 Enable `acyclic-stream/postgres` and call
 `postgres::PostgresStream::connect(connection_string, namespace)`. Each namespace
 is an independent Stream provider in the caller-owned database. The adapter
@@ -91,8 +99,9 @@ That run also passed both local host baselines (6.38 s), the cross-session and
 listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
-fixtures compiled for wasm. Adapter inventory is 491 Rust lines plus 13 SQL
-lines; the shared journal-orchestration extraction remains follow-up #1629.
+fixtures compiled for wasm. The current storage draft's adapter inventory is
+495 Rust lines plus 13 SQL lines, pending the #1705 integration; the shared
+journal-orchestration extraction remains follow-up #1629.
 
 The shared prepare/durability/install correction passed all 390 Stream library
 tests in 8.65 s, with no ignored or filtered tests. A real SQL observation of 48
