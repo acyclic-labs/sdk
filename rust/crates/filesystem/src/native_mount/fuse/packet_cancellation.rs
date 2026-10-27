@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Wake, Waker};
 
-pub(super) fn register<T: Wake>(
+pub(super) fn register<T: Wake + Send + Sync + 'static>(
     work: &NativeMaterializationWork,
     owner: &Arc<T>,
 ) -> Result<Cancelled<'static>, NativeMountError> {

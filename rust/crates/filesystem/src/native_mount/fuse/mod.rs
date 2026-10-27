@@ -19,7 +19,6 @@ use crate::materializer::NativeResourceCredit::{Copy, Items};
 use fuser::{FileAttr, FileType, FopenFlags, INodeNo, InitFlags, TimeOrNow};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::OnceLock;

@@ -26,7 +26,11 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
     let work = cache_work(FINITE_CACHE_BUDGET, &crate::CancellationToken::new());
     let baseline = work.live_allocation_bytes();
     let (socket, _frontend) = UnixStream::pair()?;
-    let device = VringControl::new(socket, NonZeroU16::new(256).ok_or(libc::EINVAL)?, &work)?;
+    let device = VringControl::new(
+        socket,
+        NonZeroU16::new(256).ok_or("nonzero maximum queue size")?,
+        &work,
+    )?;
     let (kick, same_counter) = counter()?;
     device.set_kick(0, Some(kick))?;
     // Duplicated SCM_RIGHTS descriptors have different fd numbers, but refer
@@ -44,7 +48,11 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
     device.set_call(0, Some(shared_call))?;
     device.set_call(1, Some(duplicate_call))?;
 
-    let polled = device.queue(0)?.kick.clone().ok_or(libc::EIO)?;
+    let polled = device
+        .queue(0)?
+        .kick
+        .clone()
+        .ok_or("original kick missing")?;
     let retained = work.live_allocation_bytes();
     device.set_kick(0, None)?;
     assert_eq!(work.live_allocation_bytes(), retained);

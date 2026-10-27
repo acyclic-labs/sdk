@@ -573,7 +573,8 @@ impl FuseProjection {
                 let whence = input.u32()? as i32;
                 input.take(4)?;
                 input.end()?;
-                output.u64(self.seek(inode, handle, offset, whence, work)?)?;
+                let offset = self.seek(inode, handle, offset, whence, work)?;
+                output.u64(u64::try_from(offset).map_err(|_| libc::EOVERFLOW)?)?;
             }
             47 => {
                 let handle = input.u64()?;
