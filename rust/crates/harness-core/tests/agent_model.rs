@@ -775,9 +775,11 @@ async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other()
     assert_eq!(spawns(&first.outs), [one.clone()]);
     assert!(spawns(&second.outs).is_empty());
     assert_eq!(
-        second.state.spawn_outcome(&one),
+        first.state.spawn_outcome(&one),
         Some(&SpawnOutcome::Spawned { child })
     );
+    // Each state holds only its own step's outcomes.
+    assert_eq!(second.state.spawn_outcome(&one), None);
     assert_eq!(
         second.state.spawn_outcome(&two),
         Some(&SpawnOutcome::Refused {

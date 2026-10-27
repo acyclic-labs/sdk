@@ -7,6 +7,7 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod commit;
+#[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
@@ -30,7 +31,6 @@ pub use driver::{
     ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
     turn_id,
 };
-#[cfg(feature = "filesystem")]
 pub(crate) use handler::checkpoint_state;
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
@@ -38,7 +38,7 @@ pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, MAX_SPAWN_OUTCOMES, Out, SpawnOutcome,
+    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, SpawnOutcome,
     SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child,
     step,
 };

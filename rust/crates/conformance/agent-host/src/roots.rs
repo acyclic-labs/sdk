@@ -162,13 +162,15 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         _ => {}
     }
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = Arc::new(objects);
+    let observed = (objects.clone(), bucket.clone());
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: acyclic_fs::Fs::new(
                 acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                LogicalObjectStore::new(Arc::new(objects), bucket),
+                LogicalObjectStore::new(objects, bucket),
                 EmbeddedCapabilities::MEMORY,
             ),
             provider: private.volume.provider().clone(),
@@ -229,6 +231,24 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             Err(format!("covering admission was refused: {error}").into())
         }
         (_, Ok(_)) => Err(format!("{case:?}: admission prepared a root it does not cover").into()),
-        (_, Err(_)) => Ok(()),
+        (_, Err(_)) => {
+            // A refusal writes no volume object either.
+            use acyclic_objects::v1::ObjectsProvider as _;
+            let (objects, bucket) = observed;
+            let written = objects
+                .list(acyclic_objects::v1::wire::ListObjectsRequest {
+                    bucket: Some(bucket),
+                    ..Default::default()
+                })
+                .await?
+                .entries
+                .len();
+            if written != 0 {
+                return Err(
+                    format!("{case:?}: a refused admission wrote {written} objects").into(),
+                );
+            }
+            Ok(())
+        }
     }
 }
