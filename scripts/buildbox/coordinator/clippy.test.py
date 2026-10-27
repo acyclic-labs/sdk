@@ -285,7 +285,7 @@ class ClippyDiagnostics(unittest.TestCase):
         # Rust source. No Cargo compiler or handwritten tool output is used.
         scripts = self.root / 'scripts'
         scripts.mkdir()
-        for name in ['gate-rust-format.sh', 'qualify-rustfmt.mjs']:
+        for name in ['gate-rust-format.sh', 'qualify-rustfmt.mjs', 'rustfmt-manifests.py']:
             shutil.copyfile(HERE.parents[1] / name, scripts / name)
         (self.root / 'Cargo.toml').write_text('[package]\nname="stdio-ownership"\nversion="0.0.0"\nedition="2024"\n')
         (self.root / 'src').mkdir()

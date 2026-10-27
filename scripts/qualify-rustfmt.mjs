@@ -8,7 +8,6 @@ import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TOML } from "bun";
 
 const VENDORED = ":(exclude)rust/vendor/**";
 // capture.json, review.json and sources.json within this evidence archive bind
@@ -20,13 +19,15 @@ const CAPTURED_EVIDENCE = ":(exclude)scripts/tests/fixtures/proof-policy/**";
 // [workspace.package] edition (false when absent, null for no workspace root),
 // `edition` the package edition, "inherit", or null for a virtual manifest.
 export function parseManifest(text) {
-  const manifest = TOML.parse(text);
-  const edition = manifest.package?.edition;
-  return {
-    workspace: manifest.workspace ? manifest.workspace.package?.edition ?? false : null,
-    edition: manifest.package ? edition?.workspace === true ? "inherit" : edition ?? "2015" : null,
-    ...(manifest.package?.workspace === undefined ? {} : { workspacePath: manifest.package.workspace }),
-  };
+  return parseManifests({ "Cargo.toml": text })["Cargo.toml"];
+}
+
+// The planner uses Python's standard tomllib. Parse the entire manifest set in
+// one invocation, independently of the JavaScript runtime running this gate.
+export function parseManifests(texts) {
+  return JSON.parse(execFileSync(process.platform === "win32" ? "python" : "python3", [
+    fileURLToPath(new URL("./rustfmt-manifests.py", import.meta.url)),
+  ], { input: JSON.stringify(texts), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
 }
 
 const nearest = (path, table) => {
@@ -40,8 +41,9 @@ const nearest = (path, table) => {
 export function filesByEdition(root) {
   const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { cwd: root, encoding: "utf8" })
     .split("\0").filter(Boolean);
-  const manifests = new Map(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
-    .map((path) => [dirname(path), parseManifest(readFileSync(resolve(root, path), "utf8"))]));
+  const texts = Object.fromEntries(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
+    .map((path) => [path, readFileSync(resolve(root, path), "utf8")]));
+  const manifests = new Map(Object.entries(parseManifests(texts)).map(([path, manifest]) => [dirname(path), manifest]));
   const workspaceEdition = (dir) => {
     const explicit = manifests.get(dir).workspacePath;
     if (explicit !== undefined) {
