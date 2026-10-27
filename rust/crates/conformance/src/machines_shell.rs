@@ -176,8 +176,38 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
         "foreign agent rejection",
     )?;
 
-    // Omitted timeout uses the same portable default. Split a multibyte source
-    // across the protocol's 4096-byte argument bound without quoting changes.
+    // The native default and longer explicit deadlines remain valid ShellInput,
+    // but exceed the canonical Machines admission. Refuse before any guest IO.
+    let refused = format!("{workspace}/shell-refused-{}", OperationId::new());
+    let mutation = format!("printf unexpected > '{refused}'");
+    for (source, timeout) in [
+        (mutation.clone(), None),
+        (mutation.clone(), Some(120)),
+        (format!("{mutation}\n#{}", "x".repeat(32_768)), Some(5)),
+    ] {
+        require(
+            matches!(
+                completed(
+                    &shell,
+                    context(&storage, &grants, 65_536, None)?,
+                    &source,
+                    timeout
+                )
+                .await,
+                Err(Error::Machines(acyclic_machines::ProviderError::Invalid(_)))
+            ),
+            "canonical command admission before dispatch",
+        )?;
+    }
+    guest(
+        provider.as_ref(),
+        machine.id,
+        &format!("test ! -e '{refused}'"),
+    )
+    .await?;
+
+    // Split a multibyte source across the protocol's 4096-byte argument bound
+    // without quoting changes, using a supported explicit deadline.
     let padding = "\u{e9}'\"$()".repeat(700);
     let source =
         format!("# .... {padding}\nprintf '%s\\n' 'portable source'; test \"$#\" -eq 0\n\n");
@@ -185,14 +215,14 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
         &shell,
         context(&storage, &grants, 65_536, None)?,
         &source,
-        None,
+        Some(5),
     )
     .await?;
     require(
         ordinary.value["stdout"] == "portable source\n"
             && ordinary.value["exit_code"] == 0
             && ordinary.value["stop"].is_null(),
-        "default timeout and long UTF-8 source",
+        "long UTF-8 source",
     )?;
 
     // The tool future must publish both streams before the guest can exit.

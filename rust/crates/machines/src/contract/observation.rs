@@ -171,7 +171,7 @@ impl ExecCommand {
             || argv.iter().map(String::len).sum::<usize>() > 32768
             || !(1..=60000).contains(&timeout_ms)
         {
-            return Err(ProviderError::Invalid("invalid guest command".into()));
+            return Err(ProviderError::Invalid("guest command admission failed; recovery: supply 1..64 NUL-free arguments within 4096 bytes each and 32768 bytes total, and an explicit timeout within 1..60000 milliseconds".into()));
         }
         Ok(Self {
             argv,
