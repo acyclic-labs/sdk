@@ -912,21 +912,35 @@ impl TurnDriver for ToolSpawner {
 }
 
 #[tokio::test]
-async fn a_client_spawn_counts_against_a_tool_spawn_in_the_same_step() -> Result {
+async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
     let (root, mut state) = one_below_the_child_limit()?;
     state
         .queued
         .push_back(TurnInput::Approval { id: intent("q") });
     let driver = ToolSpawner(Mutex::new(None));
-    let stepped = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
-    // The turn ran with the client's child already open, and the tool's
+    // The spawn's step carries only the spawn: no turn runs while its child
+    // is being created, so none can write to it in the creating commit.
+    let requested = step(&driver, &root, Some(state), 2, spawn_request(1)).await?;
+    assert_eq!(*driver.0.lock().expect("seen lock"), None);
+    let (client, child) = requested_child(&root, 1)?;
+    assert_eq!(spawns(&requested.outs), [client.clone()]);
+    assert_eq!(requested.outs.len(), 1);
+    assert_eq!(
+        requested.state.spawn_outcome(&client),
+        SpawnOutcome::Spawned {
+            child: child.clone()
+        }
+    );
+    // The queued turn continues at once, on the next step.
+    assert_eq!(requested.alarm, Alarm::At(CONTINUE_NOW));
+    let stepped = step(&driver, &root, Some(requested.state), 2, Wake::Alarm).await?;
+    // It runs with the client's child open and reachable, and the tool's
     // spawn past the limit is refused rather than failing every retry.
     assert_eq!(
         *driver.0.lock().expect("seen lock"),
         Some(MAX_OPEN_CHILDREN)
     );
-    let (client, child) = requested_child(&root, 1)?;
-    assert_eq!(spawns(&stepped.outs), [client.clone()]);
+    assert!(spawns(&stepped.outs).is_empty());
     assert_eq!(
         stepped.state.spawn_outcome(&client),
         SpawnOutcome::Spawned { child }

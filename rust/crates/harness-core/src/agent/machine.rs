@@ -416,6 +416,17 @@ pub async fn step<T: TurnDriver + ?Sized>(
 ) -> Result<Step, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
+    // A requested spawn's step carries only that spawn: its child is created
+    // by this step's commit, so no turn may reach it until the commit lands.
+    // Pending turn work continues at once on the next step (the kernel's
+    // alarm), where the child is open and reachable.
+    let spawn_wake = matches!(
+        wake,
+        Wake::Inbox {
+            record: InboxRecord::Spawn(_),
+            ..
+        }
+    );
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
     let previous = state
@@ -456,8 +467,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
                 brief: Some(spawn.brief.into_bytes()),
                 volumes: Vec::new(),
             });
-            // Applied before the turn runs, so its tools see this child; a
-            // turn in progress keeps the slots its recorded spawns take.
+            // A turn in progress keeps the slots its recorded spawns take.
             let free = state.free_children();
             apply_spawns(&mut state, &mut outs, 0, free);
             state
@@ -467,7 +477,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     let applied = outs.len();
     if state.closed {
         cascade(&mut state, &mut outs)?;
-    } else {
+    } else if !spawn_wake {
         run(driver, &mut state, cursor, alarm_wake, &mut outs).await?;
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
