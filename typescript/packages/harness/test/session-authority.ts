@@ -20,7 +20,7 @@ async function key() {
   return { ...pair, publicBytes: new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)) };
 }
 async function sign(key: CryptoKey, transcript: Uint8Array) {
-  return new Uint8Array(await crypto.subtle.sign("Ed25519", key, transcript));
+  return new Uint8Array(await crypto.subtle.sign("Ed25519", key, new Uint8Array(transcript)));
 }
 export async function bindLocalSession(stream: WasmStream): Promise<void> {
   const environment = await key(), account = await key(), runtime = await key(), tip = await key();

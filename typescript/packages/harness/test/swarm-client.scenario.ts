@@ -13,7 +13,7 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
   await initializeClientQueries();
   const append = (path: string, value: string) => appendRecord(stream, path, value);
   const entry = (id: string) => conversation(id, inbox);
-  for (const [agent, id] of [[root, rootId], [child, childId]]) {
+  for (const [agent, id] of [[root, rootId], [child, childId]] as const) {
     await append(`${agent}/conversation`, entry(id));
     await append(`harness/status/${id}`, `{"phase":"running","cursor":${inbox}}`);
   }

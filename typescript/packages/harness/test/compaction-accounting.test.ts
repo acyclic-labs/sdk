@@ -113,7 +113,7 @@ test("Rust execution checkpoint wire preserves ref-only observations and rejects
   const event = { kind: "context_compacted", step: 7, projection: file, compaction: file, accounting: file } as const;
   const bytes = contracts.encodeCanonicalJson(event);
   const decoded = contracts.decodeExecutionEventJson(bytes);
-  expect(decoded).toEqual(event);
+  expect(decoded as unknown).toEqual(event);
   expect(contracts.encodeCanonicalJson(decoded)).toEqual(bytes);
   if (decoded.kind !== "context_compacted") throw new Error("wrong generated event kind");
   expect(decoded.accounting.descriptor.byte_length).toBe(4);
