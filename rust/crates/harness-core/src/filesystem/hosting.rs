@@ -1,7 +1,7 @@
 //! The admitted root of one hosted agent tree: the association of a host's
 //! signing custody, the admission its platform verified for the caller, and
-//! the actual agent and volume stores, made once and used for every root the
-//! caller creates. The same [`Bound`] serves local, self-hosted and managed
+//! the one placement its agents and volumes are both built on, made once and
+//! used for every root the caller creates. The same [`Bound`] serves local, self-hosted and managed
 //! hosting; only how the platform verifies its caller differs.
 //!
 //! A root's fresh volumes and its adoption are one commit:
@@ -10,15 +10,24 @@
 //! [`Prepared`] commit owns its fresh volumes' publication holds until it
 //! settles, so no unpublished object it names is collected before then.
 
-use super::{FilesystemHost, TurnAdmission, agent_authority};
-use crate::{
-    agent::{AgentHost, AgentId, AgentPath, Error, ForkAdopted, IntentId, Spawn, VolumeBinding},
-    conversation::{ContentGrant, FileRef, VolumeOperation},
-    core::{Authority, AuthorityRoot, Scope},
+use super::{
+    FilesystemContentPublisher, FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost,
+    TurnAdmission, TurnExecutors, TurnLimits, agent_authority,
 };
+use crate::{
+    OperationId,
+    agent::{
+        AgentHost, AgentId, AgentPath, Error, ExecutorDriver, ForkAdopted, IntentId, Spawn,
+        VolumeBinding,
+    },
+    conversation::{ContentAccess, ContentGrant, ContentPublisher, FileRef, VolumeOperation},
+    core::{Authority, AuthorityRoot, Scope},
+    resources::ProviderRef,
+};
+use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
 use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, FilesystemCommit,
-    FilesystemCommitOutcome, StreamAuthorityStore, WorkBudget, WorkspaceName,
+    AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, EmbeddedCapabilities,
+    FilesystemCommit, FilesystemCommitOutcome, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
     distributed::AuthorityProvider,
 };
 use std::sync::Arc;
@@ -98,11 +107,41 @@ pub enum RootSubmission {
     Unknown(Prepared),
 }
 
-/// A host's custody, a caller's admission and the stores they act on, bound
-/// once. Every root and turn of this binding uses these same stores.
+/// The one admitted stream instance and its placement. Agents, their actor
+/// state and their volumes' authority all live on `stream`, so a root's
+/// volumes and adoption, and every spawn, commit together.
+pub struct Placement<P, O> {
+    /// The admitted stream instance.
+    pub stream: Arc<P>,
+    /// Volume content objects.
+    pub objects: O,
+    /// What the volume store guarantees.
+    pub capabilities: EmbeddedCapabilities,
+    /// The filesystem provider every volume of this placement names.
+    pub provider: ProviderRef,
+    /// Account and namespace of the agents' actors.
+    pub within: ActorReference,
+}
+
+/// How hosted agents run their turns.
+pub struct Turns {
+    /// Each turn's executor.
+    pub executors: Arc<dyn TurnExecutors>,
+    /// Bounds of every turn.
+    pub limits: TurnLimits,
+    /// Bounds of every agent actor.
+    pub actors: ActorLimits,
+    /// Alarm clock.
+    pub clock: Arc<dyn Clock>,
+}
+
+/// A host's custody, a caller's admission and the one placement they act on,
+/// bound once. Every root, turn and spawn of this binding uses this placement.
 pub struct Bound<P: AuthorityProvider + 'static, O: 'static> {
     issuer: AuthorityRoot,
     admission: TurnAdmission,
+    within: ActorReference,
+    maximum_bytes: u64,
     agents: Arc<AgentHost<P>>,
     volumes: Arc<Host<P, O>>,
 }
@@ -113,49 +152,94 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Binds `caller`, as the host's platform verified it, to the host's
-    /// signing custody `issuer` and its stores. `volumes`' authority must be
-    /// `agents`' stream, so a root's volumes and adoption commit together.
-    #[must_use]
+    /// signing custody `issuer` over `placement`.
+    ///
+    /// # Errors
+    /// When the placement's provider or limits are invalid.
     pub fn admitted(
         issuer: AuthorityRoot,
         caller: VerifiedCaller,
-        agents: Arc<AgentHost<P>>,
-        volumes: Arc<Host<P, O>>,
-    ) -> Self {
+        placement: Placement<P, O>,
+        turns: Turns,
+    ) -> Result<Self, Error> {
         Self::new(
             issuer,
             TurnAdmission::Admitted {
                 audience: caller.audience,
                 scope: caller.scope,
             },
-            agents,
-            volumes,
+            placement,
+            turns,
         )
     }
 
     /// The explicit self-host enrollment: the host's own custody is the root
     /// of every agent it creates. Never selected by a request.
-    #[must_use]
+    ///
+    /// # Errors
+    /// As [`Self::admitted`].
     pub fn local_root(
         issuer: AuthorityRoot,
-        agents: Arc<AgentHost<P>>,
-        volumes: Arc<Host<P, O>>,
-    ) -> Self {
-        Self::new(issuer, TurnAdmission::LocalRoot, agents, volumes)
+        placement: Placement<P, O>,
+        turns: Turns,
+    ) -> Result<Self, Error> {
+        Self::new(issuer, TurnAdmission::LocalRoot, placement, turns)
     }
 
-    const fn new(
+    fn new(
         issuer: AuthorityRoot,
         admission: TurnAdmission,
-        agents: Arc<AgentHost<P>>,
-        volumes: Arc<Host<P, O>>,
-    ) -> Self {
-        Self {
+        placement: Placement<P, O>,
+        turns: Turns,
+    ) -> Result<Self, Error> {
+        let Placement {
+            stream,
+            objects,
+            capabilities,
+            provider,
+            within,
+        } = placement;
+        let volumes = FilesystemHost::new(
+            Fs::new(
+                StreamAuthorityStore::new(Arc::clone(&stream)),
+                objects,
+                capabilities,
+            ),
+            &provider,
+            None,
+        )
+        .map_err(turn)?;
+        let maximum_bytes = turns.limits.maximum_bytes;
+        let driver = ExecutorDriver::new(Arc::new(FilesystemTurnHost::new(
+            Arc::clone(&stream),
+            Arc::clone(&volumes),
+            issuer.clone(),
+            admission.clone(),
+            turns.executors,
+            turns.limits,
+        )));
+        let spawns = Arc::new(FilesystemSpawnVolumes::new(
+            Arc::clone(&volumes),
+            issuer.clone(),
+            admission.clone(),
+            maximum_bytes,
+        ));
+        let agents = Arc::new(AgentHost::with_spawn_volumes(
+            stream,
+            driver,
+            within.clone(),
+            turns.actors,
+            turns.clock,
+            spawns,
+        )?);
+        Ok(Self {
             issuer,
             admission,
+            within,
+            maximum_bytes,
             agents,
             volumes,
-        }
+        })
     }
 
     /// The admission every agent of this binding derives its scope from, for
@@ -170,6 +254,62 @@ where
     #[must_use]
     pub const fn agents(&self) -> &Arc<AgentHost<P>> {
         &self.agents
+    }
+
+    /// Account and namespace of this binding's agent actors.
+    #[must_use]
+    pub const fn within(&self) -> &ActorReference {
+        &self.within
+    }
+
+    /// Stages `text` once on `agent`'s private volume under the agent's
+    /// admitted authority, keyed by the agent, the input `kind` and `intent`,
+    /// so every retry names the same file.
+    ///
+    /// # Errors
+    /// When the admission does not write the agent's private volume, or the
+    /// store fails.
+    pub async fn stage_text(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        intent: &IntentId,
+        text: &str,
+    ) -> Result<FileRef, Error> {
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
+            .map_err(turn)?;
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
+        for part in [agent.as_str(), kind, intent.as_str()] {
+            hasher.update(part.as_bytes());
+            hasher.update(&[0]);
+        }
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+        let operation = OperationId::from_bytes(operation);
+        let publisher = FilesystemContentPublisher::new(
+            Arc::clone(&self.volumes),
+            &authority.private.volume,
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        let path = format!("inputs/{operation}.txt");
+        let staged = publisher
+            .stage_once(
+                operation,
+                &path,
+                text.as_bytes(),
+                "text/plain",
+                kind,
+                ContentAccess::default(),
+            )
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        Ok(staged.0)
     }
 
     /// Prepares root `request` under intent `intent`.

@@ -81,6 +81,7 @@ once_cell = "1.21.3"
 notify = { workspace = true, optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
@@ -163,6 +164,7 @@ shuttle = "=0.8.1"
 tracing-subscriber.workspace = true
 loom = "0.7.2"
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local", "test-support"] }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util", "process"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }

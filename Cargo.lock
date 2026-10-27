@@ -375,6 +375,7 @@ name = "acyclic-harness"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
