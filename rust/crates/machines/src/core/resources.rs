@@ -41,25 +41,33 @@ impl OperationRegistry {
             return Ok(Vec::new());
         }
         let path = self.journal.path(&format!("ops/{}/native", record.id))?;
-        let mut records = self
-            .journal
-            .provider
-            .read(ReadRequest { path, from, limit })
-            .await
-            .map_err(storage)?;
         let mut values = Vec::new();
-        while let Some(row) = records.try_next().await.map_err(storage)? {
-            if row.sequence != from + values.len() as u64 || values.len() as u64 >= u64::from(limit)
-            {
+        while values.len() < limit as usize {
+            let count = (limit as usize - values.len()).min(acyclic_stream::MAX_ITEMS) as u32;
+            let start = from + values.len() as u64;
+            let end = start + u64::from(count);
+            let mut records = self
+                .journal
+                .provider
+                .read(ReadRequest {
+                    path: path.clone(),
+                    from: start,
+                    limit: count,
+                })
+                .await
+                .map_err(storage)?;
+            while let Some(row) = records.try_next().await.map_err(storage)? {
+                if row.sequence != from + values.len() as u64 || row.sequence >= end {
+                    return Err(storage(acyclic_stream::StreamError::InvalidResponse));
+                }
+                values.push(
+                    serde_json::from_slice(&row.value)
+                        .map_err(|_| storage(acyclic_stream::StreamError::InvalidResponse))?,
+                );
+            }
+            if from + values.len() as u64 != end {
                 return Err(storage(acyclic_stream::StreamError::InvalidResponse));
             }
-            values.push(
-                serde_json::from_slice(&row.value)
-                    .map_err(|_| storage(acyclic_stream::StreamError::InvalidResponse))?,
-            );
-        }
-        if values.len() as u64 != u64::from(limit) {
-            return Err(storage(acyclic_stream::StreamError::InvalidResponse));
         }
         Ok(values)
     }
