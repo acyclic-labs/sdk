@@ -1,0 +1,49 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "UserPromptSubmit": [
+     {
+      "hooks": [
+       {
+        "type": "command",
+        "shell": "sh",
+        "command": "cat >/dev/null; printf '%s' '{\"decision\":\"block\",\"reason\":\"HOOK-BLOCK-KITE\"}'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "turns": [],
+ "expect": {
+  "text": null,
+  "outcome": "failed",
+  "error": "HOOK-BLOCK-KITE",
+  "files": {
+   "plans/a.md": "before\n"
+  }
+ },
+ "platforms": {
+  "windows": {
+   "home": {
+    ".claude/settings.json": {
+     "hooks": {
+      "UserPromptSubmit": [
+       {
+        "hooks": [
+         {
+          "type": "command",
+          "shell": "powershell",
+          "command": "$null=[Console]::In.ReadToEnd(); [Console]::Write('{\"decision\":\"block\",\"reason\":\"HOOK-BLOCK-KITE\"}')"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   }
+  }
+ }
+}

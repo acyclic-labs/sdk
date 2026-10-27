@@ -161,6 +161,15 @@ pub enum HookFailure {
     Block,
 }
 
+impl HookFailure {
+    /// Whether a failure under this policy blocks `event`. A `Stop` failure
+    /// never blocks: blocking a stop asks the model to continue a finished
+    /// turn.
+    pub(crate) fn blocks(self, event: HookEvent) -> bool {
+        self == Self::Block && event != HookEvent::Stop
+    }
+}
+
 impl HookSpec {
     pub(super) fn validate(&self) -> Result<()> {
         let (command, arguments_valid) = match &self.run {

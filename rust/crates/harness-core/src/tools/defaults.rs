@@ -7,14 +7,19 @@ pub fn defaults() -> Result<ToolRegistry> {
     Ok(registry)
 }
 
-/// Names of every standard tool, in catalog order.
+/// Names of every standard tool: the catalog's, in order, then the agent tools.
 #[must_use]
 pub fn names() -> Vec<String> {
-    super::catalog().map(|spec| spec.name.to_owned()).collect()
+    super::catalog()
+        .map(|spec| spec.name)
+        .chain(super::AGENT_TOOLS)
+        .map(str::to_owned)
+        .collect()
 }
 
-/// Binds the standard tools `names` selects that the task's resources can
-/// back. A name outside the catalog is refused.
+/// Binds the catalog tools `names` selects that the task's resources can
+/// back. Agent tool names are bound per turn by [`super::bind_agent_tools`];
+/// any other name is refused.
 #[doc(hidden)]
 pub fn bind_defaults(
     registry: &mut ToolRegistry,
@@ -24,10 +29,10 @@ pub fn bind_defaults(
     volume: bool,
     workspace: bool,
 ) -> Result<()> {
-    if let Some(unknown) = names
-        .iter()
-        .find(|name| !super::catalog().any(|spec| spec.name == name.as_str()))
-    {
+    if let Some(unknown) = names.iter().find(|name| {
+        !super::catalog().any(|spec| spec.name == name.as_str())
+            && !super::AGENT_TOOLS.contains(&name.as_str())
+    }) {
         return Err(crate::Error::Invalid(format!("unknown tool {unknown}")));
     }
     for spec in super::catalog() {

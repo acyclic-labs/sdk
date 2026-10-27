@@ -89,6 +89,8 @@ pub struct LocalHarness {
     prompt: Option<String>,
     /// Open children each agent may have at once.
     max_children: Option<u32>,
+    /// The agent tools selected among the standard tools, bound per turn.
+    agent_tools: Vec<String>,
     active_directory: String,
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]

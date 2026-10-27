@@ -258,15 +258,17 @@ fn definition<T: JsonSchema>(name: &str, description: &str) -> Result<ToolDefini
 
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
 /// `effects` and its private `writer`, and selects them for the model over any
-/// other revision of the same names. `max_children` bounds the agent's open
-/// children; `spawn` refuses a child beyond it.
+/// other revision of the same names. Only the agent tools `names` selects are
+/// bound, so a host omits or swaps each one like any standard tool.
+/// `max_children` bounds the agent's open children; `spawn` refuses a child
+/// beyond it.
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
     effects: Arc<dyn TurnEffects>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
-    max_children: Option<u32>,
+    (names, max_children): (&[String], Option<u32>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
         agent: agent.path.clone(),
@@ -301,6 +303,9 @@ pub fn bind_agent_tools(
             )?,
         ),
     ] {
+        if !names.iter().any(|selected| selected == name) {
+            continue;
+        }
         let tool = Tool {
             hook_names: &[],
             definition,

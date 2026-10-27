@@ -49,7 +49,7 @@ impl StockExecution<'_> {
     /// indeterminate in the workspace executor and must never be replayed as absent.
     pub(super) async fn tool_hook_output(
         &self,
-        _operation: OperationId,
+        operation: OperationId,
         site: HookSite,
         invocation: &ToolInvocation,
         response: Option<&ToolResult>,
@@ -86,8 +86,10 @@ impl StockExecution<'_> {
             Error::Unsupported("tool hook workspace execution is not bound".into())
         })?;
         let phase = crate::hooks::effects::phase_operation(invocation.operation_id, event);
-        let context =
+        let mut context =
             crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id)?;
+        // The outcome is retained under the turn that called the tool.
+        context.model_turn = (operation, 0);
         match executor
             .run_hooks(
                 (&hooks.rules, hooks.manifest),
@@ -194,11 +196,12 @@ impl StockExecution<'_> {
         let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
             Error::Unsupported("stop hook workspace execution is not bound".into())
         })?;
-        let context = crate::runtime::ToolContext::new(
+        let mut context = crate::runtime::ToolContext::new(
             Arc::clone(task),
             step_operation(operation, step),
             "stop",
         )?;
+        context.model_turn = (operation, step);
         match executor
             .run_hooks(
                 (&hooks.rules, hooks.manifest),

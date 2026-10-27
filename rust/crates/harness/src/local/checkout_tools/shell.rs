@@ -86,7 +86,7 @@ impl CheckoutTools {
     }
 }
 
-struct StopOnDrop(native_process::capture::OwnerControl);
+pub(super) struct StopOnDrop(pub(super) native_process::capture::OwnerControl);
 
 impl Drop for StopOnDrop {
     fn drop(&mut self) {

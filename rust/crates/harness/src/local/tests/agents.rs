@@ -2,7 +2,7 @@
 //! the root agent's actor runs its turn on the stock executor.
 
 use super::super::LocalAgents;
-use super::{text, volume, volume_config};
+use super::{ScriptedModelProvider, text, volume, volume_config};
 use crate::{
     Error, LocalHarness, Result,
     agent::{
@@ -11,6 +11,7 @@ use crate::{
 };
 use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
 use futures::TryStreamExt;
+use serde_json::json;
 use std::sync::Arc;
 
 fn agent(error: impl std::fmt::Display) -> Error {
@@ -319,4 +320,145 @@ async fn follow_tool_output(
     })
     .await
     .map_err(|_| Error::Conflict("a revoked observation stayed open".into()))
+}
+
+/// A local HTTP peer that answers each request with its own ordinal, so a
+/// hook that ran again would add different context.
+#[cfg(unix)]
+fn counting_server() -> Result<(u16, Arc<std::sync::atomic::AtomicUsize>)> {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(agent)?;
+    let port = listener.local_addr().map_err(agent)?.port();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let served = Arc::clone(&count);
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let body = format!("HOOK-HTTP-{ordinal}");
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    Ok((port, count))
+}
+
+/// A turn whose `UserPromptSubmit` hook called an HTTP peer is interrupted
+/// after the hook's outcome was recorded; the reopened agent replays the
+/// turn from `hooks/{turn}/{op}.json`, with no new hook run or HTTP call,
+/// and the model sees the identical recorded context.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let (port, calls) = counting_server()?;
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
+    let hook = format!("cat >/dev/null; curl -sS http://127.0.0.1:{port}/");
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        serde_json::to_vec(&json!({"hooks": {"UserPromptSubmit": [{"hooks": [
+            {"type": "command", "shell": "sh", "command": hook}
+        ]}]}}))
+        .map_err(agent)?,
+    )
+    .map_err(agent)?;
+    let workspace = directory.path().join("work");
+    std::fs::create_dir_all(&workspace).map_err(agent)?;
+    let open = |provider: Arc<ScriptedModelProvider>| {
+        let (workspace, home) = (workspace.clone(), home.clone());
+        let state = directory.path().join("state");
+        async move {
+            let config = super::checkout_config(&workspace, (super::model()?, provider))?
+                .state_directory(state)
+                .settings(
+                    crate::native_settings::SettingsConfig::new(&workspace, &home)
+                        .codex_home(home.join(".codex")),
+                );
+            Ok::<_, Error>(Arc::new(LocalHarness::open(config).await?))
+        }
+    };
+    let pending = super::scripted([crate::test_support::ScriptedTurn::Events(vec![
+        crate::test_support::ScriptedEvent::Pending {},
+    ])]);
+    let harness = open(pending.clone()).await?;
+    let id = IntentId::try_from("hooked").map_err(agent)?;
+    harness.prompt(&id, "hello").await.map_err(agent)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while pending.request_count() == 0 {
+        if std::time::Instant::now() > deadline {
+            return Err(Error::Conflict(
+                "the hooked turn never reached the model".into(),
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let recorded = serde_json::to_string(&pending.request(0)).map_err(agent)?;
+    assert!(recorded.contains("HOOK-HTTP-1"), "{recorded}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // Crash: the turn is still waiting on the model when the harness drops.
+    drop(harness);
+    let resumed = Arc::new(
+        ScriptedModelProvider::new([crate::test_support::ScriptedTurn::Text("done".into())])
+            .with_context_capacity(super::capacity())
+            .with_reconciliations([crate::test_support::ScriptedReconciliation {
+                orphan: true,
+                observed: Vec::new(),
+                continuation: Some(vec![
+                    serde_json::from_value(json!({"kind": "content", "delta": "done"}))
+                        .map_err(agent)?,
+                    serde_json::from_value(
+                        json!({"kind": "completed", "metadata": {"finish": "stop"}}),
+                    )
+                    .map_err(agent)?,
+                ]),
+            }]),
+    );
+    let harness = open(resumed.clone()).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let entries = settled(&agents, &root).await?;
+    assert_eq!(entries.len(), 1);
+    // The replay ran no hook and made no HTTP call.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // A re-dispatched request carries the identical recorded context.
+    if let Some(request) = resumed.request(0) {
+        let replayed = serde_json::to_string(&request).map_err(agent)?;
+        assert!(
+            replayed.contains("HOOK-HTTP-1") && !replayed.contains("HOOK-HTTP-2"),
+            "{replayed}"
+        );
+    }
+    // The outcome is the one file recorded under the turn, beside its marker.
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let state = agents.state(&root).await.map_err(agent)?;
+    let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
+    let private = &state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
+        .ok_or_else(|| Error::NotFound("private volume".into()))?
+        .volume;
+    assert_eq!(names(&harness, private, "hooks").await?, [turn.to_string()]);
+    let recorded = names(&harness, private, &format!("hooks/{turn}")).await?;
+    let [outcome, marker] = recorded.as_slice() else {
+        return Err(Error::Conflict(format!(
+            "one hook outcome, got {recorded:?}"
+        )));
+    };
+    assert_eq!(
+        outcome.strip_suffix(".json"),
+        marker.strip_suffix(".started")
+    );
+    Ok(())
 }
