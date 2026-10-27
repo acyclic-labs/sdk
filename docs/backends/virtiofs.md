@@ -91,19 +91,22 @@ and socket implementation (job `1793061176450-13144-f5af43b2`). This proves
 compilation, not a public source admission, protocol interoperability or mount.
 
 The latest completed Linux filesystem library run, including every existing
-ignored mount test, finished in 30.35 seconds: 2,478 passed and 23 failed,
-with zero ignored or filtered tests (source `338cfe73fcfae8117cc29121cd758682d1d01589`,
-job `1793067232971-47857-a6f47503`). Test compilation took 577 seconds;
+ignored mount test, finished in 30.40 seconds: 2,480 passed and 21 failed,
+with zero ignored or filtered tests (source `cb33ccdecaac7dd39faa19c0573bcb1dfa99339b`,
+job `1793068106729-51192-eb8cbc3c`). Test compilation took 570 seconds;
 the preceding source's compile-only gate passed in 96 seconds.
 Worker retirement, event-counter custody,
 shared-view isolation, node-facts writes, original finite cancellation, terminal
 source refusal and both kernel packet replays passed. The first-cause ordering
-and immediate post-effect failure changes compiled and ran. The live mount
-cases failed the second-write-pending assertion in cross-descriptor fsync;
-the open-reader visibility vector also failed. There were also 21 failures
-routed to the filesystem owner. This is not a passing suite. The two failing
-mount vectors now reuse the real packet recorder to report kernel completion
-order and handle IDs on failure; that diagnostic awaits qualification.
+and immediate post-effect failure changes compiled and ran. All FUSE vectors
+and Linux mount cases passed in this run. The preceding source
+`338cfe73fcfae8117cc29121cd758682d1d01589` failed cross-descriptor fsync's
+second-write-pending assertion and the open-reader visibility vector. Only
+test diagnostics changed between these runs: those intermittent failures are
+still unresolved. The two vectors reuse the real packet recorder to report
+kernel completion order and handle IDs on failure; neither emitted a failure
+trace in this run. The remaining 21 failures are routed to the filesystem
+owner. This is not a passing suite.
 
 A new real QEMU/cloud-hypervisor vector requires prepared guest artifacts:
 
@@ -120,7 +123,7 @@ cloud-hypervisor booted real guests, mounted the standard socket, wrote/read
 the test bytes, deleted the file and verified absence, unmounted and powered
 off with exit status zero. Both servers positively joined with `transport=Ok(())`
 and no callback failure. QEMU recorded 755 backend reads, 11 backend writes and
-3,253 callback items; cloud-hypervisor recorded 709 reads, 11 writes and 3,216
+3,253 callback items; cloud-hypervisor recorded 755 reads, 11 writes and 3,254
 items. These are private fixture-source
 interoperability results, not public hosted admission or page-fault revocation
 proof. The canonical receipt confirms home, targets, outer targets and outer
