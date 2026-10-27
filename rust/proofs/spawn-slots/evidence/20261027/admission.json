@@ -45,5 +45,20 @@
   "rust_positive_tests": 5,
   "positive_source": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
   "raw_log_root": "Q:/lanes/verify/evidence/1697/retained-raw",
-  "raw_log_custody": "Captured logs are outside the product repository; logs ending .json/.patch in this index remain relative to this manifest. SHA256 values are unchanged."
+  "raw_log_custody": "Captured logs are outside the product repository; logs ending .json/.patch in this index remain relative to this manifest. SHA256 values are unchanged.",
+  "rebased_refresh": {
+    "source": "74efc341e2448fd5a5756a6a74c12801ec66ade2",
+    "report": "rebase-report.json",
+    "report_sha256": "1ba0ed09ab91f16b7f56b2f1f96af5c4a41f2e44ab81bbcbb83804b9e925c3fb",
+    "archive_sha256": "d32d7c89a0f89f774823948ebc696cbae4b4f85895b01265fe720c360e29ad72",
+    "archive": "Q:/lanes/verify/evidence/1697/rebased-74efc34-captured.tar.gz",
+    "actual_remote_root": "/mnt/bb/verify-1697/74efc34/rebase\r",
+    "local_raw_root": "Q:/lanes/verify/evidence/1697/rebased-74efc34/rebase",
+    "status": "PASS",
+    "positive_tests": 6,
+    "additional_production_controls": 1,
+    "affected_check_seconds": 80.69565678900108,
+    "total_seconds": 400.67296024200186,
+    "transport_note": "PowerShell stdin added a trailing CR to the evidence directory name. Located by exact unique report-bearing directory; raw member bytes retained, tar root normalized. Earlier capture refusals did not rerun any proof."
+  }
 }

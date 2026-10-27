@@ -1,0 +1,186 @@
+{
+  "mode": "rebase",
+  "steps": [
+    {
+      "step": "toolchain",
+      "argv": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 0.03203956299694255,
+      "log_sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "step": "lane-artifacts",
+      "argv": [
+        "node",
+        "scripts/check-lane-artifacts.mjs",
+        "6e889edf0f906250cfdd4bf4428d019e78e47b23",
+        "HEAD"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 0.11441492399899289,
+      "log_sha256": "8e903f4e166718b9eb049fe2838a4c499b350df9d199c920f612cb526175eaf0"
+    },
+    {
+      "step": "rebase-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 159.24002902400025,
+      "log_sha256": "76c832d3a5254814c8eed7ac1592535d6eb6aa9441dac8d3681b4bdedd194b91"
+    },
+    {
+      "step": "record_bounds_cover_every_kind_and_json_escape_expansion",
+      "argv": [
+        "/mnt/bb/jobs/job-879n_53m/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "record_bounds_cover_every_kind_and_json_escape_expansion",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 0.1644155989997671,
+      "log_sha256": "505674bfd04c61a86f5cdeb3d7aa8a63c0d213c3bd2d447143781efc491432df"
+    },
+    {
+      "step": "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
+      "argv": [
+        "/mnt/bb/jobs/job-879n_53m/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 0.016341206999641145,
+      "log_sha256": "c2641161898b5686674508938fb22df45fb17c4582ea97adf893c09a4a22e220"
+    },
+    {
+      "step": "waiting_host_status_requires_a_bounded_name",
+      "argv": [
+        "/mnt/bb/jobs/job-879n_53m/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "waiting_host_status_requires_a_bounded_name",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 0.003837039999780245,
+      "log_sha256": "8444f88cd7bd4a761b09694d8daf3256b6c76c023ee57fd461ccda57d3fee379"
+    },
+    {
+      "step": "slot-schedules",
+      "argv": [
+        "/mnt/bb/jobs/job-879n_53m/target/debug/deps/agent_model-8fcbf6d21bf03433",
+        "slot_schedules::",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 0.06416592900131945,
+      "log_sha256": "82f97c6c09a312862be9d9ad1ae9ed00c2487493475dc7a54179040613c36a94"
+    },
+    {
+      "step": "affected-check",
+      "argv": [
+        "cargo",
+        "check",
+        "--locked",
+        "--all-features",
+        "-p",
+        "acyclic-harness-core",
+        "-p",
+        "acyclic-stream",
+        "-p",
+        "acyclic-contract-derive"
+      ],
+      "cwd": "/mnt/bb/verify-1697/74efc34/source",
+      "exit": 0,
+      "seconds": 80.69565678900108,
+      "log_sha256": "502082386dc0bc766cf7aac51f7a0ecd4194b47ca9fbf8e4a6573c3715d44745"
+    },
+    {
+      "step": "host-bound-control-build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-harness-core",
+        "--features",
+        "filesystem",
+        "--lib",
+        "--test",
+        "agent-model",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/mnt/bb/jobs/job-879n_53m/tmp/verify-1697-host-bound-control",
+      "exit": 0,
+      "seconds": 158.67044725399683,
+      "log_sha256": "2db2ed8872131038cdb3f5732096b0a77cdcb30d9ee996589403cca27a9b0919"
+    },
+    {
+      "step": "host-bound-control",
+      "argv": [
+        "/mnt/bb/jobs/job-879n_53m/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+        "waiting_host_status_requires_a_bounded_name",
+        "--nocapture"
+      ],
+      "cwd": "/mnt/bb/jobs/job-879n_53m/tmp/verify-1697-host-bound-control",
+      "exit": 101,
+      "seconds": 0.0038701500016031787,
+      "log_sha256": "18c317d4f140de3e13dfe9940478d080fe96eeed8f9db5a75b2aef108cbbdb6e"
+    }
+  ],
+  "status": "PASS",
+  "source": "74efc341e2448fd5a5756a6a74c12801ec66ade2",
+  "executables": [
+    {
+      "step": "rebase-build",
+      "path": "/mnt/bb/jobs/job-879n_53m/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "0d247acdd444f9f2b53e0fb392515e93cc123fc2baa4bcf96848c82cdedeac88"
+    },
+    {
+      "step": "rebase-build",
+      "path": "/mnt/bb/jobs/job-879n_53m/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "6665e6b46fe99fc9db7a0b4cf3f4dbf50bb382a23376f24fa50213817a40f85d"
+    },
+    {
+      "step": "host-bound-control-build",
+      "path": "/mnt/bb/jobs/job-879n_53m/target/debug/deps/agent_model-8fcbf6d21bf03433",
+      "sha256": "e3df437bf6e23f21948f71c097454403588883252acbffc671cdcd23d752a035"
+    },
+    {
+      "step": "host-bound-control-build",
+      "path": "/mnt/bb/jobs/job-879n_53m/target/debug/deps/acyclic_harness_core-aded3d50ba7fb6a0",
+      "sha256": "618c57286f180585375d7b34599fc5175bf0a301dbd2036a6c679a0bc831e3ce"
+    }
+  ],
+  "mutations": [
+    {
+      "id": "host-bound-control",
+      "path": "rust/crates/harness-core/src/agent/records.rs",
+      "before_sha256": "1c41889c33b45073e8b51a8a942b3f52b85c8c432c85219daaf4d9c9aa395d9c",
+      "after_sha256": "1465f0b62d459ad566a493a8b0765596611509b0217708c9a55f0a69d0ef4f73",
+      "before": "Phase::WaitingHost { host } => check_text(host)",
+      "after": "Phase::WaitingHost { host: _ } => Ok(())"
+    }
+  ],
+  "seconds": 400.67296024200186
+}

@@ -70,7 +70,9 @@
       "id": "record_bounds",
       "proofs": [
         "harness-core: record_bounds_cover_every_kind_and_json_escape_expansion",
-        "harness-core: every_record_a_step_writes_fits_its_limit_at_the_configured_maxima"
+        "harness-core: every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
+        "harness-core: waiting_host_status_requires_a_bounded_name",
+        "agent-model: an_invalid_host_wait_fails_before_publishing_status_or_effects"
       ],
       "controls": [
         {
@@ -78,6 +80,12 @@
           "before": "pub const MAX_PATH_BYTES: usize = 4096;",
           "after": "pub const MAX_PATH_BYTES: usize = 32768;",
           "expected": "unchanged canonical-encoding bound assertion fails; refusal is not counted as a successful bound"
+        },
+        {
+          "file": "rust/crates/harness-core/src/agent/records.rs",
+          "before": "Phase::WaitingHost { host } => check_text(host)",
+          "after": "Phase::WaitingHost { host: _ } => Ok(())",
+          "expected": "unchanged bounded host admission assertion fails"
         }
       ]
     }
@@ -122,6 +130,16 @@
       "report": "evidence/20261027/mutants-report.json",
       "kind": "production-runtime-controls",
       "seconds": 465.306162616
+    },
+    {
+      "kind": "rebased-record-transition-and-host-control",
+      "report": "evidence/20261027/rebase-report.json",
+      "source": "74efc341e2448fd5a5756a6a74c12801ec66ade2",
+      "positive_tests": 6,
+      "actual_negative_controls": 1,
+      "all_features_check": "PASS",
+      "seconds": 400.67296024200186,
+      "raw_log_root": "Q:/lanes/verify/evidence/1697/rebased-74efc34/rebase"
     }
   ],
   "remaining": [
