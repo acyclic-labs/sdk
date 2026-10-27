@@ -52,6 +52,78 @@ fn recorded_kernel_packets_replay_without_mounting() -> Result<(), Box<dyn std::
     replay(&capture.packets)
 }
 
+#[test]
+fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let capture: KernelCapture = serde_json::from_str(include_str!(
+        "../../../../fixtures/fuse/linux-kernel-packets.json"
+    ))?;
+    let (source, _) = shared_sources(posix_config())?;
+    seed(&source)?;
+    let work = cache_work(FINITE_HANDLER_POLICY, &crate::CancellationToken::new());
+    let core = projection_core(Arc::new(source), FINITE_HANDLER_POLICY, work.cancellation())?;
+    let _active = NativeMountWorkScope::new(&core, &work)?;
+    let protocol = PacketSession::new(
+        PacketRouter::Single(FuseProjection {
+            core: Arc::clone(&core),
+        }),
+        MAXIMUM_WRITE,
+        std::num::NonZeroU32::new(4096).ok_or("nonzero packet page size")?,
+    )?;
+    let mut response = super::super::fuse_vec(4096, &work)?;
+    response.resize(4096, 0);
+    let packet = |opcode| {
+        capture
+            .packets
+            .iter()
+            .find(|packet| {
+                PacketRequest::parse(&packet.request).is_ok_and(|request| request.opcode == opcode)
+            })
+            .ok_or("recorded real kernel packet missing")
+    };
+    protocol
+        .publish(
+            &PacketRequest::parse(&packet(26)?.request)
+                .map_err(std::io::Error::from_raw_os_error)?,
+            &mut response,
+            |_| Ok(()),
+        )
+        .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+    let result = core.request::<()>(|_| {
+        Err(NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::MissingCustody,
+        ))
+    });
+    assert_eq!(core.finish(result), Err(libc::EIO));
+    let before = work.receipt();
+    for expected in [libc::EIO, libc::ENODEV] {
+        let failure = protocol.publish(
+            &PacketRequest::parse(&packet(1)?.request)
+                .map_err(std::io::Error::from_raw_os_error)?,
+            &mut response,
+            |bytes| {
+                let mut reply = PacketInput::new(bytes.ok_or(libc::EPROTO)?);
+                reply.u32()?;
+                assert_eq!(reply.u32()? as i32, -expected);
+                Ok(())
+            },
+        );
+        assert_eq!(failure.err().map(|failure| failure.errno()), Some(expected));
+        assert_eq!(work.receipt(), before, "no fresh source callback allowance");
+        if expected == libc::EIO {
+            assert!(matches!(
+                core.take_handler_failure()
+                    .ok_or("original failure missing")?
+                    .0,
+                NativeMountError::Materialization(
+                    crate::NativeTreeMaterializationError::MissingCustody
+                )
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Capture {
     pub(in crate::native_mount::fuse) fn current() -> Option<Arc<Self>> {
         RECORDING.with_borrow(Clone::clone)
