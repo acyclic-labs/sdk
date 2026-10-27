@@ -157,3 +157,18 @@ adapters on demand (the default features include local storage):
 ```sh
 cargo test --locked -p acyclic-fs --features conformance,memory --test main public_conformance
 ```
+
+The Postgres/MinIO adapter runs the same public suite and retains the independent
+provider-reopen check through `bash scripts/backends/storage-conformance.sh`.
+The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` providers:
+
+```sh
+CHROMEDRIVER=chromedriver CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test --locked -p acyclic-fs --no-default-features --features browser,memory,conformance \
+  --target wasm32-unknown-unknown --test browser_commit public_conformance
+```
+
+`Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection
+visits preserve the original owner; async storage calls retain the original
+`AuthorityWork`, buffers and publication holds. Counts describe the wrapped
+provider boundary, rather than physical traffic hidden inside a provider.
