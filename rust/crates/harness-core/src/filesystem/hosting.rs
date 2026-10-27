@@ -119,7 +119,9 @@ pub struct Placement<P, O> {
     pub capabilities: EmbeddedCapabilities,
     /// The filesystem provider every volume of this placement names.
     pub provider: ProviderRef,
-    /// Account and namespace of the agents' actors.
+    /// Account and namespace of the agents' actors. The binding's runtime
+    /// claims only these, so each tree served on a shared stream needs its
+    /// own namespace, and one binding serves all of its roots' trees.
     pub within: ActorReference,
 }
 
