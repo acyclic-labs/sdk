@@ -146,5 +146,15 @@ class CommitTests(unittest.TestCase):
         self.assertEqual((self.terminated, relaunch.retirements()), (['i-old'], []))
 
 
+    def test_concurrent_relaunch_never_starts_while_one_holds_the_lock(self):
+        started = []
+        with patch.object(relaunch, '_relaunch', lambda dry_run=False: started.append(1) or 'i-x'):
+            with open(self.dir/'relaunch.lock', 'a') as held:
+                relaunch.fcntl.flock(held, relaunch.fcntl.LOCK_EX)
+                self.assertIsNone(relaunch.relaunch())
+            self.assertEqual(started, [])
+            self.assertEqual((relaunch.relaunch(), started), ('i-x', [1]))
+
+
 if __name__ == '__main__':
     unittest.main()

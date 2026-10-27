@@ -22,6 +22,7 @@ sources after aws.env.
 """
 import base64
 import datetime
+import fcntl
 import hashlib
 import hmac
 import io
@@ -355,6 +356,18 @@ def retire_pending(keep=()):
 
 
 def relaunch(dry_run=False):
+    """One recovery at a time: the lock covers reading settings, launching,
+    committing and every retirement, so a concurrent run never retires the
+    pending replacement of another."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_DIR/'relaunch.lock', 'a') as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            alert('BUILDBOX_RELAUNCH', 'another relaunch is in progress; not starting a second'); return None
+        return _relaunch(dry_run)
+
+
+def _relaunch(dry_run=False):
     cfg = json.loads((HERE/'relaunch.json').read_text())
     snapshot = CONFIG_DIR/'tools-snapshot.tar'
     if not dry_run and not snapshot.exists(): raise RuntimeError('no tool snapshot; run `relaunch.py snapshot` while bb2 is up')
