@@ -468,7 +468,6 @@ impl Error {
         use crate::wire::ErrorCode;
         match self.cause() {
             Self::TaskFiles(error) => match error.as_ref() {
-                #[cfg(feature = "filesystem")]
                 crate::task_volume::Error::FileRead(error) => error.code(),
                 crate::task_volume::Error::FenceConflict
                 | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,

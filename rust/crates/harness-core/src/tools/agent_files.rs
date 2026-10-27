@@ -151,7 +151,6 @@ fn classify(error: crate::task_volume::Error) -> Result<Rejected> {
             "agent inspection exceeds its file-count or render bound; inspect a narrower path",
         )),
         Volume::InvalidPath => Ok(invalid(error)),
-        #[cfg(feature = "filesystem")]
         Volume::FileRead(error) => Err(error),
         Volume::Unauthorized
         | Volume::Storage(_)
