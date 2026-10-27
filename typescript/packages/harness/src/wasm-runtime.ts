@@ -100,6 +100,14 @@ export async function ensureConnectionWasm(): Promise<void> {
   }
 }
 
+/** Defaults are data and need neither a server nor provider admission. */
+export async function ensurePresetWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (typeof exports.graphcoderPreset !== "function") {
+    throw new Error("harness WASM does not provide the required preset export");
+  }
+}
+
 /** Browser authority and agent hosts share the one physical WASM instance. */
 export async function ensureBrowserWasm(): Promise<void> {
   assertBrowserWasmExports(await loadHarnessWasm());

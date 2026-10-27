@@ -2,6 +2,7 @@
 
 #![doc = include_str!("../../docs/client/README.md")]
 
+pub use acyclic_harness_core::preset::Preset;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},

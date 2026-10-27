@@ -20,6 +20,16 @@ the selected endpoint. Browsers pass a credential explicitly or supply the
 environment object. These resolved options are configuration, not a session
 capability or proof that a server is reachable.
 
+Preset data and defaults also have one Rust definition. Native callers use
+`acyclic_harness::client::Preset::graphcoder()` (the original
+`acyclic_harness::preset::Preset` path is the same type). TS callers use
+`initializeClientPreset()` followed by `graphcoderPreset()`. Its generated
+`Preset` and approval-policy types come from those same Rust definitions. For
+example, `const preset = graphcoderPreset(); preset.model = "provider/model";`
+changes one default without a second configuration builder. All seven fields
+remain ordinary configuration data. Producing this value creates no session or
+agent and does not apply configuration to a remote host.
+
 Call `initializeClientQueries()` before constructing client objects. `AgentClient`
 folds the selected conversation, status and filesystem streams through one bounded
 `WireSession`. `PageWindow` retains complete provider pages and their opaque
@@ -67,7 +77,7 @@ an authorized, verified host reader; a filesystem follow record is metadata, not
 the file's contents.
 
 The one-credential connect/config facade and local-default example still require
-the public host bootstrap, root binding, shared preset and immutable file reader.
+the public host bootstrap, root binding, preset application and immutable file reader.
 These are not supplied by the low-level session welcome or root-discovery command.
 The legacy task workflow, object facade and Harness protobuf subpaths are retired.
 

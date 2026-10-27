@@ -6,6 +6,10 @@ pub use connection::{
     resolve_connection_options,
 };
 
+/// The same preset and defaults applied by local and hosted harnesses.
+#[cfg(any(feature = "grpc", feature = "wasm"))]
+pub use acyclic_harness_core::preset::Preset;
+
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
