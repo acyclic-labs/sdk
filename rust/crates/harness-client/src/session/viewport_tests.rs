@@ -222,7 +222,7 @@ fn hundred_thousand_agent_tree_has_bounded_viewport() {
             .values_mut()
             .chain(session.resource_views.values_mut())
         {
-            fill(view);
+            fill(&mut view.view);
         }
         assert!(session.retained_bytes() <= 12 * 8192);
         peak_bytes = peak_bytes.max(session.retained_bytes());
@@ -253,15 +253,21 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let (mut session, scheduler) = client();
     let (streams, resources) = tree.visible(0);
     session.replace_interests(streams, resources).unwrap();
+    let old_path = session.views.keys().next().unwrap().clone();
+    fill(&mut session.views.get_mut(&old_path).unwrap().view);
+    let old_bytes = session.retained_bytes();
+    let old_next = session.view(&old_path).unwrap().next_sequence();
     let revision = session.revision();
     let (streams, mut resources) = tree.visible(32);
-    resources.extend(std::iter::repeat_n(
-        follow("fs:/volume/excess/output".into()),
-        17,
+    resources.extend((0..5).map(|id| follow(format!("fs:/volume/excess{id}/output"))));
+    assert!(matches!(
+        session.replace_interests(streams, resources),
+        Err(WireSessionError::Demand(DemandError::SelectedCapacity))
     ));
-    assert!(session.replace_interests(streams, resources).is_err());
     assert_eq!(session.revision(), revision);
     assert_eq!(session.followed_interests(), 12);
+    assert_eq!(session.retained_bytes(), old_bytes);
+    assert_eq!(session.view(&old_path).unwrap().next_sequence(), old_next);
     // Negative control: the old stream-only replacement retains off-screen
     // tool panes. The identical current-resource oracle rejects that shape.
     let (streams, resources) = tree.visible(32);
@@ -309,4 +315,97 @@ fn agent_viewport_releases_output_panes_on_scroll_out() {
         .unwrap();
     assert_eq!(client.residency(), (8, 8, 0));
     scheduler.tasks.lock().unwrap().clear();
+}
+
+#[test]
+fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
+    for resource in [false, true] {
+        for failed in [false, true] {
+            let tree = Tree::new(64);
+            let (mut session, scheduler) = client();
+            let (streams, resources) = tree.visible(0);
+            let path = streams[0].0.clone();
+            let request = if resource {
+                resources[0].clone()
+            } else {
+                streams[0].1.clone()
+            };
+            let name = validate_resource_subscription(&resources[0]).unwrap().0;
+            session.replace_interests(streams, resources).unwrap();
+            let terminal = if failed {
+                vec![Err(StreamError::Unavailable)]
+            } else {
+                Vec::new()
+            };
+            let follow = Subscription {
+                state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+            };
+            let mut context = Context::from_waker(std::task::Waker::noop());
+            if resource {
+                fill(&mut session.resource_views.get_mut(&name).unwrap().view);
+                session.resources.insert(name.clone(), follow);
+                assert!(session.poll_resource(&name, &mut context).is_ready());
+                assert!(!session.is_resource_following(&name));
+            } else {
+                fill(&mut session.views.get_mut(&path).unwrap().view);
+                session.follows.insert(path.clone(), follow);
+                assert!(session.poll_stream(&path, &mut context).is_ready());
+                assert!(!session.is_following(&path));
+            }
+            let view = |session: &WireSession| {
+                let view = if resource {
+                    session.resource_view(&name)
+                } else {
+                    session.view(&path)
+                }
+                .unwrap();
+                (
+                    view.retained_bytes(),
+                    view.next_sequence(),
+                    view.revision(),
+                    view.record(0).unwrap().value.as_ptr(),
+                )
+            };
+            let retained = view(&session);
+            // Negative-control oracle: the old live-map membership check calls
+            // this terminal interest new despite its populated retained fold.
+            let would_reopen = if resource {
+                !session.resources.contains_key(&name)
+            } else {
+                !session.follows.contains_key(&path)
+            };
+            assert!(would_reopen && retained.0 > 0);
+            for _ in 0..2 {
+                let (streams, resources) = tree.visible(0);
+                session.replace_interests(streams, resources).unwrap();
+                assert_eq!(view(&session), retained);
+                assert_eq!(session.followed_interests(), 11);
+                assert_eq!(session.retained_views(), 12);
+            }
+            // Retained ownership still binds the credential, even without a
+            // live follow. A replacement cannot relabel another user's output.
+            let revision = session.revision();
+            let (mut streams, mut resources) = tree.visible(0);
+            if resource {
+                resources[0].credential = 1;
+            } else {
+                streams[0].1.credential = 1;
+            }
+            assert!(matches!(
+                session.replace_interests(streams, resources),
+                Err(WireSessionError::InvalidSubscription)
+            ));
+            assert_eq!(session.revision(), revision);
+            assert_eq!(view(&session), retained);
+            if resource {
+                session.begin_resource(request).unwrap();
+                assert_eq!(session.resource_view(&name).unwrap().retained_bytes(), 0);
+            } else {
+                session.begin_stream(path.clone(), request).unwrap();
+                assert_eq!(session.view(&path).unwrap().retained_bytes(), 0);
+            }
+            assert_eq!(session.followed_interests(), 12);
+            scheduler.tasks.lock().unwrap().clear();
+        }
+    }
 }
