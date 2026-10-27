@@ -19,6 +19,7 @@ mod layout;
 mod lower;
 mod machine;
 mod records;
+mod reply;
 mod volumes;
 pub use volumes::SpawnVolumes;
 
@@ -37,14 +38,15 @@ pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Wait, Wake, step,
+    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Queued, Step, TurnDriver, TurnFuture,
+    TurnInput, TurnStep, Wait, Wake, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
     ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
     MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, StatusRecord, VolumeBinding,
 };
+pub use reply::{Reply, reply};
 
 /// Agent model failures.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +60,9 @@ pub enum Error {
     /// The recipient agent was never created.
     #[error("no such agent")]
     NoSuchAgent,
+    /// A committed record contradicts the request's identity.
+    #[error("agent request conflicts: {0}")]
+    Conflict(&'static str),
     /// Completion is uncertain; retry this exact request until it resolves.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<acyclic_stream::CommitRequest>),
@@ -81,6 +86,7 @@ impl Error {
             Self::Path(_) => "invalid_agent_path",
             Self::Record(_) => "invalid_agent_record",
             Self::NoSuchAgent => "no_such_agent",
+            Self::Conflict(_) => "agent_conflict",
             Self::Unknown(_) => "agent_unknown",
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",

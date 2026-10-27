@@ -62,18 +62,14 @@ pub async fn prompt_settled(
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
     use crate::agent::{
-        AgentOutcome, AgentRecord as _, ConversationEntry, Delivered, IntentId, Phase,
-        StatusRecord, TurnInput,
+        AgentOutcome, AgentRecord as _, Delivered, IntentId, Phase, Reply, StatusRecord,
     };
-    use acyclic_stream::{FollowFilter, ReadRequest, StreamProvider as _};
+    use acyclic_stream::{FollowFilter, StreamProvider as _};
     use futures::TryStreamExt as _;
     let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
     let stream = |error: acyclic_stream::StreamError| crate::Error::Storage(error.to_string());
-    let inbox = match harness
-        .prompt(&IntentId::try_from(id).map_err(agent)?, prompt)
-        .await
-        .map_err(agent)?
-    {
+    let id = IntentId::try_from(id).map_err(agent)?;
+    let inbox = match harness.prompt(&id, prompt).await.map_err(agent)? {
         Delivered::Committed { inbox } => inbox,
         Delivered::Closed => return Err(crate::Error::Conflict("root agent is closed".into())),
     };
@@ -103,36 +99,21 @@ pub async fn prompt_settled(
             _ => {}
         }
     }
-    let path = root.conversation().map_err(agent)?;
-    // The prompt's turn is among the last entries: later input is still queued.
-    const RECENT: u32 = 16;
-    let tail = provider.tail(path.clone()).await.map_err(stream)?;
-    let entries: Vec<_> = provider
-        .read(ReadRequest {
-            path,
-            from: tail.saturating_sub(u64::from(RECENT)),
-            limit: RECENT,
-        })
-        .await
-        .map_err(stream)?
-        .try_collect()
-        .await
-        .map_err(stream)?;
-    for record in entries.iter().rev() {
-        let entry = ConversationEntry::decode(&record.value).map_err(agent)?;
-        if matches!(entry.input, TurnInput::Message { inbox: settled, .. } if settled == inbox) {
+    match agents.reply(root, &id, inbox).await.map_err(agent)? {
+        Reply::Answered { entry, .. } => {
             let bytes = harness
                 .client_reader()?
                 .read(&entry.output, 1 << 20, None, None)?
                 .await?;
             let output = serde_json::from_slice(&bytes)
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-            return Ok(PromptOutcome::Settled(entry, output));
+            Ok(PromptOutcome::Settled(entry, output))
         }
+        reply => Err(crate::Error::NotFound(format!(
+            "settled turn of prompt {}: {reply:?}",
+            id.as_str()
+        ))),
     }
-    Err(crate::Error::NotFound(format!(
-        "settled turn of prompt {id}"
-    )))
 }
 
 #[cfg(all(
