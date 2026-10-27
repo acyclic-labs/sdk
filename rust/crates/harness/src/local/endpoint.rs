@@ -16,11 +16,14 @@ use tokio::sync::broadcast;
 /// The connection's one credential slot: it drives and observes the root.
 pub(super) const CREDENTIAL: u32 = 0;
 
-/// Failed deliveries the in-process host reports for one actor.
+/// Failed deliveries the in-process host reports for one actor, and the
+/// harness hosting it: an in-process connection keeps its host running, so
+/// its prompts' turns run for as long as any clone of it lives.
 #[derive(Clone)]
 pub(super) struct Failures {
     pub(super) sender: broadcast::Sender<AgentFailure>,
     pub(super) actor: ActorReference,
+    pub(super) _host: Arc<LocalHarness>,
 }
 
 /// A session bound to one served agent tree.
@@ -172,6 +175,7 @@ impl LocalHarness {
         let failures = Failures {
             sender: hosted.failures().clone(),
             actor: hosted.agents().actor(server.root()).map_err(storage)?,
+            _host: Arc::clone(self),
         };
         Connection::bind(session, observation.credential, Some(failures)).await
     }
