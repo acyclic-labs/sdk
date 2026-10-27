@@ -27,50 +27,9 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGua
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
-#[allow(
-    clippy::type_complexity,
-    reason = "The test gate pairs one admission signal with release of that same write."
-)]
-static TEST_WRITE_GATE: OnceLock<
-    Mutex<
-        Option<(
-            std::sync::mpsc::SyncSender<()>,
-            std::sync::mpsc::Receiver<()>,
-        )>,
-    >,
-> = OnceLock::new();
-
-#[cfg(test)]
 pub(super) use tests::packets::trace_kernel_packets;
-
-/// Pauses one FUSE write after handle admission.
 #[cfg(test)]
-pub(super) fn pause_next_write_after_admission() -> (
-    std::sync::mpsc::Receiver<()>,
-    std::sync::mpsc::SyncSender<()>,
-) {
-    let (admitted_send, admitted_receive) = std::sync::mpsc::sync_channel(0);
-    let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
-    *TEST_WRITE_GATE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some((admitted_send, release_receive));
-    (admitted_receive, release_send)
-}
-
-#[cfg(test)]
-fn pause_test_write() {
-    let Some((admitted, release)) = TEST_WRITE_GATE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-    else {
-        return;
-    };
-    let _ = admitted.send(());
-    let _ = release.recv_timeout(Duration::from_secs(10));
-}
+pub(super) use tests::write_gate::pause_next_write_after_admission;
 
 const ROOT_INODE: u64 = 1;
 /// Inodes per view of a shared instance. A view's inodes are

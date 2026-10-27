@@ -81,6 +81,7 @@ pub(in crate::native_mount) mod retirement;
 mod shared;
 mod vhost_session;
 mod vring;
+pub(in crate::native_mount::fuse) mod write_gate;
 
 use cache::*;
 use native::*;
