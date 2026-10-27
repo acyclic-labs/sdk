@@ -219,6 +219,21 @@ fn host_error(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
 
+/// Every settled turn commits its already-recorded actions, including a turn
+/// whose later model call fails. Pending or uncertain turns retain their journal.
+async fn settle_effects(
+    agent: &AgentState,
+    open: &OpenTurn,
+    mut step: TurnStep,
+) -> Result<TurnStep, Error> {
+    if let Some(effects) = &open.effects {
+        let mut outs = super::effect_outs(agent, effects.recorded().await.map_err(host_error)?);
+        outs.append(&mut step.outs);
+        step.outs = outs;
+    }
+    Ok(step)
+}
+
 impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     fn step<'a>(
         &'a self,
@@ -257,7 +272,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     wait: Wait::Input,
                 });
             }
-            let progress = progress.map_err(host_error)?;
             let failed = |message: &str| TurnStep {
                 checkpoint: None,
                 outs: Vec::new(),
@@ -265,7 +279,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     message: message.to_owned(),
                 }),
             };
-            Ok(match progress {
+            let progress = match progress {
+                Ok(progress) => progress,
+                // A provider owns bounded retry/recovery and returns these typed
+                // outcomes only when it is finished. Settle through the normal
+                // agent commit so status followers and parents observe failure.
+                Err(error) if error.is_model_failure() => {
+                    return settle_effects(agent, &open, failed(&error.to_string())).await;
+                }
+                Err(error) => return Err(host_error(error)),
+            };
+            let step = match progress {
                 ExecutionProgress::Ready(output) => {
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
@@ -295,12 +319,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             Wait::Input
                         };
                     // The tools' recorded effects commit with the turn's settlement.
-                    let mut outs = match &open.effects {
-                        Some(effects) => {
-                            super::effect_outs(agent, effects.recorded().await.map_err(host_error)?)
-                        }
-                        None => Vec::new(),
-                    };
+                    let mut outs = Vec::new();
                     outs.push(Out::Conversation(entry.encode()?));
                     outs.extend(goal);
                     TurnStep {
@@ -328,16 +347,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }],
                         _ => Vec::new(),
                     };
-                    TurnStep {
+                    return Ok(TurnStep {
                         checkpoint: Some(encode(&input)?),
                         outs,
                         wait: Wait::Approval(id),
-                    }
+                    });
                 }
                 ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),
                 ExecutionProgress::Failed(kind) => failed(kind.message()),
                 ExecutionProgress::PreDispatchFailed(failure) => failed(failure.message()),
-            })
+            };
+            settle_effects(agent, &open, step).await
         })
     }
 }

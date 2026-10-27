@@ -1,5 +1,6 @@
-//! One OS keychain entry owns a signing seed; persisted host metadata contains
-//! only its public opaque reference. Missing or locked custody never regenerates it.
+//! One credential entry owns a signing seed; persisted host metadata contains
+//! only its public opaque reference. Production uses OS custody; test and fixture
+//! builds use process-local custody, without opening an OS credential store.
 use crate::owner_record::{SecretBytes, new_key};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,7 +10,11 @@ use std::{
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
+#[cfg(not(any(test, feature = "test-support")))]
 const SERVICE: &str = "acyclic.authority.signing-seed.v1";
+
+#[cfg(any(test, feature = "test-support"))]
+mod fixture;
 
 /// Non-secret, content-bound reference to OS-owned signing custody.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -21,6 +26,7 @@ pub struct SigningKeyReference([u8; 32]);
 pub struct ProvisionalSigningKey {
     reference: SigningKeyReference,
     cleanup: AtomicBool,
+    entry: keyring::Entry,
 }
 
 impl ProvisionalSigningKey {
@@ -41,14 +47,9 @@ impl ProvisionalSigningKey {
 impl Drop for ProvisionalSigningKey {
     fn drop(&mut self) {
         if self.cleanup.load(Ordering::Acquire) {
-            // Drop cannot report a locked/unavailable store. Never replace or
-            // recreate custody during cleanup, and only remove our original seed.
-            let _ = self.reference.with_seed(|_| {
-                self.reference
-                    .entry()?
-                    .delete_credential()
-                    .map_err(|_| unavailable())
-            });
+            // Keep the original backend handle: cleanup must not require another
+            // successful read or select a different store after a failed write.
+            let _ = self.entry.delete_credential();
         }
     }
 }
@@ -64,48 +65,49 @@ impl SigningKeyReference {
     /// the OS credential store before the host publishes its reference.
     pub fn create() -> io::Result<ProvisionalSigningKey> {
         let seed = Zeroizing::new(new_key()?);
-        let (reference, created) = Self::retain_entry(&seed)?;
-        Ok(ProvisionalSigningKey {
-            reference,
-            cleanup: AtomicBool::new(created),
-        })
+        Self::retain(&seed)
     }
 
     /// Migrate an original seed read from an authenticated private descriptor.
     /// This preserves its authority rather than generating replacement credentials.
-    pub fn retain(seed: &[u8; 32]) -> io::Result<Self> {
-        Self::retain_entry(seed).map(|(reference, _)| reference)
-    }
-
-    fn retain_entry(seed: &[u8; 32]) -> io::Result<(Self, bool)> {
+    /// The caller must keep this guard until actual owner publication. An
+    /// unsuccessful publication retires newly acquired custody on every exit.
+    pub fn retain(seed: &[u8; 32]) -> io::Result<ProvisionalSigningKey> {
         if bool::from(seed.ct_eq(&[0; 32])) {
             return Err(io::ErrorKind::InvalidData.into());
         }
         let reference = Self(*blake3::hash(seed).as_bytes());
         let entry = reference.entry()?;
-        let created = match entry.get_secret() {
+        let key = ProvisionalSigningKey {
+            reference,
+            cleanup: AtomicBool::new(false),
+            entry,
+        };
+        match key.entry.get_secret() {
             Ok(existing) => {
                 let existing = SecretBytes(existing);
                 if !bool::from(existing.0.as_slice().ct_eq(seed)) {
                     return Err(unavailable());
                 }
-                false
             }
             Err(keyring::Error::NoEntry) => {
-                entry.set_secret(seed).map_err(|_| unavailable())?;
-                true
+                // Arm before writing, including a backend that stores the seed
+                // but loses its acknowledgement. Verification can also fail.
+                key.cleanup.store(true, Ordering::Release);
+                key.entry.set_secret(seed).map_err(|_| unavailable())?;
             }
             Err(_) => return Err(unavailable()),
-        };
+        }
         // Observe the actual stored seed before publishing any reference. A
         // competing replacement or an unavailable backend cannot appear successful.
         reference.with_seed(|stored| {
             if bool::from(stored.ct_eq(seed)) {
-                Ok((reference, created))
+                Ok(())
             } else {
                 Err(unavailable())
             }
-        })?
+        })??;
+        Ok(key)
     }
 
     /// Borrow secret material only for bootstrap, then clear the OS output buffer
@@ -147,6 +149,7 @@ impl SigningKeyReference {
 /// only when a D-Bus session exists, then the kernel keyring
 /// ([`crate::kernel_keyring`]), which needs no daemon,
 /// so headless hosts keep custody without any plaintext fallback.
+#[cfg(not(any(test, feature = "test-support")))]
 fn stores(name: &str) -> io::Result<Vec<keyring::Entry>> {
     #[cfg(target_os = "linux")]
     {
@@ -165,6 +168,11 @@ fn stores(name: &str) -> io::Result<Vec<keyring::Entry>> {
     Ok(vec![
         keyring::Entry::new(SERVICE, name).map_err(|_| unavailable())?,
     ])
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn stores(name: &str) -> io::Result<Vec<keyring::Entry>> {
+    Ok(vec![fixture::entry(name)])
 }
 
 #[cfg(test)]
@@ -252,12 +260,9 @@ mod tests {
         ));
         winner_ref.with_seed(|_| ())?;
         // Reopening existing custody does not give the new owner cleanup rights.
-        let (existing, created) = winner_ref.with_seed(SigningKeyReference::retain_entry)??;
-        assert!(!created);
-        drop(ProvisionalSigningKey {
-            reference: existing,
-            cleanup: AtomicBool::new(created),
-        });
+        let existing = winner_ref.with_seed(SigningKeyReference::retain)??;
+        assert!(!existing.cleanup.load(Ordering::Acquire));
+        drop(existing);
         winner_ref.with_seed(|_| ())?;
         winner_ref
             .entry()?
@@ -266,7 +271,11 @@ mod tests {
 
         // Actual former create path retained an entry with no publication owner.
         let seed = Zeroizing::new(new_key()?);
-        let leaked = SigningKeyReference::retain(&seed)?;
+        let former = SigningKeyReference::retain(&seed)?;
+        let leaked = former.reference();
+        // The former bare-reference API had no abandonment owner.
+        former.cleanup.store(false, Ordering::Release);
+        drop(former);
         assert!(leaked.with_seed(|_| ()).is_ok());
         leaked
             .entry()?
@@ -282,13 +291,13 @@ mod tests {
         Ok(())
     }
 
-    /// Uses the actual OS credential service, launched in an isolated user
-    /// session by scripts/with-owner-keychain.sh on headless Linux hosts.
+    /// The custody contract runs against the same in-process fixture backend as
+    /// integration tests, never the user's real OS credential service.
     #[test]
-    fn os_keychain_retains_original_seed_and_rejects_missing_or_replaced_custody() -> io::Result<()>
-    {
+    fn custody_retains_original_seed_and_rejects_missing_or_replaced_entries() -> io::Result<()> {
         let seed = Zeroizing::new(new_key()?);
-        let reference = SigningKeyReference::retain(&seed)?;
+        let key = SigningKeyReference::retain(&seed)?;
+        let reference = key.reference();
         let entry = reference.entry()?;
         assert!(reference.with_seed(|loaded| bool::from(loaded.ct_eq(&*seed)))?);
         // Negative control: the former config writer exposes the planted seed.
@@ -314,6 +323,33 @@ mod tests {
                 .is_err()
         );
         assert!(matches!(entry.get_secret(), Err(keyring::Error::NoEntry)));
+        Ok(())
+    }
+
+    #[test]
+    fn abandoned_keys_and_failed_custody_admission_leave_zero_entries() -> io::Result<()> {
+        let mut references = Vec::new();
+        for _ in 0..256 {
+            let key = SigningKeyReference::create()?;
+            references.push(key.reference());
+            drop(key);
+
+            for fault in [
+                fixture::Fault::StoredRead,
+                fixture::Fault::WriteAcknowledgement,
+            ] {
+                let seed = Zeroizing::new(new_key()?);
+                let reference = SigningKeyReference(*blake3::hash(&*seed).as_bytes());
+                let name = blake3::Hash::from_bytes(reference.0).to_hex();
+                fixture::fail_once(name.as_str(), fault);
+                assert!(SigningKeyReference::retain(&seed).is_err());
+                references.push(reference);
+            }
+        }
+        let retained = references.iter().try_fold(0, |count, reference| {
+            Ok::<_, io::Error>(count + usize::from(reference.entry()?.get_secret().is_ok()))
+        })?;
+        assert_eq!(retained, 0, "abandoned or refused custody leaked an entry");
         Ok(())
     }
 }

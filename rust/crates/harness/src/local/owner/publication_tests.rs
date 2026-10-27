@@ -176,3 +176,95 @@ fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
     assert_eq!(reopened.key_ref, migrated.key_ref);
     assert_eq!(fs::read(&path).unwrap(), protected);
 }
+
+#[test]
+fn concurrent_owner_migration_cannot_publish_another_callers_provisional_key() -> Result<()> {
+    use acyclic_native_runtime::{
+        FileLock, FileLockMode, owner_record, private_file, signing_key::SigningKeyReference,
+    };
+    // Enumerate the former interleaving and the serialized path, using real
+    // credential operations and lock contention rather than thread timing.
+    for serialized in [false, true] {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let path = directory.path().join("owner.json");
+        let owner = Owner {
+            key: Some(owner_record::new_key().map_err(storage)?),
+            key_ref: None,
+            agent: AgentId::new(),
+            task: TaskId::new(),
+            project: VolumeRef::new(
+                crate::resources::ProviderRef::new(
+                    "local".into(),
+                    "filesystem".into(),
+                    "2".into(),
+                    &mut None,
+                )?,
+                "project".into(),
+                VolumeClass::Project,
+                VolumeOwner::Project("project".into()),
+                &mut None,
+            )?,
+            workspace: None,
+            workspace_identity: None,
+            workspace_incarnation: None,
+        };
+        let seed = owner
+            .key
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing fixture seed".into()))?;
+        let mut legacy =
+            serde_json::to_value(&owner).map_err(|error| Error::Invalid(error.to_string()))?;
+        legacy
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("fixture owner is not an object".into()))?
+            .insert(
+                "key".into(),
+                serde_json::to_value(seed).map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+        serde_json::to_writer(private_file::create(&path).map_err(storage)?, &legacy)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let lock = FileLock::acquire(
+            private_file::open_or_create(&path.with_extension("lock")).map_err(storage)?,
+            FileLockMode::Exclusive,
+        )
+        .map_err(storage)?;
+        let first = SigningKeyReference::retain(seed).map_err(storage)?;
+        let first_ref = first.reference();
+        if serialized {
+            TRY_OWNER_LOCK.set(true);
+            let contender = Owner::load(&path);
+            TRY_OWNER_LOCK.set(false);
+            assert!(
+                matches!(contender, Err(Error::Storage(_))),
+                "contender bypassed publication ownership"
+            );
+            assert_eq!(fs::read(&path).map_err(storage)?.first(), Some(&b'{'));
+        } else {
+            // Actual former reader: reuse the first call's not-yet-published
+            // credential and publish it while that call still owns cleanup.
+            let contender = Owner::load_record(&path)?;
+            assert_eq!(contender.key_ref, Some(first_ref));
+        }
+        drop(first);
+        assert!(first_ref.with_seed(|_| ()).is_err());
+        drop(lock);
+        if serialized {
+            let winner = Owner::load(&path)?;
+            let reference = winner
+                .key_ref
+                .ok_or_else(|| Error::Invalid("missing published key".into()))?;
+            assert!(
+                reference
+                    .with_seed(|stored| stored == seed)
+                    .map_err(storage)?
+            );
+            assert_eq!(Owner::load(&path)?.key_ref, Some(reference));
+        } else {
+            assert!(
+                Owner::load(&path).is_err(),
+                "former interleaving did not lose published custody"
+            );
+        }
+    }
+    Ok(())
+}

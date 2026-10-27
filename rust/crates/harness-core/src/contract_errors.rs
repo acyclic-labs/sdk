@@ -541,6 +541,18 @@ impl Error {
         self.code().as_str_name()
     }
 
+    /// A provider exchange has definitively failed after its own bounded recovery.
+    /// Native work, storage and uncertain publication errors are never provider outcomes.
+    #[must_use]
+    pub(crate) fn is_model_failure(&self) -> bool {
+        match self {
+            Self::ModelUnavailable { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::ModelDiagnostic { .. } => true,
+            _ => false,
+        }
+    }
+
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
         matches!(
