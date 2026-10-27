@@ -73,7 +73,6 @@ pub mod hooks;
 pub mod identity;
 pub mod interaction;
 mod json_literal;
-pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
@@ -163,7 +162,6 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use json_literal::deserialize as deserialize_json_value;
-pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 mod process_error;
