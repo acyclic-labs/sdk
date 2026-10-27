@@ -26,7 +26,7 @@ fi
 exit 0
 `);
     chmodSync(join(cwd, "bin/cargo"), 0o755);
-    for (const name of ["gate-test-runner.sh", "gate-rust-format.sh", "check-browser-targets.sh", "gate-feature-matrix.sh", "gate-windows-features.sh"]) {
+    for (const name of ["with-owner-keychain.sh", "gate-test-runner.sh", "gate-rust-format.sh", "check-browser-targets.sh", "gate-feature-matrix.sh", "gate-windows-features.sh"]) {
       writeFileSync(join(cwd, "scripts", name), "#!/bin/bash\nexit 0\n");
     }
     writeFileSync(join(cwd, "scripts/qualify-mcp-loom.mjs"), `
