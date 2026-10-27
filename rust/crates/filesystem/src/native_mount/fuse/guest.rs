@@ -65,7 +65,10 @@ impl GuestSessionAdmission {
         let work = source
             .native_original_work()?
             .ok_or(NativeMountError::ControlPending)?;
-        let _installed = super::super::shared::metering::install(source.as_ref(), &work)?;
+        let (_original, guard) = super::super::shared::metering::install(source.as_ref(), &work)?;
+        if guard.is_none() {
+            return Err(MountSourceError::AccessDenied.into());
+        }
         let identity = *owner.posix().identities.first().ok_or(libc::EACCES)?;
         let root = source
             .lookup_with_meter(&ROOT_PATH, &work)?

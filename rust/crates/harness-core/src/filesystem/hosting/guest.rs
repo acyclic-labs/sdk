@@ -71,6 +71,21 @@ where
         enrollment
             .volume
             .validate(&mut Some(&mut io.history_io()))?;
+        let bytes =
+            (std::mem::size_of::<EnrolledSource>() + 2 * std::mem::size_of::<usize>()) as u64;
+        let bytes = bytes
+            .checked_add(enrollment.volume.logical_owned_bytes()?)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    (enrollment.posix.identities.capacity() * std::mem::size_of::<(u32, u32)>())
+                        as u64,
+                )
+            })
+            .ok_or(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "guest enrollment ownership overflow",
+            })?;
+        let custody = work.claim(bytes, 1, WorkCounters::UNCHARGED)?;
         let name = enrollment
             .volume
             .storage_name(&mut Some(&mut io.history_io()))?;
@@ -88,11 +103,6 @@ where
         let options =
             owner_mount_options(&workspace, &self.issuer, None, enrollment.writable, work).await?;
         let source = workspace.native_source(&options).await?;
-        let bytes = (std::mem::size_of::<EnrolledSource>() + 2 * std::mem::size_of::<usize>())
-            as u64
-            + enrollment.volume.logical_owned_bytes()?
-            + (enrollment.posix.identities.capacity() * std::mem::size_of::<(u32, u32)>()) as u64;
-        let custody = work.claim(bytes, 1, WorkCounters::UNCHARGED)?;
         GuestSessionAdmission::local_root(Arc::new(EnrolledSource {
             source,
             enrollment,

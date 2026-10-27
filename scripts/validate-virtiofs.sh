@@ -18,9 +18,14 @@ run() {
 }
 
 features=filesystem-local,native-execution,test-support
-run 'compile filesystem tests' cargo test --locked -p acyclic-fs --lib --no-run || exit "$?"
-run 'compile local owner and daemon tests' cargo test --locked -p acyclic-harness --features "$features" --lib --test virtiofs --no-run || exit "$?"
-run 'compile original Bound tests' cargo test --locked -p acyclic-harness-core --features "$features" --test agent-model --no-run || exit "$?"
+status=0
+run 'compile filesystem tests' cargo test --locked -p acyclic-fs --lib --no-run || status=$?
+run 'compile local owner and daemon tests' cargo test --locked -p acyclic-harness --features "$features" --lib --test virtiofs --no-run || status=$?
+run 'compile original Bound tests' cargo test --locked -p acyclic-harness-core --features "$features" --test agent-model --no-run || status=$?
+if (( status != 0 )); then
+    printf 'step=virtiofs compile gates; recovery: bash scripts/validate-virtiofs.sh\n' >&2
+    exit "$status"
+fi
 run 'prepare real guest artifacts' python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest || exit "$?"
 export ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest
 

@@ -1,45 +1,81 @@
 # Linux virtio-fs
 
-The Linux transport uses standard vhost-user-fs over a Unix socket. Its two
-split virtqueues (hiprio and one request queue) feed the same FUSE packet entry
-and projection state as the host `/dev/fuse` mount. It requires shared guest
-memory; it does not require DAX or a provider-specific VMM protocol.
+`acyclic_fs::native_mount::GuestSessionAdmission` exposes raw Linux FUSE packets
+and standard vhost-user-fs over a Unix socket. The host `/dev/fuse` mount and
+virtqueues use one packet dispatcher and the existing projection state.
+QEMU and cloud-hypervisor require shared guest RAM; DAX is unnecessary.
 
-This implementation is under construction. The public admitted-session
-constructor and `acyclic-virtiofsd` command are not available yet. The commands
-below describe the standard frontend attachment to an already running socket;
-the validation section distinguishes the two real fixture-source guest boots
-from the public admission work that remains.
+## Composition
 
-## Admission and limits
+Create an explicit `hosting::Bound::local_root` with the deployment's original
+issuer, agent host and filesystem host. `Bound::guest_session(enrollment, work)`
+opens its exact canonical volume, reuses the signed policy compiler and source
+guard, and returns the sole authority input to the packet/socket entries.
+`LocalGuestEnrollment` contains the volume reference, writable intent and a
+source-owned POSIX identity map plus allowed metadata mutations. Identity pairs
+are identity mappings into virtual volume metadata, never host user selection.
 
-Strict hosted admission is unsupported and must refuse before volume I/O.
-Linux can satisfy later private-mapping faults from guest cache without a
-server authorization callback. Direct I/O, zero entry/attribute TTLs and no
-writeback or `KEEP_CACHE` do not establish the requested revocation boundary.
-An explicit standalone `LocalRoot` configuration is a separate authority case;
-it cannot substitute for an authenticated hosted parent.
+```rust,ignore
+let admission = bound.guest_session(local_enrollment, &original_work).await?;
+let retired = admission.serve(already_connected_unix_stream, b"acyclic")?;
+if let Some((cause, counters)) = retired.take_callback_failure() {
+    return Err(cause.into());
+}
+retired.transport()?;
+```
 
-The source admission must retain the original funded source, exact volume and
-view, revocable callback guard, and authenticated POSIX identity and metadata
-operations. A socket path, guest UID/GID or destination ownership is not that
-admission. A public source producer for this complete binding remains pending.
+Embedding a different trusted local composition can implement `LocalGuestSource`.
+It must retain the authenticated canonical source and its original funded work,
+guard, exact view and enrolled POSIX policy together. This is a source-owner
+boundary, not a guest-request interface. Session consumers cannot supply a UID,
+path or cache flag. `packet` retains original work/view leases through its
+physical publisher closure; a failed/uncertain completion closes the session.
 
-The transport negotiates split rings, indirect descriptors, event indices,
-protocol features, and standard CONFIG/MQ/REPLY_ACK. It does not advertise DAX,
-notification queues, migration, inflight restoration or device-state transfer.
-A transport failure with uncertain completion retires the session; it does not
-replay a filesystem mutation. All started physical workers join before their
-source or guest-memory mapping is released.
+The standalone command uses the SDK's existing protected local-owner enrollment
+and the same `Bound`, with no model, shell tool or provider credentials:
 
-## Standard frontend commands
+```sh
+cargo build --locked -p acyclic-harness --features filesystem-local,native-execution \
+  --bin acyclic-virtiofsd
+acyclic-virtiofsd --socket /tmp/acyclic-fs.sock --config /srv/acyclic/guest.json
+```
 
-These examples assume trusted Linux guest kernel and initramfs artifacts,
-512 MiB guest RAM, a running server at `/tmp/acyclic-fs.sock`, and mount tag
-`acyclic`. The guest kernel must provide `CONFIG_VIRTIO_FS` and its VMM's
-virtio transport. The guest initramfs must provide a shell and mount tools.
+The local JSON has `directory` (canonical local filesystem store),
+`state_directory` (protected local owner state), `enrollment` and `budget`.
+Serialize the enrollment with the SDK so its `volume` remains the exact existing
+`VolumeRef`; use `GuestPosixPolicy { identities: vec![(0, 0), (1000, 1000)],
+metadata: true }` only when the local owner enrolls those identities and metadata
+mutations. Serialize a finite `acyclic_fs::performance::work_budget(ops, bytes)`
+as `budget`; omitted counters have zero allowance. The command opens the enrolled
+volume, does not create a substitute project volume, and needs no `/dev/fuse`.
+The existing source must support the intended native POSIX metadata operations.
+The integration test `harness/tests/virtiofs.rs` shows complete local composition
+and config generation. Ctrl-C cancels the original work and joins the server;
+the daemon removes only its own socket inode.
 
-QEMU uses a shared memory backend and its standard filesystem device:
+## Limits
+
+Hosted `Bound::admitted` refuses guest admission before volume IO. Linux can
+satisfy later private-mapping faults without a server callback. Completed INVAL,
+direct I/O and zero TTLs cannot establish revocation of those private mappings.
+LocalRoot enrollment does not substitute for a verified hosted parent.
+
+This transport chooses direct I/O, zero name/attribute/negative/symlink/directory
+TTLs, and no KEEP_CACHE/writeback. Source callbacks retain the original guard.
+Unmapped UID/GID and forbidden metadata operations refuse before volume IO;
+chown targets must also be enrolled. Device-node creation is unsupported.
+
+Two split queues (hiprio plus one request queue), indirect descriptors,
+EVENT_IDX, CONFIG/MQ/REPLY_ACK are supported. DAX, notification queues, migration,
+inflight restoration and device-state transfer are not advertised. Maintained
+rust-vmm crates supply the protocol, queue and memory primitives. Socket failure
+never replays an uncertain filesystem mutation. Every started physical worker
+joins before source or guest-memory mappings are released.
+
+## Standard frontends
+
+Use a trusted kernel/initramfs containing virtio-fs and a shell. Start the daemon
+above, then choose one frontend:
 
 ```sh
 qemu-system-x86_64 -enable-kvm -nodefaults -nographic -serial mon:stdio \
@@ -47,19 +83,15 @@ qemu-system-x86_64 -enable-kvm -nodefaults -nographic -serial mon:stdio \
   -numa node,memdev=mem -kernel "$GUEST_KERNEL" -initrd "$GUEST_INITRAMFS" \
   -append 'console=ttyS0 rdinit=/bin/sh' \
   -chardev socket,id=fs,path=/tmp/acyclic-fs.sock \
-  -device vhost-user-fs-pci,chardev=fs,tag=acyclic
-```
+  -device vhost-user-fs-pci,chardev=fs,tag=acyclic,queue-size=512
 
-cloud-hypervisor uses shared memory and one request queue:
-
-```sh
 cloud-hypervisor --kernel "$GUEST_KERNEL" --initramfs "$GUEST_INITRAMFS" \
   --cmdline 'console=ttyS0 rdinit=/bin/sh' --memory size=512M,shared=on \
   --serial tty --console off \
   --fs tag=acyclic,socket=/tmp/acyclic-fs.sock,num_queues=1,queue_size=512
 ```
 
-Inside either guest, exercise an admitted writable standalone volume:
+Inside either guest:
 
 ```sh
 mkdir -p /mnt/acyclic
@@ -71,79 +103,34 @@ test ! -e /mnt/acyclic/qualification
 umount /mnt/acyclic
 ```
 
-The currently inspected upstream Firecracker exposes vhost-user **block**,
-and its device/configuration inventory has no filesystem frontend. Its block
-configuration cannot attach this socket. A Firecracker build must first expose
-the standard virtio filesystem device (device ID 26) and vhost-user-fs frontend;
-there is no upstream filesystem attachment command to copy here. The SDK does
-not supply a private Firecracker protocol.
-
-Frontend references: [QEMU vhost-user](https://www.qemu.org/docs/master/system/devices/virtio/vhost-user.html),
-[cloud-hypervisor virtio-fs](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/fs.md),
-[Firecracker vhost-user block](https://github.com/firecracker-microvm/firecracker/blob/main/docs/api_requests/block-vhost-user.md),
-[Firecracker device inventory](https://github.com/firecracker-microvm/firecracker/blob/main/src/vmm/src/devices/virtio/mod.rs).
-Cache evidence: [Linux v6.18 FUSE file operations](https://github.com/torvalds/linux/blob/v6.18/fs/fuse/file.c).
+Upstream Firecracker exposes vhost-user block, not a filesystem frontend; its
+block API cannot attach this socket. A build must expose standard device ID 26
+and a vhost-user-fs frontend before there is a valid filesystem command to run.
+No private Firecracker variant is supplied. References:
+[QEMU](https://www.qemu.org/docs/master/system/devices/virtio/vhost-user.html),
+[cloud-hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/fs.md),
+[Firecracker](https://github.com/firecracker-microvm/firecracker/blob/main/docs/api_requests/block-vhost-user.md).
 
 ## Validation
 
-bb2 passed `cargo check --locked -p acyclic-fs --tests` for the shared packet
-and socket implementation (job `1793061176450-13144-f5af43b2`). This proves
-compilation, not a public source admission, protocol interoperability or mount.
-
-The latest completed Linux filesystem library run, including every existing
-ignored mount test, finished in 30.40 seconds: 2,480 passed and 21 failed,
-with zero ignored or filtered tests (source `cb33ccdecaac7dd39faa19c0573bcb1dfa99339b`,
-job `1793068106729-51192-eb8cbc3c`). Test compilation took 570 seconds;
-the preceding source's compile-only gate passed in 96 seconds.
-Worker retirement, event-counter custody,
-shared-view isolation, node-facts writes, original finite cancellation, terminal
-source refusal and both kernel packet replays passed. The first-cause ordering
-and immediate post-effect failure changes compiled and ran. All FUSE vectors
-and Linux mount cases passed in this run. The preceding source
-`338cfe73fcfae8117cc29121cd758682d1d01589` failed cross-descriptor fsync's
-second-write-pending assertion and the open-reader visibility vector. Only
-test diagnostics changed between these runs: those intermittent failures are
-still unresolved. The two vectors reuse the real packet recorder to report
-kernel completion order and handle IDs on failure; neither emitted a failure
-trace in this run. The remaining 21 failures are routed to the filesystem
-owner. This is not a passing suite.
-
-The subsequent signed source `d09451d7a2a61e66e13a9ff00233c1def5d841d3`
-passed the bb2 compile-only command `cargo test --locked -p acyclic-fs --lib --no-run`
-(job `1793069360883-56931-7a8cd1a0`): 9m11s compilation, 617.9s canonical
-total, and all four cleanup receipt fields true. It binds the fsync test's
-pause to its exact enrolled source and scopes its writer/fsync threads so
-failure releases the pause before joining them. An unrelated mount can no
-longer consume this pause. No runtime suite was rerun, and this distinct test
-interference fix does not diagnose the two intermittent mount failures above.
-
-A new real QEMU/cloud-hypervisor vector requires prepared guest artifacts:
+Current Bound/daemon source is awaiting the single bb2 validation at signed
+`2d555684ffa3730b602c54db888d1620bf2c6865`:
 
 ```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest && ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture'
+pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'bash scripts/validate-virtiofs.sh'
 ```
 
-The real-kernel capture and replay test passed in that run, as did standard
-vhost-user CONFIG negotiation and quiet cancellation/EOF. Its actual INIT,
-LOOKUP, READ, WRITE and RELEASE traffic and kernel/binary/source provenance
-are retained in [the packet fixture](../../rust/crates/filesystem/fixtures/fuse/README.md).
-The mount-free replay of that saved fixture also passed. Both QEMU and
-cloud-hypervisor booted real guests, mounted the standard socket, wrote/read
-the test bytes, deleted the file and verified absence, unmounted and powered
-off with exit status zero. Both servers positively joined with `transport=Ok(())`
-and no callback failure. QEMU recorded 755 backend reads, 11 backend writes and
-3,253 callback items; cloud-hypervisor recorded 755 reads, 11 writes and 3,254
-items. These are private fixture-source
-interoperability results, not public hosted admission or page-fault revocation
-proof. The canonical receipt confirms home, targets, outer targets and outer
-temporary directory cleanup.
+The script compiles first, then runs complete relevant suites without name
+filters, including real host FUSE/kernel replay and both actual VMMs through
+the public standalone daemon. Refusal vectors check revoked guards, wrong
+providers, unmapped identities and forbidden metadata operations before IO.
+Captured kernel packets and their provenance are in `filesystem/fixtures/fuse`;
+negative vectors explicitly perturb those real packets rather than invent
+provider/kernel fixtures. Guest artifact preparation records actual distribution
+kernel/module, static BusyBox, initramfs and official VMM release digests.
 
-Actual preparation succeeded using the installed
-distribution kernel, its actual virtio-fs module and static BusyBox. The helper
-verifies the official cloud-hypervisor release asset's SHA-256 and records exact
-artifact provenance and copies no host initrd or configuration. The vector
-retains the socket and VMM process tree through positive exit/cleanup.
-The standard protocol-before-SET_OWNER negotiation, CALL/ERR-before-SET_FEATURES
-setup and CALL replacement on a settled enabled queue were exercised by these
-actual VMMs. The guest vector additionally asserted nonzero source callback
-work and refused unexpected transport retirement in this run.
+Historical `cb33ccdecaac7dd39faa19c0573bcb1dfa99339b` passed the FUSE vectors and
+both fixture-source guests, but its complete filesystem suite was **2480 pass /
+21 fail**, with earlier intermittent mount failures unresolved. That is neither
+qualification of the current Bound/daemon nor an unchanged-suite pass. The
+compile-only `d09451d7a2a61e66e13a9ff00233c1def5d841d3` result adds no runtime claim.

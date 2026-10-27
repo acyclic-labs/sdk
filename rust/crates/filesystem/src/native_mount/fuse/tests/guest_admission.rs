@@ -44,7 +44,9 @@ impl NativeMountCallbackGuard for Revocable {
     }
 }
 
-fn enrollment() -> Result<
+fn enrollment(
+    guarded: bool,
+) -> Result<
     (
         Arc<Enrolled>,
         Arc<Revocable>,
@@ -54,10 +56,14 @@ fn enrollment() -> Result<
 > {
     let config = posix_config();
     let shared = Arc::new(crate::native_mount::SharedCheckout::new(
-        memory_checkout(config, crate::CheckoutMode::tracking_transaction(), 1)?
-            .into_iter()
-            .next()
-            .ok_or("one checkout")?,
+        memory_checkout(
+            config,
+            crate::model::CheckoutMode::tracking_transaction(),
+            1,
+        )?
+        .into_iter()
+        .next()
+        .ok_or("one checkout")?,
     ));
     let work = cache_work(FINITE_HANDLER_POLICY, &crate::CancellationToken::new());
     let guard = Arc::new(Revocable(AtomicBool::new(true)));
@@ -72,9 +78,13 @@ fn enrollment() -> Result<
         )?,
         vec![],
         None,
-    )?
-    .with_native_callback_guard(guard.clone())
-    .into_arc_meter(&work)?;
+    )?;
+    let source = if guarded {
+        source.with_native_callback_guard(guard.clone())
+    } else {
+        source
+    };
+    let source = source.into_arc_meter(&work)?;
     Ok((
         Arc::new(Enrolled {
             source,
@@ -113,7 +123,7 @@ fn captured(opcode: u32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 
 #[test]
 fn revoked_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error::Error>> {
-    let (owner, guard, work) = enrollment()?;
+    let (owner, guard, work) = enrollment(true)?;
     guard.0.store(false, Ordering::Release);
     let before = work.receipt();
     assert!(GuestSessionAdmission::local_root(owner).is_err());
@@ -132,7 +142,7 @@ fn revoked_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error
 #[test]
 fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (owner, guard, work) = enrollment()?;
+    let (owner, guard, work) = enrollment(true)?;
     let admission = GuestSessionAdmission::local_root(owner)?;
     let mut response = vec![0; admission.packet_capacity()];
     let init = captured(26)?;
@@ -194,5 +204,21 @@ fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
         before.backend_write_operations
     );
     assert!(admission.take_callback_failure().is_some());
+    Ok(())
+}
+
+#[test]
+fn unguarded_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error::Error>> {
+    let (owner, _, work) = enrollment(false)?;
+    let before = work.receipt();
+    assert!(GuestSessionAdmission::local_root(owner).is_err());
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
     Ok(())
 }
