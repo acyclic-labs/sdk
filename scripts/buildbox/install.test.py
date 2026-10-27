@@ -201,9 +201,17 @@ class InstallTests(unittest.TestCase):
             legacy=Path(temporary)/'legacy';legacy.mkdir()
             (legacy/'bb-cache.py').write_text('import contextlib\n@contextlib.contextmanager\ndef migration():\n    raise AssertionError("retakes upgrade.lock")\n    yield\n')
             unit=Path(temporary)/'unit';unit.write_text('[Unit]\n');calls=[]
-            with patch.object(installer,'CACHE_UNIT',unit),patch.object(installer.subprocess,'run',lambda command,**kw:calls.append(command)):
+            outgoing=Path(temporary)/'outgoing';outgoing.mkdir()
+            (outgoing/'bb-cache.py').write_text('import sys\ndef retire_owners():\n    sys.modules["installer_order"].append(["retire"])\n')
+            sys.modules['installer_order']=calls
+            run=lambda command,**kw:calls.append(command) or subprocess.CompletedProcess(command,0)
+            with patch.object(installer,'CACHE_UNIT',unit),patch.object(installer.subprocess,'run',run), \
+                 patch.object(installer,'current_generation',lambda:outgoing):
                 with installer.generation_services(legacy):pass
-            self.assertEqual(calls,[['systemctl','try-restart','buildbox-cache.service']])
+            del sys.modules['installer_order']
+            # Retirement stops the unit: a try-restart after it would start nothing.
+            self.assertEqual(calls,[['systemctl','is-active','--quiet','buildbox-cache.service'],['retire'],
+                                    ['systemctl','restart','buildbox-cache.service']])
 
     def test_switch_back_retires_the_failed_generations_cache_server_first(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:

@@ -314,7 +314,11 @@ def generation_services(generation):
         outgoing=current_generation()
         yield
         if CACHE_UNIT.exists():
-            retire_cache(outgoing);subprocess.run(['systemctl','try-restart','buildbox-cache.service'],check=True)
+            # Retirement stops the unit, so its prior activity is read first and
+            # the predecessor's server is then started explicitly.
+            active=subprocess.run(['systemctl','is-active','--quiet','buildbox-cache.service']).returncode==0
+            retire_cache(outgoing)
+            if active:subprocess.run(['systemctl','restart','buildbox-cache.service'],check=True)
         return
     if CACHE_UNIT.exists():subprocess.run(['systemctl','disable','--now','buildbox-cache.service'],check=True)
     yield
