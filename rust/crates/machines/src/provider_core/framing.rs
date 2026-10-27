@@ -190,6 +190,7 @@ where
         let Some(frame) = source.next().await else {
             return Ok(None);
         };
+        let frame = frame?;
         if frame.flags == 2 {
             let trailer: serde_json::Value =
                 serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Unavailable)?;
@@ -220,9 +221,10 @@ mod tests {
             .iter()
             .flat_map(|value| format!("{value}\n").into_bytes())
             .collect();
-        let actual: Vec<u32> = json_frames(stream::iter([Ok::<_, ()>(lines)]), Framing::Lines)
-            .try_collect()
-            .await?;
+        let actual: Vec<u32> =
+            json_frames::<u32, _, _, _>(stream::iter([Ok::<_, ()>(lines)]), Framing::Lines)
+                .try_collect()
+                .await?;
         assert_eq!(actual, values);
 
         let mut connect = Vec::new();
@@ -234,7 +236,7 @@ mod tests {
         connect.extend(terminal);
         // A terminal envelope owns termination; later input is never decoded.
         connect.extend(connect_message(&serde_json::json!(11))?);
-        let actual: Vec<u32> = json_frames(
+        let actual: Vec<u32> = json_frames::<u32, _, _, _>(
             stream::iter(connect.into_iter().map(|byte| Ok::<_, ()>(vec![byte]))),
             Framing::Connect,
         )
