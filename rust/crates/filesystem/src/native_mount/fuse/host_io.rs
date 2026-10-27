@@ -1,10 +1,11 @@
 //! The host transport: one nonblocking FUSE device and a shared stop wake.
 
 use super::notification::PacketSink;
+use super::transport_io::{self, Ready};
 use acyclic_native_runtime::ProcessWake;
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::sync::Arc;
 
 pub(super) struct HostIo {
@@ -16,13 +17,6 @@ pub(super) struct HostIo {
 #[derive(Debug, PartialEq)]
 pub(super) enum Received {
     Packet(usize),
-    Wake,
-    Closed,
-}
-
-#[derive(PartialEq)]
-enum Ready {
-    Device,
     Wake,
     Closed,
 }
@@ -52,43 +46,11 @@ impl HostIo {
     }
 
     fn wait(&self, events: i16) -> io::Result<Ready> {
-        let mut fds = [
-            libc::pollfd {
-                fd: self.device.as_raw_fd(),
-                events,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.wake.as_fd().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        loop {
-            if self.wake.is_stopped() {
-                return Ok(Ready::Closed);
-            }
-            // SAFETY: both pollfd entries remain valid for this call; owned FDs
-            // cannot be closed while this HostIo is borrowed by a worker.
-            if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } >= 0 {
-                if self.wake.is_stopped() {
-                    return Ok(Ready::Closed);
-                }
-                if fds[1].revents & libc::POLLIN != 0 {
-                    self.wake.consume()?;
-                    return Ok(Ready::Wake);
-                }
-                if fds[0].revents != 0 {
-                    // Read/write reports the actual device EOF or error.
-                    return Ok(Ready::Device);
-                }
-                continue;
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
+        let ready = transport_io::wait(&self.wake, Some(self.device.as_fd()), events)?;
+        if ready == Ready::Wake {
+            self.wake.consume()?;
         }
+        Ok(ready)
     }
 
     pub(super) fn receive(&self, bytes: &mut [u8]) -> io::Result<Received> {
@@ -96,7 +58,7 @@ impl HostIo {
             match self.wait(libc::POLLIN)? {
                 Ready::Closed => return Ok(Received::Closed),
                 Ready::Wake => return Ok(Received::Wake),
-                Ready::Device => {}
+                Ready::Device(_) => {}
             }
             match (&*self.device).read(bytes) {
                 Ok(0) => return Ok(Received::Closed),
