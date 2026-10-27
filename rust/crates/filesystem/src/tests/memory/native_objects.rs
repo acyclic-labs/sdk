@@ -38,7 +38,7 @@ async fn object_allocation_denial_cannot_publish_an_object() -> Result<(), Box<d
             crate::NativeTreeMaterializationError::Work(_)
         ))
     ));
-    assert!(!provider!(store, contains(object.object_id()), WorkBudget::UNBOUNDED)?.value);
+    assert!(!provider_receipt!(store, contains(object.object_id()), WorkBudget::UNBOUNDED)?.value);
     original.receipt().verify(budget)?;
     Ok(())
 }
@@ -66,13 +66,13 @@ async fn native_object_bytes_retain_the_original_allocation_until_last_alias_dro
     store
         .put_hashed(object, &mut AuthorityWork::native(&original, &cancel))
         .await?;
-    let view = provider!(store, read(id, 4), WorkBudget::UNBOUNDED)?.value;
+    let view = provider_receipt!(store, read(id, 4), WorkBudget::UNBOUNDED)?.value;
     let reader = NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
     let native_view = store
         .read(id, 4, &mut AuthorityWork::native(&reader, &cancel))
         .await?;
     let alias = native_view.bytes.clone();
-    provider!(
+    provider_receipt!(
         store,
         put(id, OwnedBytes::from_static(b"body")),
         WorkBudget::UNBOUNDED
@@ -82,7 +82,7 @@ async fn native_object_bytes_retain_the_original_allocation_until_last_alias_dro
         .put_hashed(second, &mut AuthorityWork::native(&original, &cancel))
         .await?;
     assert_eq!(
-        provider!(store, read(id, 4), WorkBudget::UNBOUNDED)?
+        provider_receipt!(store, read(id, 4), WorkBudget::UNBOUNDED)?
             .value
             .bytes
             .as_ref(),

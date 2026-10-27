@@ -1,4 +1,9 @@
 macro_rules! provider_receipt {
+    ($store:expr, $method:ident($($arg:expr),* $(,)?), $budget:expr) => {{
+        let cancel = acyclic_fs::CancellationToken::new();
+        let budget = $budget;
+        provider_receipt!($store, $method($($arg),*), budget, &cancel)
+    }};
     ($store:expr, $method:ident($($arg:expr),* $(,)?), $budget:expr, $cancel:expr) => {{
         let arguments = ($($arg,)*);
         let funding = ($budget, $cancel);
@@ -6,6 +11,15 @@ macro_rules! provider_receipt {
         let result = provider_receipt!(@call $store, $method, arguments, work);
         work.receipt(result)
     }};
+    (@call $store:expr, head, $args:ident, $work:ident) => {
+        $store.head($args.0, &mut $work).await
+    };
+    (@call $store:expr, fence, $args:ident, $work:ident) => {
+        $store.fence($args.0, $args.1, &mut $work).await
+    };
+    (@call $store:expr, find_operation, $args:ident, $work:ident) => {
+        $store.find_operation($args.0, $args.1, &mut $work).await
+    };
     (@call $store:expr, create_authority, $args:ident, $work:ident) => {
         $store.create_authority($args.0, $args.1, &mut $work, None::<&mut ()>)
             .await.map_err(|error| error.into_error(std::convert::identity))

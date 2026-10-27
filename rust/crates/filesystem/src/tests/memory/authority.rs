@@ -4,7 +4,7 @@ use super::*;
 async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([1; 16]);
-    let created = provider!(
+    let created = provider_receipt!(
         store,
         create_authority(authority_id, Epoch::GENESIS),
         WorkBudget::UNBOUNDED
@@ -22,7 +22,7 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
         payload: bytes::Bytes::from_static(b"payload"),
     };
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             compare_and_append(authority_id, Epoch::GENESIS, head, commit),
             WorkBudget::UNBOUNDED
@@ -30,13 +30,13 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
         .value,
         AppendOutcome::Committed(_)
     ));
-    let current = provider!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value;
-    let fenced = provider!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
+    let current = provider_receipt!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value;
+    let fenced = provider_receipt!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
     let FenceOutcome::Advanced(fenced_head) = fenced.value else {
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let page = provider!(
+    let page = provider_receipt!(
         store,
         replay(
             authority_id,
@@ -57,7 +57,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::new(2)?;
     let authority_id = AuthorityId::from_bytes([11; 16]);
-    let head = match provider!(
+    let head = match provider_receipt!(
         store,
         create_authority(authority_id, Epoch::GENESIS),
         WorkBudget::UNBOUNDED
@@ -76,7 +76,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
         payload: bytes::Bytes::from_static(b"ab"),
     };
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             compare_and_append(authority_id, Epoch::GENESIS, head, commit),
             WorkBudget::UNBOUNDED
@@ -85,7 +85,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
         AppendOutcome::Committed(_)
     ));
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             replay(
                 authority_id,
@@ -112,12 +112,12 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
         payload: bytes::Bytes::from_static(b"abc"),
     };
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             compare_and_append(
                 authority_id,
                 Epoch::GENESIS,
-                provider!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value,
+                provider_receipt!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value,
                 oversized
             ),
             WorkBudget::UNBOUNDED
@@ -138,7 +138,7 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([16; 16]);
-    let created = provider!(
+    let created = provider_receipt!(
         store,
         create_authority(authority_id, Epoch::GENESIS),
         WorkBudget::UNBOUNDED
@@ -150,7 +150,7 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
         ([17; 16], [18; 32], bytes::Bytes::from_static(b"aa")),
         ([19; 16], [20; 32], bytes::Bytes::from_static(b"bb")),
     ] {
-        let appended = provider!(
+        let appended = provider_receipt!(
             store,
             compare_and_append(
                 authority_id,
@@ -174,7 +174,7 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
             digest: commit.digest,
         };
     }
-    let replay = provider!(
+    let replay = provider_receipt!(
         store,
         replay(
             authority_id,
@@ -205,13 +205,13 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([21; 16]);
     assert!(matches!(
-        provider!(store, head(authority_id), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, head(authority_id), WorkBudget::UNBOUNDED),
         Err(AuthorityFailure {
             error: AuthorityStoreError::Missing,
             ..
         })
     ));
-    let created = provider!(
+    let created = provider_receipt!(
         store,
         create_authority(authority_id, Epoch::GENESIS),
         WorkBudget::UNBOUNDED
@@ -220,7 +220,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         return Err("authority unexpectedly existed".into());
     };
     assert!(matches!(
-        provider!(store, create_authority(authority_id, Epoch::GENESIS), WorkBudget::UNBOUNDED)?
+        provider_receipt!(store, create_authority(authority_id, Epoch::GENESIS), WorkBudget::UNBOUNDED)?
             .value,
         CreateAuthorityOutcome::Existing(actual) if actual == genesis
     ));
@@ -232,7 +232,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         fingerprint,
         payload: bytes::Bytes::from_static(b"durable"),
     };
-    let committed = provider!(
+    let committed = provider_receipt!(
         store,
         compare_and_append(authority_id, Epoch::GENESIS, genesis, proposed.clone()),
         WorkBudget::UNBOUNDED
@@ -241,12 +241,12 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         return Err("first append was not committed".into());
     };
     assert!(matches!(
-        provider!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, proposed.clone()), WorkBudget::UNBOUNDED)?
+        provider_receipt!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, proposed.clone()), WorkBudget::UNBOUNDED)?
             .value,
         AppendOutcome::AlreadyCommitted(actual) if actual == durable
     ));
     assert!(matches!(
-        provider!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, ProposedCommit {
+        provider_receipt!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, ProposedCommit {
                     publication: None,
                     fingerprint: Digest::from_bytes([24; 32]),
                     ..proposed
@@ -257,7 +257,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         } if committed_fingerprint == fingerprint
     ));
     assert_eq!(
-        provider!(
+        provider_receipt!(
             store,
             find_operation(authority_id, operation_id),
             WorkBudget::UNBOUNDED
@@ -266,7 +266,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         Some(durable.clone())
     );
     assert!(
-        provider!(
+        provider_receipt!(
             store,
             find_operation(authority_id, OperationId::from_bytes([25; 16])),
             WorkBudget::UNBOUNDED
@@ -274,8 +274,8 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         .value
         .is_none()
     );
-    let current = provider!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value;
-    let stale = provider!(
+    let current = provider_receipt!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value;
+    let stale = provider_receipt!(
         store,
         compare_and_append(
             authority_id,
@@ -294,19 +294,20 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         stale.value,
         AppendOutcome::Conflict { actual } if actual == current
     ));
-    let fenced = provider!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
+    let fenced = provider_receipt!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
     let FenceOutcome::Advanced(fenced_head) = fenced.value else {
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let repeated_fence = provider!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
+    let repeated_fence =
+        provider_receipt!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
     assert_eq!(
         repeated_fence.value,
         FenceOutcome::Conflict {
             actual: fenced_head
         }
     );
-    let wrong_epoch = provider!(
+    let wrong_epoch = provider_receipt!(
         store,
         compare_and_append(
             authority_id,
@@ -336,7 +337,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         },
     ] {
         assert!(matches!(
-            provider!(
+            provider_receipt!(
                 store,
                 replay(authority_id, Sequence::GENESIS, invalid),
                 WorkBudget::UNBOUNDED
@@ -348,7 +349,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         ));
     }
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             replay(
                 authority_id,

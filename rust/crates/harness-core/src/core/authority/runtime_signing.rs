@@ -28,7 +28,7 @@ impl RuntimeSigner {
         ));
         let workload = workload::RuntimeKeys::new(&seed);
         let public = Arc::new(PublicAuthority {
-            trust: std::sync::RwLock::new(workload::trust(id, &workload)),
+            trust: std::sync::RwLock::new(Arc::new(workload::trust(id, &workload))),
             metadata_key: metadata.verifying_key().to_bytes(),
             workload: Default::default(),
             historical: Default::default(),
@@ -43,7 +43,7 @@ impl RuntimeSigner {
 }
 
 pub(super) struct PublicAuthority {
-    pub(super) trust: std::sync::RwLock<acyclic_auth::trust::Snapshot>,
+    pub(super) trust: std::sync::RwLock<Arc<acyclic_auth::trust::Snapshot>>,
     pub(super) metadata_key: [u8; 32],
     // One immutable workload and the canonical certificate verifier. Switching
     // scopes retires the old workload without reauthenticating identical roots.
@@ -232,7 +232,27 @@ mod tests {
             &mut None,
         )?;
         verifier.verify(&online_child, &mut None)?;
+        let (before, revision) = runtime.public_trust_revision()?;
+        let (same, same_revision) = runtime.public_trust_revision()?;
+        assert_eq!(revision, same_revision);
+        assert!(Arc::ptr_eq(&before, &same));
+        // The former per-read copy passes value equality but not shared custody.
+        let copied = Arc::new(before.as_ref().clone());
+        assert!(before.as_ref() == copied.as_ref());
+        assert!(!Arc::ptr_eq(&before, &copied));
+        let mut exported = runtime.public_workload_trust()?;
+        exported.minimum_key_epoch = u64::MAX;
+        assert_ne!(before.minimum_key_epoch, exported.minimum_key_epoch);
+        assert!(Arc::ptr_eq(&before, &runtime.public_trust_revision()?.0));
+        let revisions = runtime.trust_revisions();
         runtime.revoke_workload(&parent)?;
+        let (revoked, next_revision) = runtime.public_trust_revision()?;
+        assert_eq!(next_revision, revision + 1);
+        assert_eq!(*revisions.borrow(), next_revision);
+        assert!(!Arc::ptr_eq(&before, &revoked));
+        assert!(!before.revoked_block_ids.contains(parent.proof.as_ref()));
+        assert!(revoked.revoked_block_ids.contains(parent.proof.as_ref()));
+        assert!(Arc::ptr_eq(&revoked, &runtime.public_trust_revision()?.0));
         assert!(verifier.verify(&online_child, &mut None).is_err());
         assert!(
             runtime

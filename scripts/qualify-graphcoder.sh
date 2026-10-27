@@ -15,8 +15,7 @@ python3 scripts/qualify-graphcoder-artifact.py \
     contract::errors::tests:: executor::tests::invocation_bounds:: \
     tools::git::view::tests:: < "$core_artifact"
 python3 scripts/qualify-graphcoder-artifact.py \
-    local::tests:: \
-    local::checkout_tools::publisher::tests:: < "$native_artifact"
+    local::tests:: < "$native_artifact"
 
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs

@@ -8,20 +8,20 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"abcdef"),
     };
-    provider!(
+    provider_receipt!(
         store,
         put(object_id, OwnedBytes::from_static(b"abcdef")),
         WorkBudget::UNBOUNDED
     )?;
     assert_eq!(
-        provider!(store, read(object_id, 6), WorkBudget::UNBOUNDED)?.value,
+        provider_receipt!(store, read(object_id, 6), WorkBudget::UNBOUNDED)?.value,
         ObjectRead {
             bytes: OwnedBytes::from_static(b"abcdef"),
             retention: ObjectReadRetention::Shared,
         }
     );
     assert!(matches!(
-        provider!(store, read(object_id, 5), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, read(object_id, 5), WorkBudget::UNBOUNDED),
         Err(ObjectFailure {
             error: ObjectStoreError::TooLarge { .. },
             ..
@@ -41,17 +41,17 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"second"),
     };
-    provider!(
+    provider_receipt!(
         store,
         put(first, OwnedBytes::from_static(b"first")),
         WorkBudget::UNBOUNDED
     )?;
-    provider!(
+    provider_receipt!(
         store,
         put(second, OwnedBytes::from_static(b"second")),
         WorkBudget::UNBOUNDED
     )?;
-    let receipt = provider!(
+    let receipt = provider_receipt!(
         store,
         read_many(&[
             crate::storage::ObjectReadRequest {
@@ -83,7 +83,7 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
     );
 
     assert!(matches!(
-        provider!(store, read_many(&[]), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, read_many(&[]), WorkBudget::UNBOUNDED),
         Err(ObjectFailure {
             error: ObjectStoreError::EmptyReadBatch,
             ..
@@ -100,7 +100,7 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"authentic"),
     };
-    provider!(
+    provider_receipt!(
         store,
         put(object_id, OwnedBytes::from_static(b"authentic")),
         WorkBudget::UNBOUNDED
@@ -116,20 +116,20 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
     state.objects[index].1 = OwnedBytes::from_static(b"corrupted");
     drop(state);
     assert!(matches!(
-        provider!(store, read(object_id, 64), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, read(object_id, 64), WorkBudget::UNBOUNDED),
         Err(ObjectFailure {
             error: ObjectStoreError::Corrupt,
             ..
         })
     ));
     assert!(matches!(
-        provider!(store, contains(object_id), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, contains(object_id), WorkBudget::UNBOUNDED),
         Err(ObjectFailure {
             error: ObjectStoreError::Corrupt,
             ..
         })
     ));
-    let batch_failure = provider!(
+    let batch_failure = provider_receipt!(
         store,
         read_many(&[crate::storage::ObjectReadRequest {
             object_id,
@@ -160,7 +160,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"data"),
     };
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             put(object_id, OwnedBytes::from_static(b"oversized")),
             WorkBudget::UNBOUNDED
@@ -171,7 +171,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         })
     ));
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             put(object_id, OwnedBytes::from_static(b"nope")),
             WorkBudget::UNBOUNDED
@@ -181,26 +181,26 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
             ..
         })
     ));
-    assert!(!provider!(store, contains(object_id), WorkBudget::UNBOUNDED)?.value);
+    assert!(!provider_receipt!(store, contains(object_id), WorkBudget::UNBOUNDED)?.value);
     assert!(matches!(
-        provider!(store, read(object_id, 4), WorkBudget::UNBOUNDED),
+        provider_receipt!(store, read(object_id, 4), WorkBudget::UNBOUNDED),
         Err(ObjectFailure {
             error: ObjectStoreError::Missing,
             ..
         })
     ));
-    provider!(
+    provider_receipt!(
         store,
         put(object_id, OwnedBytes::from_static(b"data")),
         WorkBudget::UNBOUNDED
     )?;
-    provider!(
+    provider_receipt!(
         store,
         put(object_id, OwnedBytes::from_static(b"data")),
         WorkBudget::UNBOUNDED
     )?;
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             read_many(&[crate::storage::ObjectReadRequest {
                 object_id,
@@ -221,7 +221,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         digest: Digest::from_bytes([31; 32]),
     };
     assert!(matches!(
-        provider!(
+        provider_receipt!(
             store,
             read_many(&[crate::storage::ObjectReadRequest {
                 object_id: missing,
@@ -237,7 +237,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     let mut denied = WorkBudget::UNBOUNDED;
     denied.object_probes = 0;
     assert!(matches!(
-        provider!(store, contains(object_id), denied),
+        provider_receipt!(store, contains(object_id), denied),
         Err(ObjectFailure {
             error: ObjectStoreError::Work(_),
             ..

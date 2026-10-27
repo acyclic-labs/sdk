@@ -78,7 +78,7 @@ fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Re
         .try_into()
         .map_err(workload::unauthorized)?;
     for change in 0..9 {
-        let mut trust = original.clone();
+        let mut trust = original.as_ref().clone();
         match change {
             0 => trust.environment_keys.clear(),
             1 => trust.issuer_keys.clear(),
@@ -100,7 +100,7 @@ fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Re
             .public
             .trust
             .write()
-            .map_err(workload::unauthorized)? = trust;
+            .map_err(workload::unauthorized)? = std::sync::Arc::new(trust);
         assert!(
             grant.require(&volume, VolumeOperation::Read, None).is_err(),
             "content grant ignored changed trust: {change}"
