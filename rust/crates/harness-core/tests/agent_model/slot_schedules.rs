@@ -3,18 +3,39 @@
 use super::*;
 
 #[tokio::test]
+async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Result {
+    for host in [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()] {
+        let (root, mut state) = one_below_the_child_limit()?;
+        state.turn = Some(Progress { inbox: 0, checkpoint: Vec::new() });
+        state.phase = Phase::Running;
+        let driver = script(vec![TurnStep {
+            checkpoint: Some(vec![]), reserved_children: 0,
+            outs: vec![Out::Spawn { intent: intent("spawn:invalid-host"), brief: None, volumes: vec![] }],
+            wait: Wait::Host(host), drops: None,
+        }]);
+        let result = step(&driver, &root, Some(state), 1, Wake::Alarm).await?;
+        assert!(matches!(result.state.phase, Phase::Done { outcome: AgentOutcome::Failed { .. } }),
+            "invalid host wait must settle as a bounded failure");
+        assert!(spawns(&result.outs).is_empty(), "invalid host wait published unchecked effects");
+        StatusRecord { phase: result.state.phase, cursor: u64::MAX }.encode()?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Result {
     let (root, mut state) = one_below_the_child_limit()?;
     let recorded = intent("spawn:already-open");
     let child = TurnEffect::child(&root, &recorded)?;
     state.open_children.insert(child.clone());
-    state.turn = Some(Vec::new());
+    state.turn = Some(Progress { inbox: 0, checkpoint: Vec::new() });
     state.phase = Phase::WaitingApproval { id: intent("approval") };
     state.reserved_children = 0; // Recorded spawn initially names an open child.
     let driver = script(vec![TurnStep {
         checkpoint: None, reserved_children: 0,
         outs: vec![Out::Spawn { intent: recorded.clone(), brief: None, volumes: vec![] }],
         wait: Wait::Input,
+        drops: None,
     }]);
     let done = || Wake::Inbox { sequence: 1, record: InboxRecord::ChildDone(ChildDone {
         child: child.clone(), outcome: AgentOutcome::Archived,
@@ -45,13 +66,14 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                     state.open_children.pop_last();
                 }
                 state.phase = Phase::Running;
-                state.turn = Some(Vec::new());
+                state.turn = Some(Progress { inbox: 0, checkpoint: Vec::new() });
                 let named: Vec<_> = (0..recorded)
                     .map(|n| intent(&format!("spawn:recorded-{n}"))).collect();
                 let driver = script(vec![
                     TurnStep {
                         checkpoint: Some(vec![1]), reserved_children: recorded, outs: vec![],
                         wait: Wait::Approval(intent("approval")),
+                        drops: None,
                     },
                     TurnStep {
                         checkpoint: None, reserved_children: 0,
@@ -59,6 +81,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             intent: intent.clone(), brief: None, volumes: Vec::new(),
                         }).collect(),
                         wait: Wait::Input,
+                        drops: None,
                     },
                 ]);
                 state = step(&driver, &root, Some(state), 1, Wake::Alarm).await?.state;

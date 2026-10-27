@@ -1,6 +1,0 @@
-
-running 1 test
-test filesystem::attestation::tests::every_write_family_preserves_digest_admission_and_retry_evidence ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 940 filtered out; finished in 0.01s
-

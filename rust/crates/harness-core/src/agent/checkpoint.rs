@@ -501,6 +501,7 @@ mod tests {
             }
             let phases = [Phase::Idle, Phase::Running,
                 Phase::WaitingApproval { id: intent() },
+                Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
                 Phase::WaitingAlarm { deadline_unix_ms: u64::MAX }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
                 message: widest_text(MAX_MESSAGE_BYTES),
@@ -513,11 +514,23 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { input, output: file() };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file() };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
         }
+    }
+
+    #[test]
+    fn waiting_host_status_requires_a_bounded_name() {
+        for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
+            let record = StatusRecord { phase: Phase::WaitingHost { host }, cursor: 0 };
+            assert!(record.check().is_err(), "unbounded or malformed host name admitted");
+        }
+        let record = StatusRecord {
+            phase: Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) }, cursor: u64::MAX,
+        };
+        assert_record_bound(&record);
     }
 }

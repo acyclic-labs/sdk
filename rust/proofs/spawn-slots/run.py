@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 parser = argparse.ArgumentParser(__doc__)
-parser.add_argument("mode", choices=["rust", "docs", "finish", "remaining", "kani", "mutants", "type-control", "check"])
+parser.add_argument("mode", choices=["rust", "docs", "finish", "remaining", "kani", "mutants", "type-control", "check", "rebase"])
 parser.add_argument("--evidence", type=Path, required=True)
 args = parser.parse_args()
 start = time.monotonic()
@@ -123,13 +123,31 @@ try:
     if args.mode == "check":
         run("affected-check", ["cargo", "check", "--locked", "--all-features", "-p", "acyclic-harness-core",
                                "-p", "acyclic-stream", "-p", "acyclic-contract-derive"])
+    elif args.mode == "rebase":
+        base = subprocess.check_output(["git", "merge-base", "HEAD", "origin/main"], cwd=ROOT, text=True).strip()
+        run("lane-artifacts", ["node", "scripts/check-lane-artifacts.mjs", base, "HEAD"])
+        binaries = build(ROOT, "rebase-build")
+        for name in ["record_bounds_cover_every_kind_and_json_escape_expansion",
+                     "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
+                     "waiting_host_status_requires_a_bounded_name"]:
+            run(name, [binaries["acyclic_harness_core"], name, "--nocapture"], passed=1)
+        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=3)
+        run("affected-check", ["cargo", "check", "--locked", "--all-features", "-p", "acyclic-harness-core",
+                               "-p", "acyclic-stream", "-p", "acyclic-contract-derive"])
+        changed = variant("host-bound-control", "rust/crates/harness-core/src/agent/records.rs",
+                          "Phase::WaitingHost { host } => check_text(host)",
+                          "Phase::WaitingHost { host: _ } => Ok(())")
+        binaries = build(changed, "host-bound-control-build")
+        run("host-bound-control", [binaries["acyclic_harness_core"],
+                                  "waiting_host_status_requires_a_bounded_name", "--nocapture"],
+            changed, failure="unbounded or malformed host name admitted")
     elif args.mode == "rust":
         binaries = build(ROOT, "positive-build")
         for name in ["record_bounds_cover_every_kind_and_json_escape_expansion",
                      "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
                      "every_write_family_preserves_digest_admission_and_retry_evidence"]:
             run(name, [binaries["acyclic_harness_core"], name, "--nocapture"], passed=1)
-        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=2)
+        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=3)
         run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
                                       "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
     elif args.mode in ("docs", "finish", "remaining"):

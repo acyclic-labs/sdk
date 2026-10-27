@@ -599,7 +599,9 @@ async fn run<T: TurnDriver + ?Sized>(
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.
-    if !turn.outs.iter().all(admissible) {
+    if !turn.outs.iter().all(admissible)
+        || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
+    {
         turn = TurnStep {
             checkpoint: None,
             reserved_children: 0,

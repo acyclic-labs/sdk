@@ -1,4 +1,5 @@
 [
+  "docs/proofs/spawn-slots.md",
   "docs/backends/browser-agent-host.md",
   "docs/backends/local-agent-host.md",
   "docs/backends/virtiofs.md",

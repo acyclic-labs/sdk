@@ -43,5 +43,7 @@
   ],
   "actual_production_controls": 7,
   "rust_positive_tests": 5,
-  "positive_source": "cac82c7aee065ede53a5703e2f3db72c58d2861e"
+  "positive_source": "cac82c7aee065ede53a5703e2f3db72c58d2861e",
+  "raw_log_root": "Q:/lanes/verify/evidence/1697/retained-raw",
+  "raw_log_custody": "Captured logs are outside the product repository; logs ending .json/.patch in this index remain relative to this manifest. SHA256 values are unchanged."
 }

@@ -10,7 +10,8 @@
     "Use deterministic schedules of the production actor step, which serializes inbox commits, rather than a separate concurrent reducer.",
     "Keep slots vacated during a paused turn until the driver reconciles recorded effects; duplicate ChildDone reserves nothing.",
     "Generate ExplicitStreamProvider from the same trait declaration; it removes all defaults and generates forwarding, so missing adapter methods fail compilation.",
-    "Attestor implementations retain the documented deterministic-function obligation; adapter properties verify original admission, exact digest and repeat evidence, not arbitrary third-party signer purity."
+    "Attestor implementations retain the documented deterministic-function obligation; adapter properties verify original admission, exact digest and repeat evidence, not arbitrary third-party signer purity.",
+    "Bound WaitingHost names introduced by main and fail invalid driver waits before effects are published."
   ],
   "targets": [
     {
@@ -99,7 +100,7 @@
     },
     {
       "command_exit": 0,
-      "log": "evidence/20261027/explicit-provider-docs.log",
+      "log": "Q:/lanes/verify/evidence/1697/retained-raw/explicit-provider-docs.log",
       "positive_examples": 2,
       "compile_failure_examples": 1,
       "report": "evidence/20261027/doctest-producer-report.json",
