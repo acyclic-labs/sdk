@@ -153,6 +153,7 @@ impl OperationRegistry {
                 known.native.as_ref().is_some_and(|known| known != &native)
                     || known.observation.source != observation.source
                     || known.observation.contract != observation.contract
+                    || !known.observation.forkable
             }) || link
                 .value
                 .as_ref()

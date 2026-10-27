@@ -26,8 +26,8 @@ impl OperationRegistry {
                 }
             }
             let handle = native.map_or_else(|| machine.to_string(), |native| native.handle);
-            self.delete_target(driver, operation, NativeResource::Machine(handle)).await?;
-            self.mark_destroyed(machine, at).await?;
+            let deleted_at = self.delete_target(driver, operation, NativeResource::Machine(handle)).await?;
+            self.mark_destroyed(machine, deleted_at.unwrap_or(at).max(current.changed_at_unix_ms)).await?;
             Ok(MutationOutcome::MachineDestroyed(machine))
         }).await
     }
@@ -63,10 +63,11 @@ impl OperationRegistry {
         driver: &D,
         operation: OperationId,
         resource: NativeResource,
-    ) -> Result<(), ProviderError> {
+    ) -> Result<Option<u64>, ProviderError> {
         self.bind_target(operation, resource.handle()).await?;
         match driver.raw_destroy(&resource).await {
-            Ok(_) | Err(ProviderError::NotFound(_)) => Ok(()),
+            Ok(at) => Ok(Some(at)),
+            Err(ProviderError::NotFound(_)) => Ok(None),
             Err(error) => Err(error),
         }
     }

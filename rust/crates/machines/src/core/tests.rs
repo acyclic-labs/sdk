@@ -1635,6 +1635,31 @@ async fn checkpoint_cleanup_reopens_the_admitted_projection_and_revokes_forkabil
         Some(false)
     );
     assert_eq!(core.join_settlement(key, operation).await?, settlement);
+    let retry = fresh(
+        core.admit(IdempotencyKey::new(), &"internal reused revoked checkpoint")
+            .await?,
+    )?;
+    assert!(matches!(
+        core.claim_checkpoint(
+            &driver,
+            retry,
+            checkpoint.clone(),
+            NativeBinding {
+                provider: driver.name().into(),
+                handle: "opaque-checkpoint-cleanup".into(),
+                endpoint: None,
+            }
+        )
+        .await,
+        Err(ProviderError::Conflict(_))
+    ));
+    assert_eq!(
+        core.checkpoint(checkpoint.id)
+            .await?
+            .map(|value| value.forkable),
+        Some(false)
+    );
+    assert_eq!(driver.mutations.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
