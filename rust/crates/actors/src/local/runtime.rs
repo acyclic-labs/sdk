@@ -2,8 +2,8 @@
 //!
 //! One dispatcher owns one follow of the state root's activation log, one
 //! ready index and one timer. A dormant actor owns no task, timer or socket: only its
-//! registration and a passive follow cursor per subscription that the
-//! dispatcher polls with that registration's waker.
+//! registration, one bounded state cut and a passive follow cursor per
+//! subscription that the dispatcher polls with that registration's waker.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 mod dispatcher;
@@ -23,7 +23,10 @@ use std::{
     convert::Infallible,
     future::poll_fn,
     hash::BuildHasher,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker},
 };
 
@@ -63,6 +66,21 @@ struct Slot {
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
+    refresh: AtomicBool,
+}
+
+/// Invalidate cancelled delivery or control publication without taking its lock.
+/// Control changes also wake the dispatcher after publication finishes.
+struct RefreshOnDrop(Option<Arc<Slot>>, bool);
+impl Drop for RefreshOnDrop {
+    fn drop(&mut self) {
+        if let Some(slot) = &self.0 {
+            slot.refresh.store(true, Ordering::Release);
+            if self.1 {
+                slot.waker.wake_by_ref();
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -71,11 +89,13 @@ struct Inner {
     released: bool,
     /// Placement this runtime owns; zero until the first claim.
     epoch: u64,
+    /// One receipt-backed cut per resident actor; never advances speculatively.
+    observed: Option<Arc<Snapshot>>,
     follows: BTreeMap<String, RecordStream>,
     /// A record read from a follow but not yet consumed by a commit.
     held: BTreeMap<String, Record>,
     /// The exact request and participant custody survive an unknown acknowledgement.
-    pending: Option<(Snapshot, PreparedPublish)>,
+    pending: Option<(Arc<Snapshot>, PreparedPublish)>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -177,6 +197,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
+                refresh: AtomicBool::new(false),
             }),
         );
         Ok(())
@@ -214,6 +235,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Durably pause or resume. Pause fences in-flight publication; resume wakes.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
+        let _refresh = RefreshOnDrop(self.slot(actor), true);
         loop {
             let snapshot = self.store.load(actor).await?;
             let state = snapshot
@@ -239,6 +261,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             self.wake(actor);
         }
         Ok(())
+    }
+
+    /// A cursor retained from an actual state observation or commit receipt.
+    /// This is a past cut, not a freshness or authority check. Publication still
+    /// compares its tail and immutable anchor. Releasing the actor drops it.
+    /// Returns `None` while a delivery owns the slot; controls must never wait
+    /// for a handler to finish before they can append cancellation or input.
+    pub fn observed_cursor(
+        &self,
+        actor: &ActorReference,
+        subscription: &str,
+        path: &StreamPath,
+    ) -> Option<u64> {
+        let slot = self.slot(actor)?;
+        let inner = slot.inner.try_lock().ok()?;
+        inner
+            .observed
+            .as_ref()?
+            .state()?
+            .subscriptions()
+            .get(subscription)
+            .filter(|observed| &observed.path == path)
+            .map(|observed| observed.cursor)
     }
 
     /// Run every currently ready or due actor to quiescence, then return the
@@ -424,6 +469,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     async fn deliver(
         &self,
         actor: &ActorReference,
+        slot: &Arc<Slot>,
+        inputs: Inputs,
+    ) -> Result<(), Error> {
+        let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
+        let result = self.deliver_retained(actor, slot, inputs).await;
+        // Cancellation can interrupt a committed publication before its receipt
+        // is retained. A completed attempt handles its outcome in the loop.
+        refresh.0 = None;
+        result
+    }
+
+    async fn deliver_retained(
+        &self,
+        actor: &ActorReference,
         slot: &Slot,
         inputs: Inputs,
     ) -> Result<(), Error> {
@@ -438,8 +497,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // provider; the committed cursor is the source of truth below.
             inner.follows.clear();
             if let Some((snapshot, publication)) = inner.pending.take() {
-                match self.store.submit(publication).await {
-                    Ok(()) => continue,
+                match self.store.submit_retained(publication).await {
+                    Ok(observed) => {
+                        inner.observed = Some(Arc::new(
+                            observed.ok_or(Error::Invalid("actor receipt has no state"))?,
+                        ));
+                        continue;
+                    }
                     Err(Error::Unknown {
                         publication,
                         source,
@@ -447,17 +511,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         inner.pending = Some((snapshot, *publication));
                         return Err(Error::Stream(source));
                     }
-                    Err(Error::Conflict) if self.store.load(actor).await?.tail != snapshot.tail => {
+                    Err(Error::Conflict) => {
+                        self.refresh_cut(actor, &mut inner, &snapshot).await?;
                         continue;
                     }
-                    Err(Error::Conflict) => {
-                        return Err(Error::Invalid("transition refused at an unchanged cut"));
+                    Err(error) => {
+                        inner.observed = None;
+                        return Err(error);
                     }
-                    Err(error) => return Err(error),
                 }
             }
-            let snapshot = self.store.load(actor).await?;
+            if slot.refresh.swap(false, Ordering::AcqRel) {
+                inner.observed = None;
+            }
+            let snapshot = match &inner.observed {
+                Some(observed) => Arc::clone(observed),
+                None => {
+                    let observed = Arc::new(self.store.load(actor).await?);
+                    inner.observed = Some(Arc::clone(&observed));
+                    observed
+                }
+            };
             let Some(state) = snapshot.state() else {
+                inner.observed = None;
                 return Ok(());
             };
             // Unclaimed here (epoch 0 locally) always claims, including a state
@@ -479,14 +555,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     )
                     .await
                 {
-                    Ok(()) => inner.epoch = epoch,
-                    Err(Error::Conflict) => {}
-                    Err(error) => return Err(error),
+                    Ok(()) => {
+                        inner.epoch = epoch;
+                        inner.observed = None;
+                    }
+                    Err(Error::Conflict) => inner.observed = None,
+                    Err(error) => {
+                        inner.observed = None;
+                        return Err(error);
+                    }
                 }
                 continue;
             }
             if state.paused() {
                 // The alarm stays committed; only its active wake is withdrawn.
+                // A later wake must observe an external resume as well.
+                inner.observed = None;
                 slot.registration.suspend_alarm();
                 return Ok(());
             }
@@ -511,6 +595,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     None => return Ok(()),
                 },
             };
+            // A retained publication cut cannot admit external handler work:
+            // another host may already have paused or replaced this placement.
+            // Until canonical control invalidation is available, observe the
+            // real provider before every handler attempt, including alarms.
+            let admitted = Arc::new(self.store.load(actor).await?);
+            if admitted.tail != snapshot.tail || admitted.anchor != snapshot.anchor {
+                inner.observed = Some(admitted);
+                continue;
+            }
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
             let cancellation = crate::guest::CancellationToken::new();
@@ -558,25 +651,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             {
                 return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
             }
-            match self
-                .store
-                .publish(
-                    &snapshot,
-                    epoch,
-                    &trigger,
-                    record.as_ref(),
-                    transition,
-                    key(&snapshot, "publish")?,
-                )
-                .await
-            {
-                Ok(()) => {}
+            let publication = self.store.prepare_publish(
+                &snapshot,
+                epoch,
+                &trigger,
+                record.as_ref(),
+                transition,
+                key(&snapshot, "publish")?,
+            )?;
+            match self.store.submit_retained(publication).await {
+                Ok(observed) => {
+                    inner.observed = Some(Arc::new(
+                        observed.ok_or(Error::Invalid("actor receipt has no state"))?,
+                    ));
+                }
                 // A moved cut is re-read; a lost placement surfaces above.
-                Err(Error::Conflict) if self.store.load(actor).await?.tail != snapshot.tail => {}
-                // The same cut refused the transition (its effect conditions or a
-                // stale trigger): retrying cannot succeed, so surface it.
                 Err(Error::Conflict) => {
-                    return Err(Error::Invalid("transition refused at an unchanged cut"));
+                    self.refresh_cut(actor, &mut inner, &snapshot).await?;
                 }
                 Err(Error::Unknown {
                     publication,
@@ -585,9 +676,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     inner.pending = Some((snapshot, *publication));
                     return Err(Error::Stream(source));
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // Settlement can fail after a successful commit. Reopen the
+                    // actual state next time instead of rerunning its handler.
+                    inner.observed = None;
+                    return Err(error);
+                }
             }
         }
+    }
+
+    /// A conflict is the only steady-state reason to rediscover the actor cut.
+    async fn refresh_cut(
+        &self,
+        actor: &ActorReference,
+        inner: &mut Inner,
+        previous: &Snapshot,
+    ) -> Result<(), Error> {
+        inner.observed = None;
+        let observed = Arc::new(self.store.load(actor).await?);
+        let moved = observed.tail != previous.tail || observed.anchor != previous.anchor;
+        inner.observed = Some(observed);
+        if !moved {
+            return Err(Error::Invalid("transition refused at an unchanged cut"));
+        }
+        Ok(())
     }
 
     /// Open the follow for one subscription. A stream that does not exist yet

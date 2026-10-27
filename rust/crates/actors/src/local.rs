@@ -11,8 +11,9 @@ use crate::guest::{
     AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, Transition, Trigger,
 };
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    ReadRequest, Record, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope,
+    CommittedMutation, IdempotencyKey, ReadRequest, Record, StreamError, StreamPath,
+    StreamProvider,
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -165,6 +166,67 @@ impl std::fmt::Debug for PreparedPublish {
     }
 }
 impl PreparedPublish {
+    /// Recover this publication's own state from its real, immutable receipt.
+    fn retained(&self, envelope: &CommittedEnvelope) -> Result<Option<Snapshot>, Error> {
+        let Some(path) = &self.own else {
+            return Ok(None);
+        };
+        let mut appends = envelope
+            .mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                CommittedMutation::Append(append) if &append.path == path => Some(append),
+                _ => None,
+            });
+        let append = appends
+            .next()
+            .ok_or(Error::Invalid("receipt omits actor state"))?;
+        let [record] = append.records.as_slice() else {
+            return Err(Error::Invalid("receipt changes actor state record count"));
+        };
+        let expected = self
+            .request
+            .conditions
+            .iter()
+            .find_map(|condition| match condition {
+                CommitCondition::Head {
+                    path: own,
+                    expected,
+                    ..
+                } if own == path => Some(*expected),
+                CommitCondition::Absent { path: own } if own == path => Some(0),
+                _ => None,
+            });
+        let authored = self
+            .request
+            .mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                CommitMutation::Append { path: own, records } if own == path => Some(records),
+                _ => None,
+            });
+        if appends.next().is_some()
+            || expected != Some(append.start)
+            || append.start.checked_add(1) != Some(append.end)
+            || append.end != append.tail
+            || record.sequence != append.start
+            || record.commit_id != envelope.commit_id
+            || !authored.is_some_and(|records| {
+                records.len() == 1
+                    && records[0].value == record.value
+                    && records[0].headers == record.headers
+            })
+        {
+            return Err(Error::Invalid("receipt differs from the actor publication"));
+        }
+        Ok(Some(Snapshot {
+            path: path.clone(),
+            tail: append.tail,
+            anchor: Some(envelope.commit_id),
+            state: Some(State::decode(&record.value)?),
+        }))
+    }
+
     /// An empty commit for a caller that is not this actor (a client, or a
     /// parent composing a spawn) that joins companion creates and appends.
     pub fn foreign(key: IdempotencyKey) -> Self {
@@ -506,7 +568,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// Seal and submit once. An unknown acknowledgement returns the whole
     /// publication in [`Error::Unknown`]; retries preserve its bytes and custody.
-    pub async fn submit(&self, mut prepared: PreparedPublish) -> Result<(), Error> {
+    pub async fn submit(&self, prepared: PreparedPublish) -> Result<(), Error> {
+        self.submit_retained(prepared).await.map(|_| ())
+    }
+
+    /// Retain only a state actually confirmed by the original provider receipt.
+    async fn submit_retained(
+        &self,
+        mut prepared: PreparedPublish,
+    ) -> Result<Option<Snapshot>, Error> {
         if !prepared.sealed {
             if let Some(composition) = &mut prepared.composition {
                 let original = &prepared.request;
@@ -566,12 +636,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 | StreamError::Unsupported,
             ) => {}
         }
+        let retained = match &outcome {
+            Ok(CommitOutcome::Committed(envelope)) => prepared.retained(envelope),
+            Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
+        };
         if let Some(composition) = prepared.composition {
             if let Err(source) = composition.settle(outcome.as_ref()).await {
                 return Err(Error::Settlement { outcome, source });
             }
         }
-        PreparedPublish::settle(&outcome?)
+        PreparedPublish::settle(&outcome?)?;
+        retained
     }
 
     fn prepare(
