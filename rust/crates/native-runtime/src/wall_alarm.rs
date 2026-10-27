@@ -135,8 +135,8 @@ fn drive(index: &Mutex<Index>, waiter: &dyn Wait, failed: &AtomicBool, now: impl
             // An unusable timer cannot keep any deadline: fire everything so
             // owners fail closed, and refuse later registrations.
             failed.store(true, Ordering::SeqCst);
-            let (due, _) = locked(index).take_due(u64::MAX);
-            for fire in due {
+            let due = std::mem::take(&mut locked(index).entries);
+            for fire in due.into_values() {
                 fire();
             }
             return;
@@ -636,6 +636,24 @@ mod tests {
             self.clock.store(now, Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    #[test]
+    fn wait_failure_fires_every_registered_deadline() {
+        let index = Mutex::new(Index::default());
+        let (fired, fire) = counter();
+        for deadline in [0, 1, u64::MAX] {
+            locked(&index).insert(deadline, Arc::clone(&fire));
+        }
+        let script = Script {
+            clock: Arc::new(AtomicU64::new(0)),
+            steps: Mutex::new(Vec::new()),
+        };
+        let failed = AtomicBool::new(false);
+        drive(&index, &script, &failed, || 0);
+        assert!(failed.load(Ordering::SeqCst));
+        assert_eq!(fired.load(Ordering::SeqCst), 3);
+        assert!(locked(&index).entries.is_empty());
     }
 
     #[test]
