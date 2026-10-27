@@ -188,37 +188,23 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
+        let crate::kernel::KernelAccounting::NativeOriginal { .. } = &*accounting else {
             return Err(MountSourceError::OriginalSnapshotUnavailable.into());
         };
-        let (work, cancellation) = (*work, *cancellation);
         let (operation, proof) = remembered;
 
         let context = self
             .publication_context(operation, None, proof, accounting)
             .await?;
-        self.authored
-            .shared_checkout()
-            .publish(
-                permit,
-                crate::kernel::KernelAccounting::native(work, cancellation),
-                Some(self.authored.cancellation()),
-                before_publication,
-                Some(context),
-                acknowledged,
-            )
-            .await
-            .map_err(|(error, accounting)| {
-                *accounting_failure = accounting;
-                error
-            })?;
-        let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
-        self.finish_publication(operation, published.generation(), proof, accounting)
-            .await?;
-        self.finish_detached_publication(work)?;
-        self.clear_mount_removals()?;
-        Ok(published)
+        self.complete_publication(
+            permit,
+            (context, operation, proof),
+            accounting,
+            before_publication,
+            acknowledged,
+            accounting_failure,
+        )
+        .await
     }
     pub(super) async fn cleanup_publication(
         &self,
