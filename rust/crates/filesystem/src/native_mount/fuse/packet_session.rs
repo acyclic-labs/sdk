@@ -102,12 +102,12 @@ impl PacketSession {
     }
 
     pub(super) fn retire_failure(&self, error: &PacketFailure) {
-        // A shared view owns its original source failure. Retiring that view
-        // must not close the kernel connection serving its siblings.
-        if !matches!(
-            (&self.router, error),
-            (PacketRouter::Shared(_), PacketFailure::Source { .. })
-        ) {
+        // The original source retains its terminal cause. Host ingress must
+        // keep answering that original refusal until its retirement owner
+        // unmounts, including when a no-reply FORGET reaches it first. Closing
+        // here would substitute ENODEV for cancellation on the next lookup.
+        // The socket owner separately stops on the returned source failure.
+        if !matches!(error, PacketFailure::Source { .. }) {
             self.close();
         }
     }
