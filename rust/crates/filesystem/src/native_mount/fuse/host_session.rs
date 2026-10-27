@@ -23,15 +23,6 @@ pub(super) struct HostSession {
     capture: Option<Arc<super::tests::packets::Capture>>,
 }
 
-struct WorkerStop<'a>(&'a HostSession);
-
-impl Drop for WorkerStop<'_> {
-    fn drop(&mut self) {
-        self.0.io.stop();
-        self.0.protocol.close();
-    }
-}
-
 impl HostSession {
     pub(super) fn new(
         router: PacketRouter,
@@ -76,39 +67,11 @@ impl HostSession {
     }
 
     pub(super) fn run(self) -> Result<(), NativeMountError> {
-        let _stop = WorkerStop(&self);
-        std::thread::scope(|scope| {
-            let mut workers = fuse_vec(crate::native_mount::CALLBACK_THREADS as usize, &self.work)?;
-            let mut result = Ok(());
-            for _ in 0..crate::native_mount::CALLBACK_THREADS {
-                match std::thread::Builder::new().spawn_scoped(scope, || {
-                    let _stop = WorkerStop(&self);
-                    let mut buffers = PacketBuffers::new(self.packet_capacity, &self.work)?;
-                    while self.serve(&mut buffers.input, &mut buffers.output)? {}
-                    Ok(())
-                }) {
-                    Ok(worker) => workers.push(worker),
-                    Err(error) => {
-                        self.io.stop();
-                        result = Err(error.into());
-                        break;
-                    }
-                }
-            }
-            for worker in workers.drain(..) {
-                match worker.join() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) if result.is_ok() => result = Err(error),
-                    Ok(Err(_)) => {}
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
-            }
-            result.and_then(|()| {
-                self.work
-                    .admit(crate::WorkCounters::UNCHARGED)
-                    .map_err(Into::into)
-            })
-        })
+        super::packet_workers::run(
+            &self,
+            std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS).ok_or(libc::EINVAL)?,
+            &self.work,
+        )
     }
 
     fn serve(&self, input: &mut [u8], output: &mut [u8]) -> Result<bool, NativeMountError> {
@@ -139,6 +102,19 @@ impl HostSession {
         self.protocol
             .publish(&request, output, publish)
             .map_err(super::packet_dispatch::PacketFailure::into_native_error)
+    }
+}
+
+impl super::packet_workers::PacketWorkers for HostSession {
+    fn stop(&self) {
+        self.io.stop();
+        self.protocol.close();
+    }
+
+    fn run_worker(&self, _index: u32) -> Result<(), NativeMountError> {
+        let mut buffers = PacketBuffers::new(self.packet_capacity, &self.work)?;
+        while self.serve(&mut buffers.input, &mut buffers.output)? {}
+        Ok(())
     }
 }
 

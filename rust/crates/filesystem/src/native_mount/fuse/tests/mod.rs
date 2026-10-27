@@ -63,6 +63,7 @@ mod inbox;
 mod mount;
 mod native;
 mod packet_cancellation;
+mod packet_workers;
 pub(super) mod packets;
 pub(in crate::native_mount) mod retirement;
 mod shared;

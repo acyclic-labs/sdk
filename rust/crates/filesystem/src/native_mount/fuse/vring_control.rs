@@ -103,7 +103,11 @@ impl VringControl {
         self.stop();
     }
 
-    fn stop(&self) {
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    pub(super) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
         for change in &self.changes {
             let _ = change.stop();
