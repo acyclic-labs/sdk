@@ -1,5 +1,5 @@
 //! The same in-flight interrupt vector for every public AgentHost backend.
-use crate::{Backend, Result, fixtures, observe::Observed, vectors};
+use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::guest::CancellationToken;
 use acyclic_harness_core::agent::*;
 use futures::channel::oneshot;
