@@ -53,10 +53,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let objects = Arc::new(S3Objects::open(store.clone(), prefix.clone(), capabilities).await?);
     let step = Instant::now();
-    acyclic_conformance::stream(streams.as_ref()).await?;
+    acyclic_conformance::stream(&acyclic_stream::conformance::Fixture::new(
+        streams.as_ref().clone(),
+    ))
+    .await?;
     println!("Stream unchanged suite: {:?}", step.elapsed());
     let step = Instant::now();
-    acyclic_conformance::objects(objects.as_ref()).await?;
+    acyclic_conformance::objects(&acyclic_objects::v1::conformance::Fixture::new(
+        objects.as_ref().clone(),
+        "conformance",
+    ))
+    .await?;
     println!("Objects unchanged suite: {:?}", step.elapsed());
     s3::verify(store.clone(), prefix.clone(), capabilities).await?;
     let bucket = objects

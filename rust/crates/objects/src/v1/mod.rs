@@ -1,4 +1,5 @@
 //! Logical bucket/key Objects contract replacing public version history and snapshots.
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 #[cfg(any(test, feature = "conformance"))]
 mod counted;

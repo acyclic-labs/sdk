@@ -44,7 +44,7 @@ const TOOL: &str = "conformance.echo";
 /// The default policy's one approver.
 const HUMAN: &str = "human";
 
-type Objects = crate::ObjectStore;
+type Objects = crate::conformance::ObjectStore;
 
 /// Calls the tool once, then answers.
 struct Scripted;
@@ -170,7 +170,7 @@ async fn asked(
     Bound<Observed, Objects>,
     AgentPath,
     Arc<AtomicUsize>,
-    Box<dyn crate::Storage>,
+    Box<dyn crate::conformance::Storage>,
 )> {
     let storage = backend.fresh().await?;
     let stream = Arc::new(Observed::new(storage.open().await?));

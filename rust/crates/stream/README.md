@@ -40,7 +40,19 @@ Stream helpers require the caller's `IdempotencyKey` for every mutation. Conditi
 
 The persistent segment trie uses an AVL sibling index with exact count, byte, depth and path-length aggregates. Fork work is independent of descendant count: O(destination depth × sibling-index height + excluded path/index work). Point updates copy only their index spines; snapshots enumerate the retained namespace. Capacity checks never enumerate the source subtree. Forks and readers retain immutable history through reference ownership.
 
-Run the shared provider suite against a fresh authority prefix with `ACYCLIC_CONFORMANCE_ENDPOINT` and `ACYCLIC_CONFORMANCE_TOKEN` using `cargo run -p acyclic-stream --features http --example provider-conformance`. It calls the same public generic `conformance::verify` used for memory, local, HTTP and browser providers. `wave1-conformance` additionally accepts `ACYCLIC_CONFORMANCE_NAMESPACE` and selects individual histories for hosted qualification.
+Run the shared provider suite against a fresh authority prefix with `ACYCLIC_CONFORMANCE_ENDPOINT` and `ACYCLIC_CONFORMANCE_TOKEN` using `cargo run -p acyclic-stream --features http,conformance --example provider-conformance`. It calls `conformance::verify(&backend)`, the same complete contract, key/subtree histories and request-budget suite used for memory, local, HTTP and browser providers. `wave1-conformance` accepts `ACYCLIC_CONFORMANCE_NAMESPACE` and selects individual named histories when producing proof receipts.
+
+For G46/G47, enable `conformance` and implement `conformance::Backend` with the
+public provider and its request ledger. `Fixture::new(provider)` wraps a concrete
+provider in the shared `testing::Counted<P>` before type erasure. Its ledger
+measures public method calls; a backend qualifying physical transport traffic
+supplies its own dispatch ledger, including calls during cursor pulls. Register
+the complete suite with `conformance::suite!(MyBackend::fresh)`, where the async
+factory retains disposable storage and returns `Result<impl Backend, E>`.
+`conformance::bench(&backend)` checks 256 append/follow/read cycles on 4-KiB
+records and reports elapsed time and request classes. Each steady-state operation
+requires zero control requests and at most one data request. Use fresh storage
+for each invocation. These functions run on demand.
 
 The `conformance` feature exposes `testing::Counted<P>` and `assert_requests!` for downstream request budgets. For example, `assert_requests!(provider, provider.append(request).await, control = 0, data <= 1)` returns the original result and checks only calls issued during that expression. Metadata, list, head, lease and token calls count as control traffic. Retain `provider.ledger()` before erasing a counted provider into a trait object to keep measuring its calls.
 

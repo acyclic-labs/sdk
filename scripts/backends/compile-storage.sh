@@ -10,7 +10,7 @@ cargo check --locked -p acyclic-conformance --features storage-backends,acyclic-
 step=compile-default-server-consumer
 cargo check --locked -p graphcoder
 step=compile-postgres-checks
-cargo check --locked -p acyclic-stream --no-default-features --features postgres --example postgres-conformance
+cargo check --locked -p acyclic-stream --no-default-features --features postgres,conformance --example postgres-conformance
 step=compile-shared-stream-regressions
 cargo test --locked -p acyclic-stream --features local,postgres --lib --no-run
 step=compile-shared-objects-regressions

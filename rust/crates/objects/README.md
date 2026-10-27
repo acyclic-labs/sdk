@@ -58,8 +58,9 @@ Use conditional writes and idempotency keys for retryable mutations. Listings
 are bounded, query-bound pages over current keys rather than captured snapshots.
 Multipart uploads require an explicit completion manifest; staging and aborting
 parts never publishes an object. The canonical v1 schema is
-`proto/objects/v1/objects.proto`. `v1::conformance::verify` exercises all 13
-operations against a disposable, immediately visible test fixture. Local tests
+`proto/objects/v1/objects.proto`. With `conformance` enabled,
+`v1::conformance::verify(&backend)` exercises the complete provider surface
+against a disposable, immediately visible test fixture. Local tests
 do not establish live service acceptance.
 
 ## Native v1 durability foundation
@@ -96,3 +97,14 @@ cloned ledgers: puts and gets count as data, heads as control, and listings as
 control. Failed requests count too. Keep `provider.ledger()` before erasing the
 wrapper behind a provider trait object. Instrument the transport dispatch with
 that ledger when measuring physical request budgets.
+
+For G46/G47, `v1::conformance::Backend` supplies the provider, a fresh namespace,
+and its request ledger. `Fixture::new(provider, namespace)` instruments a concrete
+provider at its public method boundary. A downstream transport backend can
+implement `Backend` with its own dispatch ledger instead. Register the complete
+suite with `v1::conformance::suite!(MyBackend::fresh)`, where the async factory
+returns `Result<impl Backend, E>` and retains all storage resources. The suite
+checks put/get and missing-get budgets as well as the logical lifecycle.
+`v1::conformance::bench(&backend)` runs the same checked 256-round put/get workload
+for any backend, reporting elapsed time and request counts. Use fresh storage for
+each invocation; both entry points are on demand.

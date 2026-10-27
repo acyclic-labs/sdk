@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HttpStream::with_ca_certificate(&endpoint, &token, 16 * 1024 * 1024, ca.as_deref())?;
     tokio::time::timeout(
         std::time::Duration::from_secs(9),
-        conformance::verify(&provider),
+        conformance::verify(&acyclic_stream::conformance::Fixture::new(provider.clone())),
     )
     .await??;
     println!("STREAM_CONFORMANCE passed");

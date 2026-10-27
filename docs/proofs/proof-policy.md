@@ -7,13 +7,13 @@ The first implemented suite is `acyclic_stream::conformance::wave1`. Its public 
 Run memory and local histories on bb2:
 
 ```sh
-build-slot --remote cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1
+build-slot --remote cargo test -p acyclic-stream --features local,conformance --test wave1_keys -- --nocapture --test-threads=1
 ```
 
 For an isolated HTTP endpoint, provide `ACYCLIC_CONFORMANCE_ENDPOINT`, `ACYCLIC_CONFORMANCE_TOKEN` and `ACYCLIC_CONFORMANCE_NAMESPACE` in the runner's environment, then run:
 
 ```sh
-build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance
+build-slot --remote cargo run -p acyclic-stream --features http,conformance --example wave1-conformance
 ```
 
 Optional `ACYCLIC_CONFORMANCE_CASE` selects one exact case name: `append_retry`, `commit_retry`, `absent_zero_tail`, `subtree_fork`, `composed_fork`, `spawn`, `closed_inbox`, `inherited_follow` or `fork_lineage`. An unknown selector fails rather than running zero cases. Each selected history has a nine-second outer deadline. Errors identify case, step, typed provider cause or violated invariant, and recovery command; tokens are never printed. The runner has no memory fallback, public fault-injection endpoint or Cloud service configuration changes. Secrets must be supplied through the build environment's existing credential transport rather than command-line literals.
