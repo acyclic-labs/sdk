@@ -15,8 +15,10 @@ const GRAPHCODER_PROMPT: &str = "You are GraphCoder, a coding agent working in t
 pub struct Preset {
     /// Model selection (`provider/model`). `None` takes the host's configured
     /// model, then its provider catalog's default.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub model: Option<String>,
     /// System prompt opening every agent turn's context; `None` sends none.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub prompt: Option<String>,
     /// Standard tools enabled, by name (see [`crate::tools::catalog`]); a
     /// name outside the catalog is refused when the harness opens.
@@ -26,8 +28,10 @@ pub struct Preset {
     pub web_tools: bool,
     /// Model rounds per turn; each round may run several tool calls. `None`
     /// keeps the harness limit.
+    #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
     pub max_steps: Option<usize>,
     /// Open children each agent may have at once; `None` is unbounded.
+    #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
     pub max_children: Option<u32>,
     /// Ordered approval chain bound to every enabled tool.
     pub approval_policy: ApprovalPolicy,

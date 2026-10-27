@@ -100,6 +100,7 @@ pub enum Approver {
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRule {
     /// Optional exact tool name.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub tool: Option<String>,
     /// Optional exact arguments, including all object fields.
     #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
