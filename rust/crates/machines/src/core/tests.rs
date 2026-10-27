@@ -1665,16 +1665,16 @@ async fn checkpoint_cleanup_reopens_the_admitted_projection_and_revokes_forkabil
 
 #[tokio::test]
 async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult {
-    let core = OperationRegistry::new(Arc::new(MemoryStream::new(Default::default())), "account")?;
+    let streams = Arc::new(MemoryStream::new(Default::default()));
+    let core = OperationRegistry::new(streams.clone(), "account")?;
     let operation = fresh(
         core.admit(IdempotencyKey::new(), &"internal bounded fork custody")
             .await?,
     )?;
     core.bind_target(operation, "existing-parent").await?;
     for index in 0..MAX_FORK_CHILDREN {
-        // Internal identity vectors with the native UUID address width, not
-        // provider captures or a claim about arbitrary opaque address lengths.
-        let resource = machine_resource(&format!("00000000-0000-4000-8000-{index:012x}"));
+        // Internal long-address vectors, not external-provider response fixtures.
+        let resource = machine_resource(&format!("opaque-{index:04}-{}", "x".repeat(4096)));
         assert!(core.bind_created(operation, &resource).await?);
         core.bind_target(operation, resource.handle()).await?;
     }
@@ -1685,8 +1685,41 @@ async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult
     assert_eq!(row.tail, u64::from(MAX_FORK_CHILDREN) + 2);
     let record = row.value.ok_or("missing internal custody point")?;
     assert_eq!(record.created.len(), MAX_FORK_CHILDREN as usize);
-    assert_eq!(record.targets, ["existing-parent"]);
+    assert_eq!(record.targets, [0]);
+    assert_eq!(record.native_resources, MAX_FORK_CHILDREN + 1);
     assert!(serde_json::to_vec(&record)?.len() <= acyclic_stream::MAX_RECORD_BYTES);
+    drop(core);
+    let core = OperationRegistry::new(streams, "account")?;
+    let record = core
+        .record(operation)
+        .await?
+        .ok_or("missing reopened custody")?;
+    assert_eq!(record.targets, ["existing-parent"]);
+    assert_eq!(record.created.len(), MAX_FORK_CHILDREN as usize);
+    assert!(
+        record
+            .created
+            .first()
+            .is_some_and(|value| value.handle().starts_with("opaque-0000-"))
+    );
+    assert!(
+        record
+            .created
+            .last()
+            .is_some_and(|value| value.handle().starts_with("opaque-1023-"))
+    );
+    let first = record.created.first().ok_or("missing first resource")?;
+    let last = record.created.last().ok_or("missing last resource")?;
+    core.deleted(operation, first).await?;
+    core.deleted(operation, last).await?;
+    assert_eq!(
+        core.created(operation).await?.len(),
+        MAX_FORK_CHILDREN as usize - 2
+    );
+    assert_eq!(
+        core.record(operation).await?.map(|value| value.targets),
+        Some(vec!["existing-parent".into()])
+    );
     Ok(())
 }
 

@@ -1,6 +1,8 @@
 //! Cleanup links are projections of the same canonical operation custody.
 //! They address a known public observation without scanning the account or
 //! inflating its bounded operation record with another copy of every child.
+//! The operation owns ordered compact native-record references; acknowledgment
+//! removes one reference in the same commit as the public deletion projection.
 use super::*;
 use acyclic_stream::{CommitCondition, CommitMutation};
 
@@ -51,7 +53,10 @@ impl OperationRegistry {
             let mut record = op
                 .value
                 .ok_or_else(|| ProviderError::NotFound(id.to_string()))?;
-            if !record.created.contains(resource) {
+            let Some(resource_index) = self.resource_id(&record, resource).await? else {
+                return Ok(());
+            };
+            if !record.created.contains(&resource_index) {
                 return Ok(());
             }
             let link = self
@@ -69,7 +74,7 @@ impl OperationRegistry {
             }
             // Unknown metadata has no public observation to project. Its typed
             // native address still remains owned until this acknowledgment.
-            record.created.retain(|owned| owned != resource);
+            record.created.retain(|owned| *owned != resource_index);
             mutations.push(self.journal.append(&suffix, &Some(record.clone()))?);
             mutations.push(self.journal.operation_log(&suffix, &Some(record))?);
             if self
@@ -145,7 +150,7 @@ impl OperationRegistry {
                 .load::<StoredCheckpoint>(&checkpoint_path)
                 .await?;
             let link = self.journal.load::<CleanupProjection>(&link_path).await?;
-            let conditions = vec![op.condition(), checkpoint.condition(), link.condition()];
+            let mut conditions = vec![op.condition(), checkpoint.condition(), link.condition()];
             let mut record = op
                 .value
                 .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
@@ -162,7 +167,10 @@ impl OperationRegistry {
                 self.claim(driver, operation, &resource, false).await?;
                 return Err(ProviderError::Conflict("checkpoint identity or native address has a different canonical binding; recovery: reconcile the original checkpoint before retrying".into()));
             }
-            let pending = bindings::own(&mut record, driver.name(), &resource, false)?;
+            let (pending, mut changes) = self
+                .ownership(&mut record, Some(driver.name()), &resource, false)
+                .await?;
+            conditions.append(&mut changes.conditions);
             let state = if let Some(mut known) = checkpoint.value {
                 known.native = Some(native.clone());
                 known
@@ -172,12 +180,13 @@ impl OperationRegistry {
                     native: Some(native.clone()),
                 }
             };
-            let mutations = vec![
+            let mut mutations = changes.mutations;
+            mutations.extend([
                 self.journal.append(&checkpoint_path, &Some(state))?,
                 self.journal.append(&link_path, &projection)?,
                 self.journal.append(&suffix, &Some(record.clone()))?,
                 self.journal.operation_log(&suffix, &Some(record))?,
-            ];
+            ]);
             if self
                 .journal
                 .publish(conditions, mutations, op.path, op.tail + 1)

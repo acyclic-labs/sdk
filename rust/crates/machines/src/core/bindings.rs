@@ -22,42 +22,6 @@ pub(super) fn check_driver(record: &StoredOperation, provider: &str) -> Result<(
     Ok(())
 }
 
-/// A resource created by this operation already has canonical custody. Using
-/// it as a fork source does not also make it an external adopted target.
-pub(super) fn target(record: &mut StoredOperation, handle: &str) {
-    if !record.created.iter().any(|owned| owned.handle() == handle)
-        && !record.targets.iter().any(|known| known == handle)
-    {
-        record.targets.push(handle.to_owned());
-    }
-}
-
-/// One pure ownership decision for machine and checkpoint results.
-pub(super) fn own(
-    record: &mut StoredOperation,
-    provider: &str,
-    resource: &NativeResource,
-    adopted: bool,
-) -> Result<bool, ProviderError> {
-    check_driver(record, provider)?;
-    if record.phase == OperationPhase::Succeeded {
-        return Err(ProviderError::Conflict(
-            "native result arrived after settlement; recovery: inspect the settled operation before reclaiming any resource".into(),
-        ));
-    }
-    let pending = record.phase == OperationPhase::Pending;
-    if adopted && !pending {
-        return Err(ProviderError::Cancelled);
-    }
-    record.provider = Some(provider.to_owned());
-    if adopted {
-        target(record, resource.handle());
-    } else if !record.created.contains(resource) {
-        record.created.push(resource.clone());
-    }
-    Ok(pending)
-}
-
 pub(super) fn project(
     entry: &mut Option<StoredMachine>,
     observation: &MachineObservation,
@@ -248,7 +212,7 @@ impl OperationRegistry {
                 .journal
                 .load::<super::custody::CleanupProjection>(&link_path)
                 .await?;
-            let conditions = vec![op.condition(), machine.condition(), link.condition()];
+            let mut conditions = vec![op.condition(), machine.condition(), link.condition()];
             let mut record = op
                 .value
                 .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
@@ -276,14 +240,18 @@ impl OperationRegistry {
                 ));
             }
             // Full addressing lives once in the machine projection; cleanup
-            // stores only a typed native address in this same operation commit.
-            let pending = own(
-                &mut record,
-                driver.name(),
-                &NativeResource::Machine(native.handle.clone()),
-                adopted,
-            )?;
-            let mut mutations = vec![self.journal.append(&link_path, &projection)?];
+            // stores compact references to typed canonical native records in this commit.
+            let (pending, mut changes) = self
+                .ownership(
+                    &mut record,
+                    Some(driver.name()),
+                    &NativeResource::Machine(native.handle.clone()),
+                    adopted,
+                )
+                .await?;
+            conditions.append(&mut changes.conditions);
+            let mut mutations = changes.mutations;
+            mutations.push(self.journal.append(&link_path, &projection)?);
             if let Some(event) = project(
                 &mut state,
                 &observation,

@@ -13,6 +13,7 @@ mod custody;
 mod journal;
 mod limits;
 mod pages;
+mod resources;
 pub use bindings::NativeBinding;
 pub use limits::RegistryLimits;
 pub use pages::{NativePage, collect_pages};
@@ -81,10 +82,11 @@ struct StoredOperation {
     intent_digest: [u8; 32],
     #[serde(default)]
     provider: Option<String>,
-    created: Vec<NativeResource>,
-    targets: Vec<String>,
+    created: Vec<u32>,
+    targets: Vec<u32>,
     phase: OperationPhase,
     outcome: Option<journal::Blob>,
+    native_resources: u32,
 }
 
 /// Immutable terminal publication. Later cleanup acknowledgments may change the
@@ -225,6 +227,7 @@ impl OperationRegistry {
                 provider: provider.map(str::to_owned),
                 created: Vec::new(),
                 targets: Vec::new(),
+                native_resources: 0,
                 phase: OperationPhase::Pending,
                 outcome: None,
             });
@@ -290,16 +293,7 @@ impl OperationRegistry {
         id: OperationId,
         resource: &NativeResource,
     ) -> Result<bool, ProviderError> {
-        self.change(id, |record| {
-            if record.phase == OperationPhase::Succeeded {
-                return false;
-            }
-            if !record.created.iter().any(|id| id == resource) {
-                record.created.push(resource.clone());
-            }
-            record.phase == OperationPhase::Pending
-        })
-        .await
+        self.bind_resource(id, None, resource, false).await
     }
 
     pub async fn bind_adopted(
@@ -307,14 +301,8 @@ impl OperationRegistry {
         id: OperationId,
         resource: &str,
     ) -> Result<bool, ProviderError> {
-        self.change(id, |record| {
-            if record.phase != OperationPhase::Pending {
-                return false;
-            }
-            bindings::target(record, resource);
-            true
-        })
-        .await
+        self.bind_resource(id, None, &NativeResource::Machine(resource.into()), true)
+            .await
     }
 
     pub async fn bind_target(&self, id: OperationId, resource: &str) -> Result<(), ProviderError> {
@@ -419,13 +407,14 @@ impl OperationRegistry {
             Some(blob) => Some(self.journal.outcome(id, blob).await?),
             None => None,
         };
+        let (created, targets) = self.custody(&record).await?;
         Ok(Some(OperationRecord {
             id: record.id,
             key: record.key,
             intent_digest: record.intent_digest,
             provider: record.provider,
-            created: record.created,
-            targets: record.targets,
+            created,
+            targets,
             phase: record.phase,
             outcome,
         }))
@@ -465,31 +454,33 @@ impl OperationRegistry {
         {
             return Ok(None);
         }
-        self.change(id, |record| {
-            if matches!(
-                record.phase,
-                OperationPhase::Pending | OperationPhase::Indeterminate
-            ) {
-                record.phase = OperationPhase::Cancelled;
-            }
-            let created = if record.phase == OperationPhase::Succeeded {
-                Vec::new()
-            } else {
-                record.created.clone()
-            };
-            Some((record.observation(), created))
-        })
-        .await
+        let observation = self
+            .change(id, |record| {
+                if matches!(
+                    record.phase,
+                    OperationPhase::Pending | OperationPhase::Indeterminate
+                ) {
+                    record.phase = OperationPhase::Cancelled;
+                }
+                record.observation()
+            })
+            .await?;
+        Ok(Some((observation, self.created(id).await?)))
     }
 
     pub async fn created(&self, id: OperationId) -> Result<Vec<NativeResource>, ProviderError> {
-        Ok(self
+        let Some(record) = self
             .journal
             .load::<StoredOperation>(&format!("ops/{id}"))
             .await?
             .value
-            .map(|record| record.created)
-            .unwrap_or_default())
+        else {
+            return Ok(Vec::new());
+        };
+        if record.created.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self.custody(&record).await?.0)
     }
 
     /// Release only this acknowledged deletion, preserving concurrent late creates.
@@ -549,10 +540,8 @@ impl OperationRegistry {
         adopted: bool,
     ) -> Result<(), ProviderError> {
         let pending = self
-            .change(operation, |record| {
-                bindings::own(record, driver.name(), resource, adopted)
-            })
-            .await??;
+            .bind_resource(operation, Some(driver.name()), resource, adopted)
+            .await?;
         if pending {
             return Ok(());
         }

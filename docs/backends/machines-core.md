@@ -63,6 +63,12 @@ never yields resources for cancellation to delete. Canonical per-operation clean
 links identify known public projections without an account scan or another copy
 of every child in the bounded operation record. Each acknowledged deletion commits
 the debt release with Destroyed state/event or revoked checkpoint forkability.
+Native addresses occupy individual `ops/<id>/native` records, appended atomically
+with their hash-to-position projection and the operation point/log. The point
+holds ordered compact positions, keeping a maximum-child operation within the
+existing 64 KiB bound even with long opaque addresses. Exact typed ledger records
+validate the hash projection; it grants no independent custody. Cleanup preserves
+the point's order and removes only the acknowledged position.
 Links confer no deletion authority: the operation's created-resource custody and
 matching native provider/address remain authoritative. Malformed metadata retains
 its typed address without inventing a public identity. Native deletion returns
