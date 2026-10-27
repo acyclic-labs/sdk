@@ -1,147 +1,21 @@
 //! Modal Sandbox V2 control plane and native task command router transport.
 //! Requires an application and an already built immutable Modal image binding.
 mod wire;
+use super::instances::Instances;
 use super::{
     Allocation, ExecSession, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
-    http::{Http, secret},
+    duplex::{duplex_exec, pump_stdin},
+    http::secret,
+    rpc::Rpc,
 };
-use crate::{ExecCommand, ExecOutput, ExecStream, MachineId, MachineState, ProviderError};
+use crate::{ExecCommand, ExecOutput, ExecStream, MachineState, ProviderError};
 use async_trait::async_trait;
-use futures::{StreamExt, TryStreamExt, stream};
-use prost::Message;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
-    time::Duration,
-};
-use tonic::{
-    Request,
-    metadata::MetadataMap,
-    transport::{Channel, ClientTlsConfig, Endpoint},
-};
+use futures::{StreamExt, TryStreamExt};
+use std::time::Duration;
+use tonic::metadata::MetadataMap;
 
 const CONTROL: &str = "modal.client.ModalClient";
 const ROUTER: &str = "modal.task_command_router.TaskCommandRouter";
-
-#[derive(Clone)]
-struct Rpc {
-    channel: Channel,
-    metadata: MetadataMap,
-}
-
-impl Rpc {
-    fn new(endpoint: &str, metadata: MetadataMap) -> Result<Self, ProviderError> {
-        let http = Http::new(endpoint, reqwest::header::HeaderMap::new())?;
-        let mut endpoint = Endpoint::from_shared(http.endpoint.to_string())
-            .map_err(|_| {
-                ProviderError::Invalid(
-                    "Modal endpoint admission failed; recovery: configure an absolute gRPC URL"
-                        .into(),
-                )
-            })?
-            .connect_timeout(Duration::from_secs(5));
-        if http.endpoint.scheme() == "https" {
-            endpoint = endpoint
-                .tls_config(ClientTlsConfig::new().with_webpki_roots())
-                .map_err(|_| ProviderError::Unavailable)?;
-        }
-        Ok(Self {
-            channel: endpoint.connect_lazy(),
-            metadata,
-        })
-    }
-
-    fn request<T>(&self, message: T, timeout: Duration) -> Request<T> {
-        let mut request = Request::new(message);
-        *request.metadata_mut() = self.metadata.clone();
-        request.set_timeout(timeout);
-        request
-    }
-
-    async fn unary<I, O>(
-        &self,
-        service: &'static str,
-        method: &'static str,
-        message: I,
-        timeout: Duration,
-    ) -> Result<O, ProviderError>
-    where
-        I: Message + Default + Send + Sync + 'static,
-        O: Message + Default + Send + Sync + 'static,
-    {
-        let mut client = tonic::client::Grpc::new(self.channel.clone());
-        client
-            .ready()
-            .await
-            .map_err(|_| ProviderError::Unavailable)?;
-        let path = format!("/{service}/{method}").parse().map_err(|_| ProviderError::Invalid("Modal RPC path construction failed; recovery: use the shipped adapter's method names".into()))?;
-        client
-            .unary(
-                self.request(message, timeout),
-                path,
-                tonic_prost::ProstCodec::default(),
-            )
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(rpc_error)
-    }
-
-    async fn output(
-        &self,
-        task: String,
-        exec: String,
-        fd: i32,
-        timeout: Duration,
-    ) -> Result<ExecStream, ProviderError> {
-        let mut client = tonic::client::Grpc::new(self.channel.clone());
-        client
-            .ready()
-            .await
-            .map_err(|_| ProviderError::Unavailable)?;
-        let response: tonic::Response<tonic::Streaming<wire::TaskExecStdioReadResponse>> = client
-            .server_streaming(
-                self.request(
-                    wire::TaskExecStdioReadRequest {
-                        task_id: task,
-                        exec_id: exec,
-                        offset: 0,
-                        file_descriptor: fd,
-                    },
-                    timeout,
-                ),
-                tonic::codegen::http::uri::PathAndQuery::from_static(
-                    "/modal.task_command_router.TaskCommandRouter/TaskExecStdioRead",
-                ),
-                tonic_prost::ProstCodec::default(),
-            )
-            .await
-            .map_err(rpc_error)?;
-        Ok(response
-            .into_inner()
-            .map(|item| item.map_err(rpc_error))
-            .try_filter_map(move |frame| async move {
-                Ok(if frame.data.is_empty() {
-                    None
-                } else {
-                    Some(if fd == 0 {
-                        ExecOutput::Stdout(frame.data)
-                    } else {
-                        ExecOutput::Stderr(frame.data)
-                    })
-                })
-            })
-            .boxed())
-    }
-}
-
-fn rpc_error(error: tonic::Status) -> ProviderError {
-    match error.code() {
-        tonic::Code::NotFound => ProviderError::NotFound("Modal resource".into()),
-        tonic::Code::AlreadyExists | tonic::Code::FailedPrecondition => ProviderError::Conflict("Modal state conflict; recovery: inspect the sandbox before a new mutation".into()),
-        tonic::Code::InvalidArgument | tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => ProviderError::Rejected("Modal request rejected; recovery: inspect app, image, network policy and credential configuration".into()),
-        _ => ProviderError::Unavailable,
-    }
-}
 
 #[derive(Clone)]
 struct Guest {
@@ -156,7 +30,7 @@ struct Guest {
 pub struct Modal {
     control: Rpc,
     app: String,
-    guests: Arc<Mutex<BTreeMap<String, Guest>>>,
+    guests: Instances<Guest>,
 }
 
 impl Modal {
@@ -186,17 +60,8 @@ impl Modal {
         Ok(Self {
             control: Rpc::new(endpoint, MetadataMap::from_headers(headers))?,
             app: app_id.into(),
-            guests: Arc::default(),
+            guests: Instances::default(),
         })
-    }
-
-    fn guest(&self, instance: &SandboxInstance) -> Result<Guest, ProviderError> {
-        self.guests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&instance.id)
-            .cloned()
-            .ok_or_else(|| ProviderError::NotFound(instance.id.clone()))
     }
 
     fn control_for(&self, guest: &Guest) -> Result<Rpc, ProviderError> {
@@ -214,7 +79,7 @@ impl Modal {
         argv: Vec<String>,
         timeout: Duration,
         input: Option<Vec<u8>>,
-    ) -> Result<(String, ExecStream), ProviderError> {
+    ) -> Result<ExecStream, ProviderError> {
         let exec = format!("ex-{}", uuid::Uuid::new_v4().simple());
         let _: wire::Empty = guest
             .router
@@ -245,14 +110,37 @@ impl Modal {
         let attach = |fd| {
             let guest = guest.clone();
             let exec = exec.clone();
-            stream::once(async move {
+            async move {
                 guest
                     .router
-                    .output(guest.task, exec, fd, timeout + Duration::from_secs(10))
+                    .streaming::<_, wire::TaskExecStdioReadResponse>(
+                        ROUTER,
+                        "TaskExecStdioRead",
+                        wire::TaskExecStdioReadRequest {
+                            task_id: guest.task,
+                            exec_id: exec,
+                            offset: 0,
+                            file_descriptor: fd,
+                        },
+                        timeout + Duration::from_secs(10),
+                    )
                     .await
-            })
-            .try_flatten()
-            .boxed()
+                    .map(|frames| {
+                        frames
+                            .try_filter_map(move |frame| async move {
+                                Ok(if frame.data.is_empty() {
+                                    None
+                                } else {
+                                    Some(if fd == 0 {
+                                        ExecOutput::Stdout(frame.data)
+                                    } else {
+                                        ExecOutput::Stderr(frame.data)
+                                    })
+                                })
+                            })
+                            .boxed()
+                    })
+            }
         };
         let stdout = attach(0);
         let stderr = attach(1);
@@ -261,7 +149,7 @@ impl Modal {
             task_id: guest.task.clone(),
             exec_id: exec.clone(),
         };
-        let exit = stream::once(async move {
+        let exit = async move {
             let result: wire::TaskExecWaitResponse = router
                 .unary(
                     ROUTER,
@@ -271,78 +159,63 @@ impl Modal {
                 )
                 .await?;
             match result.exit_status {
-                Some(wire::ExitStatus::Code(code)) => Ok(ExecOutput::ExitCode(code)),
-                Some(wire::ExitStatus::Signal(signal)) => Ok(ExecOutput::ExitCode(128 + signal)),
+                Some(wire::ExitStatus::Code(code)) => Ok(code),
+                Some(wire::ExitStatus::Signal(signal)) => Ok(128 + signal),
                 None => Err(ProviderError::Unavailable),
             }
-        });
+        };
         let input_guest = guest.clone();
         let input_exec = exec.clone();
-        let input = stream::once(async move {
-            if let Some(data) = input {
-                for (offset, bytes) in data.chunks(65_536).enumerate() {
-                    let _: wire::Empty = input_guest
-                        .router
-                        .unary(
-                            ROUTER,
-                            "TaskExecStdinWrite",
-                            wire::TaskExecStdinWriteRequest {
-                                task_id: input_guest.task.clone(),
-                                exec_id: input_exec.clone(),
-                                offset: offset as u64 * 65_536,
-                                data: bytes.to_vec(),
-                                eof: false,
-                            },
-                            Duration::from_secs(10),
-                        )
-                        .await?;
-                }
-                let _: wire::Empty = input_guest
+        let input = pump_stdin(input, move |offset, data, eof| {
+            let guest = input_guest.clone();
+            let exec = input_exec.clone();
+            Box::pin(async move {
+                let _: wire::Empty = guest
                     .router
                     .unary(
                         ROUTER,
                         "TaskExecStdinWrite",
                         wire::TaskExecStdinWriteRequest {
-                            task_id: input_guest.task,
-                            exec_id: input_exec,
-                            offset: data.len() as u64,
-                            data: vec![],
-                            eof: true,
+                            task_id: guest.task,
+                            exec_id: exec,
+                            offset,
+                            data,
+                            eof,
                         },
                         Duration::from_secs(10),
                     )
                     .await?;
-            }
-            Ok::<Option<ExecOutput>, ProviderError>(None)
-        })
-        .try_filter_map(|frame| async move { Ok(frame) });
-        Ok((
-            exec,
-            stream::select(stream::select(stdout, stderr), input)
-                .chain(exit)
-                .boxed(),
-        ))
+                Ok(())
+            })
+        });
+        Ok(duplex_exec(stdout, stderr, input, exit))
     }
 
-    fn owned(
+    fn session(
         &self,
         instance: &SandboxInstance,
-        command: ExecCommand,
-    ) -> Result<ExecStream, ProviderError> {
-        let driver = self.clone();
-        let instance = instance.clone();
-        let request = command.clone();
-        super::owned_exec(
-            MachineId::from_digest(sha2::Sha256::digest(instance.id.as_bytes()).into()),
-            &command,
-            None,
-            super::ConsoleHistory::default(),
-            driver.start(&instance, request)?,
-        )
+        command: &ExecCommand,
+        input: Option<Vec<u8>>,
+    ) -> Result<ExecSession, ProviderError> {
+        let guest = self.guests.get(instance)?;
+        Ok(super::process_group_io(
+            command,
+            input,
+            move |argv, timeout, input| {
+                let guest = guest.clone();
+                Box::pin(async move {
+                    Self::raw_start(
+                        &guest,
+                        argv,
+                        Duration::from_millis(u64::from(timeout)),
+                        input,
+                    )
+                    .await
+                })
+            },
+        ))
     }
 }
-
-use sha2::Digest;
 
 #[async_trait]
 impl SandboxDriver for Modal {
@@ -407,17 +280,14 @@ impl SandboxDriver for Modal {
             secret(&format!("Bearer {}", access.jwt))?,
         );
         let router = Rpc::new(&access.url, MetadataMap::from_headers(headers))?;
-        self.guests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                response.sandbox_id.clone(),
-                Guest {
-                    task: response.task_id,
-                    router,
-                    sandbox_token: response.sandbox_token,
-                },
-            );
+        self.guests.insert(
+            response.sandbox_id.clone(),
+            Guest {
+                task: response.task_id,
+                router,
+                sandbox_token: response.sandbox_token,
+            },
+        );
         Ok(SandboxInstance {
             endpoint: format!("modal://{}", response.sandbox_id),
             id: response.sandbox_id,
@@ -430,7 +300,7 @@ impl SandboxDriver for Modal {
     }
 
     async fn state(&self, instance: &SandboxInstance) -> Result<MachineState, ProviderError> {
-        let guest = self.guest(instance)?;
+        let guest = self.guests.get(instance)?;
         let response: wire::SandboxWaitResponse = self
             .control_for(&guest)?
             .unary(
@@ -453,7 +323,7 @@ impl SandboxDriver for Modal {
     }
 
     async fn destroy(&self, instance: &SandboxInstance) -> Result<(), ProviderError> {
-        let guest = self.guest(instance)?;
+        let guest = self.guests.get(instance)?;
         let _: wire::Empty = self
             .control_for(&guest)?
             .unary(
@@ -465,10 +335,7 @@ impl SandboxDriver for Modal {
                 Duration::from_secs(10),
             )
             .await?;
-        self.guests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&instance.id);
+        self.guests.remove(instance);
         Ok(())
     }
 
@@ -477,27 +344,7 @@ impl SandboxDriver for Modal {
         instance: &SandboxInstance,
         command: ExecCommand,
     ) -> Result<ExecSession, ProviderError> {
-        let guest = self.guest(instance)?;
-        let maintenance_guest = guest.clone();
-        let timeout = Duration::from_millis(u64::from(command.timeout_ms()));
-        Ok(super::process_group_session(
-            &command,
-            move |argv| {
-                Box::pin(async move {
-                    Self::raw_start(&guest, argv, timeout, None)
-                        .await
-                        .map(|(_, output)| output)
-                })
-            },
-            move |argv| {
-                let guest = maintenance_guest.clone();
-                Box::pin(async move {
-                    Self::raw_start(&guest, argv, Duration::from_secs(10), None)
-                        .await
-                        .map(|(_, output)| output)
-                })
-            },
-        ))
+        self.session(instance, &command, None)
     }
 
     async fn read_file(
@@ -505,8 +352,10 @@ impl SandboxDriver for Modal {
         instance: &SandboxInstance,
         path: &str,
     ) -> Result<Vec<u8>, ProviderError> {
-        let command = ExecCommand::new(vec!["cat".into(), "--".into(), path.into()], 30_000)?;
-        super::collect_success(self.owned(instance, command)?, "Modal file download").await
+        super::exec_read_file(instance, path, |command, input| {
+            self.session(instance, command, input)
+        })
+        .await
     }
 
     async fn write_file(
@@ -515,44 +364,9 @@ impl SandboxDriver for Modal {
         path: &str,
         data: &[u8],
     ) -> Result<(), ProviderError> {
-        let guest = self.guest(instance)?;
-        let command = ExecCommand::new(
-            vec![
-                "sh".into(),
-                "-c".into(),
-                format!("umask 077; cat > {}", super::shell_quote(path)),
-            ],
-            30_000,
-        )?;
-        let maintenance_guest = guest.clone();
-        let data = data.to_vec();
-        let session = super::process_group_session(
-            &command,
-            move |argv| {
-                Box::pin(async move {
-                    Self::raw_start(&guest, argv, Duration::from_secs(30), Some(data))
-                        .await
-                        .map(|(_, output)| output)
-                })
-            },
-            move |argv| {
-                let guest = maintenance_guest.clone();
-                Box::pin(async move {
-                    Self::raw_start(&guest, argv, Duration::from_secs(10), None)
-                        .await
-                        .map(|(_, output)| output)
-                })
-            },
-        );
-        let output = super::owned_exec(
-            MachineId::from_digest(sha2::Sha256::digest(instance.id.as_bytes()).into()),
-            &command,
-            None,
-            super::ConsoleHistory::default(),
-            session,
-        )?;
-        super::collect_success(output, "Modal file upload")
-            .await
-            .map(|_| ())
+        super::exec_write_file(instance, path, data, |command, input| {
+            self.session(instance, command, input)
+        })
+        .await
     }
 }

@@ -1,7 +1,9 @@
 //! E2B REST control plane and envd Connect RPC transport.
 //! Wire definitions: e2b npm 2.61.0, process.Process and /v2/sandboxes.
+use super::instances::Instances;
 use super::{
     Allocation, ExecSession, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
+    framing::{Framing, connect_message, frames},
     http::{Http, secret},
 };
 use crate::{ExecCommand, ExecOutput, MachineState, ProviderError};
@@ -10,11 +12,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use futures::{StreamExt, stream};
 use reqwest::{Method, header::HeaderMap};
 use serde::Deserialize;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
-    time::Duration,
-};
+use std::time::Duration;
 
 /// E2B cloud or account-free Embed deployment. Authentication values are never
 /// included in resource endpoints or diagnostics. Templates must provide the
@@ -24,7 +22,7 @@ pub struct E2b {
     api: Http,
     guest_domain: String,
     dev_proxy: Option<Http>,
-    guests: Arc<Mutex<BTreeMap<String, Http>>>,
+    guests: Instances<Http>,
     maximum_lifetime: Duration,
 }
 
@@ -67,26 +65,18 @@ impl E2b {
             dev_proxy: dev_proxy
                 .map(|url| Http::new(url, HeaderMap::new()))
                 .transpose()?,
-            guests: Arc::default(),
+            guests: Instances::default(),
             maximum_lifetime,
         })
     }
 
-    fn guest(&self, instance: &SandboxInstance) -> Result<Http, ProviderError> {
-        self.guests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&instance.id)
-            .cloned()
-            .ok_or_else(|| ProviderError::NotFound(instance.id.clone()))
-    }
     async fn raw_start(
         &self,
         instance: &SandboxInstance,
         argv: Vec<String>,
         timeout_ms: u32,
     ) -> Result<crate::ExecStream, ProviderError> {
-        let guest = self.guest(instance)?;
+        let guest = self.guests.get(instance)?;
         let tag = uuid::Uuid::new_v4().to_string();
         let mut argv = argv.iter();
         let executable = argv.next().ok_or_else(|| {
@@ -106,40 +96,36 @@ impl E2b {
                 .await,
         )
         .await?;
-        let output = stream::try_unfold((response.bytes_stream(), Vec::<u8>::new()), |(mut source, mut pending)| async move {
-            loop {
-                if let Some(header) = pending.get(..5) {
-                    let flags = header.first().copied().unwrap_or(0);
-                    let length = header.get(1..5).and_then(|value| <[u8; 4]>::try_from(value).ok())
-                        .map(u32::from_be_bytes).ok_or(ProviderError::Unavailable)? as usize;
-                    if length > 1024 * 1024 || flags & !2 != 0 { return Err(ProviderError::Unavailable); }
-                    if pending.len() >= length + 5 {
-                        let frame = pending.drain(..length + 5).skip(5).collect::<Vec<_>>();
-                        if flags == 2 {
-                            let trailer: serde_json::Value = serde_json::from_slice(&frame).map_err(|_| ProviderError::Unavailable)?;
-                            if trailer.get("error").is_some() { return Err(ProviderError::Unavailable); }
-                            return Ok(None);
+        let output = stream::try_unfold(
+            frames(response.bytes_stream(), Framing::Connect),
+            |mut source| async move {
+                while let Some(frame) = source.next().await {
+                    let frame = frame?;
+                    if frame.flags == 2 {
+                        let trailer: serde_json::Value = serde_json::from_slice(&frame.data)
+                            .map_err(|_| ProviderError::Unavailable)?;
+                        if trailer.get("error").is_some() {
+                            return Err(ProviderError::Unavailable);
                         }
-                        let frame: StartResponse = serde_json::from_slice(&frame).map_err(|_| ProviderError::Unavailable)?;
-                        let output = match frame.event {
-                            Event::Start(_value) | Event::Keepalive(_value) => continue,
-                            Event::Data(Data::Stdout(data)) => ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
-                            Event::Data(Data::Stderr(data)) => ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
-                            Event::End(end) if end.exited && end.error.is_none() => ExecOutput::ExitCode(end.code),
-                            Event::End(_) => return Err(ProviderError::Unavailable),
-                        };
-                        if matches!(&output, ExecOutput::Stdout(data) | ExecOutput::Stderr(data) if data.is_empty()) { continue; }
-                        return Ok(Some((output, (source, pending))));
+                        return Ok(None);
                     }
+                    let frame: StartResponse = serde_json::from_slice(&frame.data)
+                        .map_err(|_| ProviderError::Unavailable)?;
+                    let output = match frame.event {
+                        Event::Start(_value) | Event::Keepalive(_value) => continue,
+                        Event::Data(Data::Stdout(data)) => ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
+                        Event::Data(Data::Stderr(data)) => ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
+                        Event::End(end) if end.exited && end.error.is_none() => ExecOutput::ExitCode(end.code),
+                        Event::End(_) => return Err(ProviderError::Unavailable),
+                    };
+                    if matches!(&output, ExecOutput::Stdout(data) | ExecOutput::Stderr(data) if data.is_empty()) {
+                        continue;
+                    }
+                    return Ok(Some((output, source)));
                 }
-                match source.next().await {
-                    Some(Ok(data)) if pending.len().saturating_add(data.len()) <= 2 * 1024 * 1024 => pending.extend_from_slice(&data),
-                    Some(_) => return Err(ProviderError::Unavailable),
-                    None if pending.is_empty() => return Ok(None),
-                    None => return Err(ProviderError::Unavailable),
-                }
-            }
-        }).boxed();
+                Ok(None)
+            },
+        ).boxed();
         Ok(output)
     }
 }
@@ -188,22 +174,6 @@ struct End {
     #[serde(default)]
     exited: bool,
     error: Option<String>,
-}
-
-fn connect_message(message: &serde_json::Value) -> Result<Vec<u8>, ProviderError> {
-    let data = serde_json::to_vec(message).map_err(|_| {
-        ProviderError::Invalid(
-            "E2B process serialization failed; recovery: inspect the command without redispatching"
-                .into(),
-        )
-    })?;
-    let length = u32::try_from(data.len()).map_err(|_| {
-        ProviderError::Invalid("E2B process request too large; recovery: reduce argv".into())
-    })?;
-    let mut framed = vec![0];
-    framed.extend_from_slice(&length.to_be_bytes());
-    framed.extend(data);
-    Ok(framed)
 }
 
 #[async_trait]
@@ -256,10 +226,7 @@ impl SandboxDriver for E2b {
             format!("https://49983-{}.{}", created.id, self.guest_domain)
         };
         let guest = Http::new(&endpoint, headers)?;
-        self.guests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(created.id.clone(), guest);
+        self.guests.insert(created.id.clone(), guest);
         Ok(SandboxInstance {
             endpoint,
             id: created.id,
@@ -301,10 +268,7 @@ impl SandboxDriver for E2b {
         .await
         {
             Ok(_) | Err(ProviderError::NotFound(_)) => {
-                self.guests
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&instance.id);
+                self.guests.remove(instance);
                 Ok(())
             }
             Err(error) => Err(error),
@@ -316,22 +280,15 @@ impl SandboxDriver for E2b {
         instance: &SandboxInstance,
         command: ExecCommand,
     ) -> Result<ExecSession, ProviderError> {
-        let start_driver = self.clone();
-        let start_instance = instance.clone();
-        let maintenance_driver = self.clone();
-        let maintenance_instance = instance.clone();
-        let timeout = command.timeout_ms();
-        Ok(super::process_group_session(
+        let driver = self.clone();
+        let instance = instance.clone();
+        Ok(super::process_group_io(
             &command,
-            move |argv| {
-                Box::pin(
-                    async move { start_driver.raw_start(&start_instance, argv, timeout).await },
-                )
-            },
-            move |argv| {
-                let driver = maintenance_driver.clone();
-                let instance = maintenance_instance.clone();
-                Box::pin(async move { driver.raw_start(&instance, argv, 10_000).await })
+            None,
+            move |argv, timeout, _| {
+                let driver = driver.clone();
+                let instance = instance.clone();
+                Box::pin(async move { driver.raw_start(&instance, argv, timeout).await })
             },
         ))
     }
@@ -342,7 +299,8 @@ impl SandboxDriver for E2b {
         path: &str,
     ) -> Result<Vec<u8>, ProviderError> {
         Http::checked(
-            self.guest(instance)?
+            self.guests
+                .get(instance)?
                 .request(Method::GET, &["files"])?
                 .query(&[("path", path), ("username", "user")])
                 .timeout(Duration::from_secs(30))
@@ -363,7 +321,8 @@ impl SandboxDriver for E2b {
         data: &[u8],
     ) -> Result<(), ProviderError> {
         Http::checked(
-            self.guest(instance)?
+            self.guests
+                .get(instance)?
                 .request(Method::POST, &["files"])?
                 .query(&[("path", path), ("username", "user")])
                 .header("content-type", "application/octet-stream")

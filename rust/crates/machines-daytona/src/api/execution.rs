@@ -1,7 +1,7 @@
 //! Native toolbox process ledger transport. Binary streams require the v2
 //! toolbox API; the old session-marker protocol cannot represent arbitrary bytes.
 use super::*;
-use acyclic_machines::provider_core::{ExecSession, process_group_session};
+use acyclic_machines::provider_core::{ExecSession, bounded_sse, process_group_session};
 use acyclic_machines::{ExecCommand, ExecOutput, ExecStream};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::{StreamExt, stream};
@@ -106,32 +106,7 @@ impl DaytonaApi {
                 "process log attachment failed; recovery: inspect the toolbox without redispatching",
             ));
         }
-        // Bound unfinished events before the SSE parser retains them. An endless
-        // line or event cannot turn a stream into an unbounded allocation.
-        let (mut retained, mut line) = (0usize, 0usize);
-        let bounded = response.bytes_stream().map(move |chunk| {
-            let chunk = chunk.map_err(|_| ProviderError::Unavailable)?;
-            if chunk.len() > 512 * 1024 {
-                return Err(ProviderError::Unavailable);
-            }
-            for byte in &chunk {
-                retained += 1;
-                match byte {
-                    b'\n' => {
-                        if line == 0 {
-                            retained = 0;
-                        }
-                        line = 0;
-                    }
-                    b'\r' => {}
-                    _ => line += 1,
-                }
-                if retained > 512 * 1024 {
-                    return Err(ProviderError::Unavailable);
-                }
-            }
-            Ok(chunk)
-        });
+        let bounded = bounded_sse(response.bytes_stream());
         let events = sse_stream::SseByteStream::new(bounded).boxed();
         let api = self.clone();
         let output = stream::try_unfold(

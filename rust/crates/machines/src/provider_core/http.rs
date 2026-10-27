@@ -33,23 +33,28 @@ pub(super) fn secret(value: &str) -> Result<HeaderValue, ProviderError> {
     Ok(value)
 }
 
+pub(super) fn endpoint_url(endpoint: &str) -> Result<Url, ProviderError> {
+    let endpoint = Url::parse(endpoint).map_err(|_| ProviderError::Invalid(
+            "provider endpoint parsing failed; recovery: configure an absolute HTTPS URL or loopback HTTP URL".into()))?;
+    if (endpoint.scheme() != "https"
+        && !(endpoint.scheme() == "http"
+            && matches!(
+                endpoint.host_str(),
+                Some("localhost" | "127.0.0.1" | "[::1]")
+            )))
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(ProviderError::Invalid("provider endpoint admission failed; recovery: use HTTPS or loopback HTTP without URL credentials, query or fragment".into()));
+    }
+    Ok(endpoint)
+}
+
 impl Http {
     pub fn new(endpoint: &str, headers: HeaderMap) -> Result<Self, ProviderError> {
-        let endpoint = Url::parse(endpoint).map_err(|_| ProviderError::Invalid(
-            "provider endpoint parsing failed; recovery: configure an absolute HTTPS URL or loopback HTTP URL".into()))?;
-        if (endpoint.scheme() != "https"
-            && !(endpoint.scheme() == "http"
-                && matches!(
-                    endpoint.host_str(),
-                    Some("localhost" | "127.0.0.1" | "[::1]")
-                )))
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(ProviderError::Invalid("provider endpoint admission failed; recovery: use HTTPS or loopback HTTP without URL credentials, query or fragment".into()));
-        }
+        let endpoint = endpoint_url(endpoint)?;
         let client = http_transport_builder()
             .build()
             .map_err(|_| ProviderError::Unavailable)?;

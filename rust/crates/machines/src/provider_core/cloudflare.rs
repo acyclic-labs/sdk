@@ -1,11 +1,12 @@
 //! Cloudflare native Containers transport for the companion Worker in
 //! `deploy/machines-cloudflare`. Lifecycle policy is implemented by `RemoteMachines`.
 
+use super::framing::{Framing, frames};
 use super::http::{Http, secret};
 use super::{Allocation, ExecSession, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec};
 use crate::{ExecCommand, ExecOutput, MachineState, ProviderError};
 use async_trait::async_trait;
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt};
 use reqwest::{Method, header::HeaderMap};
 use serde::Deserialize;
 use std::time::Duration;
@@ -58,27 +59,16 @@ impl Cloudflare {
                 .await,
         )
         .await?;
-        let output = stream::try_unfold((response.bytes_stream(), Vec::new()), |(mut source, mut pending)| async move {
-            loop {
-                if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-                    let line = pending.drain(..=end).collect::<Vec<_>>();
-                    let frame: Frame = serde_json::from_slice(&line).map_err(|_| ProviderError::Rejected("Cloudflare exec frame decoding failed; recovery: inspect the Worker version without replaying the command".into()))?;
-                    let frame = match frame {
-                        Frame::Stdout(data) => ExecOutput::Stdout(data),
-                        Frame::Stderr(data) => ExecOutput::Stderr(data),
-                        Frame::Exit(code) => ExecOutput::ExitCode(code),
-                        Frame::Error(_reason) => return Err(ProviderError::Unavailable),
-                    };
-                    return Ok(Some((frame, (source, pending))));
+        let output = frames(response.bytes_stream(), Framing::Lines)
+            .and_then(|frame| async move {
+                let frame: Frame = serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Rejected("Cloudflare exec frame decoding failed; recovery: inspect the Worker version without replaying the command".into()))?;
+                match frame {
+                    Frame::Stdout(data) => Ok(ExecOutput::Stdout(data)),
+                    Frame::Stderr(data) => Ok(ExecOutput::Stderr(data)),
+                    Frame::Exit(code) => Ok(ExecOutput::ExitCode(code)),
+                    Frame::Error(_reason) => Err(ProviderError::Unavailable),
                 }
-                match source.next().await {
-                    Some(Ok(data)) if pending.len().saturating_add(data.len()) <= 512 * 1024 => pending.extend_from_slice(&data),
-                    Some(_) => return Err(ProviderError::Unavailable),
-                    None if pending.is_empty() => return Ok(None),
-                    None => return Err(ProviderError::Unavailable),
-                }
-            }
-        }).boxed();
+            }).boxed();
         Ok(output)
     }
 }
@@ -172,22 +162,15 @@ impl SandboxDriver for Cloudflare {
         instance: &SandboxInstance,
         command: ExecCommand,
     ) -> Result<ExecSession, ProviderError> {
-        let start_driver = self.clone();
-        let start_instance = instance.clone();
-        let maintenance_driver = self.clone();
-        let maintenance_instance = instance.clone();
-        let timeout = command.timeout_ms();
-        Ok(super::process_group_session(
+        let driver = self.clone();
+        let instance = instance.clone();
+        Ok(super::process_group_io(
             &command,
-            move |argv| {
-                Box::pin(
-                    async move { start_driver.raw_start(&start_instance, argv, timeout).await },
-                )
-            },
-            move |argv| {
-                let driver = maintenance_driver.clone();
-                let instance = maintenance_instance.clone();
-                Box::pin(async move { driver.raw_start(&instance, argv, 10_000).await })
+            None,
+            move |argv, timeout, _| {
+                let driver = driver.clone();
+                let instance = instance.clone();
+                Box::pin(async move { driver.raw_start(&instance, argv, timeout).await })
             },
         ))
     }

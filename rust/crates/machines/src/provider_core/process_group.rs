@@ -6,6 +6,30 @@ use crate::{ExecCommand, ExecStream, ProviderError};
 use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
 use std::sync::Arc;
 
+/// Adapts one raw exec primitive to the common start, cancellation and cleanup
+/// sequence. Input belongs only to the user command, never to maintenance.
+pub fn process_group_io(
+    command: &ExecCommand,
+    input: Option<Vec<u8>>,
+    transport: impl Fn(
+        Vec<String>,
+        u32,
+        Option<Vec<u8>>,
+    ) -> BoxFuture<'static, Result<ExecStream, ProviderError>>
+    + Send
+    + Sync
+    + 'static,
+) -> ExecSession {
+    let transport = Arc::new(transport);
+    let start = Arc::clone(&transport);
+    let timeout = command.timeout_ms();
+    process_group_session(
+        command,
+        move |argv| start(argv, timeout, input),
+        move |argv| transport(argv, 10_000, None),
+    )
+}
+
 /// Prepares cancellation before any transport request. A transport start may
 /// have been accepted even if its response is lost. The cancellation tombstone
 /// prevents that delayed launch from executing the user's command.
