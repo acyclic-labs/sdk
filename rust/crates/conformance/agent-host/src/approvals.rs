@@ -1,9 +1,12 @@
 //! A hosted approval's success path, through the one shared core every host
-//! serves `Approvals` and `Decide` with: a turn pauses on a tool call its
-//! policy asks a human about, the pending approval lists with the exact
-//! action, a decision bound to another action is refused, the exact
-//! decision resumes the turn to completion, and retrying that decision
-//! after the agent resumed replays instead of deciding again.
+//! serves `Approvals` and `Decide` with. A root created with no policy file
+//! still runs under its host's preset policy: under the generic default, a
+//! turn pauses on a tool call the human is asked about, the pending approval
+//! lists with the exact action, a decision bound to another action is
+//! refused, the exact decision resumes the turn to completion, and retrying
+//! that decision after the agent resumed replays instead of deciding again.
+//! Under a preset that explicitly accepts every action, the same call runs
+//! with nothing pending.
 use crate::{Backend, Result, observe::Observed, roots::volume, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
 use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
@@ -25,7 +28,7 @@ use acyclic_harness_core::{
         Model, ModelContent, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest,
         ToolCall,
     },
-    runtime::{RuntimeScope, ToolPolicy},
+    runtime::RuntimeScope,
     tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry,
         ToolResult,
@@ -41,6 +44,8 @@ use std::sync::{
 const TOOL: &str = "conformance.echo";
 /// The default policy's one approver.
 const HUMAN: &str = "human";
+
+type Objects = LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
 
 /// Calls the tool once, then answers.
 struct Scripted;
@@ -91,7 +96,8 @@ impl ToolExecutor for Echo {
     }
 }
 
-/// Each turn: the scripted model, the counted tool, and the human gate.
+/// Each turn: the scripted model, the counted tool, and the turn's resolved
+/// approval gate. The executor adds no gate of its own.
 struct Approving(Arc<AtomicUsize>);
 impl TurnExecutors for Approving {
     fn executor<'a>(
@@ -123,11 +129,6 @@ impl TurnExecutors for Approving {
                 &mut None,
                 None,
             )?;
-            // The agent's policy, or the default one naming `HUMAN`.
-            let gate = match &authority.approval {
-                Some(gate) => Arc::clone(gate),
-                None => Arc::new(ApprovalPolicy::default().bind()?) as Arc<dyn ToolPolicy>,
-            };
             let executor = StockExecutor::new(
                 Model::new(
                     "conformance".into(),
@@ -149,7 +150,7 @@ impl TurnExecutors for Approving {
                     ]),
                     Limits::default(),
                 )?,
-                Some(gate),
+                Arc::clone(&authority.approval),
             )?;
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
@@ -157,6 +158,16 @@ impl TurnExecutors for Approving {
 }
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
+    human_decides(backend).await?;
+    accepted(backend).await
+}
+
+/// A root with no policy file, under a host whose preset is `policy`, after
+/// its first turn on a message asking it to call the tool.
+async fn asked(
+    backend: &dyn Backend,
+    policy: ApprovalPolicy,
+) -> Result<(Bound<Observed, Objects>, AgentPath, Arc<AtomicUsize>)> {
     let storage = backend.fresh().await?;
     let stream = Arc::new(Observed::new(storage.open().await?));
     let audience = Authority {
@@ -182,12 +193,13 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         issuer,
         VerifiedCaller { audience, scope },
         Placement {
-            stream,
-            objects: LogicalObjectStore::new(Arc::new(objects), bucket),
-            capabilities: EmbeddedCapabilities::MEMORY,
+            filesystem: acyclic_fs::Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(stream),
+                LogicalObjectStore::new(Arc::new(objects), bucket),
+                EmbeddedCapabilities::MEMORY,
+            ),
             provider: private.volume.provider().clone(),
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
-            attestor: None,
         },
         Turns {
             executors: Arc::new(Approving(Arc::clone(&calls))),
@@ -198,6 +210,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
             },
             actors: vectors::limits()?,
             clock: Arc::new(SystemClock),
+            approval_policy: policy,
         },
     )?;
     let RootSubmission::Created(root) = bound
@@ -235,6 +248,12 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         )
         .await?;
     bound.agents().drain(&root).await?;
+    Ok((bound, root, calls))
+}
+
+/// The generic default asks the human, and the decision path completes.
+async fn human_decides(backend: &dyn Backend) -> Result {
+    let (bound, root, calls) = asked(backend, ApprovalPolicy::default()).await?;
 
     // The turn waits on the tool call, which has not run.
     let Some((
@@ -291,6 +310,23 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     if bound.agents().state(&root).await?.phase != Phase::Idle || calls.load(Ordering::SeqCst) != 1
     {
         return Err("a replayed decision ran the tool again".into());
+    }
+    Ok(())
+}
+
+/// A preset that explicitly accepts every action runs the call unasked.
+async fn accepted(backend: &dyn Backend) -> Result {
+    let (bound, root, calls) = asked(backend, ApprovalPolicy::accept_all("conformance")).await?;
+    if bound.pending_approval(&root).await?.is_some() {
+        return Err("an accept-all preset left the tool call pending".into());
+    }
+    let phase = bound.agents().state(&root).await?.phase;
+    if phase != Phase::Idle || calls.load(Ordering::SeqCst) != 1 {
+        return Err(format!(
+            "the accepted turn did not complete: {phase:?}, {} tool calls",
+            calls.load(Ordering::SeqCst)
+        )
+        .into());
     }
     Ok(())
 }

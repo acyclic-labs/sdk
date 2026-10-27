@@ -166,6 +166,14 @@ use crate::test_support::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
 };
 
+/// The explicit allow-every-call policy of tests that do not exercise
+/// approvals: every tool authority names its policy.
+fn allowed() -> Result<Arc<dyn crate::runtime::ToolPolicy>> {
+    Ok(Arc::new(crate::test_support::FixedToolPolicy::new(
+        crate::runtime::ToolPolicyDecision::Allow,
+    )?))
+}
+
 fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
     ModelEvent::ToolCall(crate::model::ToolCall::new(
         call_id.into(),

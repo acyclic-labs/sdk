@@ -167,6 +167,7 @@ impl LocalHarness {
                 },
                 actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 clock: Arc::new(SystemClock),
+                approval_policy: self.approval_policy.clone(),
             },
         )
         .map_err(storage)?;
@@ -284,6 +285,7 @@ impl LocalHarness {
                 TurnAdmission::LocalRoot,
                 Arc::new(Executors(Arc::downgrade(self))),
                 limits,
+                self.approval_policy.clone(),
             )
             .with_approvers(self.approval_models.clone())
             .with_goals(self.goal_continuations)

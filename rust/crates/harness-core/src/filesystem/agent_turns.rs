@@ -46,8 +46,9 @@ pub struct TurnAuthority {
     /// Reader of files under `scope` and writer of the private volume, for
     /// model content, tool inputs and the turn's own output.
     pub content: ContentBindings,
-    /// Approval gate of the agent's policy file; without one every tool runs.
-    pub approval: Option<Arc<dyn crate::runtime::ToolPolicy>>,
+    /// Approval gate of the agent's resolved policy (see
+    /// [`FilesystemTurnHost::new`]): every turn has one.
+    pub approval: Arc<dyn crate::runtime::ToolPolicy>,
     /// Where the turn's agent tools record their effects.
     pub effects: Option<Arc<dyn crate::agent::TurnEffects>>,
 }
@@ -335,6 +336,15 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
     prompt: Option<Arc<str>>,
+    policy: crate::approvals::ApprovalPolicy,
+}
+
+/// A turn's bindings before its approval gate is resolved.
+struct Bindings {
+    issuer: AuthorityRoot,
+    scope: Scope,
+    grants: Capabilities,
+    content: ContentBindings,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -344,7 +354,10 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Host signing each agent's authority with `issuer`'s custody, derived
-    /// from `admission`.
+    /// from `admission`. Every turn runs under one approval policy, resolved
+    /// once: the agent's own policy file, chosen explicitly when it was
+    /// adopted, or else `policy`, the host's preset. No policy is ever
+    /// absent, so accepting every action is only ever an explicit choice.
     #[must_use]
     pub fn new(
         stream: Arc<P>,
@@ -353,6 +366,7 @@ where
         admission: TurnAdmission,
         executors: Arc<dyn TurnExecutors>,
         limits: TurnLimits,
+        policy: crate::approvals::ApprovalPolicy,
     ) -> Self {
         Self {
             stream,
@@ -365,6 +379,7 @@ where
             approvers: Default::default(),
             goals: Some(Default::default()),
             prompt: None,
+            policy,
         }
     }
 
@@ -396,19 +411,17 @@ where
         &self,
         agent: &AgentState,
         content: &ContentBindings,
-    ) -> Result<(AgentApprovalPolicy, Option<ApprovalPolicy>)> {
+    ) -> Result<(AgentApprovalPolicy, ApprovalPolicy)> {
         let policy = match &agent.policy {
             Some(file) => {
                 let bytes = content
                     .reader
                     .read(file, self.limits.maximum_bytes, None, None)?
                     .await?;
-                Some(
-                    crate::contract::json_from_slice::<ApprovalPolicy>(&bytes)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                )
+                crate::contract::json_from_slice::<ApprovalPolicy>(&bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
             }
-            None => None,
+            None => self.policy.clone(),
         };
         let limits = crate::conversation::Limits {
             file_bytes: self.limits.maximum_bytes,
@@ -433,8 +446,8 @@ where
         approved: bool,
         reason: Option<String>,
     ) -> Result<()> {
-        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
-        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        let (_, bindings, files) = self.journal(self.admit(agent)?, &[])?;
+        let (policy, _) = self.approvals(agent, &bindings.content).await?;
         crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
 
@@ -487,8 +500,8 @@ where
         let crate::agent::Phase::WaitingApproval { id } = &agent.phase else {
             return Ok(None);
         };
-        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
-        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        let (_, bindings, files) = self.journal(self.admit(agent)?, &[])?;
+        let (policy, _) = self.approvals(agent, &bindings.content).await?;
         let bytes = policy.request(&*files, id.as_str()).await?;
         let request = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -504,8 +517,8 @@ where
         id: &crate::agent::IntentId,
         principal: &str,
     ) -> Result<Option<crate::interaction::Interaction>> {
-        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
-        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        let (_, bindings, files) = self.journal(self.admit(agent)?, &[])?;
+        let (policy, _) = self.approvals(agent, &bindings.content).await?;
         let Some(bytes) =
             crate::approvals::decided_request(&*files, &policy, id.as_str(), principal).await?
         else {
@@ -531,7 +544,7 @@ where
         external: &[FileRef],
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
-        TurnAuthority,
+        Bindings,
         Arc<AgentInternalFiles<A, O>>,
     )> {
         let AgentAuthority {
@@ -583,7 +596,7 @@ where
         );
         Ok((
             journal,
-            TurnAuthority {
+            Bindings {
                 issuer,
                 scope,
                 grants: capabilities,
@@ -591,8 +604,6 @@ where
                     reader,
                     writer: Some(writer),
                 },
-                approval: None,
-                effects: None,
             },
             Arc::new(internal),
         ))
@@ -757,8 +768,8 @@ where
                 let content = crate::agent::model_input(&entry.input).map_err(agent_error)?;
                 external.extend(input_files(&content));
             }
-            let (journal, mut authority, files) = self.journal(admitted, &external)?;
-            authority.effects = Some(Arc::new(FilesystemTurnEffects::new(
+            let (journal, bindings, files) = self.journal(admitted, &external)?;
+            let effects = Some(Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),
                 agent.path.clone(),
@@ -769,24 +780,24 @@ where
                 Some(policy) => FilesystemTurnGoal::bind(
                     &self.host,
                     agent,
-                    &authority.issuer.verifier(&mut None)?,
-                    &authority.scope,
+                    &bindings.issuer.verifier(&mut None)?,
+                    &bindings.scope,
                     self.limits.maximum_bytes,
                     policy,
                 )?
                 .map(|goal| Arc::new(goal) as Arc<dyn crate::agent::TurnGoal>),
                 None => None,
             };
-            let (policy, configured) = self.approvals(agent, &authority.content).await?;
-            authority.approval = configured
-                .map(|policy| {
-                    policy
-                        .bind()
-                        .map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>)
-                })
-                .transpose()?;
+            let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
+            let authority = TurnAuthority {
+                issuer: bindings.issuer,
+                scope: bindings.scope,
+                grants: bindings.grants,
+                content: bindings.content,
+                approval: Arc::new(resolved.bind()?),
+                effects: effects.clone(),
+            };
             let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
-            let effects = authority.effects.clone();
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));

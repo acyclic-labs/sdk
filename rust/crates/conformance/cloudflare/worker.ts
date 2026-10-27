@@ -18,6 +18,8 @@ const options = {
   limits: { file_bytes: 1048576n, path_bytes: 4096n, attachments: 32n, render_bytes: 1048576n,
     model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
   principal: "do-conformance",
+  // This host explicitly accepts every action its agents take.
+  approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] },
   handler_timeout_ms: 30_000n,
 };
 

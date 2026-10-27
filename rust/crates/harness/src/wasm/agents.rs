@@ -114,6 +114,10 @@ struct WasmBrowserAgentOptions {
     limits: Limits,
     /// Principal recorded as the sender of every browser control.
     principal: String,
+    /// The approval policy of every agent with no policy file of its own:
+    /// the host's preset choice, such as `graphcoderPreset().approval_policy`.
+    /// It has no default, so accepting every action is always explicit.
+    approval_policy: crate::approvals::ApprovalPolicy,
     /// Optional delivery backstop for event-owned hosting.
     #[serde(default)]
     #[tsify(optional)]

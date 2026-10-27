@@ -158,7 +158,7 @@ async fn drive(modes: &[Mode]) -> Result<()> {
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        Some(Arc::new(DenyMode)),
+        Arc::new(DenyMode),
     )?;
     let reconciling = executor.clone().into_reconciliation();
     let input = TurnInput {

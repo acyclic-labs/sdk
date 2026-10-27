@@ -32,7 +32,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
         ContextPipeline::default(),
         tools,
     )
-    .with_tool_authority(wide, None)?
+    .with_tool_authority(wide, allowed()?)?
     .with_limits(narrow);
     assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
     let journal = Journal::default();
@@ -114,7 +114,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits::default(),
             )?,
-            Some(Arc::new(FixedPolicy(deny))),
+            Arc::new(FixedPolicy(deny)),
         )?;
         let journal = Journal::default();
         let input = TurnInput {
@@ -174,7 +174,7 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits::default(),
             )?,
-            None,
+            allowed()?,
         )
     };
     let input = TurnInput {
@@ -301,7 +301,7 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits::default(),
             )?,
-            None,
+            allowed()?,
         )?;
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),

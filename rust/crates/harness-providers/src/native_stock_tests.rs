@@ -202,6 +202,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
             policy,
         }),
         LIMITS,
+        Default::default(),
     );
     let agents = AgentHost::new(
         stream.clone(),

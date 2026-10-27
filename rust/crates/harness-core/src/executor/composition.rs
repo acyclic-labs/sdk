@@ -134,23 +134,18 @@ impl StockExecutor {
 }
 
 impl StockExecutor {
-    /// Enforces the same explicit tool grants and policy in the stock model loop.
+    /// Enforces the same explicit tool grants and approval policy in the stock
+    /// model loop. Every tool authority has a policy: one accepting every
+    /// action is an explicit choice, never the result of a missing one.
     pub fn with_tool_authority(
         mut self,
         scope: RuntimeScope,
-        policy: Option<Arc<dyn ToolPolicy>>,
+        policy: Arc<dyn ToolPolicy>,
     ) -> Result<Self> {
-        if self.tools.requires_approval_policy() && policy.is_none() {
-            return Err(Error::Invalid(
-                "default tools require an approval policy binding".into(),
-            ));
-        }
-        if let Some(policy) = &policy {
-            validate_policy_identity(&policy.identity(), None)?;
-        }
-        self.policy_identity = policy.as_ref().map(|policy| policy.identity());
+        validate_policy_identity(&policy.identity(), None)?;
+        self.policy_identity = Some(policy.identity());
         self.tool_scope = scope;
-        self.policy = policy;
+        self.policy = Some(policy);
         Ok(self)
     }
 
@@ -218,7 +213,7 @@ mod tests {
                 Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
                 ContextPipeline::default(), tools,
-            ).with_tool_authority(RuntimeScope::new(crate::Capabilities::new(grants), Limits::default())?, None)?
+            ).with_tool_authority(RuntimeScope::new(crate::Capabilities::new(grants), Limits::default())?, Arc::new(crate::test_support::FixedToolPolicy::new(crate::runtime::ToolPolicyDecision::Allow)?))?
                 .without_tool_authority();
             prop_assert_eq!(executor.tool_scope.grants(), &expected);
             prop_assert_eq!(executor.tools.definitions(None)?, before);

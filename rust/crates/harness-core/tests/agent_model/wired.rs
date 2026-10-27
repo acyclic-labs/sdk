@@ -131,6 +131,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
+        Default::default(),
     ));
     let mut adoption = adopted(id(2));
     adoption.parent = Some(parent.clone());
@@ -184,6 +185,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
             TurnAdmission::LocalRoot,
             executors(model.clone())?,
             LIMITS,
+            Default::default(),
         )
         .with_prompt(Some("You write code.")),
     );
@@ -277,6 +279,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
                 TurnAdmission::Admitted { audience, scope },
                 executors(model.clone())?,
                 LIMITS,
+                Default::default(),
             ));
             let mut adoption = adopted(id(5));
             adoption.parent = Some(parent.clone());
@@ -424,6 +427,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                 },
                 executors(model.clone())?,
                 LIMITS,
+                Default::default(),
             ));
             let mut adoption = adopted(id(7));
             adoption.parent = Some(parent.clone());

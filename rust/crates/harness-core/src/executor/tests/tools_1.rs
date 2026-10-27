@@ -49,7 +49,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         ContextPipeline::default(),
         tools,
     )
-    .with_tool_authority(scope.clone(), None)?
+    .with_tool_authority(scope.clone(), allowed()?)?
     // This context has no private summary writer, so it cannot enable compaction.
     .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let operation = OperationId::new();
@@ -89,7 +89,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         },
         &mut None,
     )?;
-    let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
+    let retargeted = executor.clone().with_tool_authority(narrowed, allowed()?)?;
     let reads = journal.3.load(Ordering::SeqCst);
     assert!(matches!(
         retargeted.execute(input.clone(), &journal).await,
@@ -181,7 +181,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 Capabilities::new(["tool:call:example.echo", capability::INTERACTION_ROUTE]),
                 Limits::default(),
             )?,
-            Some(Arc::new(ApprovalPolicy)),
+            Arc::new(ApprovalPolicy),
         )?;
         let journal = Journal::default();
         let input = TurnInput {
@@ -309,7 +309,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -492,7 +492,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {
@@ -698,7 +698,7 @@ async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {
@@ -746,7 +746,7 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {
@@ -811,7 +811,7 @@ async fn malformed_tool_arguments_return_to_the_model_without_dispatch() -> Resu
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {
@@ -866,7 +866,7 @@ async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Resul
             Capabilities::new(["tool:call:example.other"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {
@@ -1052,7 +1052,7 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits::default(),
             )?,
-            None,
+            allowed()?,
         )?;
         let journal = Journal::default();
         let input = TurnInput {
@@ -1112,7 +1112,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
                 ContextPipeline::default(),
                 tools,
             )
-            .with_tool_authority(scope, None)?
+            .with_tool_authority(scope, allowed()?)?
             // This context has no private summary writer, so it cannot enable compaction.
             .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_task_context(&original, operation)?;

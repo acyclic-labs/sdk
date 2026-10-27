@@ -175,6 +175,7 @@ fn turns() -> Result<Turns> {
         },
         actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         clock: Arc::new(SystemClock),
+        approval_policy: Default::default(),
     })
 }
 

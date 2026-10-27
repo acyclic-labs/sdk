@@ -127,7 +127,7 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let input = input();
     let mut first = Box::pin(executor.execute(input.clone(), &journal));

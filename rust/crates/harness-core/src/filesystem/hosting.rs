@@ -140,6 +140,9 @@ pub struct Turns {
     pub actors: ActorLimits,
     /// Alarm clock.
     pub clock: Arc<dyn Clock>,
+    /// The approval policy of every agent with no policy file of its own:
+    /// the host's preset ([`crate::preset::Preset::approval_policy`]).
+    pub approval_policy: crate::approvals::ApprovalPolicy,
 }
 
 /// A host's custody, a caller's admission and the one placement they act on,
@@ -208,6 +211,8 @@ where
         let stream = filesystem.stream_provider();
         let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
         let maximum_bytes = turns.limits.maximum_bytes;
+        // The preset's policy binds before any agent runs under it.
+        turns.approval_policy.bind().map_err(turn)?;
         let turner = Arc::new(FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
@@ -215,6 +220,7 @@ where
             admission.clone(),
             turns.executors,
             turns.limits,
+            turns.approval_policy,
         ));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         let spawns = Arc::new(FilesystemSpawnVolumes::new(

@@ -102,7 +102,7 @@ async fn complete_batch_keeps_each_signature_through_execution_and_replay() -> R
             Capabilities::new(["tool:call:example.echo"]),
             Limits::default(),
         )?,
-        None,
+        allowed()?,
     )?;
     let journal = Journal::default();
     let input = TurnInput {

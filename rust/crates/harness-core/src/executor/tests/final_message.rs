@@ -80,7 +80,7 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
                 ContextPipeline::default(),
                 ToolRegistry::default(),
             )
-            .with_tool_authority(scope, None)?,
+            .with_tool_authority(scope, allowed()?)?,
             Arc::new(Journal::default()),
             "fixture".into(),
             ModelContent::Text("continue".into()),
@@ -133,7 +133,7 @@ proptest! {
             echo_tools(Arc::new(FakeTool(AtomicUsize::new(0))), json!({"type":"object"}),
                 json!({}), crate::tool::json_projection_schema(json!({})))?,
         ).with_tool_authority(RuntimeScope::new(
-            Capabilities::new(["tool:call:example.echo"]), Limits::default())?, None)?;
+            Capabilities::new(["tool:call:example.echo"]), Limits::default())?, allowed()?)?;
         let journal = Journal::default();
         let input = TurnInput { operation_id: OperationId::new(), input: ModelContent::Text("x".into()),
             selected_context: None, max_steps: 4 };

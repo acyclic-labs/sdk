@@ -21,7 +21,6 @@ impl ToolRegistry {
         {
             return Err(Error::Conflict("tool registries overlap".into()));
         }
-        self.requires_approval |= other.requires_approval;
         let data = Arc::make_mut(&mut self.data);
         let other = Arc::unwrap_or_clone(other.data);
         data.versions.extend(other.versions);

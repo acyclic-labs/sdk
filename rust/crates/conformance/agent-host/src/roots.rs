@@ -185,6 +185,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             },
             actors: vectors::limits()?,
             clock: Arc::new(SystemClock),
+            approval_policy: Default::default(),
         },
     )?;
     let request = || RootRequest {

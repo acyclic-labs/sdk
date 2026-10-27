@@ -29,7 +29,7 @@ fn executor(
         ToolRegistry::default(),
     )
     // The execution's context is narrowed to this authority.
-    .with_tool_authority(scope.clone(), None)?
+    .with_tool_authority(scope.clone(), allowed()?)?
     .with_task_context(context, operation)?;
     Ok(match policy {
         Some(policy) => executor.with_compaction_policy(policy),
