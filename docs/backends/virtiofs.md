@@ -8,7 +8,9 @@ QEMU and cloud-hypervisor require shared guest RAM; DAX is unnecessary.
 ## Composition
 
 Create an explicit `hosting::Bound::local_root` with the deployment's original
-issuer, agent host and filesystem host. `Bound::guest_session(enrollment, work)`
+issuer, `Placement` and `Turns`. The placement retains the canonical `Fs` and
+`Bound` derives its agent stream from that same filesystem.
+`Bound::guest_session(enrollment, work)`
 opens its exact canonical volume, reuses the signed policy compiler and source
 guard, and returns the sole authority input to the packet/socket entries.
 `LocalGuestEnrollment` contains the volume reference, writable intent and a
