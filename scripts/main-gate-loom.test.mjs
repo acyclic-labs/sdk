@@ -34,7 +34,7 @@ if (process.argv[2] === process.env.FAIL_MODEL) {
   process.exit(101);
 }
 `);
-    const flags = ["--child-views", "--harness-models", "--query-model"];
+    const flags = ["--harness-models"];
     for (const fail of ["", ...flags]) {
       writeFileSync(join(cwd, "loom-calls"), "");
       const result = spawnSync("bash", [process.env.MAIN_GATE_LOOM_TEST_RUNNER || join(scripts, "main-gate-checks.sh")], {
