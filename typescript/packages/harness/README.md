@@ -36,6 +36,21 @@ folds the selected conversation, status and filesystem streams through one bound
 cursors. Expand child nodes with bounded child pages; select full streams only for
 agents the interface needs.
 
+For a scrolling UI, use `client.setViewport(agents, conversationCursors,
+statusCursors, outputSubscriptions)`: the first agent is focused, the rest are
+visible, and output subscriptions are encoded `SessionSubscription` values for
+the visible tool panes. The Rust core replaces the complete viewport atomically;
+omitted agents and panes release their follows and cached records. Pass `[]` for
+output subscriptions when the tool pane is hidden. Overlapping interests retain
+their cursors. The combined cap is 16 interests (two per agent, one per pane);
+over-capacity input leaves the previous viewport intact. `setView` remains the
+agent-only operation for callers managing output lifetimes separately.
+
+Keep child and historical pages in `PageWindow`, using the server's exclusive
+cursors for backfill; read individual displayed records rather than copying a
+whole conversation. Closing the client releases all interests. No idle agent
+needs its own client, timer, or subscription.
+
 `AgentClient.controls(binding)` binds controls to that client's existing session
 pool and credential slot. Prepare a command once and retain its
 `PreparedAgentInvocation` through the exchange. A typed uncertain result retains

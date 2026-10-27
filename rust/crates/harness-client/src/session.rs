@@ -12,6 +12,9 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(all(test, feature = "agents"))]
+mod viewport_tests;
+
 type Follow = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
 
 enum SubscriptionState {
@@ -20,8 +23,15 @@ enum SubscriptionState {
 }
 
 struct Subscription {
-    request: wire::SessionSubscription,
     state: SubscriptionState,
+}
+
+// The fold owns its original selection even after its live follow ends. A
+// viewport refresh must neither restart terminal interests nor forget which
+// principal/filter produced their retained records.
+struct RetainedView {
+    request: wire::SessionSubscription,
+    view: StreamView,
 }
 
 /// Admission failures are distinct from authenticated provider refusals.
@@ -81,9 +91,9 @@ pub struct WireSession {
     policy: DemandPolicy,
     demand: ViewDemand,
     follows: BTreeMap<StreamPath, Subscription>,
-    views: BTreeMap<StreamPath, StreamView>,
+    views: BTreeMap<StreamPath, RetainedView>,
     resources: BTreeMap<String, Subscription>,
-    resource_views: BTreeMap<String, StreamView>,
+    resource_views: BTreeMap<String, RetainedView>,
     view_policy: StreamViewPolicy,
     revision: u64,
 }
@@ -168,16 +178,52 @@ impl WireSession {
     /// transport retains the final view until the UI removes that interest.
     #[must_use]
     pub fn view(&self, stream: &StreamPath) -> Option<&StreamView> {
-        self.views.get(stream)
+        self.views.get(stream).map(|retained| &retained.view)
     }
 
     /// Replace a complete bounded set of stream subscriptions atomically.
-    /// Existing selected follows keep their fold and cursor. New cursors apply
-    /// only to newly selected streams. Validation finishes before any old
+    /// Existing selected views keep their fold and cursor, including terminal
+    /// views. New cursors apply only to newly selected streams. Validation finishes before any old
     /// interest is released, and removals precede new pool admission.
     pub fn replace_streams(
         &mut self,
         subscriptions: impl IntoIterator<Item = (StreamPath, wire::SessionSubscription)>,
+    ) -> Result<(), WireSessionError> {
+        self.replace_selected(subscriptions, None)
+    }
+
+    /// Replace the entire viewport, including tool-output panes. Removed
+    /// resources relinquish both their follow and cached records before new
+    /// interests can open. Invalid replacements leave the old viewport intact.
+    pub fn replace_interests(
+        &mut self,
+        subscriptions: impl IntoIterator<Item = (StreamPath, wire::SessionSubscription)>,
+        resources: impl IntoIterator<Item = wire::SessionSubscription>,
+    ) -> Result<(), WireSessionError> {
+        let mut requested = BTreeMap::new();
+        for (index, subscription) in resources.into_iter().enumerate() {
+            if index == self.policy.selected_capacity() {
+                return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
+            }
+            let (resource, _) = validate_resource_subscription(&subscription)?;
+            if let Some(existing) = self.resource_views.get(&resource)
+                && (existing.request.credential != subscription.credential
+                    || existing.request.kind != subscription.kind
+                    || existing.request.filter != subscription.filter)
+            {
+                return Err(WireSessionError::InvalidSubscription);
+            }
+            if requested.insert(resource, subscription).is_some() {
+                return Err(WireSessionError::AlreadyOpen);
+            }
+        }
+        self.replace_selected(subscriptions, Some(requested))
+    }
+
+    fn replace_selected(
+        &mut self,
+        subscriptions: impl IntoIterator<Item = (StreamPath, wire::SessionSubscription)>,
+        resources: Option<BTreeMap<String, wire::SessionSubscription>>,
     ) -> Result<(), WireSessionError> {
         let mut requested = BTreeMap::new();
         for (index, (path, subscription)) in subscriptions.into_iter().enumerate() {
@@ -185,7 +231,7 @@ impl WireSession {
                 return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
             }
             validate_subscription(&path, &subscription)?;
-            if let Some(existing) = self.follows.get(&path)
+            if let Some(existing) = self.views.get(&path)
                 && (existing.request.credential != subscription.credential
                     || existing.request.kind != subscription.kind)
             {
@@ -197,7 +243,10 @@ impl WireSession {
                 return Err(WireSessionError::AlreadyOpen);
             }
         }
-        if requested.len() + self.resource_views.len() > self.policy.selected_capacity() {
+        let resource_count = resources
+            .as_ref()
+            .map_or(self.resource_views.len(), BTreeMap::len);
+        if requested.len() + resource_count > self.policy.selected_capacity() {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         let demand = ViewDemand::new(
@@ -207,10 +256,17 @@ impl WireSession {
             self.demand.expanded().cloned(),
         )
         .map_err(WireSessionError::Demand)?;
-        let opening = requested
-            .keys()
-            .filter(|path| !self.follows.contains_key(*path))
-            .count();
+        let opening_resources = resources.as_ref().map_or(0, |requested| {
+            requested
+                .keys()
+                .filter(|key| !self.resource_views.contains_key(*key))
+                .count()
+        });
+        let opening = opening_resources
+            + requested
+                .keys()
+                .filter(|path| !self.views.contains_key(*path))
+                .count();
         // A replacement can change composition (for example focus) while its
         // stream membership is unchanged. Fence renderer caches in that case too.
         let last_revision = self
@@ -220,8 +276,24 @@ impl WireSession {
         // These futures are lazy: staging them cannot admit a pool request.
         let mut staged = Vec::with_capacity(opening);
         let mut revision = self.revision + 1;
+        let mut staged_resources = Vec::with_capacity(opening_resources);
+        if let Some(requested) = &resources {
+            for (resource, subscription) in requested {
+                if self.resource_views.contains_key(resource) {
+                    continue;
+                }
+                revision += 1;
+                let from = subscription
+                    .resume
+                    .as_ref()
+                    .ok_or(WireSessionError::InvalidSubscription)?
+                    .next;
+                let (view, follow) = self.stage_stream(subscription.clone(), from, revision);
+                staged_resources.push((resource.clone(), view, follow));
+            }
+        }
         for (path, subscription) in requested {
-            if self.follows.contains_key(&path) {
+            if self.views.contains_key(&path) {
                 continue;
             }
             revision += 1;
@@ -235,9 +307,18 @@ impl WireSession {
         }
         self.follows.retain(|path, _| demand.contains_full(path));
         self.views.retain(|path, _| demand.contains_full(path));
+        if let Some(requested) = &resources {
+            self.resources.retain(|key, _| requested.contains_key(key));
+            self.resource_views
+                .retain(|key, _| requested.contains_key(key));
+        }
         for (path, view, subscription) in staged {
             self.views.insert(path.clone(), view);
             self.follows.insert(path, subscription);
+        }
+        for (resource, view, subscription) in staged_resources {
+            self.resource_views.insert(resource.clone(), view);
+            self.resources.insert(resource, subscription);
         }
         self.demand = demand;
         self.revision = last_revision;
@@ -310,7 +391,7 @@ impl WireSession {
         subscription: wire::SessionSubscription,
         from: u64,
         revision: u64,
-    ) -> (StreamView, Subscription) {
+    ) -> (RetainedView, Subscription) {
         let filtered = subscription.filter.is_some()
             || matches!(
                 &subscription.kind,
@@ -321,9 +402,11 @@ impl WireSession {
         let client = self.client.clone();
         let opening = Box::pin(async move { client.subscribe(subscription).await });
         (
-            StreamView::new(self.view_policy, from, revision, filtered),
-            Subscription {
+            RetainedView {
                 request,
+                view: StreamView::new(self.view_policy, from, revision, filtered),
+            },
+            Subscription {
                 state: SubscriptionState::Opening(opening),
             },
         )
@@ -362,6 +445,7 @@ impl WireSession {
     ///
     /// # Errors
     /// Refuses duplicate, over-budget or malformed follows before admission.
+    /// Calling this explicitly reopens a terminal resource and replaces its view.
     pub fn begin_resource(
         &mut self,
         subscription: wire::SessionSubscription,
@@ -400,7 +484,9 @@ impl WireSession {
     /// Borrow one selected filesystem follow's bounded fold.
     #[must_use]
     pub fn resource_view(&self, resource: &str) -> Option<&StreamView> {
-        self.resource_views.get(resource)
+        self.resource_views
+            .get(resource)
+            .map(|retained| &retained.view)
     }
 
     /// Release one filesystem follow and its view; dropping the subscription
@@ -454,6 +540,23 @@ impl WireSession {
     #[must_use]
     pub fn followed_interests(&self) -> usize {
         self.follows.len() + self.resources.len()
+    }
+
+    /// Display payload/record charge across the bounded selected folds,
+    /// including final views retained after a follow ends.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        self.views
+            .values()
+            .chain(self.resource_views.values())
+            .map(|retained| retained.view.retained_bytes())
+            .sum()
+    }
+
+    /// All retained folds, including terminal resources, share one finite cap.
+    #[must_use]
+    pub fn retained_views(&self) -> usize {
+        self.views.len() + self.resource_views.len()
     }
 
     /// Admitted selected follows, including pending opens, independent of swarm size.
@@ -532,7 +635,7 @@ fn poll_open<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
 /// The one poll and fold shared by stream and filesystem follows.
 fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
     follows: &mut BTreeMap<K, Subscription>,
-    views: &mut BTreeMap<K, StreamView>,
+    views: &mut BTreeMap<K, RetainedView>,
     session_revision: &mut u64,
     key: &Q,
     context: &mut Context<'_>,
@@ -560,7 +663,8 @@ fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
                     .get_mut(key)
                     .ok_or(WireSessionError::NotOpen)
                     .and_then(|view| {
-                        view.apply(&frame, revision)
+                        view.view
+                            .apply(&frame, revision)
                             .map_err(WireSessionError::Stream)
                     })?;
                 *session_revision = revision;
