@@ -3,8 +3,8 @@
 
 use super::framing::{Framing, frames};
 use super::http::{Http, secret};
-use super::{Allocation, ExecSession, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec};
-use crate::{ExecCommand, ExecOutput, MachineState, ProviderError};
+use super::{Allocation, SandboxDriver, SandboxInstance, SandboxSpec};
+use crate::{ExecOutput, MachineState, ProviderError};
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use reqwest::{Method, header::HeaderMap};
@@ -44,33 +44,6 @@ impl Cloudflare {
         path.extend_from_slice(suffix);
         self.http.request(method, &path)
     }
-    async fn raw_start(
-        &self,
-        instance: &SandboxInstance,
-        argv: Vec<String>,
-        timeout_ms: u32,
-    ) -> Result<crate::ExecStream, ProviderError> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let response = Http::checked(
-            self.request(Method::POST, &instance.id, &["exec", &id])?
-                .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10))
-                .json(&serde_json::json!({"argv": argv}))
-                .send()
-                .await,
-        )
-        .await?;
-        let output = frames(response.bytes_stream(), Framing::Lines)
-            .and_then(|frame| async move {
-                let frame: Frame = serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Rejected("Cloudflare exec frame decoding failed; recovery: inspect the Worker version without replaying the command".into()))?;
-                match frame {
-                    Frame::Stdout(data) => Ok(ExecOutput::Stdout(data)),
-                    Frame::Stderr(data) => Ok(ExecOutput::Stderr(data)),
-                    Frame::Exit(code) => Ok(ExecOutput::ExitCode(code)),
-                    Frame::Error(_reason) => Err(ProviderError::Unavailable),
-                }
-            }).boxed();
-        Ok(output)
-    }
 }
 
 #[derive(Deserialize)]
@@ -102,16 +75,11 @@ impl SandboxDriver for Cloudflare {
         Some(Duration::from_secs(30 * 24 * 60 * 60))
     }
     async fn snapshot(&self, instance: &SandboxInstance, _: &str) -> Result<String, ProviderError> {
-        let snapshot: serde_json::Value = Http::checked(
+        let snapshot: serde_json::Value = Http::json(
             self.request(Method::POST, &instance.id, &["snapshot"])?
-                .timeout(Duration::from_secs(30))
-                .send()
-                .await,
+                .timeout(Duration::from_secs(30)),
         )
-        .await?
-        .json()
-        .await
-        .map_err(|_| ProviderError::Unavailable)?;
+        .await?;
         if snapshot
             .get("id")
             .and_then(serde_json::Value::as_str)
@@ -132,12 +100,6 @@ impl SandboxDriver for Cloudflare {
     fn maximum_lifetime(&self) -> Option<Duration> {
         Some(Duration::from_secs(6 * 60 * 60))
     }
-    fn validate(&self, spec: &SandboxSpec) -> Result<(), ProviderError> {
-        if !matches!(spec.network, NetworkPolicy::BlockAll) {
-            return Err(ProviderError::Unsupported("Cloudflare network admission failed; recovery: register BlockAll until outbound Worker policy is configured".into()));
-        }
-        Ok(())
-    }
 
     async fn create(&self, spec: &SandboxSpec) -> Result<SandboxInstance, ProviderError> {
         let mut body = serde_json::json!({"image": spec.image, "env": spec.env, "internet": false});
@@ -145,12 +107,10 @@ impl SandboxDriver for Cloudflare {
             body["snapshot"] =
                 serde_json::from_str(&snapshot.handle).map_err(|_| ProviderError::Unavailable)?;
         }
-        Http::checked(
+        Http::empty(
             self.request(Method::POST, &spec.name, &[])?
                 .timeout(Duration::from_secs(20))
-                .json(&body)
-                .send()
-                .await,
+                .json(&body),
         )
         .await?;
         Ok(SandboxInstance {
@@ -165,19 +125,11 @@ impl SandboxDriver for Cloudflare {
     }
 
     async fn state(&self, instance: &SandboxInstance) -> Result<MachineState, ProviderError> {
-        let state: State = Http::checked(
+        let state: State = Http::json(
             self.request(Method::GET, &instance.id, &[])?
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await,
+                .timeout(Duration::from_secs(5)),
         )
-        .await?
-        .json()
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "Cloudflare state response decoding failed; recovery: inspect the deployed Worker version");
-            ProviderError::Unavailable
-        })?;
+        .await?;
         Ok(if state.running {
             MachineState::Running
         } else {
@@ -186,32 +138,40 @@ impl SandboxDriver for Cloudflare {
     }
 
     async fn destroy(&self, instance: &SandboxInstance) -> Result<(), ProviderError> {
-        Http::checked(
+        Http::empty(
             self.request(Method::DELETE, &instance.id, &[])?
-                .timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(10)),
+        )
+        .await
+    }
+
+    async fn exec(
+        &self,
+        instance: &SandboxInstance,
+        argv: Vec<String>,
+        timeout_ms: u32,
+        _input: Option<Vec<u8>>,
+    ) -> Result<crate::ExecStream, ProviderError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let response = Http::checked(
+            self.request(Method::POST, &instance.id, &["exec", &id])?
+                .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10))
+                .json(&serde_json::json!({"argv": argv}))
                 .send()
                 .await,
         )
         .await?;
-        Ok(())
-    }
-
-    fn start(
-        &self,
-        instance: &SandboxInstance,
-        command: ExecCommand,
-    ) -> Result<ExecSession, ProviderError> {
-        let driver = self.clone();
-        let instance = instance.clone();
-        Ok(super::process_group_io(
-            &command,
-            None,
-            move |argv, timeout, _| {
-                let driver = driver.clone();
-                let instance = instance.clone();
-                Box::pin(async move { driver.raw_start(&instance, argv, timeout).await })
-            },
-        ))
+        let output = frames(response.bytes_stream(), Framing::Lines)
+            .and_then(|frame| async move {
+                let frame: Frame = serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Rejected("Cloudflare exec frame decoding failed; recovery: inspect the Worker version without replaying the command".into()))?;
+                match frame {
+                    Frame::Stdout(data) => Ok(ExecOutput::Stdout(data)),
+                    Frame::Stderr(data) => Ok(ExecOutput::Stderr(data)),
+                    Frame::Exit(code) => Ok(ExecOutput::ExitCode(code)),
+                    Frame::Error(_reason) => Err(ProviderError::Unavailable),
+                }
+            }).boxed();
+        Ok(output)
     }
 
     async fn read_file(
@@ -219,18 +179,12 @@ impl SandboxDriver for Cloudflare {
         instance: &SandboxInstance,
         path: &str,
     ) -> Result<Vec<u8>, ProviderError> {
-        Http::checked(
+        Http::bytes(
             self.request(Method::GET, &instance.id, &["file"])?
                 .timeout(Duration::from_secs(20))
-                .query(&[("path", path)])
-                .send()
-                .await,
+                .query(&[("path", path)]),
         )
-        .await?
-        .bytes()
         .await
-        .map(|data| data.to_vec())
-        .map_err(|_| ProviderError::Unavailable)
     }
 
     async fn write_file(
@@ -239,15 +193,12 @@ impl SandboxDriver for Cloudflare {
         path: &str,
         data: &[u8],
     ) -> Result<(), ProviderError> {
-        Http::checked(
+        Http::empty(
             self.request(Method::PUT, &instance.id, &["file"])?
                 .timeout(Duration::from_secs(20))
                 .query(&[("path", path)])
-                .body(data.to_vec())
-                .send()
-                .await,
+                .body(data.to_vec()),
         )
-        .await?;
-        Ok(())
+        .await
     }
 }

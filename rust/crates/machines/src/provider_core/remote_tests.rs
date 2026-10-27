@@ -36,7 +36,13 @@ impl SandboxDriver for NoDispatch {
         self.dispatch()
     }
 
-    fn start(&self, _: &SandboxInstance, _: ExecCommand) -> Result<ExecSession, ProviderError> {
+    async fn exec(
+        &self,
+        _: &SandboxInstance,
+        _: Vec<String>,
+        _: u32,
+        _: Option<Vec<u8>>,
+    ) -> Result<ExecStream, ProviderError> {
         self.dispatch()
     }
 
@@ -127,5 +133,46 @@ async fn missing_atomic_snapshot_boundary_refuses_every_entry_before_dispatch()
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert!(provider.list_machines(None, 1).await?.machines.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_policy_and_stdin_admission_precede_transport()
+-> Result<(), Box<dyn std::error::Error>> {
+    let driver = NoDispatch::default();
+    let calls = Arc::clone(&driver.0);
+    let provider = RemoteMachines::new(
+        driver.clone(),
+        RemoteMachinesConfig {
+            images: [([7; 32], "registered-image".into())].into(),
+            networks: [(
+                [8; 32],
+                NetworkPolicy::AllowDomains(vec!["example.com".into()]),
+            )]
+            .into(),
+            ..RemoteMachinesConfig::default()
+        },
+    );
+    assert!(matches!(
+        provider
+            .create(CreateMachine::new(
+                IdempotencyKey::new(),
+                Image::custom([7; 32])?,
+                [8; 32]
+            ))
+            .await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    let instance = SandboxInstance {
+        id: "internal-admission-vector".into(),
+        endpoint: "".into(),
+        allocation: Allocation::default(),
+    };
+    let command = ExecCommand::new(vec!["cat".into()], 1000)?;
+    assert!(matches!(
+        driver.start(&instance, &command, Some(vec![0, 255])),
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     Ok(())
 }

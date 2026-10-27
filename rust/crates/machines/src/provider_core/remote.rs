@@ -211,7 +211,12 @@ impl<D: SandboxDriver> RemoteMachines<D> {
             network,
             env: BTreeMap::new(),
         };
-        self.driver.validate(&spec)?;
+        spec.lifetime_seconds()?;
+        if matches!(spec.network, NetworkPolicy::AllowDomains(_))
+            && !self.driver.supports_domain_egress()
+        {
+            return Err(ProviderError::Unsupported("provider network admission failed; recovery: register BlockAll or choose a provider with native domain allowlist enforcement".into()));
+        }
         // Record dispatch before awaiting the reply, so a lost reply never frees the key.
         self.ops.bind_target(operation, &name);
         let instance = self.driver.create(&spec).await?;
@@ -307,7 +312,7 @@ impl<D: SandboxDriver> RemoteMachines<D> {
             &command,
             expiry,
             self.history.clone(),
-            driver.start(&binding.instance, request)?,
+            driver.start(&binding.instance, &request, None)?,
         )
     }
 }

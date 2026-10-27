@@ -34,7 +34,8 @@ impl MachineShell {
         verifier: Arc<AuthorityVerifier>,
     ) -> Result<Self> {
         verifier.expiry(&signed)?;
-        if !workspace.starts_with('/')
+        if workspace.len() > 4096
+            || !workspace.starts_with('/')
             || workspace.contains('\0')
             || workspace.contains('\\')
             || workspace
@@ -150,31 +151,20 @@ impl ToolExecutor for MachineShell {
                 return Err(Error::Invalid("machine shell cwd admission failed; recovery: use a relative POSIX directory without parent traversal".into()));
             }
             let cwd = format!("{}/{}", self.workspace, cwd);
-            let source = format!(
-                "acyclic_root=$(cd -P -- {} && pwd -P) || {{ printf '%s\\n' 'shell workspace selection failed; recovery: restore the configured workspace' >&2; exit 125; }}\ncd -P -- {} || {{ printf '%s\\n' 'shell cwd selection failed; recovery: choose an existing workspace directory' >&2; exit 125; }}\ncase \"$PWD/\" in \"$acyclic_root/\"*) ;; *) printf '%s\\n' 'shell cwd escapes the workspace; recovery: choose a directory within the configured workspace' >&2; exit 125;; esac\nunset acyclic_root\n{}",
-                quote(&self.workspace),
-                quote(&cwd),
-                input.command
-            );
+            if cwd.len() > 4096 {
+                return Err(Error::Invalid("machine shell cwd exceeds the portable path bound; recovery: use a workspace-relative path whose full guest path fits 4096 bytes".into()));
+            }
+            let argv = shell_argv(&self.workspace, &cwd, &input.command);
             let expiry = self.verifier.expiry(&self.signed)?.saturating_mul(1000);
             let expiry = context
                 .effective_scope()
                 .run_limits()
                 .deadline_epoch_ms
                 .map_or(expiry, |deadline| expiry.min(deadline));
-            let command = ExecCommand::new(
-                vec![
-                    "bash".into(),
-                    "--noprofile".into(),
-                    "--norc".into(),
-                    "-c".into(),
-                    source,
-                ],
-                input.timeout_ms()?,
-            )
-            .map_err(|error| map_error(error, Some(invocation.operation_id)))?
-            .with_expiry(expiry)
-            .with_output_limit(context.effective_scope().limits().render_bytes);
+            let command = ExecCommand::new(argv, input.timeout_ms()?)
+                .map_err(|error| map_error(error, Some(invocation.operation_id)))?
+                .with_expiry(expiry)
+                .with_output_limit(context.effective_scope().limits().render_bytes);
             let mut files = ToolOutputWriter::open(&context, request).await?;
             let mut output = self
                 .host
@@ -251,6 +241,35 @@ impl ToolExecutor for MachineShell {
     }
 }
 
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+// Pass source as bounded positional arguments, preserving arbitrary UTF-8,
+// quotes and trailing newlines. The inner bash receives the original script
+// with no extra positional parameters or wrapper variables in its environment.
+fn shell_argv(workspace: &str, cwd: &str, source: &str) -> Vec<String> {
+    const BOOTSTRAP: &str = r#"acyclic_root=$(cd -P -- "$1" && pwd -P) || { printf '%s\n' 'shell workspace selection failed; recovery: restore the configured workspace' >&2; exit 125; }
+cd -P -- "$2" || { printf '%s\n' 'shell cwd selection failed; recovery: choose an existing workspace directory' >&2; exit 125; }
+case "$PWD/" in "$acyclic_root/"*) ;; *) printf '%s\n' 'shell cwd escapes the workspace; recovery: choose a directory within the configured workspace' >&2; exit 125;; esac
+shift 2
+printf -v acyclic_source %s "$@"
+exec bash --noprofile --norc -c "$acyclic_source"
+"#;
+    let mut argv = vec![
+        "bash".into(),
+        "--noprofile".into(),
+        "--norc".into(),
+        "-c".into(),
+        BOOTSTRAP.into(),
+        "bash".into(),
+        workspace.into(),
+        cwd.into(),
+    ];
+    let mut remaining = source;
+    while !remaining.is_empty() {
+        let mut end = remaining.len().min(4096);
+        while !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+        argv.push(remaining[..end].into());
+        remaining = &remaining[end..];
+    }
+    argv
 }

@@ -95,7 +95,7 @@ pub struct SandboxInstance {
 /// Capability declarations and credential handling belong in the adapter;
 /// operation replay, event history and pagination do not.
 #[async_trait]
-pub trait SandboxDriver: Send + Sync + 'static {
+pub trait SandboxDriver: Clone + Send + Sync + 'static {
     /// Provider name used in diagnostics and compatibility commitments.
     fn name(&self) -> &'static str;
 
@@ -138,9 +138,10 @@ pub trait SandboxDriver: Send + Sync + 'static {
         None
     }
 
-    /// Rejects unsupported settings before the operation records dispatch.
-    fn validate(&self, _spec: &SandboxSpec) -> Result<(), ProviderError> {
-        Ok(())
+    /// Declares native domain allowlist enforcement. The core admits policy;
+    /// adapters only encode an already admitted policy in their create primitive.
+    fn supports_domain_egress(&self) -> bool {
+        false
     }
 
     /// Creates one ready sandbox using a registered image and enforced network policy.
@@ -180,16 +181,45 @@ pub trait SandboxDriver: Send + Sync + 'static {
         }
     }
 
-    /// Prepares one command without dispatching it. The output stream performs
-    /// the single start request when polled. The stop handle must already cover
-    /// a lost or delayed start reply and every descendant of the command.
+    /// Whether the native exec primitive can accept owned binary stdin.
+    fn supports_stdin(&self) -> bool {
+        false
+    }
+
+    /// Dispatches one native command. The shared core supplies process ownership
+    /// and cancellation; stdin is present only after supports_stdin admission.
+    async fn exec(
+        &self,
+        instance: &SandboxInstance,
+        argv: Vec<String>,
+        timeout_ms: u32,
+        input: Option<Vec<u8>>,
+    ) -> Result<crate::ExecStream, ProviderError>;
+
+    /// Prepares common ownership before dispatch, including a lost start reply.
     fn start(
         &self,
         instance: &SandboxInstance,
-        command: ExecCommand,
-    ) -> Result<super::ExecSession, ProviderError>;
+        command: &ExecCommand,
+        input: Option<Vec<u8>>,
+    ) -> Result<super::ExecSession, ProviderError> {
+        if input.is_some() && !self.supports_stdin() {
+            return Err(ProviderError::Unsupported("provider stdin admission failed; recovery: choose a provider with native stdin support".into()));
+        }
+        let driver = self.clone();
+        let instance = instance.clone();
+        Ok(super::process_group_io(
+            command,
+            input,
+            move |argv, timeout, input| {
+                let driver = driver.clone();
+                let instance = instance.clone();
+                Box::pin(async move { driver.exec(&instance, argv, timeout, input).await })
+            },
+        ))
+    }
 
-    /// Downloads an exact file as bytes, without text conversion.
+    /// Reads exact guest bytes without text conversion.
     async fn read_file(
         &self,
         instance: &SandboxInstance,

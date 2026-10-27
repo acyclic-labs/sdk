@@ -15,6 +15,9 @@ use the same vectors for publication before exit, stops and cancellation on drop
 The binding uses the machine's configured disk workspace. It does not create a
 kernel filesystem projection or import task volumes.
 
-Shell parity is incomplete while the Machines command admission retains its
-60-second timeout and 4096-byte argument caps: the native shell defaults to 300
-seconds and accepts longer source. Calls exceeding those bounds fail admission.
+The shared shell input admits 1..60 seconds (60 by default), at most 16 KiB of
+UTF-8 source and 4096-byte relative paths on every executor. This narrows native
+shell admission to the portable contract. MachineShell passes source in UTF-8
+chunks, each within the existing 4096-byte argument bound, then executes the
+original source in bash. Quotes and trailing newlines are preserved. The Machines
+60-second timeout, 64-argument and 32768-byte total argv bounds are unchanged.

@@ -3,14 +3,14 @@
 mod wire;
 use super::instances::Instances;
 use super::{
-    Allocation, ExecSession, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
+    Allocation, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
     duplex::{duplex_exec, pump_stdin},
     http::secret,
     rpc::Rpc,
 };
-use crate::{ExecCommand, ExecOutput, ExecStream, MachineState, ProviderError};
+use crate::{ExecStream, MachineState, ProviderError};
 use async_trait::async_trait;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use std::time::Duration;
 use tonic::metadata::MetadataMap;
 
@@ -125,21 +125,7 @@ impl Modal {
                         timeout + Duration::from_secs(10),
                     )
                     .await
-                    .map(|frames| {
-                        frames
-                            .try_filter_map(move |frame| async move {
-                                Ok(if frame.data.is_empty() {
-                                    None
-                                } else {
-                                    Some(if fd == 0 {
-                                        ExecOutput::Stdout(frame.data)
-                                    } else {
-                                        ExecOutput::Stderr(frame.data)
-                                    })
-                                })
-                            })
-                            .boxed()
-                    })
+                    .map(|frames| frames.map_ok(|frame| frame.data))
             }
         };
         let stdout = attach(0);
@@ -189,31 +175,6 @@ impl Modal {
             })
         });
         Ok(duplex_exec(stdout, stderr, input, exit))
-    }
-
-    fn session(
-        &self,
-        instance: &SandboxInstance,
-        command: &ExecCommand,
-        input: Option<Vec<u8>>,
-    ) -> Result<ExecSession, ProviderError> {
-        let guest = self.guests.get(instance)?;
-        Ok(super::process_group_io(
-            command,
-            input,
-            move |argv, timeout, input| {
-                let guest = guest.clone();
-                Box::pin(async move {
-                    Self::raw_start(
-                        &guest,
-                        argv,
-                        Duration::from_millis(u64::from(timeout)),
-                        input,
-                    )
-                    .await
-                })
-            },
-        ))
     }
 }
 
@@ -275,11 +236,8 @@ impl SandboxDriver for Modal {
     fn maximum_lifetime(&self) -> Option<Duration> {
         Some(Duration::from_secs(24 * 3600))
     }
-    fn validate(&self, spec: &SandboxSpec) -> Result<(), ProviderError> {
-        if !spec.env.is_empty() {
-            return Err(ProviderError::Unsupported("Modal environment admission failed; recovery: register environment variables in the immutable image".into()));
-        }
-        spec.lifetime_seconds().map(|_| ())
+    fn supports_domain_egress(&self) -> bool {
+        true
     }
 
     async fn create(&self, spec: &SandboxSpec) -> Result<SandboxInstance, ProviderError> {
@@ -389,12 +347,23 @@ impl SandboxDriver for Modal {
         Ok(())
     }
 
-    fn start(
+    fn supports_stdin(&self) -> bool {
+        true
+    }
+    async fn exec(
         &self,
         instance: &SandboxInstance,
-        command: ExecCommand,
-    ) -> Result<ExecSession, ProviderError> {
-        self.session(instance, &command, None)
+        argv: Vec<String>,
+        timeout_ms: u32,
+        input: Option<Vec<u8>>,
+    ) -> Result<ExecStream, ProviderError> {
+        Self::raw_start(
+            &self.guests.get(instance)?,
+            argv,
+            Duration::from_millis(u64::from(timeout_ms)),
+            input,
+        )
+        .await
     }
 
     async fn read_file(
@@ -403,7 +372,7 @@ impl SandboxDriver for Modal {
         path: &str,
     ) -> Result<Vec<u8>, ProviderError> {
         super::exec_read_file(instance, path, |command, input| {
-            self.session(instance, command, input)
+            self.start(instance, command, input)
         })
         .await
     }
@@ -415,7 +384,7 @@ impl SandboxDriver for Modal {
         data: &[u8],
     ) -> Result<(), ProviderError> {
         super::exec_write_file(instance, path, data, |command, input| {
-            self.session(instance, command, input)
+            self.start(instance, command, input)
         })
         .await
     }

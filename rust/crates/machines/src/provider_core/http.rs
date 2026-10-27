@@ -80,6 +80,30 @@ impl Http {
             .headers(self.headers.clone()))
     }
 
+    /// One status check and body decode. Unknown mutation outcomes never retry.
+    pub async fn json<T: serde::de::DeserializeOwned>(
+        request: reqwest::RequestBuilder,
+    ) -> Result<T, ProviderError> {
+        Self::checked(request.send().await)
+            .await?
+            .json()
+            .await
+            .map_err(|_| ProviderError::Unavailable)
+    }
+
+    pub async fn bytes(request: reqwest::RequestBuilder) -> Result<Vec<u8>, ProviderError> {
+        Self::checked(request.send().await)
+            .await?
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|_| ProviderError::Unavailable)
+    }
+
+    pub async fn empty(request: reqwest::RequestBuilder) -> Result<(), ProviderError> {
+        Self::checked(request.send().await).await.map(|_| ())
+    }
+
     pub async fn checked(
         response: Result<Response, reqwest::Error>,
     ) -> Result<Response, ProviderError> {

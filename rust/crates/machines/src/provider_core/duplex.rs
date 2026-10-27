@@ -5,14 +5,32 @@ use std::future::Future;
 
 /// Output headers can depend on input. Poll both attachments and the input
 /// pump together, then settle the exit only after all bytes have drained.
-pub(super) fn duplex_exec(
-    stdout: impl Future<Output = Result<ExecStream, ProviderError>> + Send + 'static,
-    stderr: impl Future<Output = Result<ExecStream, ProviderError>> + Send + 'static,
+pub(super) fn duplex_exec<SO, SE>(
+    stdout: impl Future<Output = Result<SO, ProviderError>> + Send + 'static,
+    stderr: impl Future<Output = Result<SE, ProviderError>> + Send + 'static,
     input: impl Future<Output = Result<(), ProviderError>> + Send + 'static,
     exit: impl Future<Output = Result<i32, ProviderError>> + Send + 'static,
-) -> ExecStream {
-    let stdout = stream::once(stdout).try_flatten();
-    let stderr = stream::once(stderr).try_flatten();
+) -> ExecStream
+where
+    SO: futures::Stream<Item = Result<Vec<u8>, ProviderError>> + Send + 'static,
+    SE: futures::Stream<Item = Result<Vec<u8>, ProviderError>> + Send + 'static,
+{
+    fn output<S>(
+        attachment: impl Future<Output = Result<S, ProviderError>> + Send + 'static,
+        channel: fn(Vec<u8>) -> ExecOutput,
+    ) -> ExecStream
+    where
+        S: futures::Stream<Item = Result<Vec<u8>, ProviderError>> + Send + 'static,
+    {
+        stream::once(attachment)
+            .try_flatten()
+            .try_filter_map(
+                move |bytes| async move { Ok((!bytes.is_empty()).then(|| channel(bytes))) },
+            )
+            .boxed()
+    }
+    let stdout = output(stdout, ExecOutput::Stdout);
+    let stderr = output(stderr, ExecOutput::Stderr);
     let input = stream::once(async move { input.await.map(|()| None::<ExecOutput>) })
         .try_filter_map(|item| async move { Ok(item) });
     stream::select(stream::select(stdout, stderr), input)
@@ -52,16 +70,16 @@ mod tests {
         let stdout_drained = Arc::clone(&drained);
         let stdout = async move {
             stdout_gate.await.map_err(|_| ProviderError::Unavailable)?;
-            Ok(stream::iter([Ok(ExecOutput::Stdout(vec![0, 255]))])
+            Ok(stream::iter([Ok(vec![0, 255])])
                 .chain(stream::once(async move {
                     stdout_drained.store(true, Ordering::Release);
-                    Ok(ExecOutput::Stdout(vec![1]))
+                    Ok(vec![1])
                 }))
                 .boxed())
         };
         let stderr = async move {
             stderr_gate.await.map_err(|_| ProviderError::Unavailable)?;
-            Ok(stream::iter([Ok(ExecOutput::Stderr(vec![255, 0]))]).boxed())
+            Ok(stream::iter([Ok(vec![255, 0])]).boxed())
         };
         let writes = Arc::new(Mutex::new(Vec::new()));
         let actual_writes = Arc::clone(&writes);

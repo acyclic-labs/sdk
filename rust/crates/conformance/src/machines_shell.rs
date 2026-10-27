@@ -61,12 +61,16 @@ fn context(
     ToolContext::new(Arc::new(task), operation, "machine-shell-conformance", None)
 }
 
-fn invocation(context: &ToolContext, source: &str, timeout: u32) -> ToolInvocation {
+fn invocation(context: &ToolContext, source: &str, timeout: Option<u32>) -> ToolInvocation {
+    let mut arguments = serde_json::json!({"command": source});
+    if let Some(timeout) = timeout {
+        arguments["timeout"] = timeout.into();
+    }
     ToolInvocation {
         operation_id: context.operation_id(),
         call_id: context.call_id().into(),
         name: "shell".into(),
-        arguments: serde_json::json!({"command": source, "timeout": timeout}),
+        arguments,
     }
 }
 
@@ -91,7 +95,7 @@ async fn completed(
     shell: &MachineShell,
     context: ToolContext,
     source: &str,
-    timeout: u32,
+    timeout: Option<u32>,
 ) -> Result<ToolResult> {
     tokio::time::timeout(Duration::from_secs(7), shell.execute(invocation(&context, source, timeout), Some(context)))
         .await.map_err(|_| Error::Invalid("machine shell completion exceeded its bound; recovery: inspect provider process cleanup and rerun conformance".into()))?
@@ -161,10 +165,34 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
     let foreign = context(&other, &grants, 65_536, None)?;
     require(
         matches!(
-            shell.authorize(None, Some(&foreign), &invocation(&foreign, "true", 5), None),
+            shell.authorize(
+                None,
+                Some(&foreign),
+                &invocation(&foreign, "true", Some(5)),
+                None
+            ),
             Err(Error::Unauthorized(_))
         ),
         "foreign agent rejection",
+    )?;
+
+    // Omitted timeout uses the same portable default. Split a multibyte source
+    // across the protocol's 4096-byte argument bound without quoting changes.
+    let padding = "\u{e9}'\"$()".repeat(700);
+    let source =
+        format!("# .... {padding}\nprintf '%s\\n' 'portable source'; test \"$#\" -eq 0\n\n");
+    let ordinary = completed(
+        &shell,
+        context(&storage, &grants, 65_536, None)?,
+        &source,
+        None,
+    )
+    .await?;
+    require(
+        ordinary.value["stdout"] == "portable source\n"
+            && ordinary.value["exit_code"] == 0
+            && ordinary.value["stop"].is_null(),
+        "default timeout and long UTF-8 source",
     )?;
 
     // The tool future must publish both streams before the guest can exit.
@@ -174,7 +202,7 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
     let source = format!(
         "printf '\\000\\377'; printf 'err\\000' >&2; while test ! -f '{barrier}'; do sleep 0.01; done; exit 7"
     );
-    let mut pending = shell.execute(invocation(&call, &source, 5), Some(call.clone()));
+    let mut pending = shell.execute(invocation(&call, &source, Some(5)), Some(call.clone()));
     let published = async {
         loop {
             let stdout = call
@@ -231,7 +259,7 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
         &shell,
         context(&storage, &grants, 3, None)?,
         "printf abcdef; sleep 5",
-        5,
+        Some(5),
     )
     .await?;
     require(
@@ -244,7 +272,7 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
         &shell,
         context(&storage, &grants, 65_536, None)?,
         "printf partial; sleep 5",
-        1,
+        Some(1),
     )
     .await?;
     require(
@@ -262,7 +290,7 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
         &shell,
         context(&storage, &grants, 65_536, Some(deadline))?,
         "printf partial; sleep 5",
-        5,
+        Some(5),
     )
     .await?;
     require(
@@ -280,7 +308,7 @@ async fn verify_inner(provider: Arc<dyn MachinesProvider>, workspace: &str) -> R
     );
     let marker = format!("{workspace}/shell-cancelled-{}", OperationId::new());
     let source = format!("(sleep 1; touch '{marker}') & printf started; sleep 5");
-    let mut pending = shell.execute(invocation(&call, &source, 5), Some(call.clone()));
+    let mut pending = shell.execute(invocation(&call, &source, Some(5)), Some(call.clone()));
     let published = async {
         loop {
             if call

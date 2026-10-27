@@ -21,7 +21,7 @@ proptest! {
             prop_assert!(!input.command.contains('\0'));
             let timeout = input.timeout_ms().map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert!(timeout > 0);
-            prop_assert_eq!(u64::from(timeout), u64::from(input.timeout.unwrap_or(300)) * 1000);
+            prop_assert_eq!(u64::from(timeout), u64::from(input.timeout.unwrap_or(60)) * 1000);
         }
     }
 }
@@ -40,7 +40,7 @@ fn model_cannot_select_a_workspace_or_escape_through_cwd() {
             .is_err()
         );
     }
-    for timeout in [0, 4_294_968, u32::MAX] {
+    for timeout in [0, 61, 4_294_968, u32::MAX] {
         assert!(
             ShellInput {
                 command: "pwd".into(),
@@ -88,5 +88,24 @@ fn windows_shell_name_keeps_powershell_execution() -> crate::Result<()> {
         crate::native_environment::PlatformPolicy::Native.facts().1,
         "PowerShell"
     );
+    Ok(())
+}
+
+#[test]
+fn portable_shell_bounds_apply_before_executor_selection() -> crate::Result<()> {
+    let mut input = ShellInput {
+        command: "#".repeat(16_384),
+        cwd: None,
+        timeout: None,
+    };
+    input.validate()?;
+    assert_eq!(input.timeout_ms()?, 60_000);
+    input.command.push('#');
+    assert!(input.validate().is_err());
+    input.command = "true".into();
+    input.timeout = Some(60);
+    input.validate()?;
+    input.timeout = Some(61);
+    assert!(input.validate().is_err());
     Ok(())
 }

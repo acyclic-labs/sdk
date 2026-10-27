@@ -2,11 +2,11 @@
 //! Wire definitions: e2b npm 2.61.0, process.Process and /v2/sandboxes.
 use super::instances::Instances;
 use super::{
-    Allocation, ExecSession, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
+    Allocation, SandboxDriver, SandboxInstance, SandboxSpec,
     framing::{Framing, connect_message, frames},
     http::{Http, secret},
 };
-use crate::{ExecCommand, ExecOutput, MachineState, ProviderError};
+use crate::{ExecOutput, MachineState, ProviderError};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures::{StreamExt, stream};
@@ -69,65 +69,6 @@ impl E2b {
             maximum_lifetime,
         })
     }
-
-    async fn raw_start(
-        &self,
-        instance: &SandboxInstance,
-        argv: Vec<String>,
-        timeout_ms: u32,
-    ) -> Result<crate::ExecStream, ProviderError> {
-        let guest = self.guests.get(instance)?;
-        let tag = uuid::Uuid::new_v4().to_string();
-        let mut argv = argv.iter();
-        let executable = argv.next().ok_or_else(|| {
-            ProviderError::Invalid("E2B argv missing; recovery: supply an executable".into())
-        })?;
-        let request = connect_message(
-            &serde_json::json!({"process": {"cmd": executable, "args": argv.collect::<Vec<_>>()}, "tag": tag, "stdin": false}),
-        )?;
-        let response = Http::checked(
-            guest
-                .request(Method::POST, &["process.Process", "Start"])?
-                .header("content-type", "application/connect+json")
-                .header("connect-protocol-version", "1")
-                .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10))
-                .body(request)
-                .send()
-                .await,
-        )
-        .await?;
-        let output = stream::try_unfold(
-            frames(response.bytes_stream(), Framing::Connect),
-            |mut source| async move {
-                while let Some(frame) = source.next().await {
-                    let frame = frame?;
-                    if frame.flags == 2 {
-                        let trailer: serde_json::Value = serde_json::from_slice(&frame.data)
-                            .map_err(|_| ProviderError::Unavailable)?;
-                        if trailer.get("error").is_some() {
-                            return Err(ProviderError::Unavailable);
-                        }
-                        return Ok(None);
-                    }
-                    let frame: StartResponse = serde_json::from_slice(&frame.data)
-                        .map_err(|_| ProviderError::Unavailable)?;
-                    let output = match frame.event {
-                        Event::Start(_value) | Event::Keepalive(_value) => continue,
-                        Event::Data(Data::Stdout(data)) => ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
-                        Event::Data(Data::Stderr(data)) => ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
-                        Event::End(end) if end.exited && end.error.is_none() => ExecOutput::ExitCode(end.code),
-                        Event::End(_) => return Err(ProviderError::Unavailable),
-                    };
-                    if matches!(&output, ExecOutput::Stdout(data) | ExecOutput::Stderr(data) if data.is_empty()) {
-                        continue;
-                    }
-                    return Ok(Some((output, source)));
-                }
-                Ok(None)
-            },
-        ).boxed();
-        Ok(output)
-    }
 }
 
 #[derive(Deserialize)]
@@ -188,18 +129,13 @@ impl SandboxDriver for E2b {
         true
     }
     async fn snapshot(&self, instance: &SandboxInstance, _: &str) -> Result<String, ProviderError> {
-        let response: serde_json::Value = Http::checked(
+        let response: serde_json::Value = Http::json(
             self.api
                 .request(Method::POST, &["sandboxes", &instance.id, "snapshots"])?
                 .timeout(Duration::from_secs(30))
-                .json(&serde_json::json!({"memory": false}))
-                .send()
-                .await,
+                .json(&serde_json::json!({"memory": false})),
         )
-        .await?
-        .json()
-        .await
-        .map_err(|_| ProviderError::Unavailable)?;
+        .await?;
         response
             .get("snapshotID")
             .and_then(serde_json::Value::as_str)
@@ -211,12 +147,10 @@ impl SandboxDriver for E2b {
         &self,
         snapshot: &super::ProviderSnapshot,
     ) -> Result<super::SnapshotRelease, ProviderError> {
-        Http::checked(
+        Http::empty(
             self.api
                 .request(Method::DELETE, &["templates", &snapshot.handle])?
-                .timeout(Duration::from_secs(10))
-                .send()
-                .await,
+                .timeout(Duration::from_secs(10)),
         )
         .await?;
         Ok(super::SnapshotRelease::Deleted)
@@ -224,20 +158,13 @@ impl SandboxDriver for E2b {
     fn maximum_lifetime(&self) -> Option<Duration> {
         Some(self.maximum_lifetime)
     }
-    fn validate(&self, spec: &SandboxSpec) -> Result<(), ProviderError> {
-        if !matches!(spec.network, NetworkPolicy::BlockAll) {
-            return Err(ProviderError::Unsupported("E2B network admission failed; recovery: register BlockAll until an egress selector policy is configured".into()));
-        }
-        spec.lifetime_seconds().map(|_| ())
-    }
 
     async fn create(&self, spec: &SandboxSpec) -> Result<SandboxInstance, ProviderError> {
-        let created: Created = Http::checked(self.api.request(Method::POST, &["v2", "sandboxes"])?
+        let created: Created = Http::json(self.api.request(Method::POST, &["v2", "sandboxes"])?
             .header("idempotency-key", &spec.name)
             .timeout(Duration::from_secs(30))
             .json(&serde_json::json!({"templateID": spec.snapshot.as_ref().map_or(spec.image.as_str(), |snapshot| snapshot.handle.as_str()), "metadata": {"acyclic.machine": spec.name}, "envVars": spec.env,
-                "timeout": spec.lifetime_seconds()?, "allow_internet_access": false, "autoPause": false, "secure": true}))
-            .send().await).await?.json().await.map_err(|_| ProviderError::Unavailable)?;
+                "timeout": spec.lifetime_seconds()?, "allow_internet_access": false, "autoPause": false, "secure": true}))).await?;
         if created.id.is_empty()
             || !created
                 .id
@@ -276,17 +203,12 @@ impl SandboxDriver for E2b {
     }
 
     async fn state(&self, instance: &SandboxInstance) -> Result<MachineState, ProviderError> {
-        let state: State = Http::checked(
+        let state: State = Http::json(
             self.api
                 .request(Method::GET, &["sandboxes", &instance.id])?
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await,
+                .timeout(Duration::from_secs(5)),
         )
-        .await?
-        .json()
-        .await
-        .map_err(|_| ProviderError::Unavailable)?;
+        .await?;
         match state.state.as_str() {
             "running" => Ok(MachineState::Running),
             "paused" => Ok(MachineState::Suspended),
@@ -295,12 +217,10 @@ impl SandboxDriver for E2b {
     }
 
     async fn destroy(&self, instance: &SandboxInstance) -> Result<(), ProviderError> {
-        match Http::checked(
+        match Http::empty(
             self.api
                 .request(Method::DELETE, &["sandboxes", &instance.id])?
-                .timeout(Duration::from_secs(10))
-                .send()
-                .await,
+                .timeout(Duration::from_secs(10)),
         )
         .await
         {
@@ -312,22 +232,64 @@ impl SandboxDriver for E2b {
         }
     }
 
-    fn start(
+    async fn exec(
         &self,
         instance: &SandboxInstance,
-        command: ExecCommand,
-    ) -> Result<ExecSession, ProviderError> {
-        let driver = self.clone();
-        let instance = instance.clone();
-        Ok(super::process_group_io(
-            &command,
-            None,
-            move |argv, timeout, _| {
-                let driver = driver.clone();
-                let instance = instance.clone();
-                Box::pin(async move { driver.raw_start(&instance, argv, timeout).await })
+        argv: Vec<String>,
+        timeout_ms: u32,
+        _input: Option<Vec<u8>>,
+    ) -> Result<crate::ExecStream, ProviderError> {
+        let guest = self.guests.get(instance)?;
+        let tag = uuid::Uuid::new_v4().to_string();
+        let mut argv = argv.iter();
+        let executable = argv.next().ok_or_else(|| {
+            ProviderError::Invalid("E2B argv missing; recovery: supply an executable".into())
+        })?;
+        let request = connect_message(
+            &serde_json::json!({"process": {"cmd": executable, "args": argv.collect::<Vec<_>>()}, "tag": tag, "stdin": false}),
+        )?;
+        let response = Http::checked(
+            guest
+                .request(Method::POST, &["process.Process", "Start"])?
+                .header("content-type", "application/connect+json")
+                .header("connect-protocol-version", "1")
+                .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10))
+                .body(request)
+                .send()
+                .await,
+        )
+        .await?;
+        let output = stream::try_unfold(
+            frames(response.bytes_stream(), Framing::Connect),
+            |mut source| async move {
+                while let Some(frame) = source.next().await {
+                    let frame = frame?;
+                    if frame.flags == 2 {
+                        let trailer: serde_json::Value = serde_json::from_slice(&frame.data)
+                            .map_err(|_| ProviderError::Unavailable)?;
+                        if trailer.get("error").is_some() {
+                            return Err(ProviderError::Unavailable);
+                        }
+                        return Ok(None);
+                    }
+                    let frame: StartResponse = serde_json::from_slice(&frame.data)
+                        .map_err(|_| ProviderError::Unavailable)?;
+                    let output = match frame.event {
+                        Event::Start(_value) | Event::Keepalive(_value) => continue,
+                        Event::Data(Data::Stdout(data)) => ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
+                        Event::Data(Data::Stderr(data)) => ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
+                        Event::End(end) if end.exited && end.error.is_none() => ExecOutput::ExitCode(end.code),
+                        Event::End(_) => return Err(ProviderError::Unavailable),
+                    };
+                    if matches!(&output, ExecOutput::Stdout(data) | ExecOutput::Stderr(data) if data.is_empty()) {
+                        continue;
+                    }
+                    return Ok(Some((output, source)));
+                }
+                Ok(None)
             },
-        ))
+        ).boxed();
+        Ok(output)
     }
 
     async fn read_file(
@@ -335,20 +297,14 @@ impl SandboxDriver for E2b {
         instance: &SandboxInstance,
         path: &str,
     ) -> Result<Vec<u8>, ProviderError> {
-        Http::checked(
+        Http::bytes(
             self.guests
                 .get(instance)?
                 .request(Method::GET, &["files"])?
                 .query(&[("path", path), ("username", "user")])
-                .timeout(Duration::from_secs(30))
-                .send()
-                .await,
+                .timeout(Duration::from_secs(30)),
         )
-        .await?
-        .bytes()
         .await
-        .map(|data| data.to_vec())
-        .map_err(|_| ProviderError::Unavailable)
     }
 
     async fn write_file(
@@ -357,18 +313,15 @@ impl SandboxDriver for E2b {
         path: &str,
         data: &[u8],
     ) -> Result<(), ProviderError> {
-        Http::checked(
+        Http::empty(
             self.guests
                 .get(instance)?
                 .request(Method::POST, &["files"])?
                 .query(&[("path", path), ("username", "user")])
                 .header("content-type", "application/octet-stream")
                 .timeout(Duration::from_secs(30))
-                .body(data.to_vec())
-                .send()
-                .await,
+                .body(data.to_vec()),
         )
-        .await?;
-        Ok(())
+        .await
     }
 }
