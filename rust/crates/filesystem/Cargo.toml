@@ -257,6 +257,10 @@ name = "embedded_workspace"
 required-features = ["local"]
 
 [[example]]
+name = "bench-fs"
+required-features = ["local"]
+
+[[example]]
 name = "record_cloud_contract"
 required-features = ["memory"]
 

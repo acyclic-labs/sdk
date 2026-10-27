@@ -1,7 +1,7 @@
 //! Compare identical public-API workloads under local durability policies.
 
 #[macro_use]
-#[path = "../../../filesystem/tests/support/unbounded.rs"]
+#[path = "../tests/support/unbounded.rs"]
 mod unbounded;
 
 use std::time::Instant;

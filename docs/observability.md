@@ -208,5 +208,5 @@ cargo bench -p acyclic-conformance --features local-runner --bench write_validat
 
 Pass divan options after `--`, for example `-- --sample-count 10 put_small`.
 Name the bench with `--bench`: the library's test harness rejects those options.
-`bench-fs` and `bench-objects` in the conformance crate measure whole
+The `bench-fs` and `bench-objects` examples in their owning crates measure whole
 workloads (see its README).

@@ -88,6 +88,7 @@ workspace = true
 
 [dev-dependencies]
 divan.workspace = true
+serde_json.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
