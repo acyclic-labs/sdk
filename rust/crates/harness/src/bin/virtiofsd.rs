@@ -23,7 +23,7 @@ mod linux {
         // This is the standalone process's single-threaded entry, before any
         // runtime or SDK services start. Keep the socket private at creation;
         // changing permissions after bind would leave an admission race.
-        rustix::fs::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
+        rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
         let host_uid = rustix::process::geteuid().as_raw();
         let mut arguments = std::env::args_os().skip(1);
         let mut socket = None;
