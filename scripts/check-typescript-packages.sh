@@ -102,12 +102,17 @@ writeFileSync(join(consumer, "package.json"), JSON.stringify({
 }, null, 2));
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
-import { actors, filesystem, harness, harnessObjects, inference, machines, objects, stream, workers } from "@acyclic-labs/sdk";
-import { ObjectContentStore } from "@acyclic-labs/harness/objects";
+import * as sdk from "@acyclic-labs/sdk";
+import { PreparedAgentCommand } from "@acyclic-labs/harness/client";
+const { actors, filesystem, harness, inference, machines, objects, stream, workers } = sdk;
 if (typeof filesystem.openBrowserFs !== "function" || typeof inference.InferenceClient !== "function" ||
-    typeof harness.Harness !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
+    typeof harness.PreparedAgentCommand !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
     typeof objects !== "object" || typeof actors.HttpActorsClient !== "function" ||
-    typeof workers.WorkersDeploymentClient !== "function" || typeof harnessObjects.ObjectContentStore !== "function" ||
-    harnessObjects.ObjectContentStore !== ObjectContentStore) throw new Error("SDK exports are incomplete");
+    typeof workers.WorkersDeploymentClient !== "function" || "harnessObjects" in sdk ||
+    harness.PreparedAgentCommand !== PreparedAgentCommand) throw new Error("SDK exports are incomplete");
+await harness.initializeClientQueries();
+const command = new PreparedAgentCommand(harness.encodeCanonicalJson({ kind: "root" }));
+try { if (command.value().kind !== "root") throw new Error("SDK client command admission failed"); }
+finally { command.free(); }
 EOF
 (cd "$work/consumer" && BUN_INSTALL_CACHE_DIR="$work/install-cache" bun install --ignore-scripts && bun smoke.mjs && node smoke.mjs)

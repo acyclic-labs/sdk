@@ -42,11 +42,11 @@ for (const entry of packageEntries) {
 export const representativeExports = {
   "@acyclic-labs/actors": "ActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
-  "@acyclic-labs/harness": "Harness",
+  "@acyclic-labs/harness": "PreparedAgentCommand",
   "@acyclic-labs/inference": "InferenceClient",
   "@acyclic-labs/machines": "machineId",
   "@acyclic-labs/objects": "MemoryObjectsV1",
-  "@acyclic-labs/pi": "piProvider",
+  "@acyclic-labs/pi": "configurePiModel",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
   "@acyclic-labs/workers": "WorkersDeploymentClient",
@@ -111,7 +111,15 @@ const checks = {
     return true;
   },
   "@acyclic-labs/fs": (m) => typeof m.openBrowserFs === "function",
-  "@acyclic-labs/harness": (m) => typeof m.Harness.builder === "function",
+  "@acyclic-labs/harness": async (m) => {
+    await m.initializeClientQueries();
+    const command = new m.PreparedAgentCommand(m.encodeCanonicalJson({ kind: "root" }));
+    try {
+      const value = command.value();
+      return value.kind === "root" && typeof m.AgentClient === "function"
+        && typeof m.AgentControls === "function" && !["Harness", "NativeContracts"].some(name => name in m);
+    } finally { command.free(); }
+  },
   "@acyclic-labs/inference": (m) => typeof m.InferenceClient === "function",
   "@acyclic-labs/machines": async (m) => {
     const provider = new m.SimulatedMachines();
@@ -137,7 +145,7 @@ const checks = {
     const fetched = await provider.get(create(m.GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: "smoke" }), 1n);
     return fetched.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV1 === "function";
   },
-  "@acyclic-labs/pi": (m) => typeof m.piProvider === "function",
+  "@acyclic-labs/pi": (m) => typeof m.configurePiModel === "function" && !("piProvider" in m),
   "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
   "@acyclic-labs/workers": (m) => typeof m.WorkersDeploymentClient === "function",
   "@acyclic-labs/stream": async (m) => {

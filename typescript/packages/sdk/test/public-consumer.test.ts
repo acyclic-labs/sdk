@@ -39,40 +39,17 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
     fs.close();
   }
 
-  const authority = { kind: "conversation", id: "consumer" } as const;
-  const harness = await harnessApi.Harness.create({
-    authority,
-    issuerId: "consumer",
-    issuerKey: new Uint8Array(32).fill(1),
-    schemas: [{
-      name: "consumer.message",
-      version: 1,
-      implementation_digest: Array(32).fill(9),
-      fork_policy: "inherit",
-      schema: { type: "object" },
-    }],
-  });
-  try {
-    const scope = harness.issueScope("root", ["event:append"]);
-    const content = harness.contracts.validate("file_ref", {
-      volume: { provider: { namespace: "consumer", family: "filesystem", version: "2" },
-        id: "extension", class: "project", owner: { kind: "project", id: "consumer" } },
-      path: "extension/event.json", version: "generation-1",
-      descriptor: harness.contracts.fileDescriptor(new TextEncoder().encode('{"text":"hello"}'), "application/json"),
-      display_name: "event.json",
-    });
-    const applied = harness.apply({
-      authority,
-      operation_id: harness.contracts.validateIdentity("operation", "01010101-0101-0101-0101-010101010101"),
-      idempotency_key: "consumer-1",
-      expected_revision: 0n,
-      scope,
-      causal_parent: null,
-      action: { kind: "append_custom", schema: "consumer.message", version: 1, content },
-    });
-    expect(applied.result).toBe("applied");
-    expect(harness.snapshot().revision).toBe(1n);
-  } finally {
-    harness.free();
-  }
+  // This public-client admission probe does not claim host execution or bootstrap.
+  await harnessApi.initializeClientQueries();
+  const encoded = harnessApi.encodeCanonicalJson({ kind: "root" } satisfies harnessApi.AgentCommand);
+  using command = new harnessApi.PreparedAgentCommand(encoded);
+  expect(command.value()).toEqual({ kind: "root" });
+  const admitted = command.bytes();
+  encoded.fill(0);
+  expect(command.bytes()).toEqual(admitted);
+  expect(() => new harnessApi.PreparedAgentCommand(harnessApi.encodeCanonicalJson({
+    kind: "root", principal: "untrusted",
+  }))).toThrow();
+  const cursor = 9_007_199_254_740_993n;
+  expect(harnessApi.decodeClientJson(harnessApi.encodeCanonicalJson({ cursor }))).toEqual({ cursor });
 });
